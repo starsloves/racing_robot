@@ -8,7 +8,7 @@ direction: clockwise
 
 segments:
   - type: turn
-    angle_deg: 90.0
+    angle_deg: 95.0
     description: rect_enter_align
   - type: move
     distance_m: 1.10
@@ -17,10 +17,10 @@ segments:
     angle_deg: -80.0
     description: rect_corner_1
   - type: move
-    distance_m: 0.50
+    distance_m: 0.45
     description: rect_side_1
   - type: turn
-    angle_deg: -85.0
+    angle_deg: -83.0
     description: rect_corner_2
   - type: move
     distance_m: 3.00

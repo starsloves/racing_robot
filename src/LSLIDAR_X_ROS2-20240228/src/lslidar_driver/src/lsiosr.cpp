@@ -37,8 +37,8 @@ int LSIOSR::setOpt(int nBits, uint8_t nEvent, int nStop)
   }
   bzero(&newtio, sizeof(newtio));
   /*步骤一，设置字符大小*/
-  newtio.c_cflag |= CLOCAL;   //如果设置，modem 的控制线将会被忽略。如果没有设置，则 open()函数会阻塞直到载波检测线宣告 modem 处于摘机状态为止。
-  newtio.c_cflag |= CREAD;    //使端口能读取输入的数据
+  newtio.c_cflag |= CLOCAL;
+  newtio.c_cflag |= CREAD;
   /*设置每个数据的位数*/
   switch (nBits)
   {
@@ -52,17 +52,17 @@ int LSIOSR::setOpt(int nBits, uint8_t nEvent, int nStop)
   /*设置奇偶校验位*/
   switch (nEvent)
   {
-  case 'O': //奇数
+  case 'O':
     newtio.c_iflag |= (INPCK | ISTRIP);
-    newtio.c_cflag |= PARENB;   //使能校验，如果不设PARODD则是偶校验
-    newtio.c_cflag |= PARODD;   //奇校验
+    newtio.c_cflag |= PARENB;
+    newtio.c_cflag |= PARODD;
     break;
-  case 'E': //偶数
+  case 'E':
     newtio.c_iflag |= (INPCK | ISTRIP);
     newtio.c_cflag |= PARENB;
     newtio.c_cflag &= ~PARODD;
     break;
-  case 'N':  //无奇偶校验位
+  case 'N':
     newtio.c_cflag &= ~PARENB;
     break;
   }
@@ -91,21 +91,13 @@ int LSIOSR::setOpt(int nBits, uint8_t nEvent, int nStop)
     break;
   }
 
-  /*
-   * 设置停止位
-   * 设置停止位的位数， 如果设置，则会在每帧后产生两个停止位， 如果没有设置，则产生一个
-   * 停止位。一般都是使用一位停止位。需要两位停止位的设备已过时了。
-   * */
   if (nStop == 1)
     newtio.c_cflag &= ~CSTOPB;
   else if (nStop == 2)
     newtio.c_cflag |= CSTOPB;
-  /*设置等待时间和最小接收字符*/
   newtio.c_cc[VTIME] = 0;
   newtio.c_cc[VMIN] = 0;
-  /*处理未接收字符*/
   tcflush(fd_, TCIFLUSH);
-  /*激活新配置*/
   if ((tcsetattr(fd_, TCSANOW, &newtio)) != 0)
   {
     perror("serial set error");
@@ -155,7 +147,6 @@ int LSIOSR::read(unsigned char *buffer, int length, int timeout)
       }
       else if (rc < 0)
       {
-        printf("error \n");
         retry--;
         if (retry <= 0)
         {
@@ -183,7 +174,6 @@ int LSIOSR::read(unsigned char *buffer, int length, int timeout)
     }
     else if ((rc < 0) && (errno != EINTR) && (errno != EAGAIN))
     {
-      printf("read error\n");
       return -1;
     }
   }
@@ -369,8 +359,7 @@ int LSIOSR::init()
 	if (0 < fd_)
 	{
 		error_code = 0;
-		setOpt(DATA_BIT_8, PARITY_NONE, STOP_BIT_1);//设置串口参数
-		//printf("open_port %s  OK !\n", port_.c_str());
+		setOpt(DATA_BIT_8, PARITY_NONE, STOP_BIT_1);
 	}
 	else
 	{

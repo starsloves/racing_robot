@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-lane_follow.py — 视觉赛道居中控制
+vision_preview.py — 视觉预览（纯观察，不动车）
 
-提供:
-  - VisionLaneEngine   : 纯 BPU 推理引擎，可被任意节点复用
-  - LaneFollowNode     : 独立 ROS 2 节点，裸视觉居中测试
+Step 1 of visual system implementation:
+  - Load BPU segmentation model
+  - Subscribe to camera topic
+  - Run inference and publish visualization topics
+  - Does NOT publish /cmd_vel
 """
 
 import os
@@ -14,49 +16,24 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
 
 
 # ═══════════════════════════════════════════════════════════
 # YOLOv8-Seg 后处理（纯函数，与 ROS 无关）
+# 来源: bak/lane_follow.py (原样复制)
 # ═══════════════════════════════════════════════════════════
-
-def _sigmoid(x):
-    return 1.0 / (1.0 + np.exp(-np.clip(x, -20, 20)))
-
-
-# ── 缓存网格（每帧重建太慢） ───────────────────────────────────
-_GRIDS = None
-_STRIDES = None
-
-
-def _init_grids():
-    global _GRIDS, _STRIDES
-    strides = (8, 16, 32)
-    grids, arrs = [], []
-    for s in strides:
-        n = 640 // s
-        xv, yv = np.meshgrid(np.arange(n, dtype=np.float32), np.arange(n, dtype=np.float32))
-        grids.append(np.stack((xv, yv), axis=-1).reshape(-1, 2))
-        arrs.append(np.full(n * n, s, dtype=np.float32))
-    _GRIDS = np.concatenate(grids, axis=0)
-    _STRIDES = np.concatenate(arrs, axis=0)
 
 
 def _compute_seg_mask(output0, output1, conf_thr=0.25, mask_thr=0.5):
-    """→ (160,160) bool or None. Cached grids, skip NMS, use argmax for speed."""
-    global _GRIDS, _STRIDES
-    if _GRIDS is None:
-        _init_grids()
-
+    """
+    YOLOv8-Seg 标准后处理：argmax objectness → mc @ proto → sigmoid → 阈值化。
+    """
     raw = output0.reshape(-1, 8400).T       # (8400, 37)
     scores = 1.0 / (1.0 + np.exp(-np.clip(raw[:, 4], -20, 20)))
-
     best = np.argmax(scores)
     if scores[best] < conf_thr:
         return None
-
     proto = output1.reshape(32, 160, 160)
     mc = raw[best, 5:37]                    # (32,) mask coeffs
     flat = 1.0 / (1.0 + np.exp(-np.clip(mc @ proto.reshape(32, -1), -20, 20)))
@@ -64,7 +41,6 @@ def _compute_seg_mask(output0, output1, conf_thr=0.25, mask_thr=0.5):
 
 
 def _center_offset(binary, roi_bottom=0.35):
-    """→ float ∈ [-1, 1] 或 None。+1=右转, -1=左转, 0=居中"""
     if binary is None:
         return None
     h, w = binary.shape
@@ -82,21 +58,12 @@ def _center_offset(binary, roi_bottom=0.35):
 
 # ═══════════════════════════════════════════════════════════
 # 可复用推理引擎 — VisionLaneEngine
+# 来源: bak/lane_follow.py (原样复制)
 # ═══════════════════════════════════════════════════════════
 
 class VisionLaneEngine:
-    """
-    纯 BPU 视觉推理引擎，无 ROS 依赖。
-
-    engine = VisionLaneEngine('/path/to/model.bin')
-    result = engine.process(bgr_image)
-    # result: {'binary', 'center_offset', 'has_detection',
-    #          'viz_overlay', 'viz_mask'}
-    """
-
-    def __init__(self, model_path, conf_thr=0.3, mask_thr=0.5,
+    def __init__(self, model_path, mask_thr=0.7,
                  roi_bottom=0.35, logger=None):
-        self.conf_thr = conf_thr
         self.mask_thr = mask_thr
         self.roi_bottom = roi_bottom
         self.model = None
@@ -119,22 +86,14 @@ class VisionLaneEngine:
         return self.model is not None
 
     def process(self, bgr_image):
-        """
-        处理一帧 BGR 图像 → dict。
-
-        center_offset: -1..1, 0=居中, +1=需右转, -1=需左转
-        """
-        h, w = bgr_image.shape[:2]
         if not self.ready:
             return _no_det(bgr_image)
 
-        # 预处理
         rgb = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
         inp = np.expand_dims(
-            cv2.resize(rgb, (640, 640)).transpose(2, 0, 1).astype(np.uint8), axis=0
+            cv2.resize(rgb, (640, 640)).astype(np.uint8), axis=0
         )
 
-        # BPU 推理（直接传 numpy 数组，无需 pyDNNTensor 包装）
         try:
             outs = self.model.forward([inp])
         except Exception as e:
@@ -145,7 +104,7 @@ class VisionLaneEngine:
             return _no_det(bgr_image)
 
         binary = _compute_seg_mask(outs[0].buffer, outs[1].buffer,
-                                   self.conf_thr, self.mask_thr)
+                                   mask_thr=self.mask_thr)
         offset = _center_offset(binary, self.roi_bottom)
 
         return {
@@ -154,11 +113,14 @@ class VisionLaneEngine:
             'has_detection': binary is not None and offset is not None,
             'viz_overlay': _viz_overlay(bgr_image, binary, offset, self.roi_bottom),
             'viz_mask': _viz_mask(binary),
+            'proto': outs[1].buffer.copy(),
+            'det': outs[0].buffer.copy(),
         }
 
 
 # ═══════════════════════════════════════════════════════════
 # 可视化辅助
+# 来源: bak/lane_follow.py (原样复制)
 # ═══════════════════════════════════════════════════════════
 
 def _no_det(bgr):
@@ -184,10 +146,18 @@ def _viz_overlay(bgr, binary, offset, roi_bottom):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return img
 
+    # Coverage sanity: if >70% filled, likely false positive
+    coverage = binary.sum() / binary.size
+    show_as_bad = coverage > 0.70
+
     mr = cv2.resize(binary.astype(np.uint8) * 255, (w, h))
     mc = np.zeros_like(bgr)
     mc[:, :, 1] = mr
     ov = cv2.addWeighted(bgr, 0.6, mc, 0.4, 0)
+
+    if show_as_bad:
+        cv2.putText(ov, f'COVERAGE {coverage*100:.0f}% (BAD)', (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
     rh = max(5, int(h * roi_bottom))
     rb = cv2.resize(binary[-rh:, :].astype(np.uint8) * 255, (w, rh))
@@ -197,87 +167,76 @@ def _viz_overlay(bgr, binary, offset, roi_bottom):
         if len(nz) > 10:
             ls.append(nz[0])
             rs.append(nz[-1])
-    if ls and rs:
+    if ls and rs and offset is not None:
         al, ar = int(np.median(ls)), int(np.median(rs))
         dy = h - rh // 2
         cv2.line(ov, (al, dy - 20), (al, dy + 20), (255, 0, 0), 2)
         cv2.line(ov, (ar, dy - 20), (ar, dy + 20), (255, 0, 0), 2)
         cv2.line(ov, (int((al + ar) / 2), dy), (w // 2, dy), (0, 0, 255), 3)
-        cv2.putText(ov, f'offset: {offset:+.3f}', (10, 30),
+        cv2.putText(ov, f'offset: {offset:+.3f} cov:{coverage*100:.0f}%', (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    elif offset is None:
+        cv2.putText(ov, f'NO BOUNDARY cov:{coverage*100:.0f}%', (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     return ov
 
 
 # ═══════════════════════════════════════════════════════════
-# 独立 ROS 节点 — LaneFollowNode
+# ROS 节点 — VisionPreview（纯观察，不动车）
 # ═══════════════════════════════════════════════════════════
 
-class LaneFollowNode(Node):
-    """独立视觉居中控制节点，用于无段序列的裸直道测试。"""
+class VisionPreview(Node):
+    """
+    视觉预览节点。
+
+    订阅相机话题 → BPU 推理 → 发布可视化话题。
+    不发出任何 /cmd_vel 运动指令。
+    """
 
     def __init__(self):
-        super().__init__('lane_follow')
+        super().__init__('vision_preview')
         self._declare_params()
         self._read_params()
         self._resolve_model_path()
+        self._resolve_save_dir()
         self.bridge = CvBridge()
-        self.engine = VisionLaneEngine(
-            self.model_path, self.conf_thr, self.mask_thr,
-            self.roi_bottom, logger=self.get_logger()
+        self._engine = None
+        self._frame_count = 0
+
+        self.get_logger().info(f'[VisionPreview] saving raw→{self.raw_dir} / viz→{self.viz_dir}')
+
+        qos = rclpy.qos.QoSProfile(
+            depth=1,
+            reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+            durability=rclpy.qos.DurabilityPolicy.VOLATILE,
         )
+        self._sub = self.create_subscription(
+            Image, self.camera_topic, self._cam_cb, qos
+        )
+        self._viz_pub = self.create_publisher(Image, '/lane_seg_viz', 10)
+        self._mask_pub = self.create_publisher(Image, '/lane_seg_mask', 10)
 
-        # 缓存最近一次推理结果
-        self._last_result = None   # dict
-        self._last_offset = 0.0
-        self._offset_integral = 0.0
-        self._lost_since = time.time()
-
-        # 发布 / 订阅
-        self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
-        self.viz_pub = self.create_publisher(Image, self.viz_topic, 10)
-        self.mask_pub = self.create_publisher(Image, self.mask_topic, 10)
-        self.create_subscription(Image, self.camera_topic, self._image_cb, 10)
-        self.create_timer(0.05, self._control_timer)
-
-        self.get_logger().info(f'[LaneFollow] cam={self.camera_topic} cmd={self.cmd_vel_topic}')
+        self.get_logger().info(
+            f'[VisionPreview] cam={self.camera_topic} 就绪'
+        )
 
     def _declare_params(self):
         for p in [
-            ('camera_topic',      '/aurora/rgb/image_raw'),
-            ('model_path',        ''),
-            ('cmd_vel_topic',     '/lane_cmd_vel'),
-            ('viz_topic',         '/lane_seg_viz'),
-            ('mask_topic',        '/lane_seg_mask'),
-            ('linear_speed',       0.20),
-            ('max_angular',        0.6),
-            ('kp_center',          0.8),
-            ('kd_center',          0.3),
-            ('ki_center',          0.01),
-            ('conf_threshold',     0.3),
-            ('mask_threshold',     0.5),
-            ('roi_bottom_ratio',   0.35),
-            ('lost_timeout_sec',   0.5),
-            ('enable_lane_follow', True),
+            ('camera_topic',   '/aurora/rgb/image_raw'),
+            ('model_path',     ''),
+            ('mask_threshold', 0.7),
+            ('roi_bottom',     0.35),
+            ('save_dir',       ''),
         ]:
             self.declare_parameter(p[0], p[1])
 
     def _read_params(self):
         g = self.get_parameter
-        self.camera_topic     = g('camera_topic').value
-        self.model_path       = g('model_path').value
-        self.cmd_vel_topic    = g('cmd_vel_topic').value
-        self.viz_topic        = g('viz_topic').value
-        self.mask_topic       = g('mask_topic').value
-        self.linear_speed     = g('linear_speed').value
-        self.max_angular      = g('max_angular').value
-        self.kp               = g('kp_center').value
-        self.kd               = g('kd_center').value
-        self.ki               = g('ki_center').value
-        self.conf_thr         = g('conf_threshold').value
-        self.mask_thr         = g('mask_threshold').value
-        self.roi_bottom       = g('roi_bottom_ratio').value
-        self.lost_timeout     = g('lost_timeout_sec').value
-        self.enabled          = g('enable_lane_follow').value
+        self.camera_topic   = g('camera_topic').value
+        self.model_path     = g('model_path').value
+        self.mask_thr       = g('mask_threshold').value
+        self.roi_bottom     = g('roi_bottom').value
+        self.save_dir       = g('save_dir').value
 
     def _resolve_model_path(self):
         if not self.model_path:
@@ -287,78 +246,74 @@ class LaneFollowNode(Node):
                 'models', 'saidao_seg_model_quant.bin'
             ))
 
-    def _image_cb(self, msg):
-        if not self.engine.ready:
+    def _resolve_save_dir(self):
+        if not self.save_dir:
+            self.save_dir = os.path.normpath(os.path.join(
+                os.path.expanduser('~'),
+                'dev_ws', 'log', 'debug', 'vision_preview'
+            ))
+        self.raw_dir = os.path.join(self.save_dir, 'raw')
+        self.viz_dir = os.path.join(self.save_dir, 'viz')
+        os.makedirs(self.raw_dir, exist_ok=True)
+        os.makedirs(self.viz_dir, exist_ok=True)
+
+    def _get_engine(self):
+        if self._engine is None:
+            self._engine = VisionLaneEngine(
+                self.model_path, self.mask_thr,
+                self.roi_bottom, logger=self.get_logger()
+            )
+        return self._engine
+
+    def _cam_cb(self, msg):
+        engine = self._get_engine()
+        if not engine.ready:
             return
+
         try:
             cv_img = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
         except Exception as e:
             self.get_logger().error(f'cv_bridge: {e}')
             return
 
-        result = self.engine.process(cv_img)
-        self._last_result = result
+        t0 = time.perf_counter()
+        result = engine.process(cv_img)
+        dt_ms = (time.perf_counter() - t0) * 1000.0
 
-        now = time.time()
-        if result['has_detection']:
-            self._lost_since = now
+        self._frame_count += 1
 
-        # 发布可视化
+        binary = result['binary']
+        cov = f'{(binary.sum()/binary.size*100):.0f}%' if binary is not None else 'N/A'
+
+        if self._frame_count % 10 == 0 or self._frame_count == 1:
+            det = result['has_detection']
+            off = f'{result["center_offset"]:+.4f}' if result['center_offset'] is not None else 'N/A'
+            self.get_logger().info(
+                f'infer={dt_ms:.0f}ms det={det} offset={off} cov={cov}'
+            )
+
+        ts = msg.header.stamp
         try:
-            ts = self.get_clock().now().to_msg()
-            for topic_name, pub, key in [
-                (self.viz_topic,  self.viz_pub,  'viz_overlay'),
-                (self.mask_topic, self.mask_pub, 'viz_mask'),
-            ]:
-                msg_out = self.bridge.cv2_to_imgmsg(result[key], 'bgr8')
-                msg_out.header.stamp = ts
-                msg_out.header.frame_id = 'camera'
-                pub.publish(msg_out)
-        except Exception:
-            pass
+            for pub, key in [(self._viz_pub, 'viz_overlay'),
+                             (self._mask_pub, 'viz_mask')]:
+                img_msg = self.bridge.cv2_to_imgmsg(result[key], 'bgr8')
+                img_msg.header.stamp = ts
+                img_msg.header.frame_id = 'camera'
+                pub.publish(img_msg)
+        except Exception as e:
+            self.get_logger().warn(f'publish viz: {e}')
 
-    def _control_timer(self):
-        if not self.enabled:
-            return
-
-        twist = Twist()
-        now = time.time()
-        lost = (self._last_result is None or
-                not self._last_result.get('has_detection'))
-
-        if lost and (now - self._lost_since > self.lost_timeout):
-            twist.linear.x = 0.0
-            twist.angular.z = 0.0
-            self._offset_integral = 0.0
-            self._last_offset = 0.0
-            self.cmd_pub.publish(twist)
-            return
-
-        offset = self._last_result['center_offset'] if self._last_result else 0.0
-        if offset is None:
-            offset = self._last_offset
-
-        dt = 0.05
-        self._offset_integral += offset * dt
-        self._offset_integral = float(np.clip(self._offset_integral, -10, 10))
-        deriv = (offset - self._last_offset) / dt
-
-        # offset > 0 = 赛道在图像右侧 → 需右转 (负 angular.z)
-        angular = -(self.kp * offset + self.kd * deriv + self.ki * self._offset_integral)
-        angular = float(np.clip(angular, -self.max_angular, self.max_angular))
-
-        linear = self.linear_speed * (1.0 - abs(angular) / self.max_angular * 0.5)
-        linear = max(0.05, linear)
-
-        twist.linear.x = linear
-        twist.angular.z = angular
-        self.cmd_pub.publish(twist)
-        self._last_offset = offset
+        # 保存 raw + overlay 到不同文件夹
+        fc = self._frame_count
+        raw_path = os.path.join(self.raw_dir, f'{fc:06d}.jpg')
+        cv2.imwrite(raw_path, cv_img)
+        viz_path = os.path.join(self.viz_dir, f'{fc:06d}.jpg')
+        cv2.imwrite(viz_path, result['viz_overlay'])
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = LaneFollowNode()
+    node = VisionPreview()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
