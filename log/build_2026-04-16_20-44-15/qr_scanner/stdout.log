@@ -1,0 +1,29 @@
+running develop
+running egg_info
+creating qr_scanner.egg-info
+writing qr_scanner.egg-info/PKG-INFO
+writing dependency_links to qr_scanner.egg-info/dependency_links.txt
+writing entry points to qr_scanner.egg-info/entry_points.txt
+writing requirements to qr_scanner.egg-info/requires.txt
+writing top-level names to qr_scanner.egg-info/top_level.txt
+writing manifest file 'qr_scanner.egg-info/SOURCES.txt'
+reading manifest file 'qr_scanner.egg-info/SOURCES.txt'
+writing manifest file 'qr_scanner.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr-scanner.egg-link (link to .)
+Installing qr_scanner script to /home/sunrise/dev_ws/install/qr_scanner/lib/qr_scanner
+
+Installed /home/sunrise/dev_ws/build/qr_scanner
+running symlink_data
+creating /home/sunrise/dev_ws/install/qr_scanner/share/ament_index
+creating /home/sunrise/dev_ws/install/qr_scanner/share/ament_index/resource_index
+creating /home/sunrise/dev_ws/install/qr_scanner/share/ament_index/resource_index/packages
+symbolically linking /home/sunrise/dev_ws/build/qr_scanner/resource/qr_scanner -> /home/sunrise/dev_ws/install/qr_scanner/share/ament_index/resource_index/packages
+symbolically linking /home/sunrise/dev_ws/build/qr_scanner/package.xml -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner
+creating /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/launch
+symbolically linking /home/sunrise/dev_ws/build/qr_scanner/launch/start_competition.launch.py -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/launch
+creating /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+symbolically linking /home/sunrise/dev_ws/build/qr_scanner/config/sr.caffemodel -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+symbolically linking /home/sunrise/dev_ws/build/qr_scanner/config/detect.prototxt -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+symbolically linking /home/sunrise/dev_ws/build/qr_scanner/config/sr.prototxt -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+symbolically linking /home/sunrise/dev_ws/build/qr_scanner/config/detect.caffemodel -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config

@@ -1,0 +1,359 @@
+[0.050s] Invoking command in '/home/sunrise/dev_ws/build/lslidar_msgs': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /home/sunrise/dev_ws/src/LSLIDAR_X_ROS2-20240228/src/lslidar_msgs -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/lslidar_msgs
+[0.360s] -- The C compiler identification is GNU 11.2.0
+[0.673s] -- The CXX compiler identification is GNU 11.2.0
+[0.707s] -- Detecting C compiler ABI info
+[1.073s] -- Detecting C compiler ABI info - done
+[1.120s] -- Check for working C compiler: /usr/bin/cc - skipped
+[1.121s] -- Detecting C compile features
+[1.123s] -- Detecting C compile features - done
+[1.140s] -- Detecting CXX compiler ABI info
+[1.550s] -- Detecting CXX compiler ABI info - done
+[1.599s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[1.600s] -- Detecting CXX compile features
+[1.603s] -- Detecting CXX compile features - done
+[1.616s] -- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)
+[2.677s] -- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+[3.299s] -- Found std_msgs: 4.9.1 (/opt/ros/humble/share/std_msgs/cmake)
+[3.508s] -- Found rosidl_generator_c: 3.1.8 (/opt/ros/humble/share/rosidl_generator_c/cmake)
+[3.544s] -- Found rosidl_adapter: 3.1.8 (/opt/ros/humble/share/rosidl_adapter/cmake)
+[3.601s] -- Found rosidl_generator_cpp: 3.1.8 (/opt/ros/humble/share/rosidl_generator_cpp/cmake)
+[3.681s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[3.788s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[3.961s] -- Found sensor_msgs: 4.9.1 (/opt/ros/humble/share/sensor_msgs/cmake)
+[4.160s] -- Found rosidl_default_generators: 1.2.1 (/opt/ros/humble/share/rosidl_default_generators/cmake)
+[4.249s] -- Found ament_lint_auto: 0.12.15 (/opt/ros/humble/share/ament_lint_auto/cmake)
+[6.375s] -- Found ament_cmake_ros: 0.10.0 (/opt/ros/humble/share/ament_cmake_ros/cmake)
+[8.805s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[9.763s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[9.912s] -- Found PythonInterp: /usr/bin/python3 (found suitable version "3.10.12", minimum required is "3.6") 
+[9.922s] -- Found python_cmake_module: 0.10.0 (/opt/ros/humble/share/python_cmake_module/cmake)
+[10.088s] -- Found PythonLibs: /usr/lib/aarch64-linux-gnu/libpython3.10.so (found suitable version "3.10.12", minimum required is "3.5") 
+[10.088s] -- Using PYTHON_EXECUTABLE: /usr/bin/python3
+[10.089s] -- Using PYTHON_INCLUDE_DIRS: /usr/include/python3.10
+[10.089s] -- Using PYTHON_LIBRARIES: /usr/lib/aarch64-linux-gnu/libpython3.10.so
+[10.233s] -- Found PythonExtra: .so  
+[11.063s] -- Added test 'copyright' to check source files copyright and LICENSE
+[11.072s] -- Added test 'lint_cmake' to check CMake code style
+[11.078s] -- Added test 'xmllint' to check XML markup files
+[11.102s] -- Configuring done
+[11.312s] -- Generating done
+[11.381s] -- Build files have been written to: /home/sunrise/dev_ws/build/lslidar_msgs
+[11.457s] Invoked command in '/home/sunrise/dev_ws/build/lslidar_msgs' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /home/sunrise/dev_ws/src/LSLIDAR_X_ROS2-20240228/src/lslidar_msgs -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/lslidar_msgs
+[11.466s] Invoking command in '/home/sunrise/dev_ws/build/lslidar_msgs': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /home/sunrise/dev_ws/build/lslidar_msgs -- -j8 -l8
+[11.658s] [  1%] [34m[1mGenerating C code for ROS interfaces[0m
+[11.707s] [  3%] [34m[1mGenerating Rust code for ROS interfaces[0m
+[11.722s] [  4%] [34m[1mGenerating C++ code for ROS interfaces[0m
+[11.754s] [  4%] Built target ament_cmake_python_copy_lslidar_msgs
+[13.642s] running egg_info
+[13.647s] creating lslidar_msgs.egg-info
+[13.649s] writing lslidar_msgs.egg-info/PKG-INFO
+[13.650s] writing dependency_links to lslidar_msgs.egg-info/dependency_links.txt
+[13.651s] writing top-level names to lslidar_msgs.egg-info/top_level.txt
+[13.652s] writing manifest file 'lslidar_msgs.egg-info/SOURCES.txt'
+[13.666s] reading manifest file 'lslidar_msgs.egg-info/SOURCES.txt'
+[13.669s] writing manifest file 'lslidar_msgs.egg-info/SOURCES.txt'
+[13.914s] [  4%] Built target ament_cmake_python_build_lslidar_msgs_egg
+[14.408s] [  4%] Built target lslidar_msgs__rs
+[15.603s] [  4%] Built target lslidar_msgs__cpp
+[15.661s] [  6%] [34m[1mGenerating C++ type support for eProsima Fast-RTPS[0m
+[15.665s] [  7%] [34m[1mGenerating C++ introspection for ROS interfaces[0m
+[15.685s] [  9%] [34m[1mGenerating C++ type support dispatch for ROS interfaces[0m
+[15.897s] [ 10%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_generator_c.dir/rosidl_generator_c/lslidar_msgs/msg/detail/lslidar_difop__functions.c.o[0m
+[15.904s] [ 12%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_generator_c.dir/rosidl_generator_c/lslidar_msgs/msg/detail/lslidar_point__functions.c.o[0m
+[15.919s] [ 14%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_generator_c.dir/rosidl_generator_c/lslidar_msgs/msg/detail/lslidar_scan__functions.c.o[0m
+[15.945s] [ 17%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_generator_c.dir/rosidl_generator_c/lslidar_msgs/msg/detail/lslidar_packet__functions.c.o[0m
+[15.949s] [ 17%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_generator_c.dir/rosidl_generator_c/lslidar_msgs/msg/detail/lslidar_sweep__functions.c.o[0m
+[16.322s] [ 18%] [32m[1mLinking C shared library liblslidar_msgs__rosidl_generator_c.so[0m
+[16.550s] [ 18%] Built target lslidar_msgs__rosidl_generator_c
+[16.602s] [ 21%] [34m[1mGenerating C type support dispatch for ROS interfaces[0m
+[16.603s] [ 21%] [34m[1mGenerating C type support for eProsima Fast-RTPS[0m
+[16.621s] [ 23%] [34m[1mGenerating C introspection for ROS interfaces[0m
+[18.912s] [ 25%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_cpp.dir/rosidl_typesupport_cpp/lslidar_msgs/msg/lslidar_difop__type_support.cpp.o[0m
+[18.930s] [ 26%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_cpp.dir/rosidl_typesupport_cpp/lslidar_msgs/msg/lslidar_point__type_support.cpp.o[0m
+[18.945s] [ 28%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_cpp.dir/rosidl_typesupport_cpp/lslidar_msgs/msg/lslidar_packet__type_support.cpp.o[0m
+[19.501s] [ 29%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_cpp.dir/rosidl_typesupport_introspection_cpp/lslidar_msgs/msg/detail/lslidar_difop__type_support.cpp.o[0m
+[19.940s] [ 31%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_c.dir/rosidl_typesupport_c/lslidar_msgs/msg/lslidar_difop__type_support.cpp.o[0m
+[20.265s] [ 32%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_c.dir/rosidl_typesupport_c/lslidar_msgs/msg/lslidar_packet__type_support.cpp.o[0m
+[20.304s] [ 34%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_cpp.dir/rosidl_typesupport_fastrtps_cpp/lslidar_msgs/msg/detail/dds_fastrtps/lslidar_difop__type_support.cpp.o[0m
+[20.641s] [ 35%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_c.dir/rosidl_typesupport_c/lslidar_msgs/msg/lslidar_point__type_support.cpp.o[0m
+[21.010s] [ 37%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_c.dir/rosidl_typesupport_c/lslidar_msgs/msg/lslidar_scan__type_support.cpp.o[0m
+[21.069s] [ 39%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_c.dir/rosidl_typesupport_fastrtps_c/lslidar_msgs/msg/detail/lslidar_difop__type_support_c.cpp.o[0m
+[21.125s] [ 40%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_cpp.dir/rosidl_typesupport_cpp/lslidar_msgs/msg/lslidar_scan__type_support.cpp.o[0m
+[21.203s] [ 42%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_c.dir/rosidl_typesupport_introspection_c/lslidar_msgs/msg/detail/lslidar_difop__type_support.c.o[0m
+[21.302s] [ 45%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_c.dir/rosidl_typesupport_c/lslidar_msgs/msg/lslidar_sweep__type_support.cpp.o[0m
+[21.308s] [ 45%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_cpp.dir/rosidl_typesupport_cpp/lslidar_msgs/msg/lslidar_sweep__type_support.cpp.o[0m
+[21.500s] [ 46%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_c.dir/rosidl_typesupport_introspection_c/lslidar_msgs/msg/detail/lslidar_packet__type_support.c.o[0m
+[21.531s] [ 48%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_c.dir/rosidl_typesupport_introspection_c/lslidar_msgs/msg/detail/lslidar_point__type_support.c.o[0m
+[21.570s] [ 50%] [32m[1mLinking CXX shared library liblslidar_msgs__rosidl_typesupport_c.so[0m
+[21.791s] [ 51%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_c.dir/rosidl_typesupport_fastrtps_c/lslidar_msgs/msg/detail/lslidar_packet__type_support_c.cpp.o[0m
+[21.806s] [ 53%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_c.dir/rosidl_typesupport_introspection_c/lslidar_msgs/msg/detail/lslidar_scan__type_support.c.o[0m
+[21.926s] [ 53%] Built target lslidar_msgs__rosidl_typesupport_c
+[22.030s] [ 54%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_c.dir/rosidl_typesupport_introspection_c/lslidar_msgs/msg/detail/lslidar_sweep__type_support.c.o[0m
+[22.165s] [ 56%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_c.dir/rosidl_typesupport_fastrtps_c/lslidar_msgs/msg/detail/lslidar_point__type_support_c.cpp.o[0m
+[22.416s] [ 57%] [32m[1mLinking C shared library liblslidar_msgs__rosidl_typesupport_introspection_c.so[0m
+[22.814s] [ 57%] Built target lslidar_msgs__rosidl_typesupport_introspection_c
+[22.889s] [ 59%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_c.dir/rosidl_typesupport_fastrtps_c/lslidar_msgs/msg/detail/lslidar_scan__type_support_c.cpp.o[0m
+[22.987s] [ 60%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_cpp.dir/rosidl_typesupport_introspection_cpp/lslidar_msgs/msg/detail/lslidar_packet__type_support.cpp.o[0m
+[23.574s] [ 62%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_cpp.dir/rosidl_typesupport_fastrtps_cpp/lslidar_msgs/msg/detail/dds_fastrtps/lslidar_packet__type_support.cpp.o[0m
+[23.659s] [ 64%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_cpp.dir/rosidl_typesupport_introspection_cpp/lslidar_msgs/msg/detail/lslidar_point__type_support.cpp.o[0m
+[23.726s] [ 65%] [32m[1mLinking CXX shared library liblslidar_msgs__rosidl_typesupport_cpp.so[0m
+[23.941s] [ 67%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_cpp.dir/rosidl_typesupport_fastrtps_cpp/lslidar_msgs/msg/detail/dds_fastrtps/lslidar_point__type_support.cpp.o[0m
+[24.021s] [ 67%] Built target lslidar_msgs__rosidl_typesupport_cpp
+[24.076s] [ 68%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_c.dir/rosidl_typesupport_fastrtps_c/lslidar_msgs/msg/detail/lslidar_sweep__type_support_c.cpp.o[0m
+[24.615s] [ 70%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_cpp.dir/rosidl_typesupport_fastrtps_cpp/lslidar_msgs/msg/detail/dds_fastrtps/lslidar_scan__type_support.cpp.o[0m
+[25.052s] [ 71%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_cpp.dir/rosidl_typesupport_fastrtps_cpp/lslidar_msgs/msg/detail/dds_fastrtps/lslidar_sweep__type_support.cpp.o[0m
+[26.149s] [ 73%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_cpp.dir/rosidl_typesupport_introspection_cpp/lslidar_msgs/msg/detail/lslidar_scan__type_support.cpp.o[0m
+[26.687s] [ 75%] [32mBuilding CXX object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_cpp.dir/rosidl_typesupport_introspection_cpp/lslidar_msgs/msg/detail/lslidar_sweep__type_support.cpp.o[0m
+[26.979s] [ 76%] [32m[1mLinking CXX shared library liblslidar_msgs__rosidl_typesupport_fastrtps_c.so[0m
+[27.726s] [ 76%] Built target lslidar_msgs__rosidl_typesupport_fastrtps_c
+[28.285s] [ 78%] [32m[1mLinking CXX shared library liblslidar_msgs__rosidl_typesupport_fastrtps_cpp.so[0m
+[28.794s] [ 78%] Built target lslidar_msgs__rosidl_typesupport_fastrtps_cpp
+[29.639s] [ 79%] [32m[1mLinking CXX shared library liblslidar_msgs__rosidl_typesupport_introspection_cpp.so[0m
+[30.119s] [ 79%] Built target lslidar_msgs__rosidl_typesupport_introspection_cpp
+[30.209s] [ 79%] Built target lslidar_msgs
+[30.303s] [ 81%] [34m[1mGenerating Python code for ROS interfaces[0m
+[35.979s] [ 81%] Built target lslidar_msgs__py
+[36.074s] [ 85%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_generator_py.dir/rosidl_generator_py/lslidar_msgs/msg/_lslidar_point_s.c.o[0m
+[36.075s] [ 85%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_generator_py.dir/rosidl_generator_py/lslidar_msgs/msg/_lslidar_difop_s.c.o[0m
+[36.076s] [ 85%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_generator_py.dir/rosidl_generator_py/lslidar_msgs/msg/_lslidar_scan_s.c.o[0m
+[36.078s] [ 87%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_generator_py.dir/rosidl_generator_py/lslidar_msgs/msg/_lslidar_packet_s.c.o[0m
+[36.082s] [ 89%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_generator_py.dir/rosidl_generator_py/lslidar_msgs/msg/_lslidar_sweep_s.c.o[0m
+[36.764s] [ 90%] [32m[1mLinking C shared library rosidl_generator_py/lslidar_msgs/liblslidar_msgs__rosidl_generator_py.so[0m
+[37.012s] [ 90%] Built target lslidar_msgs__rosidl_generator_py
+[37.107s] [ 93%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_typesupport_fastrtps_c__pyext.dir/rosidl_generator_py/lslidar_msgs/_lslidar_msgs_s.ep.rosidl_typesupport_fastrtps_c.c.o[0m
+[37.109s] [ 93%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_typesupport_c__pyext.dir/rosidl_generator_py/lslidar_msgs/_lslidar_msgs_s.ep.rosidl_typesupport_c.c.o[0m
+[37.110s] [ 95%] [32mBuilding C object CMakeFiles/lslidar_msgs__rosidl_typesupport_introspection_c__pyext.dir/rosidl_generator_py/lslidar_msgs/_lslidar_msgs_s.ep.rosidl_typesupport_introspection_c.c.o[0m
+[37.758s] [ 98%] [32m[1mLinking C shared library rosidl_generator_py/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so[0m
+[37.759s] [ 98%] [32m[1mLinking C shared library rosidl_generator_py/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so[0m
+[37.759s] [100%] [32m[1mLinking C shared library rosidl_generator_py/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so[0m
+[38.005s] [100%] Built target lslidar_msgs__rosidl_typesupport_c__pyext
+[38.006s] [100%] Built target lslidar_msgs__rosidl_typesupport_introspection_c__pyext
+[38.010s] [100%] Built target lslidar_msgs__rosidl_typesupport_fastrtps_c__pyext
+[38.068s] Invoked command in '/home/sunrise/dev_ws/build/lslidar_msgs' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /home/sunrise/dev_ws/build/lslidar_msgs -- -j8 -l8
+[38.116s] Invoking command in '/home/sunrise/dev_ws/build/lslidar_msgs': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /home/sunrise/dev_ws/build/lslidar_msgs
+[38.154s] -- Install configuration: ""
+[38.155s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/ament_index/resource_index/rosidl_interfaces/lslidar_msgs
+[38.156s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs
+[38.157s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg
+[38.158s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/lslidar_difop.h
+[38.158s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/lslidar_scan.h
+[38.159s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/lslidar_point.h
+[38.160s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/lslidar_packet.h
+[38.160s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/rosidl_generator_c__visibility_control.h
+[38.161s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/lslidar_sweep.h
+[38.161s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail
+[38.162s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__struct.h
+[38.163s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__type_support.h
+[38.164s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__struct.h
+[38.165s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__functions.h
+[38.165s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__struct.h
+[38.166s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__type_support.h
+[38.166s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__functions.h
+[38.167s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__functions.h
+[38.167s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__struct.h
+[38.168s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__functions.h
+[38.168s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__functions.h
+[38.169s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__type_support.h
+[38.169s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__functions.c
+[38.170s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__functions.c
+[38.170s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__type_support.h
+[38.171s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__functions.c
+[38.172s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__functions.c
+[38.172s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__functions.c
+[38.173s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__struct.h
+[38.173s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__type_support.h
+[38.174s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/environment/library_path.sh
+[38.174s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/environment/library_path.dsv
+[38.175s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_generator_c.so
+[38.175s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_generator_c.so" to ""
+[38.176s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs
+[38.176s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg
+[38.177s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/rosidl_typesupport_fastrtps_c__visibility_control.h
+[38.178s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail
+[38.178s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__rosidl_typesupport_fastrtps_c.h
+[38.179s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__rosidl_typesupport_fastrtps_c.h
+[38.179s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__rosidl_typesupport_fastrtps_c.h
+[38.180s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__rosidl_typesupport_fastrtps_c.h
+[38.180s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__rosidl_typesupport_fastrtps_c.h
+[38.181s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_fastrtps_c.so
+[38.181s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_fastrtps_c.so" to ""
+[38.182s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs
+[38.183s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg
+[38.183s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/lslidar_scan.hpp
+[38.184s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/lslidar_difop.hpp
+[38.185s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/lslidar_packet.hpp
+[38.185s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail
+[38.186s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__builder.hpp
+[38.186s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__builder.hpp
+[38.187s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__builder.hpp
+[38.187s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__type_support.hpp
+[38.188s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__traits.hpp
+[38.188s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__builder.hpp
+[38.189s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__struct.hpp
+[38.189s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__type_support.hpp
+[38.190s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__struct.hpp
+[38.191s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__traits.hpp
+[38.191s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__traits.hpp
+[38.192s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__traits.hpp
+[38.192s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__builder.hpp
+[38.193s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__struct.hpp
+[38.193s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__struct.hpp
+[38.195s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__traits.hpp
+[38.196s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__type_support.hpp
+[38.196s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__struct.hpp
+[38.197s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__type_support.hpp
+[38.198s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__type_support.hpp
+[38.198s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/lslidar_sweep.hpp
+[38.199s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/rosidl_generator_cpp__visibility_control.hpp
+[38.199s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/lslidar_point.hpp
+[38.200s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs
+[38.201s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg
+[38.201s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail
+[38.201s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__rosidl_typesupport_fastrtps_cpp.hpp
+[38.202s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/dds_fastrtps
+[38.203s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__rosidl_typesupport_fastrtps_cpp.hpp
+[38.203s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__rosidl_typesupport_fastrtps_cpp.hpp
+[38.204s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__rosidl_typesupport_fastrtps_cpp.hpp
+[38.205s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__rosidl_typesupport_fastrtps_cpp.hpp
+[38.205s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/rosidl_typesupport_fastrtps_cpp__visibility_control.h
+[38.206s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_fastrtps_cpp.so
+[38.207s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_fastrtps_cpp.so" to ""
+[38.208s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs
+[38.208s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg
+[38.209s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/rosidl_typesupport_introspection_c__visibility_control.h
+[38.209s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail
+[38.210s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__rosidl_typesupport_introspection_c.h
+[38.211s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__type_support.c
+[38.211s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__type_support.c
+[38.212s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__type_support.c
+[38.212s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__rosidl_typesupport_introspection_c.h
+[38.213s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__rosidl_typesupport_introspection_c.h
+[38.214s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__rosidl_typesupport_introspection_c.h
+[38.215s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__type_support.c
+[38.216s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__rosidl_typesupport_introspection_c.h
+[38.216s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__type_support.c
+[38.217s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_introspection_c.so
+[38.217s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_introspection_c.so" to ""
+[38.218s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_c.so
+[38.219s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_c.so" to ""
+[38.220s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs
+[38.220s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg
+[38.221s] -- Up-to-date: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail
+[38.221s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__rosidl_typesupport_introspection_cpp.hpp
+[38.222s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_point__type_support.cpp
+[38.222s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__rosidl_typesupport_introspection_cpp.hpp
+[38.223s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__rosidl_typesupport_introspection_cpp.hpp
+[38.223s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__type_support.cpp
+[38.224s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_packet__type_support.cpp
+[38.224s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__rosidl_typesupport_introspection_cpp.hpp
+[38.225s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_scan__type_support.cpp
+[38.225s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_sweep__rosidl_typesupport_introspection_cpp.hpp
+[38.226s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/include/lslidar_msgs/lslidar_msgs/msg/detail/lslidar_difop__type_support.cpp
+[38.227s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_introspection_cpp.so
+[38.227s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_introspection_cpp.so" to ""
+[38.228s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_cpp.so
+[38.228s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_typesupport_cpp.so" to ""
+[38.229s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/environment/pythonpath.sh
+[38.230s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/environment/pythonpath.dsv
+[38.230s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs-1.2.0-py3.10.egg-info
+[38.231s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs-1.2.0-py3.10.egg-info/SOURCES.txt
+[38.231s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs-1.2.0-py3.10.egg-info/PKG-INFO
+[38.232s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs-1.2.0-py3.10.egg-info/dependency_links.txt
+[38.233s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs-1.2.0-py3.10.egg-info/top_level.txt
+[38.233s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs
+[38.234s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/_lslidar_msgs_s.ep.rosidl_typesupport_introspection_c.c
+[38.234s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg
+[38.235s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_scan.py
+[38.236s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_difop_s.c
+[38.236s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_point_s.c
+[38.237s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_packet_s.c
+[38.237s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_scan_s.c
+[38.238s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_sweep_s.c
+[38.238s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_difop.py
+[38.239s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/__init__.py
+[38.239s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_point.py
+[38.240s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_packet.py
+[38.240s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_sweep.py
+[38.241s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/liblslidar_msgs__rosidl_generator_py.so
+[38.241s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/_lslidar_msgs_s.ep.rosidl_typesupport_c.c
+[38.242s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so
+[38.242s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so
+[38.243s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so
+[38.243s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/__init__.py
+[38.244s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/_lslidar_msgs_s.ep.rosidl_typesupport_fastrtps_c.c
+[38.511s] Listing '/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs'...
+[38.512s] Compiling '/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/__init__.py'...
+[38.512s] Listing '/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg'...
+[38.513s] Compiling '/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/__init__.py'...
+[38.514s] Compiling '/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_difop.py'...
+[38.514s] Compiling '/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_packet.py'...
+[38.515s] Compiling '/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_point.py'...
+[38.515s] Compiling '/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_scan.py'...
+[38.516s] Compiling '/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/msg/_lslidar_sweep.py'...
+[38.558s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so
+[38.560s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so" to ""
+[38.560s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so
+[38.562s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so" to ""
+[38.563s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so
+[38.565s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages/lslidar_msgs/lslidar_msgs_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so" to ""
+[38.565s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_generator_py.so
+[38.567s] -- Set runtime path of "/home/sunrise/dev_ws/install/lslidar_msgs/lib/liblslidar_msgs__rosidl_generator_py.so" to ""
+[38.567s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/ament_index/resource_index/rust_packages/lslidar_msgs
+[38.568s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/rust
+[38.568s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/rust/src
+[38.569s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/rust/src/msg.rs
+[38.570s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/rust/src/msg
+[38.570s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/rust/src/msg/rmw.rs
+[38.571s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/rust/src/lib.rs
+[38.571s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/rust/build.rs
+[38.572s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/rust/Cargo.toml
+[38.572s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/msg/LslidarDifop.idl
+[38.573s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/msg/LslidarPacket.idl
+[38.574s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/msg/LslidarPoint.idl
+[38.574s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/msg/LslidarScan.idl
+[38.575s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/msg/LslidarSweep.idl
+[38.575s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/msg/LslidarDifop.msg
+[38.576s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/msg/LslidarPacket.msg
+[38.576s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/msg/LslidarPoint.msg
+[38.577s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/msg/LslidarScan.msg
+[38.578s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/msg/LslidarSweep.msg
+[38.578s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/ament_index/resource_index/package_run_dependencies/lslidar_msgs
+[38.579s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/ament_index/resource_index/parent_prefix_path/lslidar_msgs
+[38.580s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/environment/ament_prefix_path.sh
+[38.580s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/environment/ament_prefix_path.dsv
+[38.581s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/environment/path.sh
+[38.582s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/environment/path.dsv
+[38.582s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/local_setup.bash
+[38.583s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/local_setup.sh
+[38.584s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/local_setup.zsh
+[38.585s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/local_setup.dsv
+[38.585s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/package.dsv
+[38.586s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/ament_index/resource_index/packages/lslidar_msgs
+[38.587s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/export_lslidar_msgs__rosidl_generator_cExport.cmake
+[38.588s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/export_lslidar_msgs__rosidl_generator_cExport-noconfig.cmake
+[38.589s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/export_lslidar_msgs__rosidl_typesupport_fastrtps_cExport.cmake
+[38.589s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/export_lslidar_msgs__rosidl_typesupport_fastrtps_cExport-noconfig.cmake
+[38.590s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/export_lslidar_msgs__rosidl_generator_cppExport.cmake
+[38.591s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/export_lslidar_msgs__rosidl_typesupport_fastrtps_cppExport.cmake
+[38.592s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/export_lslidar_msgs__rosidl_typesupport_fastrtps_cppExport-noconfig.cmake
+[38.592s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/lslidar_msgs__rosidl_typesupport_introspection_cExport.cmake
+[38.593s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/lslidar_msgs__rosidl_typesupport_introspection_cExport-noconfig.cmake
+[38.594s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/lslidar_msgs__rosidl_typesupport_cExport.cmake
+[38.595s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/lslidar_msgs__rosidl_typesupport_cExport-noconfig.cmake
+[38.596s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/lslidar_msgs__rosidl_typesupport_introspection_cppExport.cmake
+[38.597s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/lslidar_msgs__rosidl_typesupport_introspection_cppExport-noconfig.cmake
+[38.597s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/lslidar_msgs__rosidl_typesupport_cppExport.cmake
+[38.598s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/lslidar_msgs__rosidl_typesupport_cppExport-noconfig.cmake
+[38.599s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/export_lslidar_msgs__rosidl_generator_pyExport.cmake
+[38.600s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/export_lslidar_msgs__rosidl_generator_pyExport-noconfig.cmake
+[38.600s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/rosidl_cmake-extras.cmake
+[38.601s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/ament_cmake_export_dependencies-extras.cmake
+[38.602s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/ament_cmake_export_include_directories-extras.cmake
+[38.603s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/ament_cmake_export_libraries-extras.cmake
+[38.603s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/ament_cmake_export_targets-extras.cmake
+[38.604s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/rosidl_cmake_export_typesupport_targets-extras.cmake
+[38.605s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/rosidl_cmake_export_typesupport_libraries-extras.cmake
+[38.605s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/lslidar_msgsConfig.cmake
+[38.606s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/cmake/lslidar_msgsConfig-version.cmake
+[38.607s] -- Installing: /home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/package.xml
+[38.618s] Invoked command in '/home/sunrise/dev_ws/build/lslidar_msgs' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /home/sunrise/dev_ws/build/lslidar_msgs

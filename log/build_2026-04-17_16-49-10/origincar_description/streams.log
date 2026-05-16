@@ -1,0 +1,61 @@
+[0.133s] Invoking command in '/home/sunrise/dev_ws/build/origincar_description': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /home/sunrise/dev_ws/src/origincar/origincar_description -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/origincar_description
+[0.544s] -- The C compiler identification is GNU 11.2.0
+[0.852s] -- The CXX compiler identification is GNU 11.2.0
+[0.887s] -- Detecting C compiler ABI info
+[1.274s] -- Detecting C compiler ABI info - done
+[1.321s] -- Check for working C compiler: /usr/bin/cc - skipped
+[1.323s] -- Detecting C compile features
+[1.325s] -- Detecting C compile features - done
+[1.340s] -- Detecting CXX compiler ABI info
+[1.786s] -- Detecting CXX compiler ABI info - done
+[1.835s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[1.836s] -- Detecting CXX compile features
+[1.840s] -- Detecting CXX compile features - done
+[1.850s] -- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)
+[2.992s] -- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+[3.639s] -- Found ament_lint_auto: 0.12.15 (/opt/ros/humble/share/ament_lint_auto/cmake)
+[4.190s] -- Added test 'copyright' to check source files copyright and LICENSE
+[4.203s] -- Added test 'flake8' to check Python code syntax and style conventions
+[4.206s] -- Added test 'lint_cmake' to check CMake code style
+[4.210s] -- Added test 'pep257' to check Python code against some of the docstring style conventions in PEP 257
+[4.217s] -- Added test 'xmllint' to check XML markup files
+[4.224s] -- Configuring done
+[4.239s] -- Generating done
+[4.249s] -- Build files have been written to: /home/sunrise/dev_ws/build/origincar_description
+[4.279s] Invoked command in '/home/sunrise/dev_ws/build/origincar_description' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /home/sunrise/dev_ws/src/origincar/origincar_description -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/origincar_description
+[4.288s] Invoking command in '/home/sunrise/dev_ws/build/origincar_description': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /home/sunrise/dev_ws/build/origincar_description -- -j8 -l8
+[4.466s] Invoked command in '/home/sunrise/dev_ws/build/origincar_description' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /home/sunrise/dev_ws/build/origincar_description -- -j8 -l8
+[4.474s] Invoking command in '/home/sunrise/dev_ws/build/origincar_description': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /home/sunrise/dev_ws/build/origincar_description
+[4.512s] -- Install configuration: ""
+[4.515s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch
+[4.517s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch/display.launch
+[4.518s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch/display.launch.py
+[4.519s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch/gazebo.launch
+[4.521s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/urdf
+[4.522s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/urdf/origincar.xacro
+[4.523s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/urdf/origincar.urdf
+[4.525s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/rviz
+[4.526s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/rviz/README
+[4.527s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/rviz/display.rviz
+[4.529s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes
+[4.530s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/up_right_Link.STL
+[4.545s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/up_left_Link.STL
+[4.571s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/base_link.STL
+[4.579s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/down_right_Link.STL
+[4.605s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/down_left_Link.STL
+[4.632s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/ament_index/resource_index/package_run_dependencies/origincar_description
+[4.634s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/ament_index/resource_index/parent_prefix_path/origincar_description
+[4.635s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/ament_prefix_path.sh
+[4.635s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/ament_prefix_path.dsv
+[4.637s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/path.sh
+[4.638s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/path.dsv
+[4.640s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.bash
+[4.641s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.sh
+[4.642s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.zsh
+[4.643s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.dsv
+[4.644s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/package.dsv
+[4.644s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/ament_index/resource_index/packages/origincar_description
+[4.645s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/cmake/origincar_descriptionConfig.cmake
+[4.645s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/cmake/origincar_descriptionConfig-version.cmake
+[4.646s] -- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/package.xml
+[4.655s] Invoked command in '/home/sunrise/dev_ws/build/origincar_description' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /home/sunrise/dev_ws/build/origincar_description

@@ -1,0 +1,249 @@
+[0.000000] (-) TimerEvent: {}
+[0.002054] (-) JobUnselected: {'identifier': 'ackermann_msgs'}
+[0.002854] (-) JobUnselected: {'identifier': 'bno055'}
+[0.003660] (-) JobUnselected: {'identifier': 'line_follower_pkg'}
+[0.003902] (-) JobUnselected: {'identifier': 'lslidar_driver'}
+[0.004257] (-) JobUnselected: {'identifier': 'lslidar_msgs'}
+[0.004470] (-) JobUnselected: {'identifier': 'origincar_base'}
+[0.004668] (-) JobUnselected: {'identifier': 'origincar_bringup'}
+[0.004865] (-) JobUnselected: {'identifier': 'origincar_description'}
+[0.005059] (-) JobUnselected: {'identifier': 'origincar_msg'}
+[0.005253] (-) JobUnselected: {'identifier': 'qr_scanner'}
+[0.005449] (-) JobUnselected: {'identifier': 'racing_control'}
+[0.005643] (-) JobUnselected: {'identifier': 'racing_stage1'}
+[0.005836] (-) JobUnselected: {'identifier': 'racing_vision_ai'}
+[0.006029] (-) JobUnselected: {'identifier': 'serial'}
+[0.006221] (-) JobUnselected: {'identifier': 'simple_avoidance'}
+[0.006413] (-) JobUnselected: {'identifier': 'utils'}
+[0.006623] (racing_stage3) JobQueued: {'identifier': 'racing_stage3', 'dependencies': OrderedDict()}
+[0.006833] (racing_stage2) JobQueued: {'identifier': 'racing_stage2', 'dependencies': OrderedDict([('origincar_bringup', '/home/sunrise/dev_ws/install/origincar_bringup'), ('qr_scanner', '/home/sunrise/dev_ws/install/qr_scanner'), ('racing_stage1', '/home/sunrise/dev_ws/install/racing_stage1')])}
+[0.007054] (racing_bringup) JobQueued: {'identifier': 'racing_bringup', 'dependencies': OrderedDict([('origincar_bringup', '/home/sunrise/dev_ws/install/origincar_bringup'), ('qr_scanner', '/home/sunrise/dev_ws/install/qr_scanner'), ('racing_stage3', '/home/sunrise/dev_ws/install/racing_stage3'), ('racing_stage1', '/home/sunrise/dev_ws/install/racing_stage1'), ('racing_stage2', '/home/sunrise/dev_ws/install/racing_stage2')])}
+[0.007290] (racing_stage3) JobStarted: {'identifier': 'racing_stage3'}
+[0.058060] (racing_stage2) JobStarted: {'identifier': 'racing_stage2'}
+[0.099185] (-) TimerEvent: {}
+[0.201483] (-) TimerEvent: {}
+[0.302333] (-) TimerEvent: {}
+[0.403154] (-) TimerEvent: {}
+[0.503976] (-) TimerEvent: {}
+[0.604873] (-) TimerEvent: {}
+[0.705786] (-) TimerEvent: {}
+[0.806693] (-) TimerEvent: {}
+[0.907571] (-) TimerEvent: {}
+[1.008419] (-) TimerEvent: {}
+[1.109230] (-) TimerEvent: {}
+[1.210060] (-) TimerEvent: {}
+[1.310895] (-) TimerEvent: {}
+[1.411789] (-) TimerEvent: {}
+[1.512689] (-) TimerEvent: {}
+[1.613535] (-) TimerEvent: {}
+[1.714434] (-) TimerEvent: {}
+[1.815406] (-) TimerEvent: {}
+[1.916291] (-) TimerEvent: {}
+[2.017668] (-) TimerEvent: {}
+[2.118567] (-) TimerEvent: {}
+[2.219445] (-) TimerEvent: {}
+[2.320290] (-) TimerEvent: {}
+[2.421157] (-) TimerEvent: {}
+[2.522054] (-) TimerEvent: {}
+[2.622906] (-) TimerEvent: {}
+[2.723752] (-) TimerEvent: {}
+[2.824607] (-) TimerEvent: {}
+[2.925446] (-) TimerEvent: {}
+[3.026300] (-) TimerEvent: {}
+[3.127147] (-) TimerEvent: {}
+[3.227999] (-) TimerEvent: {}
+[3.328846] (-) TimerEvent: {}
+[3.429691] (-) TimerEvent: {}
+[3.530527] (-) TimerEvent: {}
+[3.631481] (-) TimerEvent: {}
+[3.732603] (-) TimerEvent: {}
+[3.833519] (-) TimerEvent: {}
+[3.934396] (-) TimerEvent: {}
+[4.035277] (-) TimerEvent: {}
+[4.136146] (-) TimerEvent: {}
+[4.237012] (-) TimerEvent: {}
+[4.337894] (-) TimerEvent: {}
+[4.438761] (-) TimerEvent: {}
+[4.539626] (-) TimerEvent: {}
+[4.640504] (-) TimerEvent: {}
+[4.741428] (-) TimerEvent: {}
+[4.842293] (-) TimerEvent: {}
+[4.943151] (-) TimerEvent: {}
+[5.044007] (-) TimerEvent: {}
+[5.144924] (-) TimerEvent: {}
+[5.245821] (-) TimerEvent: {}
+[5.346687] (-) TimerEvent: {}
+[5.447582] (-) TimerEvent: {}
+[5.548461] (-) TimerEvent: {}
+[5.649388] (-) TimerEvent: {}
+[5.750242] (-) TimerEvent: {}
+[5.851114] (-) TimerEvent: {}
+[5.952002] (-) TimerEvent: {}
+[6.052909] (-) TimerEvent: {}
+[6.153947] (-) TimerEvent: {}
+[6.255003] (-) TimerEvent: {}
+[6.277867] (racing_stage3) Command: {'cmd': ['/usr/bin/python3', '-W', 'ignore:setup.py install is deprecated', '-W', 'ignore:easy_install command is deprecated', 'setup.py', 'egg_info', '--egg-base', '../../../build/racing_stage3', 'build', '--build-base', '/home/sunrise/dev_ws/build/racing_stage3/build', 'install', '--record', '/home/sunrise/dev_ws/build/racing_stage3/install.log', '--single-version-externally-managed', 'install_data'], 'cwd': '/home/sunrise/dev_ws/src/racing/racing_stage3', 'env': {'LANGUAGE': 'en_US.UTF-8', 'USER': 'sunrise', 'SSH_CLIENT': '172.20.10.4 49254 22', 'GIT_EDITOR': ':', 'XDG_SESSION_TYPE': 'tty', 'GIT_ASKPASS': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/extensions/git/dist/askpass.sh', 'SHLVL': '1', 'LD_LIBRARY_PATH': '/home/sunrise/dev_ws/install/origincar_base/lib:/home/sunrise/dev_ws/install/serial/lib:/home/sunrise/dev_ws/install/origincar_msg/lib:/home/sunrise/dev_ws/install/lslidar_msgs/lib:/home/sunrise/dev_ws/install/ackermann_msgs/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/tros/humble/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/hobot/lib:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/hobot/lib/sensor:/system/lib:/system/usr/lib:/lib:', 'BROWSER': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/bin/helpers/browser.sh', 'MOTD_SHOWN': 'pam', 'HOME': '/home/sunrise', 'OLDPWD': '/home/sunrise/dev_ws', 'TERM_PROGRAM_VERSION': '1.117.0', 'VSCODE_IPC_HOOK_CLI': '/run/user/1000/vscode-ipc-89648f4d-b0d6-49ae-8be2-6b24f2134237.sock', 'ROS_PYTHON_VERSION': '3', 'VSCODE_GIT_ASKPASS_MAIN': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/extensions/git/dist/askpass-main.js', 'VSCODE_GIT_ASKPASS_NODE': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/node', 'VSCODE_PYTHON_AUTOACTIVATE_GUARD': '1', 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus', 'COLORTERM': 'truecolor', 'TROS_DISTRO': 'humble', 'COLCON_PREFIX_PATH': '/home/sunrise/dev_ws/install', 'ROS_DISTRO': 'humble', 'LOGNAME': 'sunrise', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'XDG_SESSION_CLASS': 'user', 'TERM': 'xterm-256color', 'XDG_SESSION_ID': '2', 'ROS_LOCALHOST_ONLY': '0', 'HISTCONTROL': 'ignorespace', 'PATH': '/home/sunrise/.vscode-server/data/User/globalStorage/github.copilot-chat/debugCommand:/home/sunrise/.vscode-server/data/User/globalStorage/github.copilot-chat/copilotCli:/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/bin/remote-cli:/home/sunrise/.local/bin:/opt/tros/humble/bin:/opt/ros/humble/bin:/usr/hobot/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin', 'XDG_RUNTIME_DIR': '/run/user/1000', 'LANG': 'en_US.UTF-8', 'LS_COLORS': 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:', 'VSCODE_GIT_IPC_HANDLE': '/run/user/1000/vscode-git-06d5588545.sock', 'TERM_PROGRAM': 'vscode', 'AMENT_PREFIX_PATH': '/home/sunrise/dev_ws/install/origincar_base:/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/racing_bringup:/home/sunrise/dev_ws/install/racing_stage3:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/lslidar_driver:/home/sunrise/dev_ws/install/lslidar_msgs:/home/sunrise/dev_ws/install/bno055:/home/sunrise/dev_ws/install/ackermann_msgs:/opt/tros/humble:/opt/ros/humble', 'SHELL': '/bin/bash', 'VSCODE_GIT_ASKPASS_EXTRA_ARGS': '', 'GIT_PAGER': 'cat', 'PWD': '/home/sunrise/dev_ws/build/racing_stage3', 'GIT_MERGE_AUTOEDIT': 'no', 'SSH_CONNECTION': '172.20.10.4 49254 172.20.10.3 22', 'PYTHONPATH': '/home/sunrise/dev_ws/build/racing_stage3/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/racing_bringup/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:/opt/tros/humble/lib/python3.10/site-packages:/opt/tros/humble/local/lib/python3.10/dist-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages', 'COLCON': '1', 'CMAKE_PREFIX_PATH': '/home/sunrise/dev_ws/install/origincar_base:/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/lslidar_driver:/home/sunrise/dev_ws/install/lslidar_msgs:/home/sunrise/dev_ws/install/ackermann_msgs'}, 'shell': False}
+[6.312584] (racing_stage2) Command: {'cmd': ['/usr/bin/python3', '-W', 'ignore:setup.py install is deprecated', '-W', 'ignore:easy_install command is deprecated', 'setup.py', 'egg_info', '--egg-base', '../../../build/racing_stage2', 'build', '--build-base', '/home/sunrise/dev_ws/build/racing_stage2/build', 'install', '--record', '/home/sunrise/dev_ws/build/racing_stage2/install.log', '--single-version-externally-managed', 'install_data'], 'cwd': '/home/sunrise/dev_ws/src/racing/racing_stage2', 'env': {'LANGUAGE': 'en_US.UTF-8', 'USER': 'sunrise', 'SSH_CLIENT': '172.20.10.4 49254 22', 'GIT_EDITOR': ':', 'XDG_SESSION_TYPE': 'tty', 'GIT_ASKPASS': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/extensions/git/dist/askpass.sh', 'SHLVL': '1', 'LD_LIBRARY_PATH': '/home/sunrise/dev_ws/install/origincar_base/lib:/home/sunrise/dev_ws/install/serial/lib:/home/sunrise/dev_ws/install/origincar_msg/lib:/home/sunrise/dev_ws/install/lslidar_msgs/lib:/home/sunrise/dev_ws/install/ackermann_msgs/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/tros/humble/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/hobot/lib:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/hobot/lib/sensor:/system/lib:/system/usr/lib:/lib:', 'BROWSER': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/bin/helpers/browser.sh', 'MOTD_SHOWN': 'pam', 'HOME': '/home/sunrise', 'OLDPWD': '/home/sunrise/dev_ws', 'TERM_PROGRAM_VERSION': '1.117.0', 'VSCODE_IPC_HOOK_CLI': '/run/user/1000/vscode-ipc-89648f4d-b0d6-49ae-8be2-6b24f2134237.sock', 'ROS_PYTHON_VERSION': '3', 'VSCODE_GIT_ASKPASS_MAIN': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/extensions/git/dist/askpass-main.js', 'VSCODE_GIT_ASKPASS_NODE': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/node', 'VSCODE_PYTHON_AUTOACTIVATE_GUARD': '1', 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus', 'COLORTERM': 'truecolor', 'TROS_DISTRO': 'humble', 'COLCON_PREFIX_PATH': '/home/sunrise/dev_ws/install', 'ROS_DISTRO': 'humble', 'LOGNAME': 'sunrise', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'XDG_SESSION_CLASS': 'user', 'TERM': 'xterm-256color', 'XDG_SESSION_ID': '2', 'ROS_LOCALHOST_ONLY': '0', 'HISTCONTROL': 'ignorespace', 'PATH': '/home/sunrise/.vscode-server/data/User/globalStorage/github.copilot-chat/debugCommand:/home/sunrise/.vscode-server/data/User/globalStorage/github.copilot-chat/copilotCli:/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/bin/remote-cli:/home/sunrise/.local/bin:/opt/tros/humble/bin:/opt/ros/humble/bin:/usr/hobot/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin', 'XDG_RUNTIME_DIR': '/run/user/1000', 'LANG': 'en_US.UTF-8', 'LS_COLORS': 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:', 'VSCODE_GIT_IPC_HANDLE': '/run/user/1000/vscode-git-06d5588545.sock', 'TERM_PROGRAM': 'vscode', 'AMENT_PREFIX_PATH': '/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/origincar_base:/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/racing_bringup:/home/sunrise/dev_ws/install/racing_stage3:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/lslidar_driver:/home/sunrise/dev_ws/install/lslidar_msgs:/home/sunrise/dev_ws/install/bno055:/home/sunrise/dev_ws/install/ackermann_msgs:/opt/tros/humble:/opt/ros/humble', 'SHELL': '/bin/bash', 'VSCODE_GIT_ASKPASS_EXTRA_ARGS': '', 'GIT_PAGER': 'cat', 'PWD': '/home/sunrise/dev_ws/build/racing_stage2', 'GIT_MERGE_AUTOEDIT': 'no', 'SSH_CONNECTION': '172.20.10.4 49254 172.20.10.3 22', 'PYTHONPATH': '/home/sunrise/dev_ws/build/racing_stage2/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/racing_bringup/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:/opt/tros/humble/lib/python3.10/site-packages:/opt/tros/humble/local/lib/python3.10/dist-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages', 'COLCON': '1', 'CMAKE_PREFIX_PATH': '/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/origincar_base:/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/lslidar_driver:/home/sunrise/dev_ws/install/lslidar_msgs:/home/sunrise/dev_ws/install/ackermann_msgs'}, 'shell': False}
+[6.355185] (-) TimerEvent: {}
+[6.456096] (-) TimerEvent: {}
+[6.556965] (-) TimerEvent: {}
+[6.657861] (-) TimerEvent: {}
+[6.758758] (-) TimerEvent: {}
+[6.859650] (-) TimerEvent: {}
+[6.960614] (-) TimerEvent: {}
+[7.061573] (-) TimerEvent: {}
+[7.162475] (-) TimerEvent: {}
+[7.263398] (-) TimerEvent: {}
+[7.364280] (-) TimerEvent: {}
+[7.465178] (-) TimerEvent: {}
+[7.566071] (-) TimerEvent: {}
+[7.666888] (-) TimerEvent: {}
+[7.767707] (-) TimerEvent: {}
+[7.868599] (-) TimerEvent: {}
+[7.969496] (-) TimerEvent: {}
+[8.014172] (racing_stage3) StdoutLine: {'line': b'running egg_info\n'}
+[8.019825] (racing_stage3) StdoutLine: {'line': b'writing ../../../build/racing_stage3/racing_stage3.egg-info/PKG-INFO\n'}
+[8.021054] (racing_stage3) StdoutLine: {'line': b'writing dependency_links to ../../../build/racing_stage3/racing_stage3.egg-info/dependency_links.txt\n'}
+[8.022169] (racing_stage3) StdoutLine: {'line': b'writing entry points to ../../../build/racing_stage3/racing_stage3.egg-info/entry_points.txt\n'}
+[8.022906] (racing_stage3) StdoutLine: {'line': b'writing requirements to ../../../build/racing_stage3/racing_stage3.egg-info/requires.txt\n'}
+[8.023572] (racing_stage3) StdoutLine: {'line': b'writing top-level names to ../../../build/racing_stage3/racing_stage3.egg-info/top_level.txt\n'}
+[8.024217] (racing_stage2) StdoutLine: {'line': b'running egg_info\n'}
+[8.029656] (racing_stage2) StdoutLine: {'line': b'writing ../../../build/racing_stage2/racing_stage2.egg-info/PKG-INFO\n'}
+[8.030845] (racing_stage2) StdoutLine: {'line': b'writing dependency_links to ../../../build/racing_stage2/racing_stage2.egg-info/dependency_links.txt\n'}
+[8.032018] (racing_stage2) StdoutLine: {'line': b'writing entry points to ../../../build/racing_stage2/racing_stage2.egg-info/entry_points.txt\n'}
+[8.032788] (racing_stage2) StdoutLine: {'line': b'writing requirements to ../../../build/racing_stage2/racing_stage2.egg-info/requires.txt\n'}
+[8.033424] (racing_stage2) StdoutLine: {'line': b'writing top-level names to ../../../build/racing_stage2/racing_stage2.egg-info/top_level.txt\n'}
+[8.034290] (racing_stage3) StdoutLine: {'line': b"reading manifest file '../../../build/racing_stage3/racing_stage3.egg-info/SOURCES.txt'\n"}
+[8.039927] (racing_stage3) StdoutLine: {'line': b"writing manifest file '../../../build/racing_stage3/racing_stage3.egg-info/SOURCES.txt'\n"}
+[8.040857] (racing_stage3) StdoutLine: {'line': b'running build\n'}
+[8.041476] (racing_stage3) StdoutLine: {'line': b'running build_py\n'}
+[8.042113] (racing_stage3) StdoutLine: {'line': b'copying racing_stage3/stage3_return_navigator.py -> /home/sunrise/dev_ws/build/racing_stage3/build/lib/racing_stage3\n'}
+[8.043028] (racing_stage3) StdoutLine: {'line': b'running install\n'}
+[8.044389] (racing_stage2) StdoutLine: {'line': b"reading manifest file '../../../build/racing_stage2/racing_stage2.egg-info/SOURCES.txt'\n"}
+[8.045032] (racing_stage3) StdoutLine: {'line': b'running install_lib\n'}
+[8.049092] (racing_stage3) StdoutLine: {'line': b'copying /home/sunrise/dev_ws/build/racing_stage3/build/lib/racing_stage3/stage3_return_navigator.py -> /home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages/racing_stage3\n'}
+[8.050208] (racing_stage2) StdoutLine: {'line': b"writing manifest file '../../../build/racing_stage2/racing_stage2.egg-info/SOURCES.txt'\n"}
+[8.050994] (racing_stage2) StdoutLine: {'line': b'running build\n'}
+[8.051608] (racing_stage2) StdoutLine: {'line': b'running build_py\n'}
+[8.053507] (racing_stage3) StdoutLine: {'line': b'byte-compiling /home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages/racing_stage3/stage3_return_navigator.py to stage3_return_navigator.cpython-310.pyc\n'}
+[8.054261] (racing_stage2) StdoutLine: {'line': b'running install\n'}
+[8.055622] (racing_stage2) StdoutLine: {'line': b'running install_lib\n'}
+[8.064682] (racing_stage2) StdoutLine: {'line': b'running install_data\n'}
+[8.065641] (racing_stage2) StdoutLine: {'line': b'copying launch/competition_stage2.launch.py -> /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/launch\n'}
+[8.066459] (racing_stage2) StdoutLine: {'line': b'copying launch/competition_support.launch.py -> /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/launch\n'}
+[8.067851] (racing_stage2) StdoutLine: {'line': b'running install_egg_info\n'}
+[8.069589] (-) TimerEvent: {}
+[8.079292] (racing_stage3) StdoutLine: {'line': b'running install_data\n'}
+[8.080199] (racing_stage3) StdoutLine: {'line': b'copying package.xml -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3\n'}
+[8.081008] (racing_stage3) StdoutLine: {'line': b'copying launch/competition_support.launch.py -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/launch\n'}
+[8.081921] (racing_stage3) StdoutLine: {'line': b'copying launch/competition_stage3.launch.py -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/launch\n'}
+[8.082830] (racing_stage3) StdoutLine: {'line': b'copying config/return_stage3.yaml -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/config\n'}
+[8.083495] (racing_stage3) StdoutLine: {'line': b'running install_egg_info\n'}
+[8.087836] (racing_stage2) StdoutLine: {'line': b"removing '/home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2-0.0.1-py3.10.egg-info' (and everything under it)\n"}
+[8.089505] (racing_stage2) StdoutLine: {'line': b'Copying ../../../build/racing_stage2/racing_stage2.egg-info to /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2-0.0.1-py3.10.egg-info\n'}
+[8.094168] (racing_stage3) StdoutLine: {'line': b"removing '/home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages/racing_stage3-0.0.1-py3.10.egg-info' (and everything under it)\n"}
+[8.094975] (racing_stage2) StdoutLine: {'line': b'running install_scripts\n'}
+[8.095684] (racing_stage3) StdoutLine: {'line': b'Copying ../../../build/racing_stage3/racing_stage3.egg-info to /home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages/racing_stage3-0.0.1-py3.10.egg-info\n'}
+[8.101564] (racing_stage3) StdoutLine: {'line': b'running install_scripts\n'}
+[8.169807] (-) TimerEvent: {}
+[8.215216] (racing_stage2) StdoutLine: {'line': b'Installing lidar_obstacle_circle_markers script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2\n'}
+[8.216164] (racing_stage2) StdoutLine: {'line': b'Installing stage2_inertial_navigator script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2\n'}
+[8.216891] (racing_stage2) StdoutLine: {'line': b'Installing stage2_standee_caption_node script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2\n'}
+[8.217655] (racing_stage2) StdoutLine: {'line': b'Installing stage2_standee_detection_node script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2\n'}
+[8.219879] (racing_stage2) StdoutLine: {'line': b"writing list of installed files to '/home/sunrise/dev_ws/build/racing_stage2/install.log'\n"}
+[8.221069] (racing_stage3) StdoutLine: {'line': b'Installing stage3_return_navigator script to /home/sunrise/dev_ws/install/racing_stage3/lib/racing_stage3\n'}
+[8.223204] (racing_stage3) StdoutLine: {'line': b"writing list of installed files to '/home/sunrise/dev_ws/build/racing_stage3/install.log'\n"}
+[8.270001] (-) TimerEvent: {}
+[8.370978] (-) TimerEvent: {}
+[8.449928] (racing_stage2) CommandEnded: {'returncode': 0}
+[8.471213] (-) TimerEvent: {}
+[8.541773] (racing_stage2) JobEnded: {'identifier': 'racing_stage2', 'rc': 0}
+[8.549011] (racing_stage3) CommandEnded: {'returncode': 0}
+[8.573219] (-) TimerEvent: {}
+[8.590889] (racing_stage3) JobEnded: {'identifier': 'racing_stage3', 'rc': 0}
+[8.596847] (racing_bringup) JobStarted: {'identifier': 'racing_bringup'}
+[8.673443] (-) TimerEvent: {}
+[8.774309] (-) TimerEvent: {}
+[8.875108] (-) TimerEvent: {}
+[8.975903] (-) TimerEvent: {}
+[9.076718] (-) TimerEvent: {}
+[9.177611] (-) TimerEvent: {}
+[9.278500] (-) TimerEvent: {}
+[9.379357] (-) TimerEvent: {}
+[9.480254] (-) TimerEvent: {}
+[9.581196] (-) TimerEvent: {}
+[9.682119] (-) TimerEvent: {}
+[9.783000] (-) TimerEvent: {}
+[9.883838] (-) TimerEvent: {}
+[9.984716] (-) TimerEvent: {}
+[10.085613] (-) TimerEvent: {}
+[10.186503] (-) TimerEvent: {}
+[10.287382] (-) TimerEvent: {}
+[10.388338] (-) TimerEvent: {}
+[10.490806] (-) TimerEvent: {}
+[10.591946] (-) TimerEvent: {}
+[10.692848] (-) TimerEvent: {}
+[10.793760] (-) TimerEvent: {}
+[10.894645] (-) TimerEvent: {}
+[10.995537] (-) TimerEvent: {}
+[11.096426] (-) TimerEvent: {}
+[11.197260] (-) TimerEvent: {}
+[11.298078] (-) TimerEvent: {}
+[11.398905] (-) TimerEvent: {}
+[11.499733] (-) TimerEvent: {}
+[11.600565] (-) TimerEvent: {}
+[11.701424] (-) TimerEvent: {}
+[11.802327] (-) TimerEvent: {}
+[11.903280] (-) TimerEvent: {}
+[12.004104] (-) TimerEvent: {}
+[12.104886] (-) TimerEvent: {}
+[12.205696] (-) TimerEvent: {}
+[12.306531] (-) TimerEvent: {}
+[12.407348] (-) TimerEvent: {}
+[12.508144] (-) TimerEvent: {}
+[12.609026] (-) TimerEvent: {}
+[12.710036] (-) TimerEvent: {}
+[12.811046] (-) TimerEvent: {}
+[12.889915] (racing_bringup) Command: {'cmd': ['/usr/bin/python3', '-W', 'ignore:setup.py install is deprecated', '-W', 'ignore:easy_install command is deprecated', 'setup.py', 'egg_info', '--egg-base', '../../../build/racing_bringup', 'build', '--build-base', '/home/sunrise/dev_ws/build/racing_bringup/build', 'install', '--record', '/home/sunrise/dev_ws/build/racing_bringup/install.log', '--single-version-externally-managed', 'install_data'], 'cwd': '/home/sunrise/dev_ws/src/racing/racing_bringup', 'env': {'LANGUAGE': 'en_US.UTF-8', 'USER': 'sunrise', 'SSH_CLIENT': '172.20.10.4 49254 22', 'GIT_EDITOR': ':', 'XDG_SESSION_TYPE': 'tty', 'GIT_ASKPASS': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/extensions/git/dist/askpass.sh', 'SHLVL': '1', 'LD_LIBRARY_PATH': '/home/sunrise/dev_ws/install/origincar_base/lib:/home/sunrise/dev_ws/install/serial/lib:/home/sunrise/dev_ws/install/origincar_msg/lib:/home/sunrise/dev_ws/install/lslidar_msgs/lib:/home/sunrise/dev_ws/install/ackermann_msgs/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/tros/humble/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/hobot/lib:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/hobot/lib/sensor:/system/lib:/system/usr/lib:/lib:', 'BROWSER': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/bin/helpers/browser.sh', 'MOTD_SHOWN': 'pam', 'HOME': '/home/sunrise', 'OLDPWD': '/home/sunrise/dev_ws', 'TERM_PROGRAM_VERSION': '1.117.0', 'VSCODE_IPC_HOOK_CLI': '/run/user/1000/vscode-ipc-89648f4d-b0d6-49ae-8be2-6b24f2134237.sock', 'ROS_PYTHON_VERSION': '3', 'VSCODE_GIT_ASKPASS_MAIN': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/extensions/git/dist/askpass-main.js', 'VSCODE_GIT_ASKPASS_NODE': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/node', 'VSCODE_PYTHON_AUTOACTIVATE_GUARD': '1', 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus', 'COLORTERM': 'truecolor', 'TROS_DISTRO': 'humble', 'COLCON_PREFIX_PATH': '/home/sunrise/dev_ws/install', 'ROS_DISTRO': 'humble', 'LOGNAME': 'sunrise', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'XDG_SESSION_CLASS': 'user', 'TERM': 'xterm-256color', 'XDG_SESSION_ID': '2', 'ROS_LOCALHOST_ONLY': '0', 'HISTCONTROL': 'ignorespace', 'PATH': '/home/sunrise/.vscode-server/data/User/globalStorage/github.copilot-chat/debugCommand:/home/sunrise/.vscode-server/data/User/globalStorage/github.copilot-chat/copilotCli:/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/bin/remote-cli:/home/sunrise/.local/bin:/opt/tros/humble/bin:/opt/ros/humble/bin:/usr/hobot/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin', 'XDG_RUNTIME_DIR': '/run/user/1000', 'LANG': 'en_US.UTF-8', 'LS_COLORS': 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:', 'VSCODE_GIT_IPC_HANDLE': '/run/user/1000/vscode-git-06d5588545.sock', 'TERM_PROGRAM': 'vscode', 'AMENT_PREFIX_PATH': '/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/racing_stage3:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/origincar_base:/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/racing_bringup:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/lslidar_driver:/home/sunrise/dev_ws/install/lslidar_msgs:/home/sunrise/dev_ws/install/bno055:/home/sunrise/dev_ws/install/ackermann_msgs:/opt/tros/humble:/opt/ros/humble', 'SHELL': '/bin/bash', 'VSCODE_GIT_ASKPASS_EXTRA_ARGS': '', 'GIT_PAGER': 'cat', 'PWD': '/home/sunrise/dev_ws/build/racing_bringup', 'GIT_MERGE_AUTOEDIT': 'no', 'SSH_CONNECTION': '172.20.10.4 49254 172.20.10.3 22', 'PYTHONPATH': '/home/sunrise/dev_ws/build/racing_bringup/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_bringup/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/racing_bringup/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:/opt/tros/humble/lib/python3.10/site-packages:/opt/tros/humble/local/lib/python3.10/dist-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages', 'COLCON': '1', 'CMAKE_PREFIX_PATH': '/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/origincar_base:/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/lslidar_driver:/home/sunrise/dev_ws/install/lslidar_msgs:/home/sunrise/dev_ws/install/ackermann_msgs'}, 'shell': False}
+[12.911197] (-) TimerEvent: {}
+[13.012074] (-) TimerEvent: {}
+[13.112869] (-) TimerEvent: {}
+[13.213630] (-) TimerEvent: {}
+[13.314424] (-) TimerEvent: {}
+[13.415229] (-) TimerEvent: {}
+[13.516067] (-) TimerEvent: {}
+[13.616856] (-) TimerEvent: {}
+[13.717668] (-) TimerEvent: {}
+[13.818490] (-) TimerEvent: {}
+[13.919293] (-) TimerEvent: {}
+[14.020103] (-) TimerEvent: {}
+[14.120898] (-) TimerEvent: {}
+[14.221716] (-) TimerEvent: {}
+[14.322513] (-) TimerEvent: {}
+[14.423302] (-) TimerEvent: {}
+[14.524227] (racing_bringup) StdoutLine: {'line': b'running egg_info\n'}
+[14.525093] (-) TimerEvent: {}
+[14.529691] (racing_bringup) StdoutLine: {'line': b'writing ../../../build/racing_bringup/racing_bringup.egg-info/PKG-INFO\n'}
+[14.531011] (racing_bringup) StdoutLine: {'line': b'writing dependency_links to ../../../build/racing_bringup/racing_bringup.egg-info/dependency_links.txt\n'}
+[14.532182] (racing_bringup) StdoutLine: {'line': b'writing requirements to ../../../build/racing_bringup/racing_bringup.egg-info/requires.txt\n'}
+[14.532873] (racing_bringup) StdoutLine: {'line': b'writing top-level names to ../../../build/racing_bringup/racing_bringup.egg-info/top_level.txt\n'}
+[14.542415] (racing_bringup) StdoutLine: {'line': b"reading manifest file '../../../build/racing_bringup/racing_bringup.egg-info/SOURCES.txt'\n"}
+[14.547140] (racing_bringup) StdoutLine: {'line': b"writing manifest file '../../../build/racing_bringup/racing_bringup.egg-info/SOURCES.txt'\n"}
+[14.547882] (racing_bringup) StdoutLine: {'line': b'running build\n'}
+[14.548400] (racing_bringup) StdoutLine: {'line': b'running build_py\n'}
+[14.549018] (racing_bringup) StdoutLine: {'line': b'running install\n'}
+[14.550929] (racing_bringup) StdoutLine: {'line': b'running install_lib\n'}
+[14.557376] (racing_bringup) StdoutLine: {'line': b'running install_data\n'}
+[14.558206] (racing_bringup) StdoutLine: {'line': b'copying launch/competition_total.launch.py -> /home/sunrise/dev_ws/install/racing_bringup/share/racing_bringup/launch\n'}
+[14.558856] (racing_bringup) StdoutLine: {'line': b'running install_egg_info\n'}
+[14.576426] (racing_bringup) StdoutLine: {'line': b"removing '/home/sunrise/dev_ws/install/racing_bringup/lib/python3.10/site-packages/racing_bringup-0.0.1-py3.10.egg-info' (and everything under it)\n"}
+[14.577796] (racing_bringup) StdoutLine: {'line': b'Copying ../../../build/racing_bringup/racing_bringup.egg-info to /home/sunrise/dev_ws/install/racing_bringup/lib/python3.10/site-packages/racing_bringup-0.0.1-py3.10.egg-info\n'}
+[14.582315] (racing_bringup) StdoutLine: {'line': b'running install_scripts\n'}
+[14.625255] (-) TimerEvent: {}
+[14.695570] (racing_bringup) StdoutLine: {'line': b"writing list of installed files to '/home/sunrise/dev_ws/build/racing_bringup/install.log'\n"}
+[14.725470] (-) TimerEvent: {}
+[14.826400] (-) TimerEvent: {}
+[14.908366] (racing_bringup) CommandEnded: {'returncode': 0}
+[14.926761] (-) TimerEvent: {}
+[14.973160] (racing_bringup) JobEnded: {'identifier': 'racing_bringup', 'rc': 0}
+[14.977489] (-) EventReactorShutdown: {}

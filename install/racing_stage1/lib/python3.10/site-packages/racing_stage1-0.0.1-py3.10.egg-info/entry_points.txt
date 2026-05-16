@@ -1,0 +1,3 @@
+[console_scripts]
+competition_controller = racing_stage1.competition_controller:main
+

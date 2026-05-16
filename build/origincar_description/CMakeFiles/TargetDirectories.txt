@@ -1,0 +1,9 @@
+/home/sunrise/dev_ws/build/origincar_description/CMakeFiles/uninstall.dir
+/home/sunrise/dev_ws/build/origincar_description/CMakeFiles/origincar_description_uninstall.dir
+/home/sunrise/dev_ws/build/origincar_description/CMakeFiles/test.dir
+/home/sunrise/dev_ws/build/origincar_description/CMakeFiles/edit_cache.dir
+/home/sunrise/dev_ws/build/origincar_description/CMakeFiles/rebuild_cache.dir
+/home/sunrise/dev_ws/build/origincar_description/CMakeFiles/list_install_components.dir
+/home/sunrise/dev_ws/build/origincar_description/CMakeFiles/install.dir
+/home/sunrise/dev_ws/build/origincar_description/CMakeFiles/install/local.dir
+/home/sunrise/dev_ws/build/origincar_description/CMakeFiles/install/strip.dir

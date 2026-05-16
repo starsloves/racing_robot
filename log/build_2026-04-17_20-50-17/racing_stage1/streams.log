@@ -1,0 +1,41 @@
+[4.167s] Invoking command in '/home/sunrise/dev_ws/src/racing/racing_stage1': AMENT_PREFIX_PATH=/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/origincar_base:/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/lslidar_driver:/home/sunrise/dev_ws/install/lslidar_msgs:/home/sunrise/dev_ws/install/ackermann_msgs:/opt/tros/humble:/opt/ros/humble PYTHONPATH=/home/sunrise/dev_ws/build/racing_stage1/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:/opt/tros/humble/lib/python3.10/site-packages:/opt/tros/humble/local/lib/python3.10/dist-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/racing_stage1 build --build-base /home/sunrise/dev_ws/build/racing_stage1/build install --record /home/sunrise/dev_ws/build/racing_stage1/install.log --single-version-externally-managed install_data
+[5.760s] running egg_info
+[5.764s] creating ../../../build/racing_stage1/racing_stage1.egg-info
+[5.765s] writing ../../../build/racing_stage1/racing_stage1.egg-info/PKG-INFO
+[5.767s] writing dependency_links to ../../../build/racing_stage1/racing_stage1.egg-info/dependency_links.txt
+[5.768s] writing entry points to ../../../build/racing_stage1/racing_stage1.egg-info/entry_points.txt
+[5.768s] writing requirements to ../../../build/racing_stage1/racing_stage1.egg-info/requires.txt
+[5.769s] writing top-level names to ../../../build/racing_stage1/racing_stage1.egg-info/top_level.txt
+[5.770s] writing manifest file '../../../build/racing_stage1/racing_stage1.egg-info/SOURCES.txt'
+[5.779s] reading manifest file '../../../build/racing_stage1/racing_stage1.egg-info/SOURCES.txt'
+[5.783s] writing manifest file '../../../build/racing_stage1/racing_stage1.egg-info/SOURCES.txt'
+[5.784s] running build
+[5.785s] running build_py
+[5.785s] creating /home/sunrise/dev_ws/build/racing_stage1/build
+[5.786s] creating /home/sunrise/dev_ws/build/racing_stage1/build/lib
+[5.787s] creating /home/sunrise/dev_ws/build/racing_stage1/build/lib/racing_stage1
+[5.787s] copying racing_stage1/__init__.py -> /home/sunrise/dev_ws/build/racing_stage1/build/lib/racing_stage1
+[5.788s] copying racing_stage1/competition_controller.py -> /home/sunrise/dev_ws/build/racing_stage1/build/lib/racing_stage1
+[5.789s] running install
+[5.790s] running install_lib
+[5.795s] creating /home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages/racing_stage1
+[5.795s] copying /home/sunrise/dev_ws/build/racing_stage1/build/lib/racing_stage1/__init__.py -> /home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages/racing_stage1
+[5.796s] copying /home/sunrise/dev_ws/build/racing_stage1/build/lib/racing_stage1/competition_controller.py -> /home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages/racing_stage1
+[5.799s] byte-compiling /home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages/racing_stage1/__init__.py to __init__.cpython-310.pyc
+[5.801s] byte-compiling /home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages/racing_stage1/competition_controller.py to competition_controller.cpython-310.pyc
+[5.822s] running install_data
+[5.823s] creating /home/sunrise/dev_ws/install/racing_stage1/share/ament_index
+[5.824s] creating /home/sunrise/dev_ws/install/racing_stage1/share/ament_index/resource_index
+[5.824s] creating /home/sunrise/dev_ws/install/racing_stage1/share/ament_index/resource_index/packages
+[5.825s] copying resource/racing_stage1 -> /home/sunrise/dev_ws/install/racing_stage1/share/ament_index/resource_index/packages
+[5.826s] copying package.xml -> /home/sunrise/dev_ws/install/racing_stage1/share/racing_stage1
+[5.826s] creating /home/sunrise/dev_ws/install/racing_stage1/share/racing_stage1/launch
+[5.827s] copying launch/competition_stage1.launch.py -> /home/sunrise/dev_ws/install/racing_stage1/share/racing_stage1/launch
+[5.828s] creating /home/sunrise/dev_ws/install/racing_stage1/share/racing_stage1/config
+[5.828s] copying config/stage1_controller.yaml -> /home/sunrise/dev_ws/install/racing_stage1/share/racing_stage1/config
+[5.829s] running install_egg_info
+[5.837s] Copying ../../../build/racing_stage1/racing_stage1.egg-info to /home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages/racing_stage1-0.0.1-py3.10.egg-info
+[5.842s] running install_scripts
+[5.955s] Installing competition_controller script to /home/sunrise/dev_ws/install/racing_stage1/lib/racing_stage1
+[5.956s] writing list of installed files to '/home/sunrise/dev_ws/build/racing_stage1/install.log'
+[6.173s] Invoked command in '/home/sunrise/dev_ws/src/racing/racing_stage1' returned '0': AMENT_PREFIX_PATH=/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/origincar_base:/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/lslidar_driver:/home/sunrise/dev_ws/install/lslidar_msgs:/home/sunrise/dev_ws/install/ackermann_msgs:/opt/tros/humble:/opt/ros/humble PYTHONPATH=/home/sunrise/dev_ws/build/racing_stage1/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:/opt/tros/humble/lib/python3.10/site-packages:/opt/tros/humble/local/lib/python3.10/dist-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/racing_stage1 build --build-base /home/sunrise/dev_ws/build/racing_stage1/build install --record /home/sunrise/dev_ws/build/racing_stage1/install.log --single-version-externally-managed install_data

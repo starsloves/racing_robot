@@ -1,0 +1,30 @@
+running egg_info
+writing ../../../build/racing_stage2_param_test/racing_stage2_param_test.egg-info/PKG-INFO
+writing dependency_links to ../../../build/racing_stage2_param_test/racing_stage2_param_test.egg-info/dependency_links.txt
+writing entry points to ../../../build/racing_stage2_param_test/racing_stage2_param_test.egg-info/entry_points.txt
+writing requirements to ../../../build/racing_stage2_param_test/racing_stage2_param_test.egg-info/requires.txt
+writing top-level names to ../../../build/racing_stage2_param_test/racing_stage2_param_test.egg-info/top_level.txt
+reading manifest file '../../../build/racing_stage2_param_test/racing_stage2_param_test.egg-info/SOURCES.txt'
+writing manifest file '../../../build/racing_stage2_param_test/racing_stage2_param_test.egg-info/SOURCES.txt'
+running build
+running build_py
+copying racing_stage2_param_test/direct_inertial_tester.py -> /home/sunrise/dev_ws/build/racing_stage2_param_test/build/lib/racing_stage2_param_test
+copying racing_stage2_param_test/__init__.py -> /home/sunrise/dev_ws/build/racing_stage2_param_test/build/lib/racing_stage2_param_test
+running install
+running install_lib
+copying /home/sunrise/dev_ws/build/racing_stage2_param_test/build/lib/racing_stage2_param_test/direct_inertial_tester.py -> /home/sunrise/dev_ws/install/racing_stage2_param_test/lib/python3.10/site-packages/racing_stage2_param_test
+copying /home/sunrise/dev_ws/build/racing_stage2_param_test/build/lib/racing_stage2_param_test/__init__.py -> /home/sunrise/dev_ws/install/racing_stage2_param_test/lib/python3.10/site-packages/racing_stage2_param_test
+byte-compiling /home/sunrise/dev_ws/install/racing_stage2_param_test/lib/python3.10/site-packages/racing_stage2_param_test/direct_inertial_tester.py to direct_inertial_tester.cpython-310.pyc
+byte-compiling /home/sunrise/dev_ws/install/racing_stage2_param_test/lib/python3.10/site-packages/racing_stage2_param_test/__init__.py to __init__.cpython-310.pyc
+running install_data
+copying resource/racing_stage2_param_test -> /home/sunrise/dev_ws/install/racing_stage2_param_test/share/ament_index/resource_index/packages
+copying package.xml -> /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test
+creating /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test/launch
+copying launch/direct_inertial_test.launch.py -> /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test/launch
+creating /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test/config
+copying config/direct_inertial_test_overrides.yaml -> /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test/config
+running install_egg_info
+Copying ../../../build/racing_stage2_param_test/racing_stage2_param_test.egg-info to /home/sunrise/dev_ws/install/racing_stage2_param_test/lib/python3.10/site-packages/racing_stage2_param_test-0.0.1-py3.10.egg-info
+running install_scripts
+Installing direct_inertial_tester script to /home/sunrise/dev_ws/install/racing_stage2_param_test/lib/racing_stage2_param_test
+writing list of installed files to '/home/sunrise/dev_ws/build/racing_stage2_param_test/install.log'

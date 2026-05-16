@@ -1,0 +1,55 @@
+-- The C compiler identification is GNU 11.2.0
+-- The CXX compiler identification is GNU 11.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)
+-- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+-- Found ament_lint_auto: 0.12.15 (/opt/ros/humble/share/ament_lint_auto/cmake)
+-- Added test 'copyright' to check source files copyright and LICENSE
+-- Added test 'flake8' to check Python code syntax and style conventions
+-- Added test 'lint_cmake' to check CMake code style
+-- Added test 'pep257' to check Python code against some of the docstring style conventions in PEP 257
+-- Added test 'xmllint' to check XML markup files
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/sunrise/dev_ws/build/origincar_description
+-- Install configuration: ""
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch/display.launch
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch/display.launch.py
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch/gazebo.launch
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/urdf
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/urdf/origincar.xacro
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/urdf/origincar.urdf
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/rviz
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/rviz/README
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/rviz/display.rviz
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/up_right_Link.STL
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/up_left_Link.STL
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/base_link.STL
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/down_right_Link.STL
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/down_left_Link.STL
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/ament_index/resource_index/package_run_dependencies/origincar_description
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/ament_index/resource_index/parent_prefix_path/origincar_description
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/ament_prefix_path.sh
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/ament_prefix_path.dsv
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/path.sh
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/path.dsv
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.bash
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.sh
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.zsh
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.dsv
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/package.dsv
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/ament_index/resource_index/packages/origincar_description
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/cmake/origincar_descriptionConfig.cmake
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/cmake/origincar_descriptionConfig-version.cmake
+-- Installing: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/package.xml

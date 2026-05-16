@@ -1,0 +1,16 @@
+person_detection_node:
+  ros__parameters:
+    camera_topic: /image
+    use_compressed: true
+    phase_topic: competition_phase
+    detection_topic: person_detection
+    crop_topic: person_detection_crop
+    detector_rate_hz: 4.0
+    stage2_only: true
+    min_detection_interval_sec: 4.0
+    report_once: true
+    confirm_frames: 2
+    min_bbox_height: 90
+    min_bbox_area_ratio: 0.02
+    max_bbox_area_ratio: 0.55
+    weight_threshold: 0.35

@@ -1,0 +1,23 @@
+running egg_info
+writing ../../../build/racing_bringup/racing_bringup.egg-info/PKG-INFO
+writing dependency_links to ../../../build/racing_bringup/racing_bringup.egg-info/dependency_links.txt
+writing requirements to ../../../build/racing_bringup/racing_bringup.egg-info/requires.txt
+writing top-level names to ../../../build/racing_bringup/racing_bringup.egg-info/top_level.txt
+reading manifest file '../../../build/racing_bringup/racing_bringup.egg-info/SOURCES.txt'
+writing manifest file '../../../build/racing_bringup/racing_bringup.egg-info/SOURCES.txt'
+running build
+running build_py
+copying racing_bringup/__init__.py -> /home/sunrise/dev_ws/build/racing_bringup/build/lib/racing_bringup
+running install
+running install_lib
+copying /home/sunrise/dev_ws/build/racing_bringup/build/lib/racing_bringup/__init__.py -> /home/sunrise/dev_ws/install/racing_bringup/lib/python3.10/site-packages/racing_bringup
+byte-compiling /home/sunrise/dev_ws/install/racing_bringup/lib/python3.10/site-packages/racing_bringup/__init__.py to __init__.cpython-310.pyc
+running install_data
+copying resource/racing_bringup -> /home/sunrise/dev_ws/install/racing_bringup/share/ament_index/resource_index/packages
+copying package.xml -> /home/sunrise/dev_ws/install/racing_bringup/share/racing_bringup
+copying launch/competition_total.launch.py -> /home/sunrise/dev_ws/install/racing_bringup/share/racing_bringup/launch
+running install_egg_info
+removing '/home/sunrise/dev_ws/install/racing_bringup/lib/python3.10/site-packages/racing_bringup-0.0.1-py3.10.egg-info' (and everything under it)
+Copying ../../../build/racing_bringup/racing_bringup.egg-info to /home/sunrise/dev_ws/install/racing_bringup/lib/python3.10/site-packages/racing_bringup-0.0.1-py3.10.egg-info
+running install_scripts
+writing list of installed files to '/home/sunrise/dev_ws/build/racing_bringup/install.log'

@@ -1,0 +1,20 @@
+stage3_return_navigator:
+  ros__parameters:
+    phase_topic: competition_phase
+    odom_topic: /odom_combined
+    cmd_topic: /cmd_vel
+    return_path_topic: /stage3_return_path
+    state_topic: stage3_state
+    feedback_topic: competition_feedback
+    start_delay_sec: 0.5
+    return_waypoints_json: '[{"x":0.00,"y":0.00,"description":"return_start"},{"x":0.55,"y":-0.10,"speed":0.16,"description":"return_wp_1"},{"x":1.05,"y":-0.55,"speed":0.17,"description":"return_wp_2"},{"x":1.45,"y":-1.20,"speed":0.16,"description":"return_wp_3"},{"x":1.65,"y":-2.00,"speed":0.12,"yaw_deg":100.0,"description":"return_goal"}]'
+    return_waypoint_tolerance: 0.18
+    return_goal_tolerance: 0.10
+    return_goal_yaw_tolerance_deg: 8.0
+    return_path_timeout_sec: 60.0
+    pure_pursuit_linear_speed: 0.18
+    pure_pursuit_lookahead_m: 0.45
+    pure_pursuit_heading_stop_deg: 70.0
+    pure_pursuit_turn_kp: 1.8
+    max_angular_speed: 0.8
+    min_angular_speed: 0.45

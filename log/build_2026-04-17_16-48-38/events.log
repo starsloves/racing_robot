@@ -1,0 +1,23 @@
+[0.000000] (-) TimerEvent: {}
+[0.002397] (-) JobUnselected: {'identifier': 'ackermann_msgs'}
+[0.003203] (-) JobUnselected: {'identifier': 'line_follower_pkg'}
+[0.004111] (-) JobUnselected: {'identifier': 'lslidar_driver'}
+[0.004377] (-) JobUnselected: {'identifier': 'lslidar_msgs'}
+[0.004588] (-) JobUnselected: {'identifier': 'origincar_description'}
+[0.004790] (-) JobUnselected: {'identifier': 'origincar_msg'}
+[0.004989] (-) JobUnselected: {'identifier': 'qr_scanner'}
+[0.005187] (-) JobUnselected: {'identifier': 'racing_control'}
+[0.005385] (-) JobUnselected: {'identifier': 'racing_obstacle_detection_yolo'}
+[0.005585] (-) JobUnselected: {'identifier': 'racing_track_detection_resnet'}
+[0.005782] (-) JobUnselected: {'identifier': 'racing_vision_ai'}
+[0.005975] (-) JobUnselected: {'identifier': 'serial'}
+[0.006168] (-) JobUnselected: {'identifier': 'simple_avoidance'}
+[0.006393] (-) JobUnselected: {'identifier': 'utils'}
+[0.006683] (origincar_bringup) JobQueued: {'identifier': 'origincar_bringup', 'dependencies': OrderedDict()}
+[0.007101] (origincar_base) JobQueued: {'identifier': 'origincar_base', 'dependencies': OrderedDict([('ackermann_msgs', '/home/sunrise/dev_ws/install/ackermann_msgs'), ('origincar_description', '/home/sunrise/dev_ws/install/origincar_description'), ('origincar_msg', '/home/sunrise/dev_ws/install/origincar_msg'), ('serial', '/home/sunrise/dev_ws/install/serial')])}
+[0.007330] (origincar_bringup) JobStarted: {'identifier': 'origincar_bringup'}
+[0.042523] (origincar_base) JobStarted: {'identifier': 'origincar_base'}
+[0.099242] (-) TimerEvent: {}
+[0.116610] (origincar_base) JobEnded: {'identifier': 'origincar_base', 'rc': 1}
+[0.120185] (origincar_bringup) JobEnded: {'identifier': 'origincar_bringup', 'rc': 'SIGINT'}
+[0.131988] (-) EventReactorShutdown: {}

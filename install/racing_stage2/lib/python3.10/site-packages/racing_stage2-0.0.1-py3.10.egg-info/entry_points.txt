@@ -1,0 +1,4 @@
+[console_scripts]
+lidar_obstacle_circle_markers = racing_stage2.lidar_obstacle_circle_markers:main
+stage2_inertial_navigator = racing_stage2.stage2_inertial_navigator:main
+

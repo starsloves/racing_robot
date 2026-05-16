@@ -1,0 +1,9 @@
+stage2_inertial_navigator:
+  ros__parameters:
+    cmd_topic: /cmd_vel
+    corridor_path_topic: /inertial_param_test/path
+    feedback_topic: /inertial_param_test/feedback
+    state_topic: /inertial_param_test/state
+    test_direction: clockwise
+    test_nav_succeeded: true
+    test_feedback_prefix: 惯导参数测试

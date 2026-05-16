@@ -1,0 +1,83 @@
+[6.384s] Invoking command in '/home/sunrise/dev_ws/build/bno055': PYTHONPATH=/home/sunrise/dev_ws/build/bno055/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --uninstall --editable --build-directory /home/sunrise/dev_ws/build/bno055/build
+[8.215s] running develop
+[9.372s] Removing /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055.egg-link (link to .)
+[10.505s] Invoked command in '/home/sunrise/dev_ws/build/bno055' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/bno055/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --uninstall --editable --build-directory /home/sunrise/dev_ws/build/bno055/build
+[10.513s] Invoking command in '/home/sunrise/dev_ws/src/racing/bno055-main': PYTHONPATH=/home/sunrise/dev_ws/build/bno055/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/bno055 build --build-base /home/sunrise/dev_ws/build/bno055/build install --record /home/sunrise/dev_ws/build/bno055/install.log --single-version-externally-managed install_data --force
+[12.233s] running egg_info
+[12.238s] writing ../../../build/bno055/bno055.egg-info/PKG-INFO
+[12.239s] writing dependency_links to ../../../build/bno055/bno055.egg-info/dependency_links.txt
+[12.240s] writing entry points to ../../../build/bno055/bno055.egg-info/entry_points.txt
+[12.241s] writing requirements to ../../../build/bno055/bno055.egg-info/requires.txt
+[12.242s] writing top-level names to ../../../build/bno055/bno055.egg-info/top_level.txt
+[12.256s] reading manifest file '../../../build/bno055/bno055.egg-info/SOURCES.txt'
+[12.259s] adding license file 'LICENSE'
+[12.259s] adding license file 'AUTHORS'
+[12.263s] writing manifest file '../../../build/bno055/bno055.egg-info/SOURCES.txt'
+[12.264s] running build
+[12.265s] running build_py
+[12.266s] creating /home/sunrise/dev_ws/build/bno055/build
+[12.267s] creating /home/sunrise/dev_ws/build/bno055/build/lib
+[12.268s] creating /home/sunrise/dev_ws/build/bno055/build/lib/bno055
+[12.269s] copying bno055/__init__.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055
+[12.269s] copying bno055/bno055.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055
+[12.270s] copying bno055/registers.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055
+[12.271s] creating /home/sunrise/dev_ws/build/bno055/build/lib/bno055/error_handling
+[12.272s] copying bno055/error_handling/exceptions.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/error_handling
+[12.272s] copying bno055/error_handling/__init__.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/error_handling
+[12.273s] creating /home/sunrise/dev_ws/build/bno055/build/lib/bno055/sensor
+[12.274s] copying bno055/sensor/__init__.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/sensor
+[12.275s] copying bno055/sensor/SensorService.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/sensor
+[12.276s] creating /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors
+[12.277s] copying bno055/connectors/Connector.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors
+[12.278s] copying bno055/connectors/i2c.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors
+[12.279s] copying bno055/connectors/__init__.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors
+[12.279s] copying bno055/connectors/uart.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors
+[12.280s] creating /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params
+[12.281s] copying bno055/params/NodeParameters.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params
+[12.282s] copying bno055/params/__init__.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params
+[12.285s] running install
+[12.287s] running install_lib
+[12.292s] creating /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055
+[12.293s] creating /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/error_handling
+[12.294s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/error_handling/exceptions.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/error_handling
+[12.296s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/error_handling/__init__.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/error_handling
+[12.297s] creating /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/sensor
+[12.298s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/sensor/__init__.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/sensor
+[12.298s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/sensor/SensorService.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/sensor
+[12.299s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/__init__.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055
+[12.300s] creating /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors
+[12.301s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors/Connector.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors
+[12.302s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors/i2c.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors
+[12.303s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors/__init__.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors
+[12.304s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors/uart.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors
+[12.304s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/registers.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055
+[12.305s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/bno055.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055
+[12.306s] creating /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params
+[12.306s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params/NodeParameters.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params
+[12.307s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params/__init__.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params
+[12.308s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/error_handling/exceptions.py to exceptions.cpython-310.pyc
+[12.310s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/error_handling/__init__.py to __init__.cpython-310.pyc
+[12.311s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/sensor/__init__.py to __init__.cpython-310.pyc
+[12.312s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/sensor/SensorService.py to SensorService.cpython-310.pyc
+[12.328s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/__init__.py to __init__.cpython-310.pyc
+[12.329s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors/Connector.py to Connector.cpython-310.pyc
+[12.331s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors/i2c.py to i2c.cpython-310.pyc
+[12.334s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors/__init__.py to __init__.cpython-310.pyc
+[12.336s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors/uart.py to uart.cpython-310.pyc
+[12.340s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/registers.py to registers.cpython-310.pyc
+[12.345s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/bno055.py to bno055.cpython-310.pyc
+[12.349s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params/NodeParameters.py to NodeParameters.cpython-310.pyc
+[12.355s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params/__init__.py to __init__.cpython-310.pyc
+[12.356s] running install_data
+[12.357s] copying resource/bno055 -> /home/sunrise/dev_ws/install/bno055/share/ament_index/resource_index/packages
+[12.358s] copying package.xml -> /home/sunrise/dev_ws/install/bno055/share/bno055
+[12.359s] copying launch/bno055.launch.py -> /home/sunrise/dev_ws/install/bno055/share/bno055/launch
+[12.360s] copying bno055/params/bno055_params.yaml -> /home/sunrise/dev_ws/install/bno055/share/bno055/config
+[12.361s] copying bno055/params/bno055_params_i2c.yaml -> /home/sunrise/dev_ws/install/bno055/share/bno055/config
+[12.362s] copying bno055/params/bno055_params_test.yaml -> /home/sunrise/dev_ws/install/bno055/share/bno055/config
+[12.362s] running install_egg_info
+[12.382s] Copying ../../../build/bno055/bno055.egg-info to /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055-0.5.0-py3.10.egg-info
+[12.388s] running install_scripts
+[12.508s] Installing bno055 script to /home/sunrise/dev_ws/install/bno055/lib/bno055
+[12.512s] writing list of installed files to '/home/sunrise/dev_ws/build/bno055/install.log'
+[12.738s] Invoked command in '/home/sunrise/dev_ws/src/racing/bno055-main' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/bno055/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/bno055 build --build-base /home/sunrise/dev_ws/build/bno055/build install --record /home/sunrise/dev_ws/build/bno055/install.log --single-version-externally-managed install_data --force

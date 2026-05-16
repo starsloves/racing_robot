@@ -1,0 +1,32 @@
+[5.714s] Invoking command in '/home/sunrise/dev_ws/src/racing/bno055-main': PYTHONPATH=/home/sunrise/dev_ws/build/bno055/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/bno055 build --build-base /home/sunrise/dev_ws/build/bno055/build install --record /home/sunrise/dev_ws/build/bno055/install.log --single-version-externally-managed install_data
+[7.949s] running egg_info
+[7.953s] writing ../../../build/bno055/bno055.egg-info/PKG-INFO
+[7.954s] writing dependency_links to ../../../build/bno055/bno055.egg-info/dependency_links.txt
+[7.956s] writing entry points to ../../../build/bno055/bno055.egg-info/entry_points.txt
+[7.957s] writing requirements to ../../../build/bno055/bno055.egg-info/requires.txt
+[7.958s] writing top-level names to ../../../build/bno055/bno055.egg-info/top_level.txt
+[7.976s] reading manifest file '../../../build/bno055/bno055.egg-info/SOURCES.txt'
+[7.979s] adding license file 'LICENSE'
+[7.980s] adding license file 'AUTHORS'
+[7.986s] writing manifest file '../../../build/bno055/bno055.egg-info/SOURCES.txt'
+[7.988s] running build
+[7.989s] running build_py
+[7.990s] copying bno055/bno055.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055
+[7.993s] copying bno055/connectors/i2c.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors
+[7.996s] copying bno055/params/NodeParameters.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params
+[8.001s] running install
+[8.004s] running install_lib
+[8.011s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors/i2c.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors
+[8.012s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/bno055.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055
+[8.014s] copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params/NodeParameters.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params
+[8.019s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors/i2c.py to i2c.cpython-310.pyc
+[8.024s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/bno055.py to bno055.cpython-310.pyc
+[8.030s] byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params/NodeParameters.py to NodeParameters.cpython-310.pyc
+[8.038s] running install_data
+[8.040s] running install_egg_info
+[8.065s] removing '/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055-0.5.0-py3.10.egg-info' (and everything under it)
+[8.066s] Copying ../../../build/bno055/bno055.egg-info to /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055-0.5.0-py3.10.egg-info
+[8.074s] running install_scripts
+[8.230s] Installing bno055 script to /home/sunrise/dev_ws/install/bno055/lib/bno055
+[8.237s] writing list of installed files to '/home/sunrise/dev_ws/build/bno055/install.log'
+[8.500s] Invoked command in '/home/sunrise/dev_ws/src/racing/bno055-main' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/bno055/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/bno055 build --build-base /home/sunrise/dev_ws/build/bno055/build install --record /home/sunrise/dev_ws/build/bno055/install.log --single-version-externally-managed install_data

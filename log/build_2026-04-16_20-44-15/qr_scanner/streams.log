@@ -1,0 +1,31 @@
+[4.068s] Invoking command in '/home/sunrise/dev_ws/build/qr_scanner': PYTHONPATH=/home/sunrise/dev_ws/build/qr_scanner/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/sunrise/dev_ws/build/qr_scanner/build --no-deps symlink_data
+[5.776s] running develop
+[6.828s] running egg_info
+[6.829s] creating qr_scanner.egg-info
+[6.829s] writing qr_scanner.egg-info/PKG-INFO
+[6.831s] writing dependency_links to qr_scanner.egg-info/dependency_links.txt
+[6.831s] writing entry points to qr_scanner.egg-info/entry_points.txt
+[6.832s] writing requirements to qr_scanner.egg-info/requires.txt
+[6.833s] writing top-level names to qr_scanner.egg-info/top_level.txt
+[6.834s] writing manifest file 'qr_scanner.egg-info/SOURCES.txt'
+[6.843s] reading manifest file 'qr_scanner.egg-info/SOURCES.txt'
+[6.847s] writing manifest file 'qr_scanner.egg-info/SOURCES.txt'
+[6.855s] running build_ext
+[6.857s] Creating /home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr-scanner.egg-link (link to .)
+[6.861s] Installing qr_scanner script to /home/sunrise/dev_ws/install/qr_scanner/lib/qr_scanner
+[6.863s] 
+[6.863s] Installed /home/sunrise/dev_ws/build/qr_scanner
+[6.864s] running symlink_data
+[6.864s] creating /home/sunrise/dev_ws/install/qr_scanner/share/ament_index
+[6.865s] creating /home/sunrise/dev_ws/install/qr_scanner/share/ament_index/resource_index
+[6.865s] creating /home/sunrise/dev_ws/install/qr_scanner/share/ament_index/resource_index/packages
+[6.866s] symbolically linking /home/sunrise/dev_ws/build/qr_scanner/resource/qr_scanner -> /home/sunrise/dev_ws/install/qr_scanner/share/ament_index/resource_index/packages
+[6.866s] symbolically linking /home/sunrise/dev_ws/build/qr_scanner/package.xml -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner
+[6.867s] creating /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/launch
+[6.867s] symbolically linking /home/sunrise/dev_ws/build/qr_scanner/launch/start_competition.launch.py -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/launch
+[6.868s] creating /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+[6.868s] symbolically linking /home/sunrise/dev_ws/build/qr_scanner/config/sr.caffemodel -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+[6.868s] symbolically linking /home/sunrise/dev_ws/build/qr_scanner/config/detect.prototxt -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+[6.869s] symbolically linking /home/sunrise/dev_ws/build/qr_scanner/config/sr.prototxt -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+[6.869s] symbolically linking /home/sunrise/dev_ws/build/qr_scanner/config/detect.caffemodel -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+[7.122s] Invoked command in '/home/sunrise/dev_ws/build/qr_scanner' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/qr_scanner/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/sunrise/dev_ws/build/qr_scanner/build --no-deps symlink_data

@@ -1,0 +1,3 @@
+[console_scripts]
+stage3_return_navigator = racing_stage3.stage3_return_navigator:main
+

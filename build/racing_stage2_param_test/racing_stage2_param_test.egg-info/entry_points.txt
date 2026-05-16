@@ -1,0 +1,4 @@
+[console_scripts]
+direct_inertial_tester = racing_stage2_param_test.direct_inertial_tester:main
+twist_cmd_relay = racing_stage2_param_test.twist_cmd_relay:main
+

@@ -1,0 +1,10 @@
+image_caption_node:
+  ros__parameters:
+    detection_topic: person_detection
+    crop_topic: person_detection_crop
+    caption_topic: human_caption_result
+    feedback_topic: competition_feedback
+    caption_mode: template
+    caption_api_url: ''
+    request_timeout_sec: 3.0
+    cooldown_sec: 5.0

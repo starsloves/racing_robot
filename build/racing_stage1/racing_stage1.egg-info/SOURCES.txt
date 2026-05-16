@@ -1,0 +1,15 @@
+package.xml
+setup.cfg
+setup.py
+../../../build/racing_stage1/racing_stage1.egg-info/PKG-INFO
+../../../build/racing_stage1/racing_stage1.egg-info/SOURCES.txt
+../../../build/racing_stage1/racing_stage1.egg-info/dependency_links.txt
+../../../build/racing_stage1/racing_stage1.egg-info/entry_points.txt
+../../../build/racing_stage1/racing_stage1.egg-info/requires.txt
+../../../build/racing_stage1/racing_stage1.egg-info/top_level.txt
+../../../build/racing_stage1/racing_stage1.egg-info/zip-safe
+config/stage1_controller.yaml
+launch/competition_stage1.launch.py
+racing_stage1/__init__.py
+racing_stage1/competition_controller.py
+resource/racing_stage1

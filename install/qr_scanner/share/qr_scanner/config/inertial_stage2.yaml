@@ -1,0 +1,27 @@
+stage2_inertial_navigator:
+  ros__parameters:
+    phase_topic: competition_phase
+    task_topic: competition_qr_task
+    odom_topic: /odom_combined
+    imu_topic: /imu/data
+    cmd_topic: /stage2_cmd_vel
+    feedback_topic: competition_feedback
+    state_topic: stage2_state
+    control_rate_hz: 20.0
+    start_delay_sec: 0.5
+    corridor_linear_speed: 0.18
+    ring_linear_speed: 0.20
+    turn_angular_speed: 0.75
+    turn_kp: 1.8
+    heading_kp: 1.6
+    max_angular_speed: 0.9
+    distance_tolerance: 0.05
+    heading_tolerance_deg: 4.0
+    segment_timeout: 12.0
+    odd_is_clockwise: true
+    clockwise_keywords: 顺时针,cw,clockwise
+    counterclockwise_keywords: 逆时针,ccw,counterclockwise
+    pre_loop_plan_json: '[{"type":"turn","angle_deg":90.0,"description":"scan_leave_1"},{"type":"move","distance_m":0.25,"speed":0.12,"description":"scan_leave_2"},{"type":"turn","angle_deg":90.0,"description":"to_corridor_axis"},{"type":"move","distance_m":1.55,"speed":0.18,"description":"corridor_approach"},{"type":"turn","angle_deg":-90.0,"description":"corridor_align"},{"type":"move","distance_m":1.40,"speed":0.18,"description":"corridor_enter"}]'
+    loop_long_length_m: 3.5
+    loop_short_length_m: 1.15
+    exit_distance_m: 1.0

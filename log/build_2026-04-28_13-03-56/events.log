@@ -1,0 +1,138 @@
+[0.000000] (-) TimerEvent: {}
+[0.002207] (-) JobUnselected: {'identifier': 'ackermann_msgs'}
+[0.003187] (-) JobUnselected: {'identifier': 'line_follower_pkg'}
+[0.004035] (-) JobUnselected: {'identifier': 'lslidar_driver'}
+[0.004293] (-) JobUnselected: {'identifier': 'lslidar_msgs'}
+[0.004504] (-) JobUnselected: {'identifier': 'origincar_base'}
+[0.004703] (-) JobUnselected: {'identifier': 'origincar_bringup'}
+[0.004902] (-) JobUnselected: {'identifier': 'origincar_description'}
+[0.005097] (-) JobUnselected: {'identifier': 'origincar_msg'}
+[0.005306] (-) JobUnselected: {'identifier': 'qr_scanner'}
+[0.005501] (-) JobUnselected: {'identifier': 'racing_control'}
+[0.005693] (-) JobUnselected: {'identifier': 'racing_stage1'}
+[0.005913] (-) JobUnselected: {'identifier': 'racing_stage2'}
+[0.006109] (-) JobUnselected: {'identifier': 'racing_vision_ai'}
+[0.006316] (-) JobUnselected: {'identifier': 'serial'}
+[0.006513] (-) JobUnselected: {'identifier': 'simple_avoidance'}
+[0.006714] (-) JobUnselected: {'identifier': 'utils'}
+[0.007006] (bno055) JobQueued: {'identifier': 'bno055', 'dependencies': OrderedDict()}
+[0.007219] (bno055) JobStarted: {'identifier': 'bno055'}
+[0.098244] (-) TimerEvent: {}
+[0.199191] (-) TimerEvent: {}
+[0.300067] (-) TimerEvent: {}
+[0.401024] (-) TimerEvent: {}
+[0.501939] (-) TimerEvent: {}
+[0.602978] (-) TimerEvent: {}
+[0.704079] (-) TimerEvent: {}
+[0.805022] (-) TimerEvent: {}
+[0.905983] (-) TimerEvent: {}
+[1.007035] (-) TimerEvent: {}
+[1.108134] (-) TimerEvent: {}
+[1.209077] (-) TimerEvent: {}
+[1.310078] (-) TimerEvent: {}
+[1.411079] (-) TimerEvent: {}
+[1.512023] (-) TimerEvent: {}
+[1.614590] (-) TimerEvent: {}
+[1.715663] (-) TimerEvent: {}
+[1.816668] (-) TimerEvent: {}
+[1.917818] (-) TimerEvent: {}
+[2.018884] (-) TimerEvent: {}
+[2.119832] (-) TimerEvent: {}
+[2.220782] (-) TimerEvent: {}
+[2.321782] (-) TimerEvent: {}
+[2.422870] (-) TimerEvent: {}
+[2.523810] (-) TimerEvent: {}
+[2.624936] (-) TimerEvent: {}
+[2.725951] (-) TimerEvent: {}
+[2.826877] (-) TimerEvent: {}
+[2.927918] (-) TimerEvent: {}
+[3.028846] (-) TimerEvent: {}
+[3.130046] (-) TimerEvent: {}
+[3.230953] (-) TimerEvent: {}
+[3.331843] (-) TimerEvent: {}
+[3.432715] (-) TimerEvent: {}
+[3.533681] (-) TimerEvent: {}
+[3.634675] (-) TimerEvent: {}
+[3.735665] (-) TimerEvent: {}
+[3.836632] (-) TimerEvent: {}
+[3.937584] (-) TimerEvent: {}
+[4.038659] (-) TimerEvent: {}
+[4.139764] (-) TimerEvent: {}
+[4.240833] (-) TimerEvent: {}
+[4.341932] (-) TimerEvent: {}
+[4.442950] (-) TimerEvent: {}
+[4.543918] (-) TimerEvent: {}
+[4.645046] (-) TimerEvent: {}
+[4.746005] (-) TimerEvent: {}
+[4.847067] (-) TimerEvent: {}
+[4.948158] (-) TimerEvent: {}
+[5.049090] (-) TimerEvent: {}
+[5.150049] (-) TimerEvent: {}
+[5.251248] (-) TimerEvent: {}
+[5.352599] (-) TimerEvent: {}
+[5.453479] (-) TimerEvent: {}
+[5.554559] (-) TimerEvent: {}
+[5.655520] (-) TimerEvent: {}
+[5.716672] (bno055) Command: {'cmd': ['/usr/bin/python3', '-W', 'ignore:setup.py install is deprecated', '-W', 'ignore:easy_install command is deprecated', 'setup.py', 'egg_info', '--egg-base', '../../../build/bno055', 'build', '--build-base', '/home/sunrise/dev_ws/build/bno055/build', 'install', '--record', '/home/sunrise/dev_ws/build/bno055/install.log', '--single-version-externally-managed', 'install_data'], 'cwd': '/home/sunrise/dev_ws/src/racing/bno055-main', 'env': {'LANGUAGE': 'en_US.UTF-8', 'USER': 'sunrise', 'SSH_CLIENT': '172.20.10.4 51083 22', 'GIT_EDITOR': ':', 'XDG_SESSION_TYPE': 'tty', 'GIT_ASKPASS': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/extensions/git/dist/askpass.sh', 'SHLVL': '1', 'LD_LIBRARY_PATH': '/home/sunrise/dev_ws/install/origincar_base/lib:/home/sunrise/dev_ws/install/serial/lib:/home/sunrise/dev_ws/install/origincar_msg/lib:/home/sunrise/dev_ws/install/lslidar_msgs/lib:/home/sunrise/dev_ws/install/ackermann_msgs/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/tros/humble/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/hobot/lib:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/hobot/lib/sensor:/system/lib:/system/usr/lib:/lib:', 'BROWSER': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/bin/helpers/browser.sh', 'MOTD_SHOWN': 'pam', 'HOME': '/home/sunrise', 'OLDPWD': '/home/sunrise/dev_ws', 'TERM_PROGRAM_VERSION': '1.117.0', 'VSCODE_IPC_HOOK_CLI': '/run/user/1000/vscode-ipc-2d1000ac-9555-4a95-943e-9b4d2340be1d.sock', 'ROS_PYTHON_VERSION': '3', 'VSCODE_GIT_ASKPASS_MAIN': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/extensions/git/dist/askpass-main.js', 'VSCODE_GIT_ASKPASS_NODE': '/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/node', 'VSCODE_PYTHON_AUTOACTIVATE_GUARD': '1', 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus', 'COLORTERM': 'truecolor', 'TROS_DISTRO': 'humble', 'COLCON_PREFIX_PATH': '/home/sunrise/dev_ws/install', 'ROS_DISTRO': 'humble', 'LOGNAME': 'sunrise', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'XDG_SESSION_CLASS': 'user', 'TERM': 'xterm-256color', 'XDG_SESSION_ID': '2', 'ROS_LOCALHOST_ONLY': '0', 'HISTCONTROL': 'ignorespace', 'PATH': '/home/sunrise/.vscode-server/data/User/globalStorage/github.copilot-chat/debugCommand:/home/sunrise/.vscode-server/data/User/globalStorage/github.copilot-chat/copilotCli:/home/sunrise/.vscode-server/cli/servers/Stable-10c8e557c8b9f9ed0a87f61f1c9a44bde731c409/server/bin/remote-cli:/home/sunrise/.local/bin:/opt/tros/humble/bin:/opt/ros/humble/bin:/usr/hobot/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin', 'XDG_RUNTIME_DIR': '/run/user/1000', 'LANG': 'en_US.UTF-8', 'LS_COLORS': 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:', 'VSCODE_GIT_IPC_HANDLE': '/run/user/1000/vscode-git-06d5588545.sock', 'TERM_PROGRAM': 'vscode', 'AMENT_PREFIX_PATH': '/home/sunrise/dev_ws/install/origincar_base:/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/lslidar_driver:/home/sunrise/dev_ws/install/lslidar_msgs:/home/sunrise/dev_ws/install/bno055:/home/sunrise/dev_ws/install/ackermann_msgs:/opt/tros/humble:/opt/ros/humble', 'SHELL': '/bin/bash', 'VSCODE_GIT_ASKPASS_EXTRA_ARGS': '', 'GIT_PAGER': 'cat', 'PWD': '/home/sunrise/dev_ws/build/bno055', 'GIT_MERGE_AUTOEDIT': 'no', 'SSH_CONNECTION': '172.20.10.4 51083 172.20.10.3 22', 'PYTHONPATH': '/home/sunrise/dev_ws/build/bno055/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/racing_stage1/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/lslidar_msgs/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:/opt/tros/humble/lib/python3.10/site-packages:/opt/tros/humble/local/lib/python3.10/dist-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages', 'COLCON': '1', 'CMAKE_PREFIX_PATH': '/home/sunrise/dev_ws/install/origincar_base:/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/lslidar_driver:/home/sunrise/dev_ws/install/lslidar_msgs:/home/sunrise/dev_ws/install/ackermann_msgs'}, 'shell': False}
+[5.755885] (-) TimerEvent: {}
+[5.856891] (-) TimerEvent: {}
+[5.957908] (-) TimerEvent: {}
+[6.058843] (-) TimerEvent: {}
+[6.159774] (-) TimerEvent: {}
+[6.260746] (-) TimerEvent: {}
+[6.361724] (-) TimerEvent: {}
+[6.462725] (-) TimerEvent: {}
+[6.563685] (-) TimerEvent: {}
+[6.664914] (-) TimerEvent: {}
+[6.765849] (-) TimerEvent: {}
+[6.866856] (-) TimerEvent: {}
+[6.967815] (-) TimerEvent: {}
+[7.068852] (-) TimerEvent: {}
+[7.169837] (-) TimerEvent: {}
+[7.270829] (-) TimerEvent: {}
+[7.371777] (-) TimerEvent: {}
+[7.472770] (-) TimerEvent: {}
+[7.573935] (-) TimerEvent: {}
+[7.674939] (-) TimerEvent: {}
+[7.775820] (-) TimerEvent: {}
+[7.876826] (-) TimerEvent: {}
+[7.955222] (bno055) StdoutLine: {'line': b'running egg_info\n'}
+[7.959983] (bno055) StdoutLine: {'line': b'writing ../../../build/bno055/bno055.egg-info/PKG-INFO\n'}
+[7.961319] (bno055) StdoutLine: {'line': b'writing dependency_links to ../../../build/bno055/bno055.egg-info/dependency_links.txt\n'}
+[7.962402] (bno055) StdoutLine: {'line': b'writing entry points to ../../../build/bno055/bno055.egg-info/entry_points.txt\n'}
+[7.963841] (bno055) StdoutLine: {'line': b'writing requirements to ../../../build/bno055/bno055.egg-info/requires.txt\n'}
+[7.965025] (bno055) StdoutLine: {'line': b'writing top-level names to ../../../build/bno055/bno055.egg-info/top_level.txt\n'}
+[7.977064] (-) TimerEvent: {}
+[7.982338] (bno055) StdoutLine: {'line': b"reading manifest file '../../../build/bno055/bno055.egg-info/SOURCES.txt'\n"}
+[7.985608] (bno055) StdoutLine: {'line': b"adding license file 'LICENSE'\n"}
+[7.986930] (bno055) StdoutLine: {'line': b"adding license file 'AUTHORS'\n"}
+[7.991255] (bno055) StdoutLine: {'line': b"writing manifest file '../../../build/bno055/bno055.egg-info/SOURCES.txt'\n"}
+[7.994062] (bno055) StdoutLine: {'line': b'running build\n'}
+[7.995683] (bno055) StdoutLine: {'line': b'running build_py\n'}
+[7.996756] (bno055) StdoutLine: {'line': b'copying bno055/bno055.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055\n'}
+[7.999690] (bno055) StdoutLine: {'line': b'copying bno055/connectors/i2c.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors\n'}
+[8.002362] (bno055) StdoutLine: {'line': b'copying bno055/params/NodeParameters.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params\n'}
+[8.007966] (bno055) StdoutLine: {'line': b'running install\n'}
+[8.010268] (bno055) StdoutLine: {'line': b'running install_lib\n'}
+[8.017446] (bno055) StdoutLine: {'line': b'copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors/i2c.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors\n'}
+[8.019037] (bno055) StdoutLine: {'line': b'copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/bno055.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055\n'}
+[8.020483] (bno055) StdoutLine: {'line': b'copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params/NodeParameters.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params\n'}
+[8.025576] (bno055) StdoutLine: {'line': b'byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors/i2c.py to i2c.cpython-310.pyc\n'}
+[8.031057] (bno055) StdoutLine: {'line': b'byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/bno055.py to bno055.cpython-310.pyc\n'}
+[8.036822] (bno055) StdoutLine: {'line': b'byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params/NodeParameters.py to NodeParameters.cpython-310.pyc\n'}
+[8.045004] (bno055) StdoutLine: {'line': b'running install_data\n'}
+[8.046857] (bno055) StdoutLine: {'line': b'running install_egg_info\n'}
+[8.071505] (bno055) StdoutLine: {'line': b"removing '/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055-0.5.0-py3.10.egg-info' (and everything under it)\n"}
+[8.073295] (bno055) StdoutLine: {'line': b'Copying ../../../build/bno055/bno055.egg-info to /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055-0.5.0-py3.10.egg-info\n'}
+[8.077199] (-) TimerEvent: {}
+[8.080971] (bno055) StdoutLine: {'line': b'running install_scripts\n'}
+[8.177413] (-) TimerEvent: {}
+[8.236915] (bno055) StdoutLine: {'line': b'Installing bno055 script to /home/sunrise/dev_ws/install/bno055/lib/bno055\n'}
+[8.243327] (bno055) StdoutLine: {'line': b"writing list of installed files to '/home/sunrise/dev_ws/build/bno055/install.log'\n"}
+[8.277703] (-) TimerEvent: {}
+[8.378682] (-) TimerEvent: {}
+[8.479641] (-) TimerEvent: {}
+[8.506235] (bno055) CommandEnded: {'returncode': 0}
+[8.581306] (-) TimerEvent: {}
+[8.593509] (bno055) JobEnded: {'identifier': 'bno055', 'rc': 0}
+[8.598056] (-) EventReactorShutdown: {}

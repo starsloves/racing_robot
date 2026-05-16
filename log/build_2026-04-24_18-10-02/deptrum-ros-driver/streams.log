@@ -1,0 +1,50 @@
+[0.050s] Invoking command in '/home/sunrise/dev_ws/build/deptrum-ros-driver': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /home/sunrise/dev_ws/src/deptrum-ros-driver-aurora930-0.2.11 -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/deptrum-ros-driver
+[0.176s] [31mCMake Error at CMakeLists.txt:2 (string):
+[0.177s]   string no output variable specified
+[0.177s] 
+[0.178s] [0m
+[0.669s] -- The C compiler identification is GNU 11.2.0
+[1.248s] -- The CXX compiler identification is GNU 11.2.0
+[1.307s] -- Detecting C compiler ABI info
+[1.714s] -- Detecting C compiler ABI info - done
+[1.777s] -- Check for working C compiler: /usr/bin/cc - skipped
+[1.778s] -- Detecting C compile features
+[1.782s] -- Detecting C compile features - done
+[1.801s] -- Detecting CXX compiler ABI info
+[2.247s] -- Detecting CXX compiler ABI info - done
+[2.333s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[2.334s] -- Detecting CXX compile features
+[2.336s] -- Detecting CXX compile features - done
+[2.359s] -- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)
+[3.434s] -- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+[4.209s] -- Found rclcpp: 16.0.19 (/opt/ros/humble/share/rclcpp/cmake)
+[4.651s] -- Found rosidl_generator_c: 3.1.8 (/opt/ros/humble/share/rosidl_generator_c/cmake)
+[4.695s] -- Found rosidl_adapter: 3.1.8 (/opt/ros/humble/share/rosidl_adapter/cmake)
+[4.761s] -- Found rosidl_generator_cpp: 3.1.8 (/opt/ros/humble/share/rosidl_generator_cpp/cmake)
+[4.857s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[4.981s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[5.332s] -- Found rmw_implementation_cmake: 6.1.2 (/opt/ros/humble/share/rmw_implementation_cmake/cmake)
+[5.357s] -- Found rmw_fastrtps_cpp: 6.2.10 (/opt/ros/humble/share/rmw_fastrtps_cpp/cmake)
+[5.886s] -- Found OpenSSL: /usr/lib/aarch64-linux-gnu/libcrypto.so (found version "3.0.2")  
+[6.032s] -- Found FastRTPS: /opt/ros/humble/include  
+[6.235s] -- Using RMW implementation 'rmw_fastrtps_cpp' as default
+[6.307s] -- Looking for pthread.h
+[6.730s] -- Looking for pthread.h - found
+[6.732s] -- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+[7.176s] -- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+[7.187s] -- Found Threads: TRUE  
+[7.562s] -- STREAM_SDK_TYPE: STELLAR400
+[7.563s] -- SYSTEM_PLATFORM: linux-aarch64
+[7.564s] -- Download deptrum-stream-stellar400-linux-aarch64-v1.1.2-18.04.tar.gz from http://192.168.104.3/data/ci_release/deptrum-stream/stellar400/release/linux-aarch64/deptrum-stream-stellar400-linux-aarch64-v1.1.2-18.04.tar.gz
+[137.594s] [31mCMake Error at cmake/Download.cmake:29 (message):
+[137.595s]   
+[137.595s]   http://192.168.104.3/data/ci_release/deptrum-stream/stellar400/release/linux-aarch64/deptrum-stream-stellar400-linux-aarch64-v1.1.2-18.04.tar.gz
+[137.596s]   doesn't exist.
+[137.596s] Call Stack (most recent call first):
+[137.597s]   cmake/Download.cmake:71 (download)
+[137.597s]   CMakeLists.txt:137 (download_sdk)
+[137.598s] 
+[137.598s] [0m
+[137.599s] -- Configuring incomplete, errors occurred!
+[137.599s] See also "/home/sunrise/dev_ws/build/deptrum-ros-driver/CMakeFiles/CMakeOutput.log".
+[137.659s] Invoked command in '/home/sunrise/dev_ws/build/deptrum-ros-driver' returned '1': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /home/sunrise/dev_ws/src/deptrum-ros-driver-aurora930-0.2.11 -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/deptrum-ros-driver

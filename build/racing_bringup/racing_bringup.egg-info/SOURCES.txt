@@ -1,0 +1,12 @@
+package.xml
+setup.cfg
+setup.py
+../../../build/racing_bringup/racing_bringup.egg-info/PKG-INFO
+../../../build/racing_bringup/racing_bringup.egg-info/SOURCES.txt
+../../../build/racing_bringup/racing_bringup.egg-info/dependency_links.txt
+../../../build/racing_bringup/racing_bringup.egg-info/requires.txt
+../../../build/racing_bringup/racing_bringup.egg-info/top_level.txt
+../../../build/racing_bringup/racing_bringup.egg-info/zip-safe
+launch/competition_total.launch.py
+racing_bringup/__init__.py
+resource/racing_bringup

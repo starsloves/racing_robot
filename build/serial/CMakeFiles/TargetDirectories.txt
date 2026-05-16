@@ -1,0 +1,10 @@
+/home/sunrise/dev_ws/build/serial/CMakeFiles/uninstall.dir
+/home/sunrise/dev_ws/build/serial/CMakeFiles/serial_uninstall.dir
+/home/sunrise/dev_ws/build/serial/CMakeFiles/serial.dir
+/home/sunrise/dev_ws/build/serial/CMakeFiles/test.dir
+/home/sunrise/dev_ws/build/serial/CMakeFiles/edit_cache.dir
+/home/sunrise/dev_ws/build/serial/CMakeFiles/rebuild_cache.dir
+/home/sunrise/dev_ws/build/serial/CMakeFiles/list_install_components.dir
+/home/sunrise/dev_ws/build/serial/CMakeFiles/install.dir
+/home/sunrise/dev_ws/build/serial/CMakeFiles/install/local.dir
+/home/sunrise/dev_ws/build/serial/CMakeFiles/install/strip.dir

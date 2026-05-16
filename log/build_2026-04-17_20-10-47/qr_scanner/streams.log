@@ -1,0 +1,23 @@
+[4.204s] Invoking command in '/home/sunrise/dev_ws/src/racing/qr_scanner': PYTHONPATH=/home/sunrise/dev_ws/build/qr_scanner/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/qr_scanner build --build-base /home/sunrise/dev_ws/build/qr_scanner/build install --record /home/sunrise/dev_ws/build/qr_scanner/install.log --single-version-externally-managed install_data
+[5.813s] running egg_info
+[5.817s] writing ../../../build/qr_scanner/qr_scanner.egg-info/PKG-INFO
+[5.819s] writing dependency_links to ../../../build/qr_scanner/qr_scanner.egg-info/dependency_links.txt
+[5.820s] writing entry points to ../../../build/qr_scanner/qr_scanner.egg-info/entry_points.txt
+[5.821s] writing requirements to ../../../build/qr_scanner/qr_scanner.egg-info/requires.txt
+[5.822s] writing top-level names to ../../../build/qr_scanner/qr_scanner.egg-info/top_level.txt
+[5.833s] reading manifest file '../../../build/qr_scanner/qr_scanner.egg-info/SOURCES.txt'
+[5.838s] writing manifest file '../../../build/qr_scanner/qr_scanner.egg-info/SOURCES.txt'
+[5.839s] running build
+[5.840s] running build_py
+[5.841s] running install
+[5.843s] running install_lib
+[5.852s] running install_data
+[5.852s] copying package.xml -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner
+[5.853s] running install_egg_info
+[5.872s] removing '/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr_scanner-0.0.1-py3.10.egg-info' (and everything under it)
+[5.874s] Copying ../../../build/qr_scanner/qr_scanner.egg-info to /home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr_scanner-0.0.1-py3.10.egg-info
+[5.879s] running install_scripts
+[5.992s] Installing competition_controller script to /home/sunrise/dev_ws/install/qr_scanner/lib/qr_scanner
+[5.993s] Installing qr_scanner script to /home/sunrise/dev_ws/install/qr_scanner/lib/qr_scanner
+[5.995s] writing list of installed files to '/home/sunrise/dev_ws/build/qr_scanner/install.log'
+[6.212s] Invoked command in '/home/sunrise/dev_ws/src/racing/qr_scanner' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/qr_scanner/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/qr_scanner build --build-base /home/sunrise/dev_ws/build/qr_scanner/build install --record /home/sunrise/dev_ws/build/qr_scanner/install.log --single-version-externally-managed install_data

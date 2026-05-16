@@ -1,0 +1,26 @@
+running egg_info
+writing ../../../build/racing_stage2/racing_stage2.egg-info/PKG-INFO
+writing dependency_links to ../../../build/racing_stage2/racing_stage2.egg-info/dependency_links.txt
+writing entry points to ../../../build/racing_stage2/racing_stage2.egg-info/entry_points.txt
+writing requirements to ../../../build/racing_stage2/racing_stage2.egg-info/requires.txt
+writing top-level names to ../../../build/racing_stage2/racing_stage2.egg-info/top_level.txt
+reading manifest file '../../../build/racing_stage2/racing_stage2.egg-info/SOURCES.txt'
+writing manifest file '../../../build/racing_stage2/racing_stage2.egg-info/SOURCES.txt'
+running build
+running build_py
+copying racing_stage2/stage2_inertial_navigator.py -> /home/sunrise/dev_ws/build/racing_stage2/build/lib/racing_stage2
+running install
+running install_lib
+copying /home/sunrise/dev_ws/build/racing_stage2/build/lib/racing_stage2/stage2_inertial_navigator.py -> /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2
+byte-compiling /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2/stage2_inertial_navigator.py to stage2_inertial_navigator.cpython-310.pyc
+running install_data
+copying launch/competition_inertial.launch.py -> /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/launch
+copying config/inertial_stage2.yaml -> /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/config
+running install_egg_info
+removing '/home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2-0.0.1-py3.10.egg-info' (and everything under it)
+Copying ../../../build/racing_stage2/racing_stage2.egg-info to /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2-0.0.1-py3.10.egg-info
+running install_scripts
+Installing image_caption_node script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2
+Installing person_detection_node script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2
+Installing stage2_inertial_navigator script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2
+writing list of installed files to '/home/sunrise/dev_ws/build/racing_stage2/install.log'

@@ -1,0 +1,47 @@
+running egg_info
+creating ../../../build/racing_stage2/racing_stage2.egg-info
+writing ../../../build/racing_stage2/racing_stage2.egg-info/PKG-INFO
+writing dependency_links to ../../../build/racing_stage2/racing_stage2.egg-info/dependency_links.txt
+writing entry points to ../../../build/racing_stage2/racing_stage2.egg-info/entry_points.txt
+writing requirements to ../../../build/racing_stage2/racing_stage2.egg-info/requires.txt
+writing top-level names to ../../../build/racing_stage2/racing_stage2.egg-info/top_level.txt
+writing manifest file '../../../build/racing_stage2/racing_stage2.egg-info/SOURCES.txt'
+package init file 'racing_stage2/__init__.py' not found (or not a regular file)
+reading manifest file '../../../build/racing_stage2/racing_stage2.egg-info/SOURCES.txt'
+writing manifest file '../../../build/racing_stage2/racing_stage2.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /home/sunrise/dev_ws/build/racing_stage2/build
+creating /home/sunrise/dev_ws/build/racing_stage2/build/lib
+creating /home/sunrise/dev_ws/build/racing_stage2/build/lib/racing_stage2
+copying racing_stage2/stage2_inertial_navigator.py -> /home/sunrise/dev_ws/build/racing_stage2/build/lib/racing_stage2
+copying racing_stage2/person_detection_node.py -> /home/sunrise/dev_ws/build/racing_stage2/build/lib/racing_stage2
+copying racing_stage2/image_caption_node.py -> /home/sunrise/dev_ws/build/racing_stage2/build/lib/racing_stage2
+running install
+running install_lib
+creating /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2
+copying /home/sunrise/dev_ws/build/racing_stage2/build/lib/racing_stage2/stage2_inertial_navigator.py -> /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2
+copying /home/sunrise/dev_ws/build/racing_stage2/build/lib/racing_stage2/person_detection_node.py -> /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2
+copying /home/sunrise/dev_ws/build/racing_stage2/build/lib/racing_stage2/image_caption_node.py -> /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2
+byte-compiling /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2/stage2_inertial_navigator.py to stage2_inertial_navigator.cpython-310.pyc
+byte-compiling /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2/person_detection_node.py to person_detection_node.cpython-310.pyc
+byte-compiling /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2/image_caption_node.py to image_caption_node.cpython-310.pyc
+running install_data
+creating /home/sunrise/dev_ws/install/racing_stage2/share/ament_index
+creating /home/sunrise/dev_ws/install/racing_stage2/share/ament_index/resource_index
+creating /home/sunrise/dev_ws/install/racing_stage2/share/ament_index/resource_index/packages
+copying resource/racing_stage2 -> /home/sunrise/dev_ws/install/racing_stage2/share/ament_index/resource_index/packages
+copying package.xml -> /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2
+creating /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/launch
+copying launch/competition_inertial.launch.py -> /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/launch
+creating /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/config
+copying config/inertial_stage2.yaml -> /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/config
+copying config/person_detection.yaml -> /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/config
+copying config/image_caption.yaml -> /home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/config
+running install_egg_info
+Copying ../../../build/racing_stage2/racing_stage2.egg-info to /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing_stage2-0.0.1-py3.10.egg-info
+running install_scripts
+Installing image_caption_node script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2
+Installing person_detection_node script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2
+Installing stage2_inertial_navigator script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2
+writing list of installed files to '/home/sunrise/dev_ws/build/racing_stage2/install.log'

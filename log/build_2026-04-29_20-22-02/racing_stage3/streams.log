@@ -1,0 +1,25 @@
+[6.247s] Invoking command in '/home/sunrise/dev_ws/src/racing/racing_stage3': PYTHONPATH=/home/sunrise/dev_ws/build/racing_stage3/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/racing_stage3 build --build-base /home/sunrise/dev_ws/build/racing_stage3/build install --record /home/sunrise/dev_ws/build/racing_stage3/install.log --single-version-externally-managed install_data
+[7.986s] running egg_info
+[7.992s] writing ../../../build/racing_stage3/racing_stage3.egg-info/PKG-INFO
+[7.993s] writing dependency_links to ../../../build/racing_stage3/racing_stage3.egg-info/dependency_links.txt
+[7.994s] writing entry points to ../../../build/racing_stage3/racing_stage3.egg-info/entry_points.txt
+[7.995s] writing requirements to ../../../build/racing_stage3/racing_stage3.egg-info/requires.txt
+[7.995s] writing top-level names to ../../../build/racing_stage3/racing_stage3.egg-info/top_level.txt
+[8.006s] reading manifest file '../../../build/racing_stage3/racing_stage3.egg-info/SOURCES.txt'
+[8.011s] writing manifest file '../../../build/racing_stage3/racing_stage3.egg-info/SOURCES.txt'
+[8.012s] running build
+[8.012s] running build_py
+[8.013s] copying racing_stage3/__init__.py -> /home/sunrise/dev_ws/build/racing_stage3/build/lib/racing_stage3
+[8.014s] running install
+[8.016s] running install_lib
+[8.021s] copying /home/sunrise/dev_ws/build/racing_stage3/build/lib/racing_stage3/__init__.py -> /home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages/racing_stage3
+[8.024s] byte-compiling /home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages/racing_stage3/__init__.py to __init__.cpython-310.pyc
+[8.026s] running install_data
+[8.027s] running install_egg_info
+[8.049s] removing '/home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages/racing_stage3-0.0.1-py3.10.egg-info' (and everything under it)
+[8.051s] Copying ../../../build/racing_stage3/racing_stage3.egg-info to /home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages/racing_stage3-0.0.1-py3.10.egg-info
+[8.057s] running install_scripts
+[8.189s] Installing image_caption_node script to /home/sunrise/dev_ws/install/racing_stage3/lib/racing_stage3
+[8.190s] Installing person_detection_node script to /home/sunrise/dev_ws/install/racing_stage3/lib/racing_stage3
+[8.192s] writing list of installed files to '/home/sunrise/dev_ws/build/racing_stage3/install.log'
+[8.424s] Invoked command in '/home/sunrise/dev_ws/src/racing/racing_stage3' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/racing_stage3/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/racing_stage3 build --build-base /home/sunrise/dev_ws/build/racing_stage3/build install --record /home/sunrise/dev_ws/build/racing_stage3/install.log --single-version-externally-managed install_data

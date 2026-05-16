@@ -1,0 +1,30 @@
+running egg_info
+writing ../../../build/bno055/bno055.egg-info/PKG-INFO
+writing dependency_links to ../../../build/bno055/bno055.egg-info/dependency_links.txt
+writing entry points to ../../../build/bno055/bno055.egg-info/entry_points.txt
+writing requirements to ../../../build/bno055/bno055.egg-info/requires.txt
+writing top-level names to ../../../build/bno055/bno055.egg-info/top_level.txt
+reading manifest file '../../../build/bno055/bno055.egg-info/SOURCES.txt'
+adding license file 'LICENSE'
+adding license file 'AUTHORS'
+writing manifest file '../../../build/bno055/bno055.egg-info/SOURCES.txt'
+running build
+running build_py
+copying bno055/bno055.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055
+copying bno055/connectors/i2c.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors
+copying bno055/params/NodeParameters.py -> /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params
+running install
+running install_lib
+copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/connectors/i2c.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors
+copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/bno055.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055
+copying /home/sunrise/dev_ws/build/bno055/build/lib/bno055/params/NodeParameters.py -> /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params
+byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/connectors/i2c.py to i2c.cpython-310.pyc
+byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/bno055.py to bno055.cpython-310.pyc
+byte-compiling /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055/params/NodeParameters.py to NodeParameters.cpython-310.pyc
+running install_data
+running install_egg_info
+removing '/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055-0.5.0-py3.10.egg-info' (and everything under it)
+Copying ../../../build/bno055/bno055.egg-info to /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055-0.5.0-py3.10.egg-info
+running install_scripts
+Installing bno055 script to /home/sunrise/dev_ws/install/bno055/lib/bno055
+writing list of installed files to '/home/sunrise/dev_ws/build/bno055/install.log'

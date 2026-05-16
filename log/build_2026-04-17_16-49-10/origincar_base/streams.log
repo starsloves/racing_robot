@@ -1,0 +1,291 @@
+[0.061s] Invoking command in '/home/sunrise/dev_ws/build/origincar_base': AMENT_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:${AMENT_PREFIX_PATH} CMAKE_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble LD_LIBRARY_PATH=/home/sunrise/dev_ws/install/serial/lib:/home/sunrise/dev_ws/install/origincar_msg/lib:/home/sunrise/dev_ws/install/ackermann_msgs/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/tros/humble/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/hobot/lib:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/hobot/lib/sensor:/system/lib:/system/usr/lib:/lib PYTHONPATH=/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:${PYTHONPATH} /usr/bin/cmake /home/sunrise/dev_ws/src/origincar/origincar_base -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/origincar_base
+[0.362s] -- The C compiler identification is GNU 11.2.0
+[0.668s] -- The CXX compiler identification is GNU 11.2.0
+[0.700s] -- Detecting C compiler ABI info
+[1.050s] -- Detecting C compiler ABI info - done
+[1.097s] -- Check for working C compiler: /usr/bin/cc - skipped
+[1.098s] -- Detecting C compile features
+[1.100s] -- Detecting C compile features - done
+[1.114s] -- Detecting CXX compiler ABI info
+[1.513s] -- Detecting CXX compiler ABI info - done
+[1.562s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[1.563s] -- Detecting CXX compile features
+[1.565s] -- Detecting CXX compile features - done
+[1.578s] -- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)
+[2.588s] -- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+[3.194s] -- Found geometry_msgs: 4.9.1 (/opt/ros/humble/share/geometry_msgs/cmake)
+[3.403s] -- Found rosidl_generator_c: 3.1.8 (/opt/ros/humble/share/rosidl_generator_c/cmake)
+[3.436s] -- Found rosidl_adapter: 3.1.8 (/opt/ros/humble/share/rosidl_adapter/cmake)
+[3.488s] -- Found rosidl_generator_cpp: 3.1.8 (/opt/ros/humble/share/rosidl_generator_cpp/cmake)
+[3.562s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[3.663s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[3.921s] -- Found tf2_geometry_msgs: 0.25.20 (/opt/ros/humble/share/tf2_geometry_msgs/cmake)
+[4.017s] -- Found eigen3_cmake_module: 0.1.1 (/opt/ros/humble/share/eigen3_cmake_module/cmake)
+[4.025s] -- Found Eigen3: TRUE (found version "3.4.0") 
+[4.025s] -- Ensuring Eigen3 include directory is part of orocos-kdl CMake target
+[4.574s] -- Found rmw_implementation_cmake: 6.1.2 (/opt/ros/humble/share/rmw_implementation_cmake/cmake)
+[4.596s] -- Found rmw_fastrtps_cpp: 6.2.10 (/opt/ros/humble/share/rmw_fastrtps_cpp/cmake)
+[5.069s] -- Found OpenSSL: /usr/lib/aarch64-linux-gnu/libcrypto.so (found version "3.0.2")  
+[5.210s] -- Found FastRTPS: /opt/ros/humble/include  
+[5.412s] -- Using RMW implementation 'rmw_fastrtps_cpp' as default
+[5.475s] -- Looking for pthread.h
+[5.844s] -- Looking for pthread.h - found
+[5.845s] -- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+[6.211s] -- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+[6.216s] -- Found Threads: TRUE  
+[6.973s] -- Found nav2_msgs: 1.1.20 (/opt/ros/humble/share/nav2_msgs/cmake)
+[7.267s] -- Found rclpy: 3.3.21 (/opt/ros/humble/share/rclpy/cmake)
+[7.279s] -- Found sensor_msgs: 4.9.1 (/opt/ros/humble/share/sensor_msgs/cmake)
+[7.406s] -- Found std_srvs: 4.9.1 (/opt/ros/humble/share/std_srvs/cmake)
+[7.472s] -- Found ackermann_msgs: 2.0.2 (/home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake)
+[7.544s] -- Found origincar_msg: 0.0.0 (/home/sunrise/dev_ws/install/origincar_msg/share/origincar_msg/cmake)
+[7.615s] -- Found serial: 1.2.1 (/home/sunrise/dev_ws/install/serial/share/serial/cmake)
+[7.635s] -- Found rosidl_default_generators: 1.2.1 (/opt/ros/humble/share/rosidl_default_generators/cmake)
+[7.714s] -- Found origincar_description: 0.0.0 (/home/sunrise/dev_ws/install/origincar_description/share/origincar_description/cmake)
+[7.726s] -- Found robot_localization: 3.5.4 (/opt/ros/humble/share/robot_localization/cmake)
+[9.687s] -- Found ament_cmake_ros: 0.10.0 (/opt/ros/humble/share/ament_cmake_ros/cmake)
+[11.587s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[12.330s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[12.478s] -- Found PythonInterp: /usr/bin/python3 (found suitable version "3.10.12", minimum required is "3.6") 
+[12.488s] -- Found python_cmake_module: 0.10.0 (/opt/ros/humble/share/python_cmake_module/cmake)
+[12.651s] -- Found PythonLibs: /usr/lib/aarch64-linux-gnu/libpython3.10.so (found suitable version "3.10.12", minimum required is "3.5") 
+[12.651s] -- Using PYTHON_EXECUTABLE: /usr/bin/python3
+[12.652s] -- Using PYTHON_INCLUDE_DIRS: /usr/include/python3.10
+[12.652s] -- Using PYTHON_LIBRARIES: /usr/lib/aarch64-linux-gnu/libpython3.10.so
+[12.791s] -- Found PythonExtra: .so  
+[13.387s] -- Found ament_lint_auto: 0.12.15 (/opt/ros/humble/share/ament_lint_auto/cmake)
+[13.628s] -- Added test 'copyright' to check source files copyright and LICENSE
+[13.637s] -- Added test 'cppcheck' to perform static code analysis on C / C++ code
+[13.644s] -- Configured cppcheck include dirs: /home/sunrise/dev_ws/src/origincar/origincar_base/include
+[13.645s] -- Configured cppcheck exclude dirs and/or files: 
+[13.652s] -- Added test 'cpplint' to check C / C++ code against the Google style
+[13.653s] -- Configured cpplint exclude dirs and/or files: 
+[13.655s] -- Added test 'flake8' to check Python code syntax and style conventions
+[13.659s] -- Added test 'lint_cmake' to check CMake code style
+[13.663s] -- Added test 'pep257' to check Python code against some of the docstring style conventions in PEP 257
+[13.671s] -- Added test 'uncrustify' to check C / C++ code style
+[13.672s] -- Configured uncrustify additional arguments: 
+[13.674s] -- Added test 'xmllint' to check XML markup files
+[13.688s] -- Configuring done
+[13.914s] -- Generating done
+[13.992s] -- Build files have been written to: /home/sunrise/dev_ws/build/origincar_base
+[14.104s] Invoked command in '/home/sunrise/dev_ws/build/origincar_base' returned '0': AMENT_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:${AMENT_PREFIX_PATH} CMAKE_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble LD_LIBRARY_PATH=/home/sunrise/dev_ws/install/serial/lib:/home/sunrise/dev_ws/install/origincar_msg/lib:/home/sunrise/dev_ws/install/ackermann_msgs/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/tros/humble/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/hobot/lib:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/hobot/lib/sensor:/system/lib:/system/usr/lib:/lib PYTHONPATH=/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:${PYTHONPATH} /usr/bin/cmake /home/sunrise/dev_ws/src/origincar/origincar_base -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/origincar_base
+[14.110s] Invoking command in '/home/sunrise/dev_ws/build/origincar_base': AMENT_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:${AMENT_PREFIX_PATH} CMAKE_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble LD_LIBRARY_PATH=/home/sunrise/dev_ws/install/serial/lib:/home/sunrise/dev_ws/install/origincar_msg/lib:/home/sunrise/dev_ws/install/ackermann_msgs/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/tros/humble/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/hobot/lib:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/hobot/lib/sensor:/system/lib:/system/usr/lib:/lib PYTHONPATH=/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:${PYTHONPATH} /usr/bin/cmake --build /home/sunrise/dev_ws/build/origincar_base -- -j8 -l8
+[14.298s] [  2%] [34m[1mGenerating C code for ROS interfaces[0m
+[14.344s] [  8%] [34m[1mGenerating C++ code for ROS interfaces[0m
+[14.346s] [  8%] [34m[1mGenerating Rust code for ROS interfaces[0m
+[14.353s] [ 11%] [32mBuilding CXX object CMakeFiles/origincar_base_node.dir/src/origincar_base.cpp.o[0m
+[14.356s] [ 14%] [32mBuilding CXX object CMakeFiles/origincar_base_node.dir/src/Quaternion_Solution.cpp.o[0m
+[14.394s] [ 14%] Built target ament_cmake_python_copy_origincar_base
+[16.240s] [ 14%] Built target origincar_base__rs
+[16.277s] [ 14%] Built target origincar_base__cpp
+[16.324s] [ 17%] [34m[1mGenerating C++ type support for eProsima Fast-RTPS[0m
+[16.327s] [ 20%] [34m[1mGenerating C++ type support dispatch for ROS interfaces[0m
+[16.329s] [ 22%] [34m[1mGenerating C++ introspection for ROS interfaces[0m
+[16.331s] running egg_info
+[16.333s] [ 25%] [32mBuilding C object CMakeFiles/origincar_base__rosidl_generator_c.dir/rosidl_generator_c/origincar_base/msg/detail/position__functions.c.o[0m
+[16.344s] creating origincar_base.egg-info
+[16.350s] writing origincar_base.egg-info/PKG-INFO
+[16.353s] writing dependency_links to origincar_base.egg-info/dependency_links.txt
+[16.356s] writing top-level names to origincar_base.egg-info/top_level.txt
+[16.360s] writing manifest file 'origincar_base.egg-info/SOURCES.txt'
+[16.384s] reading manifest file 'origincar_base.egg-info/SOURCES.txt'
+[16.393s] writing manifest file 'origincar_base.egg-info/SOURCES.txt'
+[16.635s] [ 28%] [32m[1mLinking C shared library liborigincar_base__rosidl_generator_c.so[0m
+[16.669s] [ 28%] Built target ament_cmake_python_build_origincar_base_egg
+[16.900s] [ 28%] Built target origincar_base__rosidl_generator_c
+[16.959s] [ 31%] [34m[1mGenerating C type support for eProsima Fast-RTPS[0m
+[16.969s] [ 34%] [34m[1mGenerating C introspection for ROS interfaces[0m
+[16.999s] [ 37%] [34m[1mGenerating C type support dispatch for ROS interfaces[0m
+[18.508s] [ 40%] [32mBuilding CXX object CMakeFiles/origincar_base__rosidl_typesupport_introspection_cpp.dir/rosidl_typesupport_introspection_cpp/origincar_base/msg/detail/position__type_support.cpp.o[0m
+[18.549s] [ 42%] [32mBuilding CXX object CMakeFiles/origincar_base__rosidl_typesupport_fastrtps_cpp.dir/rosidl_typesupport_fastrtps_cpp/origincar_base/msg/detail/dds_fastrtps/position__type_support.cpp.o[0m
+[18.645s] [ 45%] [32mBuilding CXX object CMakeFiles/origincar_base__rosidl_typesupport_cpp.dir/rosidl_typesupport_cpp/origincar_base/msg/position__type_support.cpp.o[0m
+[19.306s] [ 48%] [32mBuilding C object CMakeFiles/origincar_base__rosidl_typesupport_introspection_c.dir/rosidl_typesupport_introspection_c/origincar_base/msg/detail/position__type_support.c.o[0m
+[19.464s] [ 51%] [32mBuilding CXX object CMakeFiles/origincar_base__rosidl_typesupport_fastrtps_c.dir/rosidl_typesupport_fastrtps_c/origincar_base/msg/detail/position__type_support_c.cpp.o[0m
+[19.519s] [ 54%] [32mBuilding CXX object CMakeFiles/origincar_base__rosidl_typesupport_c.dir/rosidl_typesupport_c/origincar_base/msg/position__type_support.cpp.o[0m
+[19.606s] [ 57%] [32m[1mLinking C shared library liborigincar_base__rosidl_typesupport_introspection_c.so[0m
+[19.725s] [ 60%] [32m[1mLinking CXX shared library liborigincar_base__rosidl_typesupport_c.so[0m
+[19.939s] [ 60%] Built target origincar_base__rosidl_typesupport_introspection_c
+[20.000s] [ 60%] Built target origincar_base__rosidl_typesupport_c
+[20.616s] [ 62%] [32m[1mLinking CXX shared library liborigincar_base__rosidl_typesupport_cpp.so[0m
+[20.843s] [ 62%] Built target origincar_base__rosidl_typesupport_cpp
+[21.408s] [ 65%] [32m[1mLinking CXX shared library liborigincar_base__rosidl_typesupport_introspection_cpp.so[0m
+[21.499s] [ 68%] [32m[1mLinking CXX shared library liborigincar_base__rosidl_typesupport_fastrtps_cpp.so[0m
+[21.619s] [ 68%] Built target origincar_base__rosidl_typesupport_introspection_cpp
+[21.832s] [ 71%] [32m[1mLinking CXX shared library liborigincar_base__rosidl_typesupport_fastrtps_c.so[0m
+[22.051s] [ 71%] Built target origincar_base__rosidl_typesupport_fastrtps_cpp
+[22.349s] [ 71%] Built target origincar_base__rosidl_typesupport_fastrtps_c
+[22.440s] [ 71%] Built target origincar_base
+[22.536s] [ 74%] [34m[1mGenerating Python code for ROS interfaces[0m
+[24.729s] [ 74%] Built target origincar_base__py
+[24.823s] [ 77%] [32mBuilding C object CMakeFiles/origincar_base__rosidl_generator_py.dir/rosidl_generator_py/origincar_base/msg/_position_s.c.o[0m
+[25.437s] [ 80%] [32m[1mLinking C shared library rosidl_generator_py/origincar_base/liborigincar_base__rosidl_generator_py.so[0m
+[25.679s] [ 80%] Built target origincar_base__rosidl_generator_py
+[25.776s] [ 85%] [32mBuilding C object CMakeFiles/origincar_base__rosidl_typesupport_introspection_c__pyext.dir/rosidl_generator_py/origincar_base/_origincar_base_s.ep.rosidl_typesupport_introspection_c.c.o[0m
+[25.778s] [ 85%] [32mBuilding C object CMakeFiles/origincar_base__rosidl_typesupport_c__pyext.dir/rosidl_generator_py/origincar_base/_origincar_base_s.ep.rosidl_typesupport_c.c.o[0m
+[25.780s] [ 88%] [32mBuilding C object CMakeFiles/origincar_base__rosidl_typesupport_fastrtps_c__pyext.dir/rosidl_generator_py/origincar_base/_origincar_base_s.ep.rosidl_typesupport_fastrtps_c.c.o[0m
+[26.339s] [ 91%] [32m[1mLinking C shared library rosidl_generator_py/origincar_base/origincar_base_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so[0m
+[26.360s] [ 94%] [32m[1mLinking C shared library rosidl_generator_py/origincar_base/origincar_base_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so[0m
+[26.365s] [ 97%] [32m[1mLinking C shared library rosidl_generator_py/origincar_base/origincar_base_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so[0m
+[26.547s] [ 97%] Built target origincar_base__rosidl_typesupport_introspection_c__pyext
+[26.563s] [ 97%] Built target origincar_base__rosidl_typesupport_c__pyext
+[26.581s] [ 97%] Built target origincar_base__rosidl_typesupport_fastrtps_c__pyext
+[99.634s] [100%] [32m[1mLinking CXX executable origincar_base_node[0m
+[106.971s] [100%] Built target origincar_base_node
+[107.025s] Invoked command in '/home/sunrise/dev_ws/build/origincar_base' returned '0': AMENT_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:${AMENT_PREFIX_PATH} CMAKE_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble LD_LIBRARY_PATH=/home/sunrise/dev_ws/install/serial/lib:/home/sunrise/dev_ws/install/origincar_msg/lib:/home/sunrise/dev_ws/install/ackermann_msgs/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/tros/humble/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/hobot/lib:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/hobot/lib/sensor:/system/lib:/system/usr/lib:/lib PYTHONPATH=/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:${PYTHONPATH} /usr/bin/cmake --build /home/sunrise/dev_ws/build/origincar_base -- -j8 -l8
+[107.032s] Invoking command in '/home/sunrise/dev_ws/build/origincar_base': AMENT_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:${AMENT_PREFIX_PATH} CMAKE_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble LD_LIBRARY_PATH=/home/sunrise/dev_ws/install/serial/lib:/home/sunrise/dev_ws/install/origincar_msg/lib:/home/sunrise/dev_ws/install/ackermann_msgs/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/tros/humble/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/hobot/lib:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/hobot/lib/sensor:/system/lib:/system/usr/lib:/lib PYTHONPATH=/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:${PYTHONPATH} /usr/bin/cmake --install /home/sunrise/dev_ws/build/origincar_base
+[107.068s] -- Install configuration: ""
+[107.068s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/ament_index/resource_index/rosidl_interfaces/origincar_base
+[107.070s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base
+[107.070s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg
+[107.071s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/position.h
+[107.072s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/rosidl_generator_c__visibility_control.h
+[107.072s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail
+[107.073s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__type_support.h
+[107.073s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__functions.h
+[107.074s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__struct.h
+[107.074s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__functions.c
+[107.075s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/environment/library_path.sh
+[107.075s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/environment/library_path.dsv
+[107.076s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_generator_c.so
+[107.077s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_generator_c.so" to ""
+[107.077s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base
+[107.078s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg
+[107.078s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/rosidl_typesupport_fastrtps_c__visibility_control.h
+[107.079s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail
+[107.080s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__rosidl_typesupport_fastrtps_c.h
+[107.081s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_fastrtps_c.so
+[107.081s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_fastrtps_c.so" to ""
+[107.082s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base
+[107.083s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg
+[107.083s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/position.hpp
+[107.084s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail
+[107.084s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__struct.hpp
+[107.085s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__type_support.hpp
+[107.085s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__traits.hpp
+[107.086s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__builder.hpp
+[107.086s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/rosidl_generator_cpp__visibility_control.hpp
+[107.087s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base
+[107.087s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg
+[107.088s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail
+[107.088s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__rosidl_typesupport_fastrtps_cpp.hpp
+[107.089s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/dds_fastrtps
+[107.089s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/rosidl_typesupport_fastrtps_cpp__visibility_control.h
+[107.090s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_fastrtps_cpp.so
+[107.091s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_fastrtps_cpp.so" to ""
+[107.091s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base
+[107.092s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg
+[107.092s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/rosidl_typesupport_introspection_c__visibility_control.h
+[107.093s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail
+[107.093s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__type_support.c
+[107.094s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__rosidl_typesupport_introspection_c.h
+[107.094s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_introspection_c.so
+[107.095s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_introspection_c.so" to ""
+[107.096s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_c.so
+[107.096s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_c.so" to ""
+[107.097s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base
+[107.097s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg
+[107.098s] -- Up-to-date: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail
+[107.098s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__rosidl_typesupport_introspection_cpp.hpp
+[107.099s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/include/origincar_base/origincar_base/msg/detail/position__type_support.cpp
+[107.099s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_introspection_cpp.so
+[107.100s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_introspection_cpp.so" to ""
+[107.100s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_cpp.so
+[107.101s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_typesupport_cpp.so" to ""
+[107.101s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/environment/pythonpath.sh
+[107.102s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/environment/pythonpath.dsv
+[107.102s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base-0.0.0-py3.10.egg-info
+[107.103s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base-0.0.0-py3.10.egg-info/SOURCES.txt
+[107.104s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base-0.0.0-py3.10.egg-info/PKG-INFO
+[107.104s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base-0.0.0-py3.10.egg-info/dependency_links.txt
+[107.105s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base-0.0.0-py3.10.egg-info/top_level.txt
+[107.105s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base
+[107.106s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/_origincar_base_s.ep.rosidl_typesupport_fastrtps_c.c
+[107.106s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/msg
+[107.107s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/msg/_position_s.c
+[107.107s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/msg/_position.py
+[107.108s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/msg/__init__.py
+[107.108s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/liborigincar_base__rosidl_generator_py.so
+[107.109s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/origincar_base_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so
+[107.109s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/_origincar_base_s.ep.rosidl_typesupport_c.c
+[107.110s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/__init__.py
+[107.110s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/_origincar_base_s.ep.rosidl_typesupport_introspection_c.c
+[107.111s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/origincar_base_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so
+[107.111s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/origincar_base_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so
+[107.353s] Listing '/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base'...
+[107.353s] Compiling '/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/__init__.py'...
+[107.354s] Listing '/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/msg'...
+[107.354s] Compiling '/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/msg/__init__.py'...
+[107.355s] Compiling '/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/msg/_position.py'...
+[107.407s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/origincar_base_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so
+[107.408s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/origincar_base_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so" to ""
+[107.409s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/origincar_base_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so
+[107.410s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/origincar_base_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so" to ""
+[107.411s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/origincar_base_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so
+[107.412s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/local/lib/python3.10/dist-packages/origincar_base/origincar_base_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so" to ""
+[107.413s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_generator_py.so
+[107.414s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/lib/liborigincar_base__rosidl_generator_py.so" to ""
+[107.415s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/ament_index/resource_index/rust_packages/origincar_base
+[107.416s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/rust
+[107.416s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/rust/src
+[107.417s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/rust/src/msg.rs
+[107.418s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/rust/src/msg
+[107.418s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/rust/src/msg/rmw.rs
+[107.419s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/rust/src/lib.rs
+[107.419s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/rust/build.rs
+[107.420s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/rust/Cargo.toml
+[107.420s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/msg/Position.idl
+[107.421s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/msg/Position.msg
+[107.422s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/lib/origincar_base/cmd_vel_to_ackermann_drive.py
+[107.423s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/lib/origincar_base/origincar_base_node
+[107.472s] -- Set runtime path of "/home/sunrise/dev_ws/install/origincar_base/lib/origincar_base/origincar_base_node" to ""
+[107.472s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/launch
+[107.473s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/launch/origincar_bringup.launch.py
+[107.473s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/launch/robot_mode_description.launch.py
+[107.474s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/launch/ekf.launch.py
+[107.474s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/launch/base_serial.launch.py
+[107.475s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/launch/__pycache__
+[107.475s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/launch/__pycache__/testtwo.launch.cpython-38.pyc
+[107.476s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/config
+[107.476s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/config/imu.yaml
+[107.477s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/config/ekf.yaml
+[107.478s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/ament_index/resource_index/package_run_dependencies/origincar_base
+[107.478s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/ament_index/resource_index/parent_prefix_path/origincar_base
+[107.479s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/environment/ament_prefix_path.sh
+[107.479s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/environment/ament_prefix_path.dsv
+[107.480s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/environment/path.sh
+[107.480s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/environment/path.dsv
+[107.481s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/local_setup.bash
+[107.481s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/local_setup.sh
+[107.482s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/local_setup.zsh
+[107.482s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/local_setup.dsv
+[107.483s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/package.dsv
+[107.483s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/ament_index/resource_index/packages/origincar_base
+[107.484s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/export_origincar_base__rosidl_generator_cExport.cmake
+[107.485s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/export_origincar_base__rosidl_generator_cExport-noconfig.cmake
+[107.485s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/export_origincar_base__rosidl_typesupport_fastrtps_cExport.cmake
+[107.486s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/export_origincar_base__rosidl_typesupport_fastrtps_cExport-noconfig.cmake
+[107.487s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/export_origincar_base__rosidl_generator_cppExport.cmake
+[107.488s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/export_origincar_base__rosidl_typesupport_fastrtps_cppExport.cmake
+[107.489s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/export_origincar_base__rosidl_typesupport_fastrtps_cppExport-noconfig.cmake
+[107.490s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/origincar_base__rosidl_typesupport_introspection_cExport.cmake
+[107.490s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/origincar_base__rosidl_typesupport_introspection_cExport-noconfig.cmake
+[107.491s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/origincar_base__rosidl_typesupport_cExport.cmake
+[107.492s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/origincar_base__rosidl_typesupport_cExport-noconfig.cmake
+[107.493s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/origincar_base__rosidl_typesupport_introspection_cppExport.cmake
+[107.493s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/origincar_base__rosidl_typesupport_introspection_cppExport-noconfig.cmake
+[107.494s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/origincar_base__rosidl_typesupport_cppExport.cmake
+[107.495s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/origincar_base__rosidl_typesupport_cppExport-noconfig.cmake
+[107.495s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/export_origincar_base__rosidl_generator_pyExport.cmake
+[107.496s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/export_origincar_base__rosidl_generator_pyExport-noconfig.cmake
+[107.497s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/rosidl_cmake-extras.cmake
+[107.497s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/ament_cmake_export_include_directories-extras.cmake
+[107.498s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/ament_cmake_export_libraries-extras.cmake
+[107.499s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/ament_cmake_export_targets-extras.cmake
+[107.499s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/rosidl_cmake_export_typesupport_targets-extras.cmake
+[107.500s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/ament_cmake_export_dependencies-extras.cmake
+[107.500s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/rosidl_cmake_export_typesupport_libraries-extras.cmake
+[107.501s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/origincar_baseConfig.cmake
+[107.502s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/cmake/origincar_baseConfig-version.cmake
+[107.502s] -- Installing: /home/sunrise/dev_ws/install/origincar_base/share/origincar_base/package.xml
+[107.516s] Invoked command in '/home/sunrise/dev_ws/build/origincar_base' returned '0': AMENT_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:${AMENT_PREFIX_PATH} CMAKE_PREFIX_PATH=/home/sunrise/dev_ws/install/serial:/home/sunrise/dev_ws/install/origincar_msg:/home/sunrise/dev_ws/install/origincar_description:/home/sunrise/dev_ws/install/ackermann_msgs:/home/sunrise/dev_ws/install/origincar_bringup:/home/sunrise/dev_ws/install/qr_scanner:/opt/tros/humble:/opt/ros/humble LD_LIBRARY_PATH=/home/sunrise/dev_ws/install/serial/lib:/home/sunrise/dev_ws/install/origincar_msg/lib:/home/sunrise/dev_ws/install/ackermann_msgs/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/tros/humble/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/hobot/lib:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/hobot/lib/sensor:/system/lib:/system/usr/lib:/lib PYTHONPATH=/home/sunrise/dev_ws/install/origincar_msg/local/lib/python3.10/dist-packages:/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages:${PYTHONPATH} /usr/bin/cmake --install /home/sunrise/dev_ws/build/origincar_base

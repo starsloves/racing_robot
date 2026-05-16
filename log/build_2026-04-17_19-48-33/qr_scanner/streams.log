@@ -1,0 +1,39 @@
+[4.296s] Invoking command in '/home/sunrise/dev_ws/src/racing/qr_scanner': PYTHONPATH=/home/sunrise/dev_ws/build/qr_scanner/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/qr_scanner build --build-base /home/sunrise/dev_ws/build/qr_scanner/build install --record /home/sunrise/dev_ws/build/qr_scanner/install.log --single-version-externally-managed install_data
+[5.908s] running egg_info
+[5.912s] writing ../../../build/qr_scanner/qr_scanner.egg-info/PKG-INFO
+[5.914s] writing dependency_links to ../../../build/qr_scanner/qr_scanner.egg-info/dependency_links.txt
+[5.916s] writing entry points to ../../../build/qr_scanner/qr_scanner.egg-info/entry_points.txt
+[5.916s] writing requirements to ../../../build/qr_scanner/qr_scanner.egg-info/requires.txt
+[5.917s] writing top-level names to ../../../build/qr_scanner/qr_scanner.egg-info/top_level.txt
+[5.929s] reading manifest file '../../../build/qr_scanner/qr_scanner.egg-info/SOURCES.txt'
+[5.935s] writing manifest file '../../../build/qr_scanner/qr_scanner.egg-info/SOURCES.txt'
+[5.936s] running build
+[5.936s] running build_py
+[5.937s] copying qr_scanner/stage2_inertial_navigator.py -> /home/sunrise/dev_ws/build/qr_scanner/build/lib/qr_scanner
+[5.938s] copying qr_scanner/person_detection_node.py -> /home/sunrise/dev_ws/build/qr_scanner/build/lib/qr_scanner
+[5.939s] copying qr_scanner/image_caption_node.py -> /home/sunrise/dev_ws/build/qr_scanner/build/lib/qr_scanner
+[5.941s] running install
+[5.943s] running install_lib
+[5.947s] copying /home/sunrise/dev_ws/build/qr_scanner/build/lib/qr_scanner/stage2_inertial_navigator.py -> /home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr_scanner
+[5.948s] copying /home/sunrise/dev_ws/build/qr_scanner/build/lib/qr_scanner/person_detection_node.py -> /home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr_scanner
+[5.949s] copying /home/sunrise/dev_ws/build/qr_scanner/build/lib/qr_scanner/image_caption_node.py -> /home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr_scanner
+[5.952s] byte-compiling /home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr_scanner/stage2_inertial_navigator.py to stage2_inertial_navigator.cpython-310.pyc
+[5.969s] byte-compiling /home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr_scanner/person_detection_node.py to person_detection_node.cpython-310.pyc
+[5.979s] byte-compiling /home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr_scanner/image_caption_node.py to image_caption_node.cpython-310.pyc
+[5.985s] running install_data
+[5.986s] copying package.xml -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner
+[5.986s] copying launch/competition_inertial.launch.py -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/launch
+[5.987s] copying config/inertial_stage2.yaml -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+[5.988s] copying config/person_detection.yaml -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+[5.989s] copying config/image_caption.yaml -> /home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/config
+[5.989s] running install_egg_info
+[6.009s] removing '/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr_scanner-0.0.1-py3.10.egg-info' (and everything under it)
+[6.011s] Copying ../../../build/qr_scanner/qr_scanner.egg-info to /home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages/qr_scanner-0.0.1-py3.10.egg-info
+[6.018s] running install_scripts
+[6.131s] Installing competition_controller script to /home/sunrise/dev_ws/install/qr_scanner/lib/qr_scanner
+[6.132s] Installing image_caption_node script to /home/sunrise/dev_ws/install/qr_scanner/lib/qr_scanner
+[6.133s] Installing person_detection_node script to /home/sunrise/dev_ws/install/qr_scanner/lib/qr_scanner
+[6.134s] Installing qr_scanner script to /home/sunrise/dev_ws/install/qr_scanner/lib/qr_scanner
+[6.134s] Installing stage2_inertial_navigator script to /home/sunrise/dev_ws/install/qr_scanner/lib/qr_scanner
+[6.136s] writing list of installed files to '/home/sunrise/dev_ws/build/qr_scanner/install.log'
+[6.351s] Invoked command in '/home/sunrise/dev_ws/src/racing/qr_scanner' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/qr_scanner/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/qr_scanner/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../../build/qr_scanner build --build-base /home/sunrise/dev_ws/build/qr_scanner/build install --record /home/sunrise/dev_ws/build/qr_scanner/install.log --single-version-externally-managed install_data

@@ -1,0 +1,30 @@
+[4.503s] Invoking command in '/home/sunrise/dev_ws/build/bno055': PYTHONPATH=/home/sunrise/dev_ws/build/bno055/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/sunrise/dev_ws/build/bno055/build --no-deps symlink_data
+[6.347s] running develop
+[7.469s] running egg_info
+[7.470s] creating bno055.egg-info
+[7.470s] writing bno055.egg-info/PKG-INFO
+[7.471s] writing dependency_links to bno055.egg-info/dependency_links.txt
+[7.472s] writing entry points to bno055.egg-info/entry_points.txt
+[7.473s] writing requirements to bno055.egg-info/requires.txt
+[7.474s] writing top-level names to bno055.egg-info/top_level.txt
+[7.474s] writing manifest file 'bno055.egg-info/SOURCES.txt'
+[7.487s] reading manifest file 'bno055.egg-info/SOURCES.txt'
+[7.491s] writing manifest file 'bno055.egg-info/SOURCES.txt'
+[7.500s] running build_ext
+[7.502s] Creating /home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages/bno055.egg-link (link to .)
+[7.506s] Installing bno055 script to /home/sunrise/dev_ws/install/bno055/lib/bno055
+[7.508s] 
+[7.509s] Installed /home/sunrise/dev_ws/build/bno055
+[7.509s] running symlink_data
+[7.510s] creating /home/sunrise/dev_ws/install/bno055/share/ament_index
+[7.511s] creating /home/sunrise/dev_ws/install/bno055/share/ament_index/resource_index
+[7.511s] creating /home/sunrise/dev_ws/install/bno055/share/ament_index/resource_index/packages
+[7.512s] symbolically linking /home/sunrise/dev_ws/build/bno055/resource/bno055 -> /home/sunrise/dev_ws/install/bno055/share/ament_index/resource_index/packages
+[7.513s] symbolically linking /home/sunrise/dev_ws/build/bno055/package.xml -> /home/sunrise/dev_ws/install/bno055/share/bno055
+[7.513s] creating /home/sunrise/dev_ws/install/bno055/share/bno055/launch
+[7.514s] symbolically linking /home/sunrise/dev_ws/build/bno055/launch/bno055.launch.py -> /home/sunrise/dev_ws/install/bno055/share/bno055/launch
+[7.514s] creating /home/sunrise/dev_ws/install/bno055/share/bno055/config
+[7.515s] symbolically linking /home/sunrise/dev_ws/build/bno055/bno055/params/bno055_params.yaml -> /home/sunrise/dev_ws/install/bno055/share/bno055/config
+[7.515s] symbolically linking /home/sunrise/dev_ws/build/bno055/bno055/params/bno055_params_i2c.yaml -> /home/sunrise/dev_ws/install/bno055/share/bno055/config
+[7.516s] symbolically linking /home/sunrise/dev_ws/build/bno055/bno055/params/bno055_params_test.yaml -> /home/sunrise/dev_ws/install/bno055/share/bno055/config
+[7.770s] Invoked command in '/home/sunrise/dev_ws/build/bno055' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/bno055/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/bno055/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/sunrise/dev_ws/build/bno055/build --no-deps symlink_data
