@@ -18,7 +18,6 @@ endif()
 install(
   DIRECTORY launch
   map
-  param
   DESTINATION share/${PROJECT_NAME}
 )
 # find dependencies

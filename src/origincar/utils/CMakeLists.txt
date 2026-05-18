@@ -20,27 +20,31 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(hbm_img_msgs REQUIRED)
+find_package(hbm_img_msgs QUIET)
 
-link_directories(
-  /opt/tros/lib/
-)
+if(hbm_img_msgs_FOUND)
+  link_directories(
+    /opt/tros/lib/
+  )
 
-add_executable(image_transport_node
-  src/image_transport_node.cpp
-)
+  add_executable(image_transport_node
+    src/image_transport_node.cpp
+  )
 
-ament_target_dependencies(
-  image_transport_node
-  rclcpp
-  sensor_msgs
-  cv_bridge
-  hbm_img_msgs
-)
+  ament_target_dependencies(
+    image_transport_node
+    rclcpp
+    sensor_msgs
+    cv_bridge
+    hbm_img_msgs
+  )
 
-# Install executables
-install(
-  TARGETS image_transport_node
-  RUNTIME DESTINATION lib/${PROJECT_NAME}
-)
+  install(
+    TARGETS image_transport_node
+    RUNTIME DESTINATION lib/${PROJECT_NAME}
+  )
+else()
+  message(WARNING "hbm_img_msgs not found, skipping image_transport_node in utils")
+endif()
+
 ament_package()
