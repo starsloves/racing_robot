@@ -49,12 +49,16 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.detour_turn_settle_sec = 0.30
         self.detour_realign_pause_sec = 2.0
         self.detour_turn_heading_tolerance = min(self.heading_tolerance, math.radians(1.5))
-        self.detour_turn_linear_speed = self.turn_linear_speed
+        # Keep trapezoid geometry stable: detour turns should not creep forward.
+        self.detour_turn_linear_speed = 0.0
         self.detour_lane_change_angle_deg = 60.0
         self.active_turn_heading_tolerance = self.heading_tolerance
         self.last_detour_turn_log_time = 0.0
         self.detour_detection_locked = False
+        self.detour_lock_depth = 0
         self.detour_resume_yaw = None
+        self.detour_blocked_state = None
+        self.detour_blocked_started_at = None
         self.front_obstacle_angle_deg = 0.0
 
         # Stage1-style obstacle handling state machine.
@@ -94,7 +98,7 @@ class DirectInertialTester(Stage2InertialNavigator):
             f'模式={self.start_mode_text()}，'
             f'矩形参数=({self.rectangle_first_leg_m:.2f}, '
             f'{self.rectangle_side_leg_m:.2f}, {self.rectangle_top_leg_m:.2f})m，'
-            f'避障方向=左右择优，且回到避障前yaw角，前向检测角±{self.detour_front_test_angle_deg:.0f}度'
+            f'避障方向=直行按净空择优，拐角/转弯优先跟随路线方向，前向检测角±{self.detour_front_test_angle_deg:.0f}度'
         )
 
     def resolve_test_direction(self, raw_value):
@@ -361,7 +365,10 @@ class DirectInertialTester(Stage2InertialNavigator):
 
     def reset_mission(self, clear_task):
         self.detour_detection_locked = False
+        self.detour_lock_depth = 0
         self.detour_resume_yaw = None
+        self.detour_blocked_state = None
+        self.detour_blocked_started_at = None
         self.reset_stage1_obstacle_state()
         super().reset_mission(clear_task)
 
@@ -379,6 +386,10 @@ class DirectInertialTester(Stage2InertialNavigator):
             'detour_right_resume_align': '右侧避障最终回正到原始航向',
             'detour_right_resume_align_wait': '右侧避障最终回正前等待',
             'detour_right_settle_before_turn': '右侧避障结束停稳',
+            'detour_right_corner_cut_turn_out': '右侧拐角斜切起始转向',
+            'detour_right_corner_cut_move': '右侧拐角斜切通过障碍',
+            'detour_right_corner_cut_settle': '右侧拐角斜切后停稳',
+            'detour_right_corner_cut_align_exit': '右侧拐角斜切后接入转弯后路线',
             'detour_left_shift_out_turn': '左侧避障外摆转向',
             'detour_left_shift_out_move': '左侧避障侧移离开原路线',
             'detour_left_forward_align': '左侧避障回正到原始航向',
@@ -389,6 +400,10 @@ class DirectInertialTester(Stage2InertialNavigator):
             'detour_left_resume_align': '左侧避障最终回正到原始航向',
             'detour_left_resume_align_wait': '左侧避障最终回正前等待',
             'detour_left_settle_before_turn': '左侧避障结束停稳',
+            'detour_left_corner_cut_turn_out': '左侧拐角斜切起始转向',
+            'detour_left_corner_cut_move': '左侧拐角斜切通过障碍',
+            'detour_left_corner_cut_settle': '左侧拐角斜切后停稳',
+            'detour_left_corner_cut_align_exit': '左侧拐角斜切后接入转弯后路线',
         }
         if description in detour_labels:
             return detour_labels[description]
@@ -429,6 +444,8 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.detour_front_confirm_count = 0
         self.active_turn_heading_tolerance = self.heading_tolerance
         self.last_detour_turn_log_time = 0.0
+        self.detour_blocked_state = None
+        self.detour_blocked_started_at = None
 
         if self.current_segment is None or self.plan_index != index:
             return
@@ -541,20 +558,305 @@ class DirectInertialTester(Stage2InertialNavigator):
             return 'right'
         return None
 
+    def select_best_available_side(self):
+        left_clear = self.left_clearance_distance
+        right_clear = self.right_clearance_distance
+        return 'left' if self.side_clearance_metric(left_clear) >= self.side_clearance_metric(right_clear) else 'right'
+
+    def side_from_turn_angle(self, angle_deg):
+        return 'left' if float(angle_deg) > 0.0 else 'right'
+
+    def resolve_guided_detour_side(self, preferred_side):
+        if preferred_side == 'left' and self.side_clearance_ok(self.left_clearance_distance):
+            return 'left'
+        if preferred_side == 'right' and self.side_clearance_ok(self.right_clearance_distance):
+            return 'right'
+        return self.select_detour_side()
+
+    def degraded_detour_config(self, preferred_side=None):
+        forced_side = self.select_best_available_side() if preferred_side is None else preferred_side
+        if preferred_side is not None:
+            opposite = 'right' if preferred_side == 'left' else 'left'
+            preferred_metric = (
+                self.side_clearance_metric(self.left_clearance_distance)
+                if preferred_side == 'left' else
+                self.side_clearance_metric(self.right_clearance_distance)
+            )
+            opposite_metric = (
+                self.side_clearance_metric(self.left_clearance_distance)
+                if opposite == 'left' else
+                self.side_clearance_metric(self.right_clearance_distance)
+            )
+            if opposite_metric > preferred_metric:
+                forced_side = opposite
+
+        lateral_scale = 0.70
+        pass_scale = 0.75
+        speed_scale = 0.60
+        return forced_side, lateral_scale, pass_scale, speed_scale
+
+    def obstacle_is_active(self):
+        return (
+            math.isfinite(self.front_obstacle_distance)
+            and self.front_obstacle_distance <= self.detour_obstacle_distance
+        )
+
+    def build_resume_segments_for_current_segment(self, entry_yaw):
+        if self.current_segment is None:
+            return []
+
+        segment_type = self.current_segment.get('type')
+        description = str(self.current_segment.get('description', 'segment'))
+
+        if segment_type == 'move':
+            target_distance = float(self.current_segment.get('distance_m', 0.0))
+            remaining_distance = max(0.0, target_distance - self.projected_distance())
+            if remaining_distance <= self.distance_tolerance:
+                return []
+            return [{
+                'type': 'move',
+                'distance_m': remaining_distance,
+                'speed': float(self.current_segment.get('speed', self.corridor_linear_speed)),
+                'description': f'{description}_resume',
+                'allow_detour': True,
+                'force_segment_heading': self.segment_heading if self.segment_heading is not None else entry_yaw,
+            }]
+
+        if segment_type == 'turn':
+            if self.segment_target_yaw is None:
+                return []
+            remaining_angle_deg = math.degrees(
+                self.angle_error(self.segment_target_yaw, entry_yaw)
+            )
+            if abs(remaining_angle_deg) <= math.degrees(self.heading_tolerance):
+                return []
+            return [{
+                'type': 'turn',
+                'angle_deg': remaining_angle_deg,
+                'description': f'{description}_resume_turn',
+                'force_start_yaw': entry_yaw,
+                'force_target_yaw': self.segment_target_yaw,
+                'heading_tolerance_rad': self.heading_tolerance,
+                'turn_linear_speed': self.turn_linear_speed,
+            }]
+
+        if segment_type == 'pause':
+            if self.segment_started_at is None:
+                return []
+            now_sec = self.get_clock().now().nanoseconds / 1e9
+            remaining_duration = max(
+                0.0,
+                float(self.current_segment.get('duration', 0.0)) - (now_sec - self.segment_started_at),
+            )
+            if remaining_duration <= 0.02:
+                return []
+            return [{
+                'type': 'pause',
+                'duration': remaining_duration,
+                'description': f'{description}_resume_pause',
+            }]
+
+        return []
+
+    def build_contextual_detour_segments(self, side, entry_yaw, pass_distance, resume_segments,
+                                        lateral_scale=1.0, speed_scale=1.0):
+        lane_change_angle_rad = math.radians(self.detour_lane_change_angle_deg)
+        if abs(math.sin(lane_change_angle_rad)) <= 1e-6:
+            return []
+
+        side_sign = 1.0 if side == 'left' else -1.0
+        shift_heading = self.normalize_angle(entry_yaw + side_sign * lane_change_angle_rad)
+        return_heading = self.normalize_angle(entry_yaw - side_sign * lane_change_angle_rad)
+        lane_change_move_distance = (self.detour_lateral_distance_m * lateral_scale) / math.sin(lane_change_angle_rad)
+        detour_speed = max(0.06, self.corridor_linear_speed * speed_scale)
+
+        segments = [
+            {
+                'type': 'turn',
+                'angle_deg': side_sign * self.detour_lane_change_angle_deg,
+                'description': f'detour_{side}_shift_out_turn',
+                'force_start_yaw': entry_yaw,
+                'force_target_yaw': shift_heading,
+                'heading_tolerance_rad': self.detour_turn_heading_tolerance,
+                'turn_linear_speed': self.detour_turn_linear_speed,
+            },
+            {
+                'type': 'move',
+                'distance_m': lane_change_move_distance,
+                'speed': detour_speed,
+                'description': f'detour_{side}_shift_out_move',
+                'allow_detour': False,
+                'is_detour': True,
+                'force_segment_heading': shift_heading,
+            },
+            {
+                'type': 'pause',
+                'duration': self.detour_realign_pause_sec,
+                'description': f'detour_{side}_forward_align_wait',
+            },
+            {
+                'type': 'turn',
+                'angle_deg': -side_sign * self.detour_lane_change_angle_deg,
+                'description': f'detour_{side}_forward_align',
+                'force_start_yaw': shift_heading,
+                'force_target_yaw': entry_yaw,
+                'heading_tolerance_rad': self.detour_turn_heading_tolerance,
+                'turn_linear_speed': self.detour_turn_linear_speed,
+            },
+            {
+                'type': 'move',
+                'distance_m': max(pass_distance, self.distance_tolerance * 2.0),
+                'speed': detour_speed,
+                'description': f'detour_{side}_pass_obstacle',
+                'allow_detour': False,
+                'is_detour': True,
+                'force_segment_heading': entry_yaw,
+            },
+            {
+                'type': 'turn',
+                'angle_deg': -side_sign * self.detour_lane_change_angle_deg,
+                'description': f'detour_{side}_return_turn',
+                'force_start_yaw': entry_yaw,
+                'force_target_yaw': return_heading,
+                'heading_tolerance_rad': self.detour_turn_heading_tolerance,
+                'turn_linear_speed': self.detour_turn_linear_speed,
+            },
+            {
+                'type': 'move',
+                'distance_m': lane_change_move_distance,
+                'speed': detour_speed,
+                'description': f'detour_{side}_return_move',
+                'allow_detour': False,
+                'is_detour': True,
+                'force_segment_heading': return_heading,
+            },
+            {
+                'type': 'pause',
+                'duration': self.detour_realign_pause_sec,
+                'description': f'detour_{side}_resume_align_wait',
+            },
+            {
+                'type': 'turn',
+                'angle_deg': side_sign * self.detour_lane_change_angle_deg,
+                'description': f'detour_{side}_resume_align',
+                'force_start_yaw': return_heading,
+                'force_target_yaw': entry_yaw,
+                'heading_tolerance_rad': self.detour_turn_heading_tolerance,
+                'turn_linear_speed': self.detour_turn_linear_speed,
+            },
+        ]
+        return segments + list(resume_segments)
+
+    def build_corner_cut_detour_segments(self, side, entry_yaw, corner_exit_yaw, remaining_distance,
+                                         lateral_scale=1.0, speed_scale=1.0, pass_scale=1.0):
+        lane_change_angle_rad = math.radians(self.detour_lane_change_angle_deg)
+        cos_angle = abs(math.cos(lane_change_angle_rad))
+        sin_angle = abs(math.sin(lane_change_angle_rad))
+        if cos_angle <= 1e-6 or sin_angle <= 1e-6:
+            return []
+
+        side_sign = 1.0 if side == 'left' else -1.0
+        shift_heading = self.normalize_angle(entry_yaw + side_sign * lane_change_angle_rad)
+        lateral_distance = self.detour_lateral_distance_m * lateral_scale
+        pass_distance = (remaining_distance + self.front_obstacle_distance + 0.12) * pass_scale
+        diagonal_distance = max(
+            lateral_distance / sin_angle,
+            pass_distance / cos_angle,
+        )
+        detour_speed = max(0.06, self.corridor_linear_speed * speed_scale)
+
+        return [
+            {
+                'type': 'turn',
+                'angle_deg': side_sign * self.detour_lane_change_angle_deg,
+                'description': f'detour_{side}_corner_cut_turn_out',
+                'force_start_yaw': entry_yaw,
+                'force_target_yaw': shift_heading,
+                'heading_tolerance_rad': self.detour_turn_heading_tolerance,
+                'turn_linear_speed': self.detour_turn_linear_speed,
+            },
+            {
+                'type': 'move',
+                'distance_m': diagonal_distance,
+                'speed': detour_speed,
+                'description': f'detour_{side}_corner_cut_move',
+                'allow_detour': False,
+                'is_detour': True,
+                'force_segment_heading': shift_heading,
+            },
+            {
+                'type': 'pause',
+                'duration': self.detour_realign_pause_sec,
+                'description': f'detour_{side}_corner_cut_settle',
+            },
+            {
+                'type': 'turn',
+                'angle_deg': math.degrees(self.angle_error(corner_exit_yaw, shift_heading)),
+                'description': f'detour_{side}_corner_cut_align_exit',
+                'force_start_yaw': shift_heading,
+                'force_target_yaw': corner_exit_yaw,
+                'heading_tolerance_rad': self.detour_turn_heading_tolerance,
+                'turn_linear_speed': self.detour_turn_linear_speed,
+            },
+        ]
+
+    def build_segments_after_corner_cut(self, corner_exit_yaw):
+        following_segments = [dict(segment) for segment in self.plan[self.plan_index + 2:]]
+        if not following_segments:
+            return []
+
+        first_segment = following_segments[0]
+        if first_segment.get('type') == 'move':
+            first_segment['force_segment_heading'] = corner_exit_yaw
+        elif first_segment.get('type') == 'turn':
+            first_segment['force_start_yaw'] = corner_exit_yaw
+            first_segment['force_target_yaw'] = self.normalize_angle(
+                corner_exit_yaw + math.radians(float(first_segment.get('angle_deg', 0.0)))
+            )
+        return following_segments
+
+    def replace_current_segment_with_detour(self, detour_segments, entry_yaw, side, message, replace_count=1):
+        if not detour_segments:
+            return False
+
+        self.detour_lock_depth += 1
+        self.detour_detection_locked = True
+        self.detour_resume_yaw = self.normalize_angle(entry_yaw)
+        self.detour_front_confirm_count = 0
+        self.detour_cooldown_until = self.get_clock().now().nanoseconds / 1e9 + self.detour_cooldown_sec
+        self.log_detour(
+            f'注入，side={self.detour_side_text(side)}，entry_yaw={self.format_yaw_deg(entry_yaw)}deg，'
+            f'segments={len(detour_segments)}'
+        )
+        self.plan = self.plan[:self.plan_index] + detour_segments + self.plan[self.plan_index + replace_count:]
+        self.publish_feedback(message)
+        self.start_segment(self.plan_index)
+        return True
+
     def maybe_inject_detour(self):
-        if self.detour_detection_locked:
+        if self.current_segment is None:
+            self.detour_front_confirm_count = 0
+            return False
+        if self.detour_detection_locked and not self.is_detour_segment(self.current_segment):
+            self.detour_front_confirm_count = 0
+            return False
+        if (
+            not self.is_detour_segment(self.current_segment)
+            and not bool(self.current_segment.get('allow_detour', True))
+        ):
             self.detour_front_confirm_count = 0
             return False
 
-        if not self.current_segment_allows_detour():
+        if not self.obstacle_is_active():
             self.detour_front_confirm_count = 0
             return False
 
-        if not math.isfinite(self.front_obstacle_distance) or self.front_obstacle_distance > self.detour_obstacle_distance:
+        segment_type = self.current_segment.get('type')
+        if segment_type not in ('move', 'turn'):
             self.detour_front_confirm_count = 0
             return False
 
-        if self.segment_heading is not None and self.current_yaw is not None:
+        if segment_type == 'move' and self.segment_heading is not None and self.current_yaw is not None:
             heading_error = self.angle_error(self.segment_heading, self.current_yaw)
             if abs(heading_error) > self.detour_heading_gate_rad:
                 self.detour_front_confirm_count = 0
@@ -567,50 +869,214 @@ class DirectInertialTester(Stage2InertialNavigator):
         if self.detour_front_confirm_count < self.detour_confirm_required:
             return False
 
-        side = self.select_detour_side()
-        if side is None:
-            self.log_detour(
-                f'等待，front={self.format_distance(self.front_obstacle_distance)}m，'
-                f'left={self.format_distance(self.left_clearance_distance)}m，'
-                f'right={self.format_distance(self.right_clearance_distance)}m，'
-                f'min_clear={self.detour_min_side_clearance:.2f}m，'
-                '未找到可安全绕行侧'
-            )
-            self.publish_state('detour_waiting')
-            self.cmd_pub.publish(self.create_twist())
-            return True
-
-        progress = self.projected_distance()
-        target_distance = float(self.current_segment['distance_m'])
-        remaining_distance = max(0.0, target_distance - progress)
-        if remaining_distance <= self.distance_tolerance:
+        safe_side = self.select_detour_side()
+        side = safe_side
+        if segment_type == 'move' and self.segment_heading is not None:
+            entry_yaw = self.segment_heading
+        else:
+            entry_yaw = self.current_yaw if self.current_yaw is not None else self.segment_start_yaw
+        if entry_yaw is None:
             self.detour_front_confirm_count = 0
             return False
 
-        forward_distance = min(self.detour_forward_distance_m, remaining_distance)
-        resume_distance = max(0.0, remaining_distance - forward_distance)
-        detour_segments = self.build_detour_segments(side, forward_distance, resume_distance)
-        entry_yaw = self.segment_heading if self.segment_heading is not None else self.segment_start_yaw
-        self.detour_detection_locked = True
-        self.detour_resume_yaw = self.normalize_angle(entry_yaw) if entry_yaw is not None else None
-        self.log_detour(
-            f'触发，front={self.format_distance(self.front_obstacle_distance)}m，'
-            f'left={self.format_distance(self.left_clearance_distance)}m，'
-            f'right={self.format_distance(self.right_clearance_distance)}m，'
-            f'选侧={self.detour_side_text(side)}，'
-            f'entry_yaw={self.format_yaw_deg(entry_yaw)}deg，'
-            f'progress={progress:.2f}/{target_distance:.2f}m，'
-            f'forward={forward_distance:.2f}m，resume={resume_distance:.2f}m，'
-            f'锁定检测直到回到 {self.format_yaw_deg(self.detour_resume_yaw)}deg'
+        if segment_type == 'move':
+            progress = self.projected_distance()
+            target_distance = float(self.current_segment.get('distance_m', 0.0))
+            remaining_distance = max(0.0, target_distance - progress)
+            if remaining_distance <= self.distance_tolerance:
+                self.detour_front_confirm_count = 0
+                return False
+
+            next_segment = self.plan[self.plan_index + 1] if self.plan_index + 1 < len(self.plan) else None
+            near_turn_boundary = (
+                next_segment is not None
+                and next_segment.get('type') == 'turn'
+                and remaining_distance <= max(self.detour_forward_distance_m, self.detour_lateral_distance_m * 1.5)
+            )
+            if near_turn_boundary:
+                guided_side = self.resolve_guided_detour_side(
+                    self.side_from_turn_angle(float(next_segment.get('angle_deg', 0.0)))
+                )
+                degraded_corner = guided_side is None
+                if degraded_corner:
+                    side, lateral_scale, pass_scale, speed_scale = self.degraded_detour_config(
+                        self.side_from_turn_angle(float(next_segment.get('angle_deg', 0.0)))
+                    )
+                else:
+                    side = guided_side
+                    lateral_scale, pass_scale, speed_scale = 1.0, 1.0, 1.0
+                corner_entry_yaw = self.current_yaw if self.current_yaw is not None else entry_yaw
+                corner_exit_yaw = self.normalize_angle(
+                    corner_entry_yaw + math.radians(float(next_segment.get('angle_deg', 0.0)))
+                )
+                corner_cut_segments = self.build_corner_cut_detour_segments(
+                    side,
+                    corner_entry_yaw,
+                    corner_exit_yaw,
+                    remaining_distance,
+                    lateral_scale=lateral_scale,
+                    speed_scale=speed_scale,
+                    pass_scale=pass_scale,
+                )
+                corner_cut_segments.extend(self.build_segments_after_corner_cut(corner_exit_yaw))
+                return self.replace_current_segment_with_detour(
+                    corner_cut_segments,
+                    corner_entry_yaw,
+                    side,
+                    (
+                        f'拐角附近检测到障碍，按转弯方向切换为{self.detour_side_text(side)}斜切绕障，绕过后直接接入转弯后路线'
+                        if not degraded_corner else
+                        f'拐角附近两侧空间都偏小，改为{self.detour_side_text(side)}低速斜切强制通过，直接接入转弯后路线'
+                    ),
+                    replace_count=2,
+                )
+
+            if safe_side is not None:
+                forward_distance = min(self.detour_forward_distance_m, remaining_distance)
+                resume_distance = max(0.0, remaining_distance - forward_distance)
+                fitted_segments = self.build_detour_segments(side, forward_distance, resume_distance)
+                if fitted_segments:
+                    return self.replace_current_segment_with_detour(
+                        fitted_segments,
+                        entry_yaw,
+                        side,
+                        f'检测到前方障碍，切换为{self.detour_side_text(side)}梯形避障，完成回切后再恢复原直行线路',
+                    )
+
+            degraded_move = side is None
+            if degraded_move:
+                side, lateral_scale, pass_scale, speed_scale = self.degraded_detour_config()
+            else:
+                lateral_scale, pass_scale, speed_scale = 1.0, 1.0, 1.0
+
+            resume_segments = self.build_resume_segments_for_current_segment(entry_yaw)
+            contextual_segments = self.build_contextual_detour_segments(
+                side,
+                entry_yaw,
+                max(self.detour_forward_distance_m, self.front_obstacle_distance + 0.12) * pass_scale,
+                resume_segments,
+                lateral_scale=lateral_scale,
+                speed_scale=speed_scale,
+            )
+            return self.replace_current_segment_with_detour(
+                contextual_segments,
+                entry_yaw,
+                side,
+                (
+                    f'检测到前方障碍，切换为{self.detour_side_text(side)}局部绕障，绕过后继续当前直行段'
+                    if not degraded_move else
+                    f'前方障碍两侧空间都偏小，改为{self.detour_side_text(side)}低速局部强制通过，绕过后继续当前直行段'
+                ),
+            )
+
+        guided_side = self.resolve_guided_detour_side(
+            self.side_from_turn_angle(float(self.current_segment.get('angle_deg', 0.0)))
         )
-        self.plan = self.plan[:self.plan_index] + detour_segments + self.plan[self.plan_index + 1:]
-        self.detour_cooldown_until = self.get_clock().now().nanoseconds / 1e9 + self.detour_cooldown_sec
-        self.detour_front_confirm_count = 0
-        self.publish_feedback(
-            f'检测到前方障碍，选择更通畅的{self.detour_side_text(side)}避障，随后回归原线路并回到避障前yaw角'
+        degraded_turn = guided_side is None
+        if degraded_turn:
+            side, lateral_scale, pass_scale, speed_scale = self.degraded_detour_config(
+                self.side_from_turn_angle(float(self.current_segment.get('angle_deg', 0.0)))
+            )
+        else:
+            side = guided_side
+            lateral_scale, pass_scale, speed_scale = 1.0, 1.0, 1.0
+        turn_entry_yaw = self.current_yaw if self.current_yaw is not None else entry_yaw
+        resume_segments = self.build_resume_segments_for_current_segment(entry_yaw)
+        contextual_segments = self.build_contextual_detour_segments(
+            side,
+            turn_entry_yaw,
+            max(self.detour_forward_distance_m, self.front_obstacle_distance + 0.12) * pass_scale,
+            resume_segments,
+            lateral_scale=lateral_scale,
+            speed_scale=speed_scale,
         )
-        self.start_segment(self.plan_index)
-        return True
+        return self.replace_current_segment_with_detour(
+            contextual_segments,
+            turn_entry_yaw,
+            side,
+            (
+                f'转弯过程中检测到前方障碍，按转弯方向切换为{self.detour_side_text(side)}局部绕障，绕过后恢复剩余转角'
+                if not degraded_turn else
+                f'转弯过程中两侧空间都偏小，改为{self.detour_side_text(side)}低速强制通过，绕过后恢复剩余转角'
+            ),
+        )
+
+    def maybe_run_global_obstacle_avoidance(self):
+        if self.current_segment is None:
+            return False
+
+        if self.current_segment.get('type') != 'pause':
+            return False
+
+        if self.obstacle_is_active():
+            side = self.select_detour_side()
+            degraded_pause = side is None
+            if degraded_pause:
+                side, lateral_scale, pass_scale, speed_scale = self.degraded_detour_config()
+            else:
+                lateral_scale, pass_scale, speed_scale = 1.0, 1.0, 1.0
+            entry_yaw = self.current_yaw if self.current_yaw is not None else self.segment_start_yaw
+            if entry_yaw is None:
+                return False
+            resume_segments = self.build_resume_segments_for_current_segment(entry_yaw)
+            contextual_segments = self.build_contextual_detour_segments(
+                side,
+                entry_yaw,
+                max(self.detour_forward_distance_m, self.front_obstacle_distance + 0.12) * pass_scale,
+                resume_segments,
+                lateral_scale=lateral_scale,
+                speed_scale=speed_scale,
+            )
+            return self.replace_current_segment_with_detour(
+                contextual_segments,
+                entry_yaw,
+                side,
+                (
+                    f'暂停阶段前方有障碍，切换为{self.detour_side_text(side)}局部绕障，绕过后恢复当前等待段'
+                    if not degraded_pause else
+                    f'暂停阶段两侧空间都偏小，改为{self.detour_side_text(side)}低速强制通过，绕过后恢复当前等待段'
+                ),
+            )
+
+        return False
+
+    def control_loop(self):
+        if self.corridor_path_active:
+            self.run_corridor_path_stage()
+            return
+
+        if not self.mission_active or self.current_segment is None:
+            if not self.mission_active:
+                self.cmd_pub.publish(self.create_twist())
+            return
+
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        if (
+            self.segment_started_at is not None
+            and now_sec - self.segment_started_at > self.segment_timeout
+        ):
+            self.publish_feedback(f'段超时，强制切换: {self.current_segment.get("description", "unknown")}')
+            self.start_segment(self.plan_index + 1)
+            return
+
+        if self.maybe_run_global_obstacle_avoidance():
+            return
+
+        if self.maybe_inject_detour():
+            return
+
+        segment_type = self.current_segment['type']
+        if segment_type == 'turn':
+            self.run_turn_segment()
+            return
+        if segment_type == 'move':
+            self.run_move_segment()
+            return
+        if segment_type == 'pause':
+            self.run_pause_segment(now_sec)
+            return
+
+        self.start_segment(self.plan_index + 1)
 
     def build_detour_segments(self, side, forward_distance, resume_distance):
         detour_entry_yaw = self.segment_heading if self.segment_heading is not None else self.segment_start_yaw
@@ -624,21 +1090,35 @@ class DirectInertialTester(Stage2InertialNavigator):
         return_heading = self.normalize_angle(detour_entry_yaw - side_sign * lane_change_angle_rad)
 
         total_remaining_distance = max(0.0, forward_distance + resume_distance)
+        if abs(math.sin(lane_change_angle_rad)) <= 1e-6 or abs(math.cos(lane_change_angle_rad)) <= 1e-6:
+            self.log_detour(
+                f'梯形避障角度无效，angle={self.detour_lane_change_angle_deg:.1f}deg'
+            )
+            return []
+
         max_lateral_distance = (total_remaining_distance * math.tan(lane_change_angle_rad)) / 2.0
         effective_lateral_distance = min(self.detour_lateral_distance_m, max(0.0, max_lateral_distance))
 
         if effective_lateral_distance <= self.distance_tolerance:
             self.log_detour(
-                f'剩余距离不足以执行绕障，remaining={total_remaining_distance:.2f}m，'
+                f'剩余距离不足以执行梯形避障，remaining={total_remaining_distance:.2f}m，'
                 f'angle={self.detour_lane_change_angle_deg:.0f}deg'
             )
             return []
 
         lane_change_move_distance = effective_lateral_distance / math.sin(lane_change_angle_rad)
-        lane_change_forward_progress = lane_change_move_distance * math.cos(lane_change_angle_rad) * 2.0
-        remaining_after_lane_change = max(0.0, total_remaining_distance - lane_change_forward_progress)
-        pass_distance = min(forward_distance, remaining_after_lane_change)
-        resume_distance_after_detour = max(0.0, remaining_after_lane_change - pass_distance)
+        lane_change_forward_progress = lane_change_move_distance * math.cos(lane_change_angle_rad)
+        minimum_required_progress = lane_change_forward_progress * 2.0
+        if total_remaining_distance <= minimum_required_progress + self.distance_tolerance:
+            self.log_detour(
+                f'剩余前进量不足以完成完整梯形回切，remaining={total_remaining_distance:.2f}m，'
+                f'min_required={minimum_required_progress:.2f}m'
+            )
+            return []
+
+        max_top_distance = max(0.0, total_remaining_distance - minimum_required_progress)
+        pass_distance = min(forward_distance, max_top_distance)
+        resume_distance_after_detour = max(0.0, total_remaining_distance - minimum_required_progress - pass_distance)
 
         detour_segments = [
             {
@@ -717,10 +1197,10 @@ class DirectInertialTester(Stage2InertialNavigator):
         ]
 
         if pass_distance <= self.distance_tolerance:
-            detour_segments = [
-                segment for segment in detour_segments
-                if segment.get('description') != f'detour_{side}_pass_obstacle'
-            ]
+            self.log_detour(
+                f'顶部平移长度不足，remaining={total_remaining_distance:.2f}m，放弃梯形避障'
+            )
+            return []
 
         if resume_distance_after_detour > self.distance_tolerance:
             detour_segments.append({
@@ -733,11 +1213,11 @@ class DirectInertialTester(Stage2InertialNavigator):
             })
 
         self.log_detour(
-            f'绕障几何，angle={self.detour_lane_change_angle_deg:.0f}deg，'
+            f'梯形几何，angle={self.detour_lane_change_angle_deg:.0f}deg，'
             f'lateral={effective_lateral_distance:.2f}m，'
-            f'lane_change_move={lane_change_move_distance:.2f}m，'
-            f'forward_after_lane_change={remaining_after_lane_change:.2f}m，'
-            f'pass={pass_distance:.2f}m，resume={resume_distance_after_detour:.2f}m'
+            f'shift_move={lane_change_move_distance:.2f}m，'
+            f'shift_progress={lane_change_forward_progress:.2f}m，'
+            f'top={pass_distance:.2f}m，resume={resume_distance_after_detour:.2f}m'
         )
 
         next_segment_index = self.plan_index + 1
@@ -798,18 +1278,6 @@ class DirectInertialTester(Stage2InertialNavigator):
                     f'直行到位，准备切换到下一段'
                 )
 
-        if self.run_stage1_style_obstacle_avoidance():
-            return
-
-        if (
-            self.current_segment_allows_stage1_avoidance()
-            and math.isfinite(self.front_obstacle_distance)
-            and self.front_obstacle_distance <= self.detour_obstacle_distance
-        ):
-            self.begin_stage1_avoidance(self.front_obstacle_angle_deg)
-            self.run_stage1_style_obstacle_avoidance()
-            return
-
         if self.current_position is None or self.segment_heading is None:
             self.cmd_pub.publish(self.create_twist())
             return
@@ -846,13 +1314,23 @@ class DirectInertialTester(Stage2InertialNavigator):
                     f'target_yaw={self.format_yaw_deg(self.segment_target_yaw)}deg，'
                     f'error={math.degrees(error):.2f}deg'
                 )
-                if description.endswith('_resume_align'):
-                    self.detour_detection_locked = False
-                    self.log_detour(
-                        f'已回到避障前yaw，恢复障碍检测，resume_yaw={self.format_yaw_deg(self.detour_resume_yaw)}deg，'
-                        f'current_yaw={self.format_yaw_deg(self.current_yaw)}deg'
-                    )
-                    self.detour_resume_yaw = None
+                if description.endswith('_resume_align') or description.endswith('_align_exit'):
+                    self.detour_lock_depth = max(0, self.detour_lock_depth - 1)
+                    self.detour_detection_locked = self.detour_lock_depth > 0
+                    if description.endswith('_align_exit'):
+                        self.log_detour(
+                            f'已接入转弯后路线，lock_depth={self.detour_lock_depth}，'
+                            f'current_yaw={self.format_yaw_deg(self.current_yaw)}deg，'
+                            f'target_yaw={self.format_yaw_deg(self.segment_target_yaw)}deg'
+                        )
+                    else:
+                        self.log_detour(
+                            f'已回到避障前yaw，lock_depth={self.detour_lock_depth}，'
+                            f'resume_yaw={self.format_yaw_deg(self.detour_resume_yaw)}deg，'
+                            f'current_yaw={self.format_yaw_deg(self.current_yaw)}deg'
+                        )
+                    if not self.detour_detection_locked:
+                        self.detour_resume_yaw = None
             self.publish_feedback(
                 f'{self.test_feedback_prefix}当前位置: '
                 f'{self.rectangle_segment_label(self.current_segment or {})}，'
