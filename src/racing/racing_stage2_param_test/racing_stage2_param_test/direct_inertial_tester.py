@@ -52,6 +52,9 @@ class DirectInertialTester(Stage2InertialNavigator):
         # Keep trapezoid geometry stable: detour turns should not creep forward.
         self.detour_turn_linear_speed = 0.0
         self.detour_lane_change_angle_deg = 60.0
+        self.detour_corner_extra_lateral_m = 0.10
+        self.detour_corner_extra_forward_m = 0.28
+        self.detour_corner_obstacle_depth_m = 0.16
         self.active_turn_heading_tolerance = self.heading_tolerance
         self.last_detour_turn_log_time = 0.0
         self.detour_detection_locked = False
@@ -757,13 +760,30 @@ class DirectInertialTester(Stage2InertialNavigator):
 
         side_sign = 1.0 if side == 'left' else -1.0
         shift_heading = self.normalize_angle(entry_yaw + side_sign * lane_change_angle_rad)
-        lateral_distance = self.detour_lateral_distance_m * lateral_scale
-        pass_distance = (remaining_distance + self.front_obstacle_distance + 0.12) * pass_scale
+        lateral_distance = max(
+            self.detour_lateral_distance_m * lateral_scale,
+            self.detour_lateral_distance_m + self.detour_corner_extra_lateral_m,
+        )
+        obstacle_depth = max(self.front_obstacle_distance, self.detour_corner_obstacle_depth_m)
+        pass_distance = (
+            remaining_distance
+            + obstacle_depth
+            + self.detour_corner_extra_forward_m
+        ) * pass_scale
         diagonal_distance = max(
             lateral_distance / sin_angle,
             pass_distance / cos_angle,
         )
         detour_speed = max(0.06, self.corridor_linear_speed * speed_scale)
+        self.log_detour(
+            f'拐角斜切几何，remaining={remaining_distance:.2f}m，'
+            f'front={self.format_distance(self.front_obstacle_distance)}m，'
+            f'lateral={lateral_distance:.2f}m，'
+            f'forward_target={pass_distance:.2f}m，'
+            f'diagonal={diagonal_distance:.2f}m，'
+            f'entry_yaw={self.format_yaw_deg(entry_yaw)}deg，'
+            f'exit_yaw={self.format_yaw_deg(corner_exit_yaw)}deg'
+        )
 
         return [
             {
@@ -905,9 +925,9 @@ class DirectInertialTester(Stage2InertialNavigator):
                 else:
                     side = guided_side
                     lateral_scale, pass_scale, speed_scale = 1.0, 1.0, 1.0
-                corner_entry_yaw = self.current_yaw if self.current_yaw is not None else entry_yaw
+                corner_entry_yaw = entry_yaw
                 corner_exit_yaw = self.normalize_angle(
-                    corner_entry_yaw + math.radians(float(next_segment.get('angle_deg', 0.0)))
+                    entry_yaw + math.radians(float(next_segment.get('angle_deg', 0.0)))
                 )
                 corner_cut_segments = self.build_corner_cut_detour_segments(
                     side,
