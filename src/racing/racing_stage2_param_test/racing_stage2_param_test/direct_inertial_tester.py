@@ -19,7 +19,8 @@ from .direct_inertial_tester_cmd_safety import DirectInertialTesterCmdSafetyMixi
 from .direct_inertial_tester_debug_log import DirectInertialTesterDebugLogMixin
 from .direct_inertial_tester_navigation import DirectInertialTesterNavigationMixin
 from .direct_inertial_tester_obstacle import DirectInertialTesterObstacleMixin
-from .ring_track import nominal_move_heading, progress_on_driven_segment_m, segment_endpoints_nominal
+from .ring_track import nominal_move_heading, segment_endpoints_nominal
+from .segment_frame import ChordPose, chord_pose_at_world, world_from_chord
 from .test_log_paths import debug_log_path as default_debug_log_path
 from .vehicle_param_sync import sync_stage2_runtime_parameters, sync_tester_runtime_parameters
 
@@ -395,8 +396,27 @@ class DirectInertialTester(
         driven_progress = t * math.sqrt(length_sq)
         return self.plan_progress_from_driven_progress_m(driven_progress, name)
 
+    def _ring_track_geometry_kwargs(self):
+        return {
+            'direction': getattr(self, 'test_direction', 'clockwise'),
+            'first_leg_m': self.rectangle_first_leg_m,
+            'side_leg_m': self.rectangle_side_leg_m,
+            'top_leg_m': self.rectangle_top_leg_m,
+        }
+
+    def chord_pose_on_segment(self, world_xy=None, segment_name=None):
+        """Task position on driven chord: (along_m, lateral_m). Not plan progress."""
+        if world_xy is None:
+            if self.current_position is None:
+                return None
+            world_xy = self.current_position
+        name = segment_name or (self.current_segment or {}).get('description', '')
+        if not name:
+            return None
+        return chord_pose_at_world(world_xy, name, **self._ring_track_geometry_kwargs())
+
     def plan_progress_from_driven_progress_m(self, driven_progress_m, segment_name=None):
-        """实测弦长与计划段长不一致时，把沿程里程缩放到计划 distance_m 坐标系。"""
+        """Chord along_m → plan distance_m frame (legacy scalar API)."""
         if driven_progress_m is None:
             return None
         segment = self.current_segment or {}
@@ -404,67 +424,38 @@ class DirectInertialTester(
         plan_len = float(segment.get('distance_m', 0.0))
         from racing_stage2_param_test.ring_track import driven_segment_length_m
 
-        driven_len = driven_segment_length_m(
-            name,
-            getattr(self, 'test_direction', 'clockwise'),
-            self.rectangle_first_leg_m,
-            self.rectangle_side_leg_m,
-            self.rectangle_top_leg_m,
-        )
+        driven_len = driven_segment_length_m(name, **self._ring_track_geometry_kwargs())
         if driven_len and plan_len > 1e-3 and driven_len > 1e-3:
             return float(driven_progress_m) * (plan_len / driven_len)
         return float(driven_progress_m)
 
+    def plan_progress_from_chord_pose(self, pose: ChordPose, entry_along_m=None):
+        """Chord pose → plan progress (uses segment entry anchor when set)."""
+        segment = self.current_segment or {}
+        plan_len = float(segment.get('distance_m', 0.0))
+        if entry_along_m is None:
+            entry_along_m = self.move_segment_entry_along_m(pose.segment_name) or 0.0
+        return pose.plan_progress_m(plan_len, entry_along_m)
+
     def move_segment_entry_along_m(self, segment_name=None):
+        """Chord-frame entry anchor (m along driven line) after turn/handoff."""
         name = segment_name or (self.current_segment or {}).get('description', '')
         if not name:
             return None
         return self._move_progress_along_entry_by_segment.get(name)
 
     def set_move_progress_entry_from_pose(self, segment_name=None):
-        """转弯/避障 handoff 后：本段沿程里程从当前在弦线上的投影算起。"""
-        name = segment_name or (self.current_segment or {}).get('description', '')
-        if not name or self.current_position is None:
+        """After turn/handoff: next segment plan progress starts at current chord along."""
+        pose = self.chord_pose_on_segment(segment_name=segment_name)
+        if pose is None:
             return
-        along = progress_on_driven_segment_m(
-            self.current_position,
-            name,
-            getattr(self, 'test_direction', 'clockwise'),
-            self.rectangle_first_leg_m,
-            self.rectangle_side_leg_m,
-            self.rectangle_top_leg_m,
-        )
-        if along is not None:
-            self._move_progress_along_entry_by_segment[name] = float(along)
-
-    def _driven_plan_progress_m(self, segment_name=None):
-        if self.current_position is None:
-            return None
-        segment = self.current_segment or {}
-        if segment.get('type') != 'move':
-            return None
-        name = segment_name or segment.get('description', '')
-        if not name:
-            return None
-        along = progress_on_driven_segment_m(
-            self.current_position,
-            name,
-            getattr(self, 'test_direction', 'clockwise'),
-            self.rectangle_first_leg_m,
-            self.rectangle_side_leg_m,
-            self.rectangle_top_leg_m,
-        )
-        if along is None:
-            return None
-        entry = self.move_segment_entry_along_m(name)
-        if entry is not None:
-            along = max(0.0, float(along) - float(entry))
-        return self.plan_progress_from_driven_progress_m(along, name)
+        self._move_progress_along_entry_by_segment[pose.segment_name] = pose.along_m
 
     def projected_distance(self):
-        progress = self._driven_plan_progress_m()
-        if progress is not None:
-            return progress
+        """Plan-frame segment progress (chord along − entry, scaled to distance_m)."""
+        pose = self.chord_pose_on_segment()
+        if pose is not None:
+            return self.plan_progress_from_chord_pose(pose)
         progress = self.nominal_segment_progress_m()
         if progress is not None:
             return progress

@@ -8,14 +8,13 @@ Short segments or insufficient room to rejoin → direct cut, then corner_align 
 import math
 
 from .ring_track import (
-    driven_segment_endpoints,
     driven_segment_length_m,
-    point_on_driven_segment,
     preferred_bypass_side_for_segment,
     progress_on_driven_segment_m,
     segment_end_goal_world,
     signed_cross_track_on_driven_segment,
 )
+from .segment_frame import world_from_chord
 
 
 class DirectInertialTesterAvoidanceMixin:
@@ -74,20 +73,12 @@ class DirectInertialTesterAvoidanceMixin:
 
     # ------------------------------------------------------------------ geometry
     def segment_lateral_offset_m(self):
+        """Chord-frame lateral (signed, left positive). Same as chord_pose.lateral_m."""
+        pose = self.chord_pose_on_segment()
+        if pose is not None:
+            return pose.lateral_m
         if self.current_position is None:
             return 0.0
-        segment_name = (self.current_segment or {}).get('description', '')
-        if segment_name:
-            cross = signed_cross_track_on_driven_segment(
-                self.current_position,
-                segment_name,
-                getattr(self, 'test_direction', 'clockwise'),
-                self.rectangle_first_leg_m,
-                self.rectangle_side_leg_m,
-                self.rectangle_top_leg_m,
-            )
-            if cross is not None:
-                return cross
         if self.segment_start_pose is None or self.segment_heading is None:
             return 0.0
         dx = self.current_position[0] - self.segment_start_pose[0]
@@ -293,17 +284,15 @@ class DirectInertialTesterAvoidanceMixin:
         return None
 
     def driven_progress_to_world(self, along_m, lateral_m=0.0):
+        """Chord (along, lateral) → world XY for goal_direct waypoints."""
         segment_name = (self.current_segment or {}).get('description', '')
         if not segment_name:
             return None
-        return point_on_driven_segment(
-            segment_name,
+        return world_from_chord(
             along_m,
             lateral_m,
-            getattr(self, 'test_direction', 'clockwise'),
-            self.rectangle_first_leg_m,
-            self.rectangle_side_leg_m,
-            self.rectangle_top_leg_m,
+            segment_name,
+            **self._ring_track_geometry_kwargs(),
         )
 
     def plan_avoidance_goals(self):
@@ -481,26 +470,11 @@ class DirectInertialTesterAvoidanceMixin:
         )
 
     def direct_cut_progress_on_chord_m(self):
-        """沿实测弦线的里程（与 handoff / corner_align 一致，不受弯后锚点干扰）。"""
-        seg_name = (self.current_segment or {}).get('description', '')
-        if not seg_name or self.current_position is None:
+        """Chord along_m / length (handoff & corner_align; ignores plan entry anchor)."""
+        pose = self.chord_pose_on_segment()
+        if pose is None:
             return None, None
-        along = progress_on_driven_segment_m(
-            self.current_position,
-            seg_name,
-            getattr(self, 'test_direction', 'clockwise'),
-            self.rectangle_first_leg_m,
-            self.rectangle_side_leg_m,
-            self.rectangle_top_leg_m,
-        )
-        driven_len = driven_segment_length_m(
-            seg_name,
-            getattr(self, 'test_direction', 'clockwise'),
-            self.rectangle_first_leg_m,
-            self.rectangle_side_leg_m,
-            self.rectangle_top_leg_m,
-        )
-        return along, driven_len
+        return pose.along_m, pose.driven_length_m
 
     def prepare_direct_cut_corner_handoff(self):
         """direct_cut 进拐角：记下需收束的弦线，下一段 move 里程从当前投影零点起算。"""
