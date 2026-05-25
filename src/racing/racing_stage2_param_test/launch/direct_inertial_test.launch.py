@@ -32,6 +32,11 @@ def generate_launch_description():
     rgb_fps_arg = DeclareLaunchArgument('rgb_fps', default_value='15')
     resolution_mode_index_arg = DeclareLaunchArgument('resolution_mode_index', default_value='2')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
+    detour_detect_distance_arg = DeclareLaunchArgument('detour_obstacle_detect_distance', default_value='1.00')
+    detour_clear_distance_arg = DeclareLaunchArgument('detour_obstacle_clear_distance', default_value='0.65')
+    avoid_watch_distance_arg = DeclareLaunchArgument('avoid_watch_distance_m', default_value='0.45')
+    avoid_commit_distance_arg = DeclareLaunchArgument('avoid_commit_distance_m', default_value='0.30')
+    avoid_corner_prefer_inside_arg = DeclareLaunchArgument('avoid_corner_prefer_inside', default_value='true')
 
     support_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(support_launch_path),
@@ -61,6 +66,11 @@ def generate_launch_description():
                 'rectangle_first_leg_m': LaunchConfiguration('rectangle_first_leg_m'),
                 'rectangle_side_leg_m': LaunchConfiguration('rectangle_side_leg_m'),
                 'rectangle_top_leg_m': LaunchConfiguration('rectangle_top_leg_m'),
+                'detour_obstacle_detect_distance': LaunchConfiguration('detour_obstacle_detect_distance'),
+                'detour_obstacle_clear_distance': LaunchConfiguration('detour_obstacle_clear_distance'),
+                'avoid_watch_distance_m': LaunchConfiguration('avoid_watch_distance_m'),
+                'avoid_commit_distance_m': LaunchConfiguration('avoid_commit_distance_m'),
+                'avoid_corner_prefer_inside': LaunchConfiguration('avoid_corner_prefer_inside'),
             },
         ],
         output='screen',
@@ -96,6 +106,11 @@ def generate_launch_description():
         rgb_fps_arg,
         resolution_mode_index_arg,
         carto_slam_arg,
+        detour_detect_distance_arg,
+        detour_clear_distance_arg,
+        avoid_watch_distance_arg,
+        avoid_commit_distance_arg,
+        avoid_corner_prefer_inside_arg,
         support_stack,
         cmd_relay_node,
         tester_node,
