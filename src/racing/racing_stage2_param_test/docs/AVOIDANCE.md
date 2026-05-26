@@ -17,7 +17,7 @@
 
 | 相位 | 目标 | 控制 |
 |------|------|------|
-| bypass | 障碍沿程 + 侧向 offset | PP 朝路点 |
+| bypass | 障碍沿程 + 侧向 offset | PP 朝路点；**段首/弯后 + 障碍≤50%** → `ENTRY_DIRECT` 直朝 bypass，极近则 skip 到 pass |
 | pass | 障碍沿程 + pass_margin | PP；横向衰减 |
 | rejoin | 长段：沿程略前 | PP |
 | exit | 段末 **E** 附近（`segment_end_goal_world`） | 短边 **贴 plan PD** |

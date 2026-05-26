@@ -8,6 +8,7 @@ import math
 
 from . import world_segment
 from .ring_track import (
+    SCENARIO_SPECS,
     apply_turn_arc_world,
     preferred_bypass_side_for_segment,
     segment_end_goal_world,
@@ -19,6 +20,9 @@ class DirectInertialTesterAvoidanceMixin:
     """Unified goal_direct detour for straight move segments."""
 
     GOAL_PHASES = ('bypass', 'pass', 'rejoin', 'exit', 'next_leg')
+    ENTRY_DIRECT_PROGRESS_WINDOW_M = 0.24
+    ENTRY_DIRECT_OBS_RATIO_MAX = 0.50
+    ENTRY_DIRECT_SKIP_BYPASS_NEAREST_M = 0.16
 
     def reset_avoidance_runtime(self):
         passed_world = list(getattr(self, 'avoidance_passed_obstacles_world', []))
@@ -58,6 +62,8 @@ class DirectInertialTesterAvoidanceMixin:
         self.goal_rejoin_along_m = None
         self.need_direct_cut = False
         self.goal_direct_phase_started_at = None
+        self.avoid_entry_direct_goal = False
+        self.avoid_entry_skipped_bypass = False
 
     @property
     def avoidance_phase(self):
@@ -420,6 +426,81 @@ class DirectInertialTesterAvoidanceMixin:
         self.locked_obstacle_lost_at = None
         self.avoid_parallel_front_margin_m = self.avoid_parallel_front_margin_default_m
         self.plan_avoidance_goals()
+        self.configure_entry_direct_avoidance()
+
+    def scenario_obstacle_ratio_on_segment(self):
+        name = str(getattr(self, 'scenario_name', '') or '').strip().lower()
+        seg = (self.current_segment or {}).get('description', '')
+        if name in SCENARIO_SPECS:
+            spec_seg, ratio = SCENARIO_SPECS[name]
+            if spec_seg == seg:
+                return float(ratio)
+        return None
+
+    def move_segment_follows_corner_turn(self):
+        prev_index = int(getattr(self, 'plan_index', 0)) - 1
+        if prev_index < 0 or not hasattr(self, 'plan'):
+            return False
+        return self.plan[prev_index].get('type') == 'turn'
+
+    def move_segment_at_entry_context(self):
+        """底边首段（入环后第一段）或任意「弯后 move 段」。"""
+        seg = self.current_segment or {}
+        if seg.get('type') != 'move':
+            return False
+        if str(seg.get('description', '')) == 'rect_first_leg':
+            return True
+        return self.move_segment_follows_corner_turn()
+
+    def segment_still_at_move_entry(self):
+        progress = self.projected_distance()
+        settle = float(getattr(self, 'move_heading_settle_m', 0.0))
+        window = max(self.ENTRY_DIRECT_PROGRESS_WINDOW_M, settle + 0.10)
+        return progress <= window
+
+    def entry_direct_avoidance_applies(self):
+        """段首/转角后且障碍落在段前部（≤50% 或 along≤55% 段长）。"""
+        if not self.move_segment_at_entry_context():
+            return False
+        if not self.segment_still_at_move_entry():
+            return False
+        ratio = self.scenario_obstacle_ratio_on_segment()
+        if ratio is not None and ratio <= self.ENTRY_DIRECT_OBS_RATIO_MAX:
+            return True
+        s_obs = getattr(self, 'locked_obstacle_along_s', None)
+        seg_len = float((self.current_segment or {}).get('distance_m', 0.0))
+        if s_obs is not None and seg_len > 1e-6 and float(s_obs) <= seg_len * 0.55:
+            return True
+        return False
+
+    def configure_entry_direct_avoidance(self):
+        """不再 rolling 贴 plan：直接 bypass；已贴锥则进 pass。"""
+        self.avoid_entry_direct_goal = False
+        self.avoid_entry_skipped_bypass = False
+        if not self.entry_direct_avoidance_applies():
+            return
+        self.avoid_entry_direct_goal = True
+        nearest = self.template_blocker_distance_m()
+        nearest_val = float(nearest) if math.isfinite(nearest) else 99.0
+        if nearest_val <= self.ENTRY_DIRECT_SKIP_BYPASS_NEAREST_M:
+            seq = getattr(self, 'goal_direct_sequence', [])
+            if 'pass' in seq:
+                self.goal_direct_index = seq.index('pass')
+                self.goal_direct_phase = 'pass'
+                self.avoid_entry_skipped_bypass = True
+                self._mark_goal_direct_phase_started()
+        ratio = self.scenario_obstacle_ratio_on_segment()
+        ratio_text = f'{ratio:.2f}' if ratio is not None else 'na'
+        self.write_debug_log(
+            'DECISION',
+            (
+                f'ENTRY_DIRECT segment={self.current_segment.get("description", "?")} '
+                f'ratio={ratio_text} progress={self.projected_distance():.2f}m '
+                f'nearest={nearest_val:.2f}m direct_bypass={self.avoid_entry_direct_goal} '
+                f'skip_to_pass={self.avoid_entry_skipped_bypass} '
+                f'goal={self.format_goal_compact()}'
+            ),
+        )
 
     def obstacle_along_segment_m(self, circle):
         world = self.obstacle_center_world_xy(circle)
@@ -518,6 +599,8 @@ class DirectInertialTesterAvoidanceMixin:
     def active_avoidance_goal_xy(self):
         phase = getattr(self, 'goal_direct_phase', '')
         if phase == 'bypass':
+            if getattr(self, 'avoid_entry_direct_goal', False):
+                return getattr(self, 'goal_bypass_xy', None)
             rolling = self.rolling_bypass_goal_xy()
             if rolling is not None:
                 return rolling
@@ -1191,7 +1274,11 @@ class DirectInertialTesterAvoidanceMixin:
         s_obs = getattr(self, 'locked_obstacle_along_s', None)
         progress = self.projected_distance()
         before_abreast = s_obs is not None and progress + 0.04 < float(s_obs)
-        if phase == 'bypass' and before_abreast:
+        if (
+            phase == 'bypass'
+            and before_abreast
+            and not getattr(self, 'avoid_entry_direct_goal', False)
+        ):
             linear = min(linear, v_max * 0.48)
             nearest = self.template_blocker_distance_m()
             if math.isfinite(nearest) and nearest < 0.18:
