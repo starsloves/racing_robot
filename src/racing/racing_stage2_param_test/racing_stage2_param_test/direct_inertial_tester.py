@@ -1,5 +1,7 @@
 """Main controller for the standalone stage2 inertial parameter tester.
 
+Navigation: world odom + waypoint targets (see docs/NAVIGATION.md, world_plan_nav.py).
+
 Submodules:
 - `direct_inertial_tester_navigation.py`: MISSION vs AVOID handoff.
 - `direct_inertial_tester_avoidance.py`: goal_direct waypoint detour.
@@ -19,8 +21,14 @@ from .direct_inertial_tester_cmd_safety import DirectInertialTesterCmdSafetyMixi
 from .direct_inertial_tester_debug_log import DirectInertialTesterDebugLogMixin
 from .direct_inertial_tester_navigation import DirectInertialTesterNavigationMixin
 from .direct_inertial_tester_obstacle import DirectInertialTesterObstacleMixin
-from .ring_track import nominal_move_heading, segment_endpoints_nominal
-from .segment_frame import ChordPose, chord_pose_at_world, world_from_chord
+from .world_plan_nav import DirectInertialTesterWorldPlanMixin
+from .ring_track import RING_CHANNEL_ENTRY_YAW_RAD, nominal_mission_finish_pose, segment_endpoints_world
+from . import world_segment
+
+# Run E: 末段名义终点与世界距离一致；勿再用 0.40m 误 finish（见 STAGE2_GOAL_DIRECT_FIX_LOG §8）
+FINISH_WORLD_DIST_M = 0.15
+FINISH_SKIP_TRIM_LAT_M = 0.10
+FINISH_SKIP_TRIM_HEAD_RAD = math.radians(10.0)
 from .test_log_paths import debug_log_path as default_debug_log_path
 from .vehicle_param_sync import sync_stage2_runtime_parameters, sync_tester_runtime_parameters
 
@@ -28,6 +36,7 @@ from .vehicle_param_sync import sync_stage2_runtime_parameters, sync_tester_runt
 class DirectInertialTester(
     DirectInertialTesterNavigationMixin,
     DirectInertialTesterAvoidanceMixin,
+    DirectInertialTesterWorldPlanMixin,
     DirectInertialTesterObstacleMixin,
     DirectInertialTesterDebugLogMixin,
     DirectInertialTesterCmdSafetyMixin,
@@ -139,10 +148,10 @@ class DirectInertialTester(
         self.avoid_bypass_max_lateral_m = 0.34
         self.segment_integrated_distance_m = 0.0
         self._segment_integrated_prev_xy = None
-        self._move_progress_along_entry_by_segment = {}
-        self._pending_lateral_trim_chord = None
+        self.ring_origin_world = None
         self._corner_shortcut_move_progress_reset = False
         self.reset_avoidance_runtime()
+        self.reset_segment_world_plan()
         self._last_search_log_at = 0.0
 
         self.obstacle_circle_pub = self.create_publisher(MarkerArray, self.obstacle_circle_topic, 10)
@@ -370,96 +379,16 @@ class DirectInertialTester(
             pre_loop_plan = self.parse_post_corridor_path_plan()
         return pre_loop_plan + self.build_ring_plan()
 
-    def nominal_segment_progress_m(self, world_xy=None):
-        """Along-segment mileage: project world XY onto the nominal move chord (lateral bypass excluded)."""
-        segment = self.current_segment
-        if segment is None or segment.get('type') != 'move':
-            return None
-        if world_xy is None:
-            if self.current_position is None:
-                return None
-            world_xy = self.current_position
-        name = segment.get('description', '')
-        endpoints = self.nominal_segment_geometry()
-        if name not in endpoints:
-            return None
-        start, end = endpoints[name]
-        sx, sy = float(start[0]), float(start[1])
-        ex, ey = float(end[0]), float(end[1])
-        px, py = float(world_xy[0]), float(world_xy[1])
-        vx, vy = ex - sx, ey - sy
-        length_sq = vx * vx + vy * vy
-        if length_sq < 1e-9:
-            return 0.0
-        t = ((px - sx) * vx + (py - sy) * vy) / length_sq
-        t = max(0.0, min(1.0, t))
-        driven_progress = t * math.sqrt(length_sq)
-        return self.plan_progress_from_driven_progress_m(driven_progress, name)
-
     def _ring_track_geometry_kwargs(self):
+        origin = getattr(self, 'ring_origin_world', None) or (0.0, 0.0, RING_CHANNEL_ENTRY_YAW_RAD)
         return {
             'direction': getattr(self, 'test_direction', 'clockwise'),
             'first_leg_m': self.rectangle_first_leg_m,
             'side_leg_m': self.rectangle_side_leg_m,
             'top_leg_m': self.rectangle_top_leg_m,
+            'origin_xy': (float(origin[0]), float(origin[1])),
+            'origin_yaw': float(origin[2]),
         }
-
-    def chord_pose_on_segment(self, world_xy=None, segment_name=None):
-        """Task position on driven chord: (along_m, lateral_m). Not plan progress."""
-        if world_xy is None:
-            if self.current_position is None:
-                return None
-            world_xy = self.current_position
-        name = segment_name or (self.current_segment or {}).get('description', '')
-        if not name:
-            return None
-        return chord_pose_at_world(world_xy, name, **self._ring_track_geometry_kwargs())
-
-    def plan_progress_from_driven_progress_m(self, driven_progress_m, segment_name=None):
-        """Chord along_m → plan distance_m frame (legacy scalar API)."""
-        if driven_progress_m is None:
-            return None
-        segment = self.current_segment or {}
-        name = segment_name or segment.get('description', '')
-        plan_len = float(segment.get('distance_m', 0.0))
-        from racing_stage2_param_test.ring_track import driven_segment_length_m
-
-        driven_len = driven_segment_length_m(name, **self._ring_track_geometry_kwargs())
-        if driven_len and plan_len > 1e-3 and driven_len > 1e-3:
-            return float(driven_progress_m) * (plan_len / driven_len)
-        return float(driven_progress_m)
-
-    def plan_progress_from_chord_pose(self, pose: ChordPose, entry_along_m=None):
-        """Chord pose → plan progress (uses segment entry anchor when set)."""
-        segment = self.current_segment or {}
-        plan_len = float(segment.get('distance_m', 0.0))
-        if entry_along_m is None:
-            entry_along_m = self.move_segment_entry_along_m(pose.segment_name) or 0.0
-        return pose.plan_progress_m(plan_len, entry_along_m)
-
-    def move_segment_entry_along_m(self, segment_name=None):
-        """Chord-frame entry anchor (m along driven line) after turn/handoff."""
-        name = segment_name or (self.current_segment or {}).get('description', '')
-        if not name:
-            return None
-        return self._move_progress_along_entry_by_segment.get(name)
-
-    def set_move_progress_entry_from_pose(self, segment_name=None):
-        """After turn/handoff: next segment plan progress starts at current chord along."""
-        pose = self.chord_pose_on_segment(segment_name=segment_name)
-        if pose is None:
-            return
-        self._move_progress_along_entry_by_segment[pose.segment_name] = pose.along_m
-
-    def projected_distance(self):
-        """Plan-frame segment progress (chord along − entry, scaled to distance_m)."""
-        pose = self.chord_pose_on_segment()
-        if pose is not None:
-            return self.plan_progress_from_chord_pose(pose)
-        progress = self.nominal_segment_progress_m()
-        if progress is not None:
-            return progress
-        return super().projected_distance()
 
     def reset_segment_integrated_distance(self):
         self.segment_integrated_distance_m = 0.0
@@ -482,39 +411,30 @@ class DirectInertialTester(
                 self.segment_integrated_distance_m += step
 
     def nominal_segment_geometry(self):
-        from racing_stage2_param_test.ring_track import DRIVEN_CW_SEGMENT_ENDPOINTS
-
-        if self.test_direction == 'clockwise' and DRIVEN_CW_SEGMENT_ENDPOINTS:
-            return dict(DRIVEN_CW_SEGMENT_ENDPOINTS)
-        return segment_endpoints_nominal(
+        return segment_endpoints_world(
             self.test_direction,
             self.rectangle_first_leg_m,
             self.rectangle_side_leg_m,
             self.rectangle_top_leg_m,
+            **{
+                k: v
+                for k, v in self._ring_track_geometry_kwargs().items()
+                if k in ('origin_xy', 'origin_yaw')
+            },
         )
-
-    def anchor_move_segment_to_nominal(self):
-        """只锚定段航向；起点保留弯后实车位姿（与实车 start_segment 一致）。"""
-        segment = self.current_segment
-        if segment is None or segment.get('type') != 'move':
-            return
-        name = segment.get('description', '')
-        heading = nominal_move_heading(
-            name,
-            self.test_direction,
-            self.rectangle_first_leg_m,
-            self.rectangle_side_leg_m,
-            self.rectangle_top_leg_m,
-        )
-        if heading is None:
-            return
-        self.segment_start_yaw = self.normalize_angle(heading)
-        self.segment_heading = self.segment_start_yaw
 
     def begin_inertial_plan_after_nav(self, nav_succeeded):
         self.reset_corridor_path_state()
         self.pending_segment_start_pose = self.current_position
         self.pending_segment_start_yaw = self.current_yaw
+        if self.current_position is not None and self.current_yaw is not None:
+            self.ring_origin_world = (
+                float(self.current_position[0]),
+                float(self.current_position[1]),
+                float(self.current_yaw),
+            )
+        else:
+            self.ring_origin_world = (0.0, 0.0, float(RING_CHANNEL_ENTRY_YAW_RAD))
 
         self.plan = self.build_inertial_plan(nav_succeeded)
         if not self.plan:
@@ -523,8 +443,6 @@ class DirectInertialTester(
             return
 
         self.start_segment(0)
-        if self.current_segment and self.current_segment.get('type') == 'move':
-            self.anchor_move_segment_to_nominal()
 
     def control_now_sec(self):
         if hasattr(self, '_offline_sim_time'):
@@ -548,9 +466,7 @@ class DirectInertialTester(
                 self.move_heading_settle_m = 0.40
         if self.current_segment and self.current_segment.get('type') == 'move':
             if getattr(self, '_corner_shortcut_move_progress_reset', False):
-                self.set_move_progress_entry_from_pose()
                 self._corner_shortcut_move_progress_reset = False
-            self.anchor_move_segment_to_nominal()
 
         if self.current_segment is None or self.plan_index != index:
             return
@@ -558,7 +474,14 @@ class DirectInertialTester(
         segment = self.current_segment
         segment_type = segment.get('type')
         if segment_type == 'turn' and getattr(self, '_corner_shortcut_turn_target', None) is not None:
+            if self.segment_heading is not None:
+                self.segment_start_yaw = self.normalize_angle(float(self.segment_heading))
+            elif self.current_yaw is not None:
+                self.segment_start_yaw = self.normalize_angle(float(self.current_yaw))
             self.segment_target_yaw = self.normalize_angle(float(self._corner_shortcut_turn_target))
+            if hasattr(self, 'sim') and self.segment_heading is not None:
+                self.sim.yaw = float(self.segment_heading)
+                self.current_yaw = self.sim.yaw
             self._corner_shortcut_turn_target = None
         if segment_type == 'turn' and 'force_start_yaw' in segment:
             self.segment_start_yaw = self.normalize_angle(float(segment['force_start_yaw']))
@@ -574,6 +497,11 @@ class DirectInertialTester(
             self.segment_start_yaw = forced_heading
             self.segment_heading = forced_heading
 
+        if segment_type == 'move':
+            self.load_move_segment_world_plan()
+        else:
+            self.reset_segment_world_plan()
+
         label = self.rectangle_segment_label(segment)
         self.log_segment_debug_snapshot(index, segment, label)
         if segment_type == 'turn':
@@ -586,6 +514,7 @@ class DirectInertialTester(
 
         if segment_type == 'move':
             distance_m = float(segment.get('distance_m', 0.0))
+            self.log_mission_move_segment_begin(index)
             self.publish_feedback(
                 f'{self.test_feedback_prefix}当前位置: {label}，目标直行 {distance_m:.2f}m'
             )
@@ -604,10 +533,16 @@ class DirectInertialTester(
             return
 
         now_sec = self.control_now_sec()
+        last_move_await_finish = (
+            self.plan_index >= len(self.plan) - 1
+            and (self.current_segment or {}).get('type') == 'move'
+            and not self.mission_last_segment_finish_pose_ready()
+        )
         if (
             self.segment_started_at is not None
             and not getattr(self, 'avoidance_active', False)
             and now_sec - self.segment_started_at > self.segment_timeout
+            and not last_move_await_finish
         ):
             self.publish_feedback(f'段超时，强制切换: {self.current_segment.get("description", "unknown")}')
             self.start_segment(self.plan_index + 1)
@@ -644,6 +579,126 @@ class DirectInertialTester(
             return
 
         self.start_segment(self.plan_index + 1)
+
+    def _mission_move_heading_error_rad(self):
+        if self.segment_heading is None or self.current_yaw is None:
+            return 0.0
+        return self.angle_error(self.segment_heading, self.current_yaw)
+
+    def _mission_move_pd_terms(self):
+        lateral_error = self.segment_lateral_offset_m()
+        heading_error = self._mission_move_heading_error_rad()
+        lat_gain = 2.4
+        head_deg = abs(math.degrees(heading_error))
+        lat_eff = lat_gain
+        if head_deg > 8.0:
+            lat_eff = lat_gain * max(0.20, 1.0 - (head_deg - 8.0) / 28.0)
+        lat_term = lat_eff * (-lateral_error)
+        head_term = self.heading_kp * heading_error
+        return lat_term, head_term, lateral_error, heading_error
+
+    def nominal_finish_xy_world(self):
+        return nominal_mission_finish_pose(
+            self.test_direction,
+            self.rectangle_first_leg_m,
+            self.rectangle_side_leg_m,
+            self.rectangle_top_leg_m,
+        )
+
+    def mission_return_finish_along_ok(self):
+        """E2: 回程段沿名义弦线已足够前进，防 exit 绕障中途误 finish。"""
+        seg = self.current_segment or {}
+        if str(seg.get('description', '')) != 'rect_return_origin':
+            return True
+        if self.current_position is None or self.segment_heading is None:
+            return False
+        ep = segment_endpoints_world(
+            self.test_direction,
+            self.rectangle_first_leg_m,
+            self.rectangle_side_leg_m,
+            self.rectangle_top_leg_m,
+        )
+        start_xy, _end_xy = ep['rect_return_origin']
+        along = world_segment.along_m(self.current_position, start_xy, self.segment_heading)
+        target = float(seg.get('distance_m', 0.0))
+        seg_tol = float(self.distance_tolerance)
+        end_thresh = self.segment_end_progress_threshold_m(target, seg_tol)
+        return along + seg_tol >= end_thresh
+
+    def _finish_approach_cmd(self):
+        """末段：沿当前 move 段弦线收敛（横偏+航向），勿横插名义终点。
+
+        竖边绕障外鼓时，应靠 exit 段 lat 收回；末段只沿回程弦线小步前进。
+        """
+        if self.segment_heading is None or self.current_yaw is None:
+            return 0.0, 0.0
+        lateral_error = self.segment_lateral_offset_m()
+        heading_error = self._mission_move_heading_error_rad()
+        head_deg = abs(math.degrees(heading_error))
+        lat_abs = abs(lateral_error)
+        lat_term = 2.8 * (-lateral_error)
+        head_term = self.heading_kp * heading_error
+        if head_deg > 45.0:
+            lat_term = 0.0
+            head_term = math.copysign(
+                min(self.max_angular_speed, abs(self.heading_kp * heading_error)),
+                heading_error,
+            )
+        elif head_deg > 12.0:
+            lat_term = 0.0
+        angular = self.clamp(lat_term + head_term, self.max_angular_speed)
+        if head_deg > 20.0 or lat_abs > FINISH_SKIP_TRIM_LAT_M:
+            linear = 0.0
+        else:
+            fx, fy = self.nominal_finish_xy_world()
+            dist_finish = math.hypot(
+                self.current_position[0] - fx,
+                self.current_position[1] - fy,
+            )
+            linear = min(0.08, 0.03 + 0.25 * max(0.0, dist_finish - FINISH_WORLD_DIST_M))
+            linear *= max(0.2, math.cos(heading_error))
+        return linear, angular
+
+    def mission_last_segment_finish_pose_ready(self):
+        """末 move 且里程达标、世界距终点近、沿回程 enough（E1+E2）。"""
+        if self.plan_index < len(self.plan) - 1:
+            return False
+        if (self.current_segment or {}).get('type') != 'move':
+            return False
+        if self.current_position is None:
+            return False
+        target_distance = float((self.current_segment or {}).get('distance_m', 0.0))
+        progress = self.projected_distance()
+        tol = float(self.distance_tolerance)
+        if progress < target_distance - tol:
+            return False
+        fx, fy = self.nominal_finish_xy_world()
+        dist_finish = math.hypot(self.current_position[0] - fx, self.current_position[1] - fy)
+        if dist_finish > FINISH_WORLD_DIST_M:
+            return False
+        return self.mission_return_finish_along_ok()
+
+    def _log_mission_move_tick(
+        self,
+        phase,
+        linear,
+        angular,
+        lat_term=None,
+        head_term=None,
+    ):
+        segment = self.current_segment or {}
+        self.maybe_log_mission_move_control(
+            self.control_now_sec(),
+            phase,
+            float(linear),
+            float(angular),
+            self.segment_lateral_offset_m(),
+            self._mission_move_heading_error_rad(),
+            self.projected_distance(),
+            float(segment.get('distance_m', 0.0)),
+            lat_term=lat_term,
+            head_term=head_term,
+        )
 
     def run_move_segment(self):
         if self.current_segment is not None and self.current_segment.get('type') == 'move':
@@ -682,23 +737,74 @@ class DirectInertialTester(
 
         progress = self.projected_distance()
         target_distance = float(self.current_segment['distance_m'])
-        if progress >= target_distance - self.distance_tolerance:
+        tol = float(self.distance_tolerance)
+        if progress >= target_distance - tol or self.segment_move_complete_on_plan(
+            along_tol=tol,
+            lat_tol=FINISH_SKIP_TRIM_LAT_M,
+        ):
+            last_move = self.plan_index >= len(self.plan) - 1
+            if self.mission_last_segment_finish_pose_ready():
+                lat = abs(self.segment_lateral_offset_m())
+                head_err = (
+                    abs(self.angle_error(self.segment_heading, self.current_yaw))
+                    if self.current_yaw is not None and self.segment_heading is not None
+                    else float('inf')
+                )
+                if lat <= FINISH_SKIP_TRIM_LAT_M and head_err <= FINISH_SKIP_TRIM_HEAD_RAD:
+                    self.publish_cmd_vel()
+                    self.start_segment(self.plan_index + 1)
+                    return
+                # E1: 世界距达标即完成；段内横偏/航向仅影响是否跳过 trim
+                self.publish_cmd_vel()
+                self.start_segment(self.plan_index + 1)
+                return
             lat = abs(self.segment_lateral_offset_m())
             head_err = (
                 abs(self.angle_error(self.segment_heading, self.current_yaw))
                 if self.current_yaw is not None
                 else 0.0
             )
-            if lat > 0.10 or head_err > math.radians(10.0):
+            need_trim = lat > FINISH_SKIP_TRIM_LAT_M or head_err > FINISH_SKIP_TRIM_HEAD_RAD
+            if last_move and not self.mission_last_segment_finish_pose_ready():
+                linear, angular = self._finish_approach_cmd()
                 lateral_error = self.segment_lateral_offset_m()
-                heading_error = (
-                    self.angle_error(self.segment_heading, self.current_yaw)
-                    if self.current_yaw is not None
-                    else 0.0
+                heading_error = self._mission_move_heading_error_rad()
+                self._log_mission_move_tick(
+                    'finish_approach',
+                    linear,
+                    angular,
+                    lat_term=2.8 * (-lateral_error),
+                    head_term=self.heading_kp * heading_error,
                 )
-                angular = self.clamp(
-                    2.8 * (-lateral_error) + self.heading_kp * heading_error,
-                    self.max_angular_speed,
+                self.publish_cmd_vel(linear, angular)
+                return
+            if need_trim:
+                lateral_error = self.segment_lateral_offset_m()
+                heading_error = self._mission_move_heading_error_rad()
+                head_deg = abs(math.degrees(heading_error))
+                if head_deg > 45.0:
+                    lat_term = 0.0
+                    head_term = self.heading_kp * heading_error
+                    angular = self.clamp(head_term, self.max_angular_speed)
+                elif head_deg > 12.0:
+                    lat_term = 0.0
+                    head_term = self.heading_kp * heading_error
+                    angular = self.clamp(head_term, self.max_angular_speed)
+                else:
+                    lat_term = 2.8 * (-lateral_error)
+                    head_term = self.heading_kp * heading_error
+                    combined = lat_term + head_term
+                    if abs(combined) < 0.04 and lat > FINISH_SKIP_TRIM_LAT_M:
+                        lat_term = 2.8 * (-lateral_error)
+                        head_term = 0.0
+                        combined = lat_term
+                    angular = self.clamp(combined, self.max_angular_speed)
+                self._log_mission_move_tick(
+                    'segment_end_trim',
+                    0.0,
+                    angular,
+                    lat_term=lat_term,
+                    head_term=head_term,
                 )
                 self.publish_cmd_vel(0.0, angular)
                 return
@@ -714,6 +820,7 @@ class DirectInertialTester(
         nearest = self.detour_nearest_obstacle_distance_m()
         if math.isfinite(nearest) and nearest < 0.70:
             linear = min(linear, max(self.detour_follow_min_linear_m, nearest * 0.18))
+        lat_term, head_term, lateral_error, heading_error = self._mission_move_pd_terms()
         linear, angular = self.mission_nominal_move_cmd(linear)
         settle_m = getattr(self, 'move_heading_settle_m', 0.0)
         if (
@@ -722,14 +829,32 @@ class DirectInertialTester(
             and self.current_yaw is not None
             and self.segment_heading is not None
         ):
-            head_err = self.angle_error(self.segment_heading, self.current_yaw)
-            if abs(head_err) > math.radians(5.0):
-                angular = self.clamp(2.4 * self.heading_kp * head_err, 0.32)
+            head_err = heading_error
+            lat_abs = abs(self.segment_lateral_offset_m())
+            if abs(head_err) > math.radians(5.0) or lat_abs > 0.12:
+                lat_eff = 2.4 * max(0.20, 1.0 - abs(math.degrees(head_err)) / 35.0)
+                lat_term = lat_eff * (-self.segment_lateral_offset_m())
+                head_term = 2.4 * self.heading_kp * head_err
+                angular = self.clamp(lat_term + head_term, 0.32)
                 linear = min(linear, 0.18) * max(0.45, math.cos(head_err))
                 linear, angular = self.mission_passed_static_obstacle_adjustment(linear, angular)
+                self._log_mission_move_tick(
+                    'post_turn_settle',
+                    linear,
+                    angular,
+                    lat_term=lat_term,
+                    head_term=head_term,
+                )
                 self.publish_cmd_vel(linear, angular)
                 return
         linear, angular = self.mission_passed_static_obstacle_adjustment(linear, angular)
+        self._log_mission_move_tick(
+            'nominal_track',
+            linear,
+            angular,
+            lat_term=lat_term,
+            head_term=head_term,
+        )
         self.publish_cmd_vel(linear, angular)
 
     def run_pause_segment(self, now_sec):
@@ -760,8 +885,27 @@ class DirectInertialTester(
                 f'{self.rectangle_segment_label(self.current_segment or {})}，'
                 '转弯完成，进入下一段'
             )
+            residual_deg = 0.0
+            if self.segment_target_yaw is not None and self.current_yaw is not None:
+                residual_deg = math.degrees(
+                    self.angle_error(self.segment_target_yaw, self.current_yaw)
+                )
+            next_index = self.plan_index + 1
+            if (
+                next_index < len(self.plan)
+                and self.plan[next_index].get('type') == 'move'
+            ):
+                self.write_debug_log(
+                    'MOVE',
+                    (
+                        f'转弯结束→下一段 {self.plan[next_index].get("description", "?")} | '
+                        f'弯末yaw={self.format_yaw_deg(self.current_yaw)}deg '
+                        f'弯目标={self.format_yaw_deg(self.segment_target_yaw)}deg '
+                        f'残差={residual_deg:+.1f}deg | 残差>5°则下一段前0.4m边转边走'
+                    ),
+                )
             self.publish_cmd_vel()
-            self.start_segment(self.plan_index + 1)
+            self.start_segment(next_index)
             return
 
         angular = self.clamp(self.turn_kp * error, self.turn_angular_speed)

@@ -31,6 +31,9 @@ class DirectInertialTesterDebugLogMixin:
         self._in_approach_envelope_logged = False
         self._last_template_gate_signature = None
         self._last_template_abort_log_at = -1.0
+        self._last_mission_move_log_at = -1.0
+        self._last_mission_move_phase = None
+        self._last_mission_move_angular = None
 
     def maybe_log_detour_cmd_throttled(
         self,
@@ -603,3 +606,151 @@ class DirectInertialTesterDebugLogMixin:
             return
         self.last_detour_follow_log_time = now_sec
         self.log_local_plan_follow(follow_mode, target_point, metrics, remaining_count)
+
+    def _mission_move_phase_label(self, phase):
+        labels = {
+            'post_turn_settle': '弯后航向收敛(段内前0.4m,航向>5°则边转边走)',
+            'nominal_track': '直行贴实测弦线(PD:横偏+航向)',
+            'segment_end_trim': '段末停车对齐(里程够但横偏>10cm或航向>10°)',
+        }
+        return labels.get(phase, phase)
+
+    def _mission_move_steer_explain(self, lateral_m, heading_err_rad, angular):
+        parts = []
+        if abs(lateral_m) >= 0.04:
+            if lateral_m > 0.0:
+                parts.append(f'横偏+{lateral_m:.2f}m在弦线左侧→控制应右转压回')
+            else:
+                parts.append(f'横偏{lateral_m:.2f}m在弦线右侧→控制应左转压回')
+        if heading_err_rad is not None and abs(heading_err_rad) >= math.radians(2.5):
+            parts.append(f'航向误差{math.degrees(heading_err_rad):+.1f}°')
+        if abs(angular) < 0.02:
+            parts.append('ω≈0')
+        elif angular > 0.0:
+            parts.append(f'实际下发左转ω={angular:+.3f}')
+        else:
+            parts.append(f'实际下发右转ω={angular:+.3f}')
+        if not parts:
+            return '横偏航向均小'
+        return '；'.join(parts)
+
+    def log_mission_move_segment_begin(self, plan_index):
+        """弯后进入 move 段时必打一条，解释参考线/横偏从哪来。"""
+        segment = self.current_segment or {}
+        if segment.get('type') != 'move':
+            return
+        name = segment.get('description', '')
+        prev_desc = 'none'
+        if plan_index > 0 and hasattr(self, 'plan'):
+            prev_desc = self.plan[plan_index - 1].get('description', 'none')
+        pose_xy = self.format_position_xy()
+        along_m = 0.0
+        lateral_m = 0.0
+        if hasattr(self, 'progress_along_segment_m') and self.current_position is not None:
+            along_val = self.progress_along_segment_m(self.current_position)
+            if along_val is not None:
+                along_m = float(along_val)
+        if hasattr(self, 'segment_lateral_offset_m'):
+            lateral_m = float(self.segment_lateral_offset_m())
+        world_text = f'plan沿程={along_m:.2f}m 横偏={lateral_m:+.2f}m(左正)'
+        plan_s = getattr(self, 'segment_plan_start_xy', None)
+        plan_e = getattr(self, 'segment_plan_end_xy', None)
+        if plan_s is not None and plan_e is not None:
+            plan_line = (
+                f'plan S=({plan_s[0]:.3f},{plan_s[1]:.3f}) '
+                f'E=({plan_e[0]:.3f},{plan_e[1]:.3f})'
+            )
+        else:
+            plan_line = 'plan S/E=unset'
+        target = self.navigation_target_xy() if hasattr(self, 'navigation_target_xy') else None
+        if target is not None:
+            plan_line += f' target=({target[0]:.3f},{target[1]:.3f})'
+        seg_h_rad = self.segment_heading
+        psi_text = self.format_yaw_deg(seg_h_rad) if seg_h_rad is not None else 'nan'
+        settle = getattr(self, 'move_heading_settle_m', 0.0)
+        yaw = self.format_yaw_deg(self.current_yaw) if self.current_yaw is not None else 'nan'
+        seg_h = self.format_yaw_deg(self.segment_heading) if self.segment_heading is not None else 'nan'
+        head_err = 0.0
+        if self.segment_heading is not None and self.current_yaw is not None:
+            head_err = math.degrees(self.angle_error(self.segment_heading, self.current_yaw))
+        self.write_debug_log(
+            'MOVE',
+            (
+                f'段开始 {name} | 上一段={prev_desc} | odom={pose_xy} '
+                f'yaw={yaw}deg 段目标航向={seg_h}deg 航向误差={head_err:+.1f}deg | '
+                f'{world_text} | {plan_line} ψ={psi_text}deg | '
+                f'弯后收敛距离={settle:.2f}m | '
+                f'说明:沿程/横偏相对名义plan弦线;无障target=段末E'
+            ),
+        )
+
+    def log_turn_finished_enter_move(self):
+        if self.current_segment is None or self.current_segment.get('type') != 'move':
+            return
+        err_deg = 0.0
+        if self.segment_target_yaw is not None and self.current_yaw is not None:
+            err_deg = math.degrees(self.angle_error(self.segment_target_yaw, self.current_yaw))
+        self.write_debug_log(
+            'MOVE',
+            (
+                f'转弯结束→进入直行 {self.current_segment.get("description", "?")} | '
+                f'弯末yaw={self.format_yaw_deg(self.current_yaw)}deg '
+                f'弯目标={self.format_yaw_deg(self.segment_target_yaw)}deg '
+                f'残差={err_deg:+.1f}deg | 若残差大,接下来0.4m会边转边走'
+            ),
+        )
+
+    def maybe_log_mission_move_control(
+        self,
+        now_sec,
+        phase,
+        linear,
+        angular,
+        lateral_m,
+        heading_err_rad,
+        progress_m,
+        target_m,
+        lat_term=None,
+        head_term=None,
+    ):
+        period = max(0.10, float(getattr(self, 'detour_debug_log_period_sec', 0.5)))
+        phase_changed = phase != getattr(self, '_last_mission_move_phase', None)
+        if not phase_changed and now_sec - getattr(self, '_last_mission_move_log_at', -1.0) < period:
+            return
+        self._last_mission_move_log_at = now_sec
+        self._last_mission_move_phase = phase
+
+        prev_angular = getattr(self, '_last_mission_move_angular', None)
+        if (
+            prev_angular is not None
+            and abs(prev_angular) > 0.04
+            and abs(angular) > 0.04
+            and prev_angular * angular < 0.0
+        ):
+            self.write_debug_log(
+                'MOVE',
+                (
+                    f'STEER_FLIP 转向反转(内外来回拧) | 上次ω={prev_angular:+.3f} '
+                    f'本次ω={angular:+.3f} | 横偏={lateral_m:+.2f}m '
+                    f'航向误差={math.degrees(heading_err_rad):+.1f}deg | '
+                    f'常见原因:横偏过大+增益高,或航向与横偏控制打架'
+                ),
+            )
+        self._last_mission_move_angular = float(angular)
+
+        term_text = ''
+        if lat_term is not None and head_term is not None:
+            term_text = f' | 分项 lat项={lat_term:+.3f} head项={head_term:+.3f}'
+        self.write_debug_log(
+            'MOVE',
+            (
+                f'phase={phase} {self._mission_move_phase_label(phase)} | '
+                f'段={self.current_segment.get("description", "?")} '
+                f'进度={progress_m:.2f}/{target_m:.2f}m | '
+                f'odom={self.format_position_xy()} yaw={self.format_yaw_deg(self.current_yaw)}deg '
+                f'段航向={self.format_yaw_deg(self.segment_heading)}deg | '
+                f'横偏={lateral_m:+.2f}m 航向误差={math.degrees(heading_err_rad):+.1f}deg | '
+                f'cmd v={linear:.3f} ω={angular:+.3f}{term_text} | '
+                f'{self._mission_move_steer_explain(lateral_m, heading_err_rad, angular)}'
+            ),
+        )

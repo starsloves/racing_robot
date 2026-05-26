@@ -14,7 +14,10 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from racing_stage2_param_test.ring_track import (
+    RING_ENTRY_POINT,
+    corridor_to_ring_entry_polyline,
     full_ring_plan_polyline,
+    nominal_mission_finish_pose,
     scenario_obstacles,
 )
 
@@ -44,14 +47,30 @@ def plot_trajectory(
 
     scenario_key = scenario.strip().lower() if scenario else ''
     if scenario_key:
-        plan = full_ring_plan_polyline(
-            direction, first_leg_m, side_leg_m, top_leg_m
-        )
+        entry = corridor_to_ring_entry_polyline()
+        ring = full_ring_plan_polyline(direction, first_leg_m, side_leg_m, top_leg_m)
+        plan = list(entry) + list(ring)
     else:
         plan = []
     if len(plan) >= 2:
         px, py = zip(*plan)
         ax.plot(px, py, 'b--', linewidth=1.5, label='plan')
+        finish = nominal_mission_finish_pose(direction, first_leg_m, side_leg_m, top_leg_m)
+        ax.plot(
+            [RING_ENTRY_POINT[0], finish[0]],
+            [RING_ENTRY_POINT[1], finish[1]],
+            'k^',
+            markersize=7,
+            label='entry / finish',
+        )
+        ax.annotate('entry (0,0)', RING_ENTRY_POINT, fontsize=8, xytext=(4, 4), textcoords='offset points')
+        ax.annotate(
+            'nominal_finish',
+            finish,
+            fontsize=8,
+            xytext=(4, -10),
+            textcoords='offset points',
+        )
 
     if xs and ys:
         ax.plot(xs, ys, 'g-', linewidth=1.5, label='trajectory')

@@ -6,7 +6,7 @@ import sys
 
 import rclpy
 
-from racing_stage2_param_test.offline_ring_test import (
+from racing_stage2_param_test.offline_runner import (
     OFFLINE_STUCK_TIME_SEC,
     run_offline_test,
     scenario_passes,
@@ -57,6 +57,7 @@ def main(argv=None):
     exit_code = 0
     try:
         for index, scenario in enumerate(scenarios):
+            print(f'[{index + 1}/{len(scenarios)}] 开始 {scenario}...', flush=True)
             shutdown = index == len(scenarios) - 1
             metrics, _, _, mission_finished, final_pose = run_offline_test(
                 scenario,
@@ -76,14 +77,14 @@ def main(argv=None):
                 f'clearance={metrics["min_clearance_m"]:.3f}m'
             )
             lines.append(line)
-            print(line)
+            print(line, flush=True)
     finally:
         if rclpy.ok():
             rclpy.shutdown()
 
     with open(summary_path, 'w', encoding='utf-8') as handle:
         handle.write('\n'.join(lines) + '\n')
-    print(f'汇总: {summary_path}')
+    print(f'汇总: {summary_path}', flush=True)
 
     if args.plot_matrix:
         matrix_png = summary_log_dir() / 'obstacle_scenario_matrix.png'

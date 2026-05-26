@@ -6,7 +6,7 @@ import sys
 
 import rclpy
 
-from racing_stage2_param_test.offline_ring_test import run_offline_test
+from racing_stage2_param_test.offline_runner import run_offline_test
 
 LEGACY_SCENARIO_MAP = {
     'real_logic_scenario_side1': 'rect_side_1_50',

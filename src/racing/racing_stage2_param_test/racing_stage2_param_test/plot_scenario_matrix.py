@@ -14,13 +14,14 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 from racing_stage2_param_test.ring_track import (
-    DRIVEN_CW_SEGMENT_ENDPOINTS,
+    MOVE_SEGMENT_NAMES,
     SCENARIO_SPECS,
     full_ring_plan_polyline,
     list_scenario_names,
     ring_drive_segments,
     scenario_expects_corner_shortcut,
     scenario_obstacles,
+    segment_endpoints_world,
 )
 from racing_stage2_param_test.test_log_paths import scenario_log_dir, summary_log_dir
 
@@ -65,7 +66,11 @@ def plot_scenario_matrix(
         px, py = zip(*plan)
         ax.plot(px, py, 'b--', linewidth=1.2, alpha=0.55, label='nominal ring')
 
-    for segment_name, (start, end) in DRIVEN_CW_SEGMENT_ENDPOINTS.items():
+    endpoints = segment_endpoints_world(direction, first_leg_m, side_leg_m, top_leg_m)
+    for segment_name in MOVE_SEGMENT_NAMES:
+        if segment_name not in endpoints:
+            continue
+        start, end = endpoints[segment_name]
         color = SEGMENT_COLORS.get(segment_name, '#555555')
         ax.plot(
             [start[0], end[0]],

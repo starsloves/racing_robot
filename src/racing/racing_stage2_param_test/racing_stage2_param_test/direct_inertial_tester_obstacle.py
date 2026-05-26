@@ -695,8 +695,13 @@ class DirectInertialTesterObstacleMixin:
                 log_file.write('=== direct_inertial_tester 避障/路径调试日志 ===\n')
                 log_file.write(f'log_path={self.debug_log_path}\n')
                 log_file.write(
-                    '字段说明: TRIGGER=触发/抑制 | DECISION=进入/退出/相位/锁边 | '
-                    'DETOUR=模板状态摘要 | CMD=控制输出 | CONFIG=启动参数\n'
+                    '字段说明: TRIGGER=避障触发/抑制 | DECISION=避障进入退出 | '
+                    'MOVE=直行贴线(非避障) | CMD=避障控制 | CONFIG=参数 | SEGMENT=段切换\n'
+                )
+                log_file.write(
+                    'MOVE: phase=弯后航向收敛|直行贴弦线|段末停车对齐 | '
+                    '横偏左正=在实测弦线左侧 | ω>0=逆时针/左转 ω<0=右转 | '
+                    'STEER_FLIP=转向符号反转(内外来回拧)\n'
                 )
                 log_file.write(
                     'goal_direct: phase=follow|bypass|pass|rejoin|exit|handoff | '
