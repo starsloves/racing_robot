@@ -30,6 +30,7 @@ def sync_tester_runtime_parameters(node):
     node.test_direction_raw = str(node.get_parameter('test_direction').value).strip()
     node.test_direction = node.resolve_test_direction(node.test_direction_raw)
     node.test_start_mode = str(node.get_parameter('test_start_mode').value).strip().lower() or 'auto'
+    node.assume_channel_entry_yaw = bool(node.get_parameter('assume_channel_entry_yaw').value)
     node.test_feedback_prefix = (
         str(node.get_parameter('test_feedback_prefix').value).strip() or '惯导参数测试'
     )

@@ -15,6 +15,7 @@ def load_direct_inertial_test_params(debug_log_path_value: str = '') -> dict:
     params.update({
         'test_direction': 'clockwise',
         'test_start_mode': 'auto',
+        'assume_channel_entry_yaw': True,
         'rectangle_first_leg_m': 1.10,
         'rectangle_side_leg_m': 0.50,
         'rectangle_top_leg_m': 2.80,

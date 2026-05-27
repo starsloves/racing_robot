@@ -23,6 +23,11 @@ def generate_launch_description():
     imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/imu/data')
     test_direction_arg = DeclareLaunchArgument('test_direction', default_value='clockwise')
     test_start_mode_arg = DeclareLaunchArgument('test_start_mode', default_value='auto')
+    # 无 Stage1：任务开始 IMU 补偿到通道口名义 90°（offset=90°-IMU_raw）。
+    assume_channel_entry_yaw_arg = DeclareLaunchArgument(
+        'assume_channel_entry_yaw',
+        default_value='true',
+    )
     rectangle_first_leg_arg = DeclareLaunchArgument('rectangle_first_leg_m', default_value='1.10')
     rectangle_side_leg_arg = DeclareLaunchArgument('rectangle_side_leg_m', default_value='0.50')
     rectangle_top_leg_arg = DeclareLaunchArgument('rectangle_top_leg_m', default_value='2.80')
@@ -63,6 +68,7 @@ def generate_launch_description():
                 'imu_topic': LaunchConfiguration('imu_topic'),
                 'test_direction': LaunchConfiguration('test_direction'),
                 'test_start_mode': LaunchConfiguration('test_start_mode'),
+                'assume_channel_entry_yaw': LaunchConfiguration('assume_channel_entry_yaw'),
                 'rectangle_first_leg_m': LaunchConfiguration('rectangle_first_leg_m'),
                 'rectangle_side_leg_m': LaunchConfiguration('rectangle_side_leg_m'),
                 'rectangle_top_leg_m': LaunchConfiguration('rectangle_top_leg_m'),
@@ -97,6 +103,7 @@ def generate_launch_description():
         imu_topic_arg,
         test_direction_arg,
         test_start_mode_arg,
+        assume_channel_entry_yaw_arg,
         rectangle_first_leg_arg,
         rectangle_side_leg_arg,
         rectangle_top_leg_arg,

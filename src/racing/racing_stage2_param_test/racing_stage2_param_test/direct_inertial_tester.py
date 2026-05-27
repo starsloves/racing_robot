@@ -60,6 +60,7 @@ class DirectInertialTester(
         # Test-mission parameters.
         self.declare_parameter('test_direction', 'clockwise')
         self.declare_parameter('test_start_mode', 'auto')
+        self.declare_parameter('assume_channel_entry_yaw', True)
         self.declare_parameter('test_feedback_prefix', '惯导参数测试')
         self.declare_parameter('rectangle_first_leg_m', 1.20)
         self.declare_parameter('rectangle_side_leg_m', 0.60)

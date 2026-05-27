@@ -8,7 +8,6 @@ import math
 
 from . import world_segment
 from .ring_track import (
-    SCENARIO_SPECS,
     apply_turn_arc_world,
     preferred_bypass_side_for_segment,
     segment_end_goal_world,
@@ -21,7 +20,6 @@ class DirectInertialTesterAvoidanceMixin:
 
     GOAL_PHASES = ('bypass', 'pass', 'rejoin', 'exit', 'next_leg')
     ENTRY_DIRECT_PROGRESS_WINDOW_M = 0.24
-    ENTRY_DIRECT_OBS_RATIO_MAX = 0.50
     ENTRY_DIRECT_SKIP_BYPASS_NEAREST_M = 0.16
 
     def reset_avoidance_runtime(self):
@@ -383,7 +381,9 @@ class DirectInertialTesterAvoidanceMixin:
         self.goal_exit_xy = exit_goal
         self.goal_next_leg_xy = next_leg_goal
 
-        if need_direct_cut:
+        if self.tail_handoff_after_pass_applies():
+            self.goal_direct_sequence = ['bypass', 'pass']
+        elif need_direct_cut:
             self.goal_direct_sequence = ['bypass', 'pass', 'exit']
         elif next_leg_goal is not None:
             self.goal_direct_sequence = ['bypass', 'pass', 'next_leg']
@@ -428,14 +428,52 @@ class DirectInertialTesterAvoidanceMixin:
         self.plan_avoidance_goals()
         self.configure_entry_direct_avoidance()
 
-    def scenario_obstacle_ratio_on_segment(self):
-        name = str(getattr(self, 'scenario_name', '') or '').strip().lower()
-        seg = (self.current_segment or {}).get('description', '')
-        if name in SCENARIO_SPECS:
-            spec_seg, ratio = SCENARIO_SPECS[name]
-            if spec_seg == seg:
-                return float(ratio)
-        return None
+    def locked_obstacle_along_s_m(self):
+        s_obs = getattr(self, 'locked_obstacle_along_s', None)
+        if s_obs is None:
+            return None
+        return float(s_obs)
+
+    def locked_obstacle_radius_m(self):
+        static = getattr(self, 'scenario_static_obstacles_world', [])
+        if static:
+            return float(static[0][2])
+        circle = getattr(self, 'locked_obstacle_circle', None)
+        if circle is not None:
+            return float(circle.get('radius', 0.12))
+        return 0.12
+
+    def avoidance_rejoin_window_m(self):
+        """过锥后 rejoin 回弦线所需最小沿程（plan 世界坐标）。"""
+        offset = float(getattr(self, 'avoid_target_offset_m', 0.32))
+        half_span = max(0.18, offset * 0.9)
+        ahead = float(getattr(self, 'avoid_goal_rejoin_ahead_m', 0.22))
+        tol = float(self.distance_tolerance)
+        return half_span + ahead + tol
+
+    def locked_obstacle_pass_along_m(self):
+        """Pass 阶段结束沿程 s（名义 plan）。"""
+        pass_along = getattr(self, 'goal_pass_along_m', None)
+        if pass_along is not None:
+            return float(pass_along)
+        s_obs = self.locked_obstacle_along_s_m()
+        if s_obs is None:
+            return None
+        pass_margin = float(getattr(self, 'avoid_goal_pass_margin_m', 0.12))
+        seg_len = float((self.current_segment or {}).get('distance_m', 0.0))
+        return min(seg_len, s_obs + self.locked_obstacle_radius_m() + pass_margin)
+
+    def segment_remain_after_pass_m(self):
+        """过锥后沿 plan 到段末 E 的剩余沿程。"""
+        seg_len = float((self.current_segment or {}).get('distance_m', 0.0))
+        pass_along = self.locked_obstacle_pass_along_m()
+        if pass_along is None:
+            return seg_len
+        return max(0.0, seg_len - pass_along)
+
+    def insufficient_remain_for_rejoin(self):
+        """沿程不足以 bypass→pass→rejoin，应 direct_cut / tail handoff。"""
+        return self.segment_remain_after_pass_m() <= self.avoidance_rejoin_window_m()
 
     def move_segment_follows_corner_turn(self):
         prev_index = int(getattr(self, 'plan_index', 0)) - 1
@@ -458,20 +496,87 @@ class DirectInertialTesterAvoidanceMixin:
         window = max(self.ENTRY_DIRECT_PROGRESS_WINDOW_M, settle + 0.10)
         return progress <= window
 
+    def entry_direct_entry_reach_m(self):
+        settle = float(getattr(self, 'move_heading_settle_m', 0.0))
+        return max(self.ENTRY_DIRECT_PROGRESS_WINDOW_M, settle + 0.10)
+
     def entry_direct_avoidance_applies(self):
-        """段首/转角后且障碍落在段前部（≤50% 或 along≤55% 段长）。"""
+        """段首/弯后：障碍沿程在入口窗口内，或尾段几何不足 rejoin + 下一段 turn。"""
         if not self.move_segment_at_entry_context():
             return False
         if not self.segment_still_at_move_entry():
             return False
-        ratio = self.scenario_obstacle_ratio_on_segment()
-        if ratio is not None and ratio <= self.ENTRY_DIRECT_OBS_RATIO_MAX:
+        s_obs = self.locked_obstacle_along_s_m()
+        if s_obs is None:
+            return False
+        if float(s_obs) <= self.entry_direct_entry_reach_m() + self.avoidance_rejoin_window_m():
             return True
-        s_obs = getattr(self, 'locked_obstacle_along_s', None)
-        seg_len = float((self.current_segment or {}).get('distance_m', 0.0))
-        if s_obs is not None and seg_len > 1e-6 and float(s_obs) <= seg_len * 0.55:
+        if self.next_plan_segment_is_turn() and self.insufficient_remain_for_rejoin():
             return True
         return False
+
+    def tail_handoff_after_pass_applies(self):
+        """下一段 turn 且过锥后沿程不足 rejoin → bypass→pass 后直接交拐角。"""
+        if not self.next_plan_segment_is_turn():
+            return False
+        return self.insufficient_remain_for_rejoin()
+
+    def segment_end_obstacle_passed(self, margin_m=0.08):
+        """段末障碍：沿程 pass 可能顶满段长；到 E 附近且已有绕开横偏即视为过锥。"""
+        if not self.insufficient_remain_for_rejoin():
+            return False
+        target = float((self.current_segment or {}).get('distance_m', 0.0))
+        seg_tol = float(self.distance_tolerance)
+        progress = self.projected_distance()
+        offset = float(self.avoid_target_offset_m)
+        at_seg_end = (
+            progress + seg_tol >= max(0.0, target - seg_tol)
+            or self.distance_to_segment_plan_end_m() <= self.SEGMENT_END_REACH_M * 1.15
+        )
+        lat_ok = abs(self.segment_lateral_offset_m()) >= offset * 0.32
+        return at_seg_end and lat_ok
+
+    def tail_pass_near_corner_m(self):
+        """尾段 handoff：世界坐标距 plan 段末 E 或沿程达标（不用场景比例/固定角点区）。"""
+        seg_tol = float(self.distance_tolerance)
+        target = float((self.current_segment or {}).get('distance_m', 0.0))
+        progress = self.projected_distance()
+        end_thresh = self.segment_end_progress_threshold_m(target, seg_tol)
+        end_reach = self.SEGMENT_END_REACH_M * 1.25
+        return (
+            self.distance_to_segment_plan_end_m() <= end_reach
+            or progress + seg_tol >= end_thresh
+        )
+
+    def corner_direct_cut_on_handoff(self):
+        """过锥后是否直接交下一段 turn（短段 exit 或任意尾段 bypass→pass）。"""
+        if self.tail_pass_handoff_ready():
+            return True
+        if (
+            self.tail_handoff_after_pass_applies()
+            and self.next_plan_segment_is_turn()
+            and getattr(self, 'goal_direct_phase', '') == 'pass'
+            and self.obstacle_passed_for_handoff(margin_m=0.06)
+            and self.tail_pass_near_corner_m()
+        ):
+            return True
+        return (
+            getattr(self, 'need_direct_cut', False)
+            and getattr(self, 'goal_direct_phase', '') == 'exit'
+        )
+
+    def tail_pass_handoff_ready(self):
+        """尾段过锥后交段：仅跳过 exit，过锥/到段末后 handoff 进拐角。"""
+        if getattr(self, 'goal_direct_phase', '') != 'pass':
+            return False
+        if not self.tail_handoff_after_pass_applies():
+            return False
+        if not (
+            self.obstacle_passed_for_handoff(margin_m=0.06)
+            or self.segment_end_obstacle_passed(margin_m=0.06)
+        ):
+            return False
+        return self.tail_pass_near_corner_m() and self.avoidance_clear_streak >= 1
 
     def configure_entry_direct_avoidance(self):
         """不再 rolling 贴 plan：直接 bypass；已贴锥则进 pass。"""
@@ -489,13 +594,15 @@ class DirectInertialTesterAvoidanceMixin:
                 self.goal_direct_phase = 'pass'
                 self.avoid_entry_skipped_bypass = True
                 self._mark_goal_direct_phase_started()
-        ratio = self.scenario_obstacle_ratio_on_segment()
-        ratio_text = f'{ratio:.2f}' if ratio is not None else 'na'
+        s_obs = self.locked_obstacle_along_s_m()
+        s_obs_text = f'{s_obs:.2f}' if s_obs is not None else 'na'
         self.write_debug_log(
             'DECISION',
             (
                 f'ENTRY_DIRECT segment={self.current_segment.get("description", "?")} '
-                f'ratio={ratio_text} progress={self.projected_distance():.2f}m '
+                f'obs_along={s_obs_text}m remain_after_pass={self.segment_remain_after_pass_m():.2f}m '
+                f'rejoin_win={self.avoidance_rejoin_window_m():.2f}m '
+                f'progress={self.projected_distance():.2f}m '
                 f'nearest={nearest_val:.2f}m direct_bypass={self.avoid_entry_direct_goal} '
                 f'skip_to_pass={self.avoid_entry_skipped_bypass} '
                 f'goal={self.format_goal_compact()}'
@@ -628,8 +735,16 @@ class DirectInertialTesterAvoidanceMixin:
         pass_along = getattr(self, 'goal_pass_along_m', None)
         if pass_along is None:
             return None
+        seg_len = float((self.current_segment or {}).get('distance_m', 0.0))
+        tol = float(self.distance_tolerance)
+        along = float(pass_along)
+        if self.tail_handoff_after_pass_applies():
+            progress = self.projected_distance()
+            if progress + 0.04 >= along or self.robot_passed_locked_obstacle():
+                ahead = float(getattr(self, 'avoid_goal_pass_ahead_m', 0.18))
+                along = min(max(0.0, seg_len - tol), max(along, progress + ahead))
         lateral = self.current_pass_lateral_m()
-        return self.segment_progress_to_world(pass_along, lateral)
+        return self.segment_progress_to_world(along, lateral)
 
     def current_pass_lateral_m(self):
         side = float(self.locked_bypass_side or 1)
@@ -959,6 +1074,9 @@ class DirectInertialTesterAvoidanceMixin:
             return False
         radius = float((self.locked_obstacle_circle or {}).get('radius', 0.12))
         progress = self.projected_distance()
+        if self.segment_end_obstacle_passed(margin_m=margin_m):
+            self.avoidance_obstacle_passed = True
+            return True
         along_pass = progress + 0.04 >= float(s_obs) + radius + margin_m
         if not along_pass:
             self.avoidance_obstacle_passed = False
@@ -987,22 +1105,28 @@ class DirectInertialTesterAvoidanceMixin:
         if not self.avoidance_active:
             return False
         phase = getattr(self, 'goal_direct_phase', '')
+        seg_tol = float(self.distance_tolerance)
+        target = float((self.current_segment or {}).get('distance_m', 0.0))
+        progress = self.projected_distance()
+        passed_ok = (
+            self.obstacle_passed_for_handoff(margin_m=0.08)
+            or self.segment_along_past_locked_obstacle(margin_m=0.08)
+            or self.segment_end_obstacle_passed(margin_m=0.08)
+            or self.locked_obstacle_physically_passed()
+        )
+
+        if self.tail_pass_handoff_ready():
+            return True
+
         if phase not in ('rejoin', 'exit', 'next_leg'):
             return False
         dist = self.distance_to_active_goal_m()
         tol = self.goal_reach_tolerance_m()
-        seg_tol = float(self.distance_tolerance)
-        target = float((self.current_segment or {}).get('distance_m', 0.0))
-        progress = self.projected_distance()
         relaxed_lat = max(
             self.avoid_rejoin_lateral_tol_m * 2.0,
             float(self.avoid_target_offset_m) * 0.35,
         )
         lat_ok = abs(self.segment_lateral_offset_m()) <= relaxed_lat
-        passed_ok = (
-            self.obstacle_passed_for_handoff(margin_m=0.08)
-            or self.segment_along_past_locked_obstacle(margin_m=0.08)
-        )
 
         if phase == 'exit' and getattr(self, 'need_direct_cut', False):
             if not passed_ok:
@@ -1334,6 +1458,14 @@ class DirectInertialTesterAvoidanceMixin:
         if not self.obstacle_passed_for_handoff(margin_m=0.08):
             return False
         phase = getattr(self, 'goal_direct_phase', '')
+        if phase == 'pass' and self.tail_handoff_after_pass_applies():
+            phase_elapsed = self.goal_direct_phase_elapsed_sec(now_sec)
+            if (
+                phase_elapsed >= 6.0
+                and self.obstacle_passed_for_handoff(margin_m=0.06)
+                and self.tail_pass_near_corner_m()
+            ):
+                return True
         if phase not in ('rejoin', 'exit', 'next_leg'):
             return False
         phase_elapsed = self.goal_direct_phase_elapsed_sec(now_sec)
@@ -1580,7 +1712,7 @@ class DirectInertialTesterAvoidanceMixin:
             self.avoidance_clear_streak = 0
 
         if self.goal_direct_handoff_ready():
-            direct_cut = getattr(self, 'need_direct_cut', False)
+            direct_cut = self.corner_direct_cut_on_handoff()
             if direct_cut:
                 self.prepare_direct_cut_corner_handoff()
             if direct_cut and self.next_plan_segment_is_turn():
@@ -1592,7 +1724,7 @@ class DirectInertialTesterAvoidanceMixin:
             return True
 
         if self.avoidance_stuck_handoff_ready(now_sec):
-            direct_cut = getattr(self, 'need_direct_cut', False)
+            direct_cut = self.corner_direct_cut_on_handoff()
             if direct_cut:
                 self.prepare_direct_cut_corner_handoff()
             if direct_cut and self.next_plan_segment_is_turn():
