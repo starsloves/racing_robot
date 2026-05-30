@@ -652,7 +652,10 @@ class DirectInertialTesterDebugLogMixin:
                 along_m = float(along_val)
         if hasattr(self, 'segment_lateral_offset_m'):
             lateral_m = float(self.segment_lateral_offset_m())
-        world_text = f'plan沿程={along_m:.2f}m 横偏={lateral_m:+.2f}m(左正)'
+        world_text = (
+            f'沿程={along_m:.2f}m '
+            f'横偏={lateral_m:+.2f}m(左正)'
+        )
         plan_s = getattr(self, 'segment_plan_start_xy', None)
         plan_e = getattr(self, 'segment_plan_end_xy', None)
         if plan_s is not None and plan_e is not None:
@@ -668,19 +671,27 @@ class DirectInertialTesterDebugLogMixin:
         seg_h_rad = self.segment_heading
         psi_text = self.format_yaw_deg(seg_h_rad) if seg_h_rad is not None else 'nan'
         settle = getattr(self, 'move_heading_settle_m', 0.0)
-        yaw = self.format_yaw_deg(self.current_yaw) if self.current_yaw is not None else 'nan'
+        nav_yaw = self.world_navigation_yaw() if hasattr(self, 'world_navigation_yaw') else None
+        raw_yaw = self.world_navigation_yaw_raw() if hasattr(self, 'world_navigation_yaw_raw') else None
         seg_h = self.format_yaw_deg(self.segment_heading) if self.segment_heading is not None else 'nan'
         head_err = 0.0
-        if self.segment_heading is not None and self.current_yaw is not None:
-            head_err = math.degrees(self.angle_error(self.segment_heading, self.current_yaw))
+        if self.segment_heading is not None and nav_yaw is not None:
+            head_err = math.degrees(self.angle_error(self.segment_heading, nav_yaw))
+        travel_m = (
+            float(self.segment_travel_progress_m())
+            if hasattr(self, 'segment_travel_progress_m')
+            else along_m
+        )
         self.write_debug_log(
             'MOVE',
             (
                 f'段开始 {name} | 上一段={prev_desc} | odom={pose_xy} '
-                f'yaw={yaw}deg 段目标航向={seg_h}deg 航向误差={head_err:+.1f}deg | '
-                f'{world_text} | {plan_line} ψ={psi_text}deg | '
+                f'raw_yaw={self.format_yaw_deg(raw_yaw)}deg nav_yaw={self.format_yaw_deg(nav_yaw)}deg '
+                f'段航向={seg_h}deg 航向误差={head_err:+.1f}deg | '
+                f'沿程={travel_m:.2f}m '
+                f'横偏={lateral_m:+.2f}m(左正) | {plan_line} ψ={psi_text}deg | '
                 f'弯后收敛距离={settle:.2f}m | '
-                f'说明:沿程/横偏相对名义plan弦线;无障target=段末E'
+                f'说明:SIM_CHAIN 固定 S→E;控制=统一 nav_yaw;无障 target=段末 E'
             ),
         )
 
@@ -741,13 +752,18 @@ class DirectInertialTesterDebugLogMixin:
         term_text = ''
         if lat_term is not None and head_term is not None:
             term_text = f' | 分项 lat项={lat_term:+.3f} head项={head_term:+.3f}'
+        yaw = (
+            self.world_navigation_yaw()
+            if hasattr(self, 'world_navigation_yaw')
+            else self.current_yaw
+        )
         self.write_debug_log(
             'MOVE',
             (
                 f'phase={phase} {self._mission_move_phase_label(phase)} | '
                 f'段={self.current_segment.get("description", "?")} '
                 f'进度={progress_m:.2f}/{target_m:.2f}m | '
-                f'odom={self.format_position_xy()} yaw={self.format_yaw_deg(self.current_yaw)}deg '
+                f'odom={self.format_position_xy()} yaw={self.format_yaw_deg(yaw)}deg '
                 f'段航向={self.format_yaw_deg(self.segment_heading)}deg | '
                 f'横偏={lateral_m:+.2f}m 航向误差={math.degrees(heading_err_rad):+.1f}deg | '
                 f'cmd v={linear:.3f} ω={angular:+.3f}{term_text} | '

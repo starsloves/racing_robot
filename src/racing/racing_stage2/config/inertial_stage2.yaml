@@ -63,3 +63,4 @@ stage2_inertial_navigator:
     detour_lateral_distance_m: 0.32
     detour_forward_distance_m: 0.75
     detour_cooldown_sec: 2.0
+    obstacle_circle_min_radius_m: 0.10

@@ -133,6 +133,9 @@ class DirectInertialTesterObstacleMixin:
 
     def scenario_static_obstacle_circle(self):
         """Offline/标定：把场景静态锥桶合成与激光簇一致的圆，避免段首已贴近时簇检测来不及。"""
+        pre_corner = self._scenario_static_pre_corner_circle()
+        if pre_corner is not None:
+            return pre_corner
         static = getattr(self, 'scenario_static_obstacles_world', [])
         target = str(getattr(self, 'scenario_obstacle_segment', '') or '').strip()
         if not static or not target:
@@ -174,6 +177,53 @@ class DirectInertialTesterObstacleMixin:
             'lateral_min': cy - radius,
             'lateral_max': cy + radius,
             'scenario_static': True,
+        }
+
+    def _scenario_static_pre_corner_circle(self):
+        """弯前：当前段末预瞄下一段 move 上的场景锥桶。"""
+        segment = self.current_segment or {}
+        if segment.get('type') != 'move':
+            return None
+        if hasattr(self, 'pre_corner_pair_allowed') and not self.pre_corner_pair_allowed():
+            return None
+        if not hasattr(self, 'upcoming_move_obstacle_near_entry'):
+            return None
+        if not hasattr(self, 'next_plan_segment_is_turn') or not self.next_plan_segment_is_turn():
+            return None
+        info = self.upcoming_move_obstacle_near_entry()
+        if info is None or self.current_position is None or self.current_yaw is None:
+            return None
+        _name, _along, (wx, wy) = info
+        static = getattr(self, 'scenario_static_obstacles_world', [])
+        if not static:
+            return None
+        sx, sy, sr = static[0]
+        if math.hypot(wx - sx, wy - sy) > float(sr) + 0.08:
+            return None
+        rx, ry = float(self.current_position[0]), float(self.current_position[1])
+        dx = float(sx) - rx
+        dy = float(sy) - ry
+        cos_y = math.cos(self.current_yaw)
+        sin_y = math.sin(self.current_yaw)
+        cx = cos_y * dx + sin_y * dy
+        cy = -sin_y * dx + cos_y * dy
+        radius = float(sr)
+        nearest = math.hypot(dx, dy) - radius
+        return {
+            'center_x': cx,
+            'center_y': cy,
+            'radius': radius,
+            'span': radius * 2.0,
+            'span_x': radius * 2.0,
+            'span_y': radius * 2.0,
+            'nearest_distance': max(0.01, nearest),
+            'angle_deg': math.degrees(math.atan2(cy, max(cx, 1e-6))),
+            'closest_x': max(0.01, cx - radius),
+            'farthest_x': cx + radius,
+            'lateral_min': cy - radius,
+            'lateral_max': cy + radius,
+            'scenario_static': True,
+            'pre_corner': True,
         }
 
     def build_obstacle_circles(self, clusters):
@@ -382,6 +432,41 @@ class DirectInertialTesterObstacleMixin:
         target_distance = float(self.current_segment.get('distance_m', 0.0))
         return max(0.0, target_distance - self.projected_distance())
 
+    def obstacle_is_beside_not_in_path(self):
+        """人/障碍在车身旁但不在直行前方时，不触发绕障（底边前段常见）。"""
+        segment = self.current_segment or {}
+        if segment.get('type') != 'move':
+            return False
+        desc = str(segment.get('description', ''))
+        progress = float(self.projected_distance()) if hasattr(self, 'projected_distance') else 0.0
+        if desc == 'rect_first_leg' and progress > 0.35:
+            return False
+        if desc not in ('rect_first_leg', 'rect_return_origin') and progress > 0.20:
+            return False
+        front = float(getattr(self, 'front_obstacle_distance', float('inf')))
+        scan = getattr(self, 'latest_scan', None)
+        if scan is None:
+            left = float('inf')
+        else:
+            left = self.sector_min_distance(
+                scan,
+                self.detour_side_center_deg - self.detour_side_test_window_deg,
+                self.detour_side_center_deg + self.detour_side_test_window_deg,
+            )
+        if not math.isfinite(left):
+            left = float('inf')
+        nearest = self.raw_detour_nearest_obstacle_distance_m()
+        if not math.isfinite(nearest) or nearest > self.detour_obstacle_detect_distance:
+            return False
+        if front <= self.avoid_watch_distance_m:
+            return False
+        if left > 0.55:
+            return False
+        angle = abs(float(getattr(self, 'front_obstacle_angle_deg', 0.0)))
+        if angle <= max(12.0, self.detour_front_test_angle_deg):
+            return False
+        return True
+
     def approaching_turn_segment_end(self):
         """Near the end of a move leg before the next turn — finish the leg, do not start detour."""
         if self.current_segment is None or self.current_segment.get('type') != 'move':
@@ -395,7 +480,12 @@ class DirectInertialTesterObstacleMixin:
         next_index = self.plan_index + 1
         if next_index >= len(self.plan):
             return False
-        return self.plan[next_index].get('type') == 'turn'
+        if self.plan[next_index].get('type') != 'turn':
+            return False
+        if hasattr(self, 'upcoming_move_obstacle_near_entry'):
+            if self.upcoming_move_obstacle_near_entry() is not None:
+                return False
+        return True
 
     def previous_segment_is_ring_corner_turn(self):
         prev_index = self.plan_index - 1
@@ -485,6 +575,8 @@ class DirectInertialTesterObstacleMixin:
             return None
         if self.is_turn_detour_segment():
             return 'turn_segment_no_detour'
+        if self.obstacle_is_beside_not_in_path():
+            return 'beside_not_in_path'
         if self.approaching_turn_segment_end():
             circle = self.active_obstacle_circle
             if circle is not None and self.circle_blocks_segment_path(circle):

@@ -2,7 +2,7 @@
 
 坐标约定（惯导起点，odom）：
 - 通道后惯导起点默认 (0, 0), yaw=90° (+Y)。
-- 各 move 段世界名义端点由 simulate_plan_world_poses 链式推演（含每弯弧线 ~12cm）。
+- 各 move 段世界名义端点由 simulate_plan_world_poses 链式推演（含 turn 弧线 ~12cm；弯后 reanchor 对齐实车 odom）。
 """
 
 import math
@@ -19,6 +19,64 @@ MOVE_SEGMENT_NAMES = (
     'rect_side_2',
     'rect_return_origin',
 )
+
+
+def build_world_ring_waypoints(
+    direction: str = 'clockwise',
+    first_leg_m: float = 1.10,
+    side_leg_m: float = 0.50,
+    top_leg_m: float = 2.80,
+    origin_xy: Point = (0.0, 0.0),
+) -> List[Point]:
+    """单套 odom 世界折线：入口→底边→…→回程（与 launch 边长一致，+Y/+X/-X/-Y）。"""
+    ox, oy = float(origin_xy[0]), float(origin_xy[1])
+    x, y = ox, oy
+    points: List[Point] = [(x, y)]
+    if direction == 'clockwise':
+        legs = (
+            (math.pi / 2.0, float(first_leg_m)),
+            (0.0, float(side_leg_m)),
+            (math.pi, float(top_leg_m)),
+            (-math.pi / 2.0, float(side_leg_m)),
+        )
+    else:
+        legs = (
+            (-math.pi / 2.0, float(first_leg_m)),
+            (math.pi, float(side_leg_m)),
+            (0.0, float(top_leg_m)),
+            (math.pi / 2.0, float(side_leg_m)),
+        )
+    for psi, length in legs:
+        x += math.cos(psi) * length
+        y += math.sin(psi) * length
+        points.append((float(x), float(y)))
+    sx, sy = points[-1]
+    ret_psi = math.atan2(oy - sy, ox - sx)
+    x += math.cos(ret_psi) * float(first_leg_m)
+    y += math.sin(ret_psi) * float(first_leg_m)
+    points.append((float(x), float(y)))
+    return points
+
+
+def world_ring_segment_endpoints(
+    segment_name: str,
+    direction: str = 'clockwise',
+    first_leg_m: float = 1.10,
+    side_leg_m: float = 0.50,
+    top_leg_m: float = 2.80,
+    origin_xy: Point = (0.0, 0.0),
+) -> Optional[Tuple[Point, Point]]:
+    """固定世界 S→E（段 i：waypoint[i]→waypoint[i+1]）。"""
+    name = str(segment_name or '').strip()
+    if name not in MOVE_SEGMENT_NAMES:
+        return None
+    idx = MOVE_SEGMENT_NAMES.index(name)
+    wps = build_world_ring_waypoints(
+        direction, first_leg_m, side_leg_m, top_leg_m, origin_xy=origin_xy
+    )
+    if idx + 1 >= len(wps):
+        return None
+    return wps[idx], wps[idx + 1]
 
 SEGMENT_LABELS_ZH = {
     'rect_first_leg': '底边 +Y',
@@ -701,11 +759,49 @@ def nominal_move_heading(
     side_leg_m: float = 0.50,
     top_leg_m: float = 2.80,
 ) -> Optional[float]:
-    endpoints = segment_endpoints_nominal(direction, first_leg_m, side_leg_m, top_leg_m)
-    if segment_name not in endpoints:
+    """Physical odom ψ for a move leg (AGENTS 顺时针：底边 +Y、左边 +X、顶边 -X、右边 -Y)。"""
+    return nominal_move_heading_rad(
+        segment_name, direction, first_leg_m, side_leg_m, top_leg_m
+    )
+
+
+def nominal_move_heading_rad(
+    segment_name: str,
+    direction: str = 'clockwise',
+    first_leg_m: float = 1.10,
+    side_leg_m: float = 0.50,
+    top_leg_m: float = 2.80,
+) -> Optional[float]:
+    """Physical chord heading in odom (raw IMU frame), independent of broken sim chain."""
+    name = str(segment_name or '').strip()
+    if not name:
         return None
-    start, end = endpoints[segment_name]
-    return math.atan2(end[1] - start[1], end[0] - start[0])
+    first = float(first_leg_m)
+    side = float(side_leg_m)
+    top = float(top_leg_m)
+    if direction == 'clockwise':
+        headings = {
+            'rect_first_leg': math.pi / 2.0,
+            'rect_side_1': 0.0,
+            'rect_top': math.pi,
+            'rect_side_2': -math.pi / 2.0,
+        }
+        if name == 'rect_return_origin':
+            p4 = (side - top, first - side)
+            p0 = (0.0, 0.0)
+            return math.atan2(p0[1] - p4[1], p0[0] - p4[0])
+        return headings.get(name)
+    headings = {
+        'rect_first_leg': -math.pi / 2.0,
+        'rect_side_1': math.pi,
+        'rect_top': 0.0,
+        'rect_side_2': math.pi / 2.0,
+    }
+    if name == 'rect_return_origin':
+        p4 = (top - side, first - side)
+        p0 = (0.0, 0.0)
+        return math.atan2(p0[1] - p4[1], p0[0] - p4[0])
+    return headings.get(name)
 
 
 def obstacle_along_segment_nominal(

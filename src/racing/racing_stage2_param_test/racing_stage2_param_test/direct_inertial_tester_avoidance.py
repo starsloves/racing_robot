@@ -62,6 +62,8 @@ class DirectInertialTesterAvoidanceMixin:
         self.goal_direct_phase_started_at = None
         self.avoid_entry_direct_goal = False
         self.avoid_entry_skipped_bypass = False
+        self.avoid_pre_corner_upcoming_segment = None
+        self._saved_mission_plan_frame = None
 
     @property
     def avoidance_phase(self):
@@ -164,7 +166,7 @@ class DirectInertialTesterAvoidanceMixin:
 
     def select_bypass_side(self, required_lat):
         """一次锁定绕边：内绕 preferred 优先；横偏明显走对侧；正中 preferred；否则比 clearance。"""
-        segment_name = (self.current_segment or {}).get('description', '')
+        segment_name = self._avoidance_plan_segment_name()
         preferred = preferred_bypass_side_for_segment(
             segment_name,
             getattr(self, 'test_direction', 'clockwise'),
@@ -299,14 +301,191 @@ class DirectInertialTesterAvoidanceMixin:
             )
         return None
 
+    # ------------------------------------------------------------------ pre-corner (lookahead on upcoming move after next turn)
+    def upcoming_move_segment_after_turn(self):
+        """Move leg that follows ``plan[index+1]`` turn."""
+        next_index = self.plan_index + 1
+        plan = getattr(self, 'plan', [])
+        if next_index + 1 >= len(plan):
+            return None
+        if plan[next_index].get('type') != 'turn':
+            return None
+        upcoming = plan[next_index + 1]
+        if upcoming.get('type') != 'move':
+            return None
+        return upcoming
+
+    def pre_corner_lookahead_along_max_m(self):
+        settle = float(getattr(self, 'move_heading_settle_m', 0.0))
+        return max(
+            self.entry_direct_entry_reach_m() + self.avoidance_rejoin_window_m(),
+            settle + 0.12,
+            float(getattr(self, 'avoid_pre_corner_upcoming_obs_max_along_m', 0.45)),
+        )
+
+    def _obstacle_on_nominal_move_plan(self, world_xy, plan_spec, obstacle_radius=0.12):
+        if plan_spec is None:
+            return None, None
+        along = world_segment.along_m(
+            world_xy,
+            plan_spec['start_xy'],
+            plan_spec['heading_rad'],
+        )
+        lateral = world_segment.lateral_m(
+            world_xy,
+            plan_spec['start_xy'],
+            plan_spec['heading_rad'],
+        )
+        half = self.driving_corridor_half_width_m() + float(obstacle_radius)
+        if abs(lateral) > half:
+            return None, None
+        return float(along), float(lateral)
+
+    def upcoming_move_obstacle_near_entry(self):
+        """Obstacle on the move leg after the next turn, within entry lookahead window."""
+        upcoming = self.upcoming_move_segment_after_turn()
+        if upcoming is None:
+            return None
+        name = str(upcoming.get('description', ''))
+        plan_spec = self.lookup_move_segment_world_plan(name)
+        if plan_spec is None:
+            return None
+        max_along = self.pre_corner_lookahead_along_max_m()
+        static = getattr(self, 'scenario_static_obstacles_world', [])
+        target = str(getattr(self, 'scenario_obstacle_segment', '') or '').strip()
+        if static and name == target:
+            sx, sy, sr = static[0]
+            along, _lat = self._obstacle_on_nominal_move_plan(
+                (float(sx), float(sy)), plan_spec, float(sr)
+            )
+            if along is None or along < -0.06 or along > max_along:
+                return None
+            return (name, along, (float(sx), float(sy)))
+        for circle in self.planning_obstacle_circles():
+            if not self.circle_counts_for_detour_trigger(circle):
+                continue
+            world = self.obstacle_center_world_xy(circle)
+            if world is None:
+                continue
+            radius = float(circle.get('radius', 0.12))
+            along, _lat = self._obstacle_on_nominal_move_plan(world, plan_spec, radius)
+            if along is None or along < -0.04 or along > max_along:
+                continue
+            return (name, along, (float(world[0]), float(world[1])))
+        return None
+
+    def pre_corner_move_predecessor(self, upcoming_segment_name):
+        """Clockwise ring: move leg immediately before ``upcoming`` (via corner turn)."""
+        order = (
+            'rect_first_leg',
+            'rect_side_1',
+            'rect_top',
+            'rect_side_2',
+            'rect_return_origin',
+        )
+        name = str(upcoming_segment_name or '')
+        if name not in order:
+            return None
+        index = order.index(name)
+        if index == 0:
+            return None
+        return order[index - 1]
+
+    def pre_corner_pair_allowed(self):
+        """Only pre-corner into a long straight (e.g. bottom return), not short sides."""
+        upcoming = self.upcoming_move_segment_after_turn()
+        if upcoming is None:
+            return False
+        upcoming_name = str(upcoming.get('description', ''))
+        plan_spec = self.lookup_move_segment_world_plan(upcoming_name)
+        if plan_spec is None:
+            return False
+        min_len = float(getattr(self, 'avoid_pre_corner_min_upcoming_seg_m', 0.95))
+        if float(plan_spec['length_m']) < min_len:
+            return False
+        pred = self.pre_corner_move_predecessor(upcoming_name)
+        current = str((self.current_segment or {}).get('description', ''))
+        return pred is not None and current == pred
+
+    def pre_corner_approach_remaining_gate_m(self):
+        seg_len = float((self.current_segment or {}).get('distance_m', 1.0))
+        cap = float(getattr(self, 'avoid_pre_corner_approach_remaining_m', 0.50))
+        corner_before = float(getattr(self, 'avoid_corner_zone_before_m', 0.55))
+        short_gate = max(0.16, min(corner_before * 0.42, seg_len * 0.48))
+        if seg_len < 0.68:
+            return min(cap, short_gate)
+        return min(cap, max(0.18, seg_len * 0.55))
+
+    def pre_corner_early_avoidance_applies(self):
+        if not self.avoidance_can_run() or getattr(self, 'avoidance_active', False):
+            return False
+        if not self.next_plan_segment_is_turn():
+            return False
+        if not self.pre_corner_pair_allowed():
+            return False
+        if self.upcoming_move_obstacle_near_entry() is None:
+            return False
+        remaining = self.move_segment_remaining_m()
+        if remaining is None:
+            return False
+        return remaining <= self.pre_corner_approach_remaining_gate_m()
+
+    def avoid_pre_corner_active(self):
+        return bool(getattr(self, 'avoid_pre_corner_upcoming_segment', None))
+
+    def _activate_pre_corner_avoidance_plan_frame(self, upcoming_name):
+        self.avoid_pre_corner_upcoming_segment = str(upcoming_name)
+        self._saved_mission_plan_frame = self._capture_segment_world_plan_frame()
+        self.apply_move_segment_world_plan(upcoming_name)
+
+    def _deactivate_pre_corner_avoidance_plan_frame(self):
+        saved = getattr(self, '_saved_mission_plan_frame', None)
+        if saved is not None:
+            self._restore_segment_world_plan_frame(saved)
+        self._saved_mission_plan_frame = None
+
+    def pre_corner_handoff_to_turn_ready(self):
+        pre = getattr(self, 'avoid_pre_corner_upcoming_segment', None)
+        if not pre or getattr(self, 'goal_direct_phase', '') != 'pass':
+            return False
+        if not (
+            self.obstacle_passed_for_handoff(margin_m=0.06)
+            or self.segment_along_past_locked_obstacle(margin_m=0.06)
+        ):
+            return False
+        saved = getattr(self, '_saved_mission_plan_frame', None)
+        if saved is None:
+            return False
+        self._restore_segment_world_plan_frame(saved)
+        try:
+            remaining = self.move_segment_remaining_m()
+            near_corner = (
+                (remaining is not None and remaining <= 0.20)
+                or self.tail_pass_near_corner_m()
+            )
+        finally:
+            self.apply_move_segment_world_plan(pre)
+        return near_corner and self.avoidance_clear_streak >= 1
+
+    def _avoidance_plan_segment_name(self):
+        pre = getattr(self, 'avoid_pre_corner_upcoming_segment', None)
+        if pre:
+            return str(pre)
+        return str((self.current_segment or {}).get('description', ''))
+
+    def _avoidance_plan_segment_length_m(self):
+        if getattr(self, 'avoid_pre_corner_upcoming_segment', None):
+            return float(self.segment_plan_length_m)
+        return float((self.current_segment or {}).get('distance_m', 0.0))
+
     def plan_avoidance_goals(self):
         """入障时算 bypass / pass / rejoin|next_leg 世界坐标与 need_direct_cut。"""
-        segment_name = (self.current_segment or {}).get('description', '')
+        segment_name = self._avoidance_plan_segment_name()
         world = self.locked_obstacle_world_xy_for_bypass()
         side = int(self.locked_bypass_side or 1)
         offset = float(self.avoid_target_offset_m)
         tol = float(self.distance_tolerance)
-        seg_len_plan = float((self.current_segment or {}).get('distance_m', 0.0))
+        seg_len_plan = self._avoidance_plan_segment_length_m()
         s_end = max(0.0, seg_len_plan - tol)
 
         s_obs_plan = getattr(self, 'locked_obstacle_along_s', None)
@@ -328,10 +507,14 @@ class DirectInertialTesterAvoidanceMixin:
 
         half_span = max(0.18, offset * 0.9)
         cut_len = float(getattr(self, 'avoid_goal_cut_segment_len_m', 0.68))
+        progress_plan = self.projected_distance()
         need_direct_cut = (
             (s_obs_plan + half_span > s_end - tol)
             or (seg_len_plan < cut_len)
         )
+        if getattr(self, 'avoid_pre_corner_upcoming_segment', None):
+            if progress_plan + 0.14 < float(s_obs_plan):
+                need_direct_cut = False
         self.need_direct_cut = need_direct_cut
 
         lateral = float(side) * offset
@@ -406,7 +589,7 @@ class DirectInertialTesterAvoidanceMixin:
             static = getattr(self, 'scenario_static_obstacles_world', [])
             for sx, sy, _sr in static:
                 along = self.progress_along_segment_m((sx, sy))
-                seg_len = float((self.current_segment or {}).get('distance_m', 99.0))
+                seg_len = self._avoidance_plan_segment_length_m()
                 if along is not None and -0.05 <= along <= seg_len + 0.20:
                     self.locked_obstacle_world_xy = (float(sx), float(sy))
                     break
@@ -501,7 +684,16 @@ class DirectInertialTesterAvoidanceMixin:
         return max(self.ENTRY_DIRECT_PROGRESS_WINDOW_M, settle + 0.10)
 
     def entry_direct_avoidance_applies(self):
-        """段首/弯后：障碍沿程在入口窗口内，或尾段几何不足 rejoin + 下一段 turn。"""
+        """段首/弯后/弯前预瞄：障碍沿程在入口窗口内，或尾段几何不足 rejoin + 下一段 turn。"""
+        if self.avoid_pre_corner_active():
+            s_obs = self.locked_obstacle_along_s_m()
+            if s_obs is None:
+                return False
+            progress = self.projected_distance()
+            ahead = float(s_obs) - float(progress)
+            return 0.0 <= ahead <= (
+                self.entry_direct_entry_reach_m() + self.avoidance_rejoin_window_m()
+            )
         if not self.move_segment_at_entry_context():
             return False
         if not self.segment_still_at_move_entry():
@@ -550,6 +742,8 @@ class DirectInertialTesterAvoidanceMixin:
 
     def corner_direct_cut_on_handoff(self):
         """过锥后是否直接交下一段 turn（短段 exit 或任意尾段 bypass→pass）。"""
+        if self.avoid_pre_corner_active():
+            return True
         if self.tail_pass_handoff_ready():
             return True
         if (
@@ -587,7 +781,15 @@ class DirectInertialTesterAvoidanceMixin:
         self.avoid_entry_direct_goal = True
         nearest = self.template_blocker_distance_m()
         nearest_val = float(nearest) if math.isfinite(nearest) else 99.0
-        if nearest_val <= self.ENTRY_DIRECT_SKIP_BYPASS_NEAREST_M:
+        skip_bypass = nearest_val <= self.ENTRY_DIRECT_SKIP_BYPASS_NEAREST_M
+        if getattr(self, '_post_turn_require_bypass', False):
+            skip_bypass = False
+            self._post_turn_require_bypass = False
+        if self.avoid_pre_corner_active() or (
+            self.move_segment_at_entry_context() and self.move_segment_follows_corner_turn()
+        ):
+            skip_bypass = False
+        if skip_bypass:
             seq = getattr(self, 'goal_direct_sequence', [])
             if 'pass' in seq:
                 self.goal_direct_index = seq.index('pass')
@@ -961,6 +1163,17 @@ class DirectInertialTesterAvoidanceMixin:
     def avoidance_should_enter(self):
         if not self.avoidance_can_run():
             return False
+        if self.pre_corner_early_avoidance_applies():
+            if self.obstacle_already_passed_in_mission():
+                return False
+            now_sec = self.control_now_sec() if hasattr(self, 'control_now_sec') else 0.0
+            if now_sec < getattr(self, 'detour_cooldown_until', 0.0):
+                return False
+            if not self.dwa_path_blocker_imminent():
+                return False
+            nearest = self.template_blocker_distance_m()
+            detect = float(self.detour_obstacle_detect_distance)
+            return math.isfinite(nearest) and nearest <= detect
         if not self.scenario_obstacle_applies_to_current_segment():
             return False
         if hasattr(self, 'approaching_turn_segment_end') and self.approaching_turn_segment_end():
@@ -1115,6 +1328,8 @@ class DirectInertialTesterAvoidanceMixin:
             or self.locked_obstacle_physically_passed()
         )
 
+        if self.pre_corner_handoff_to_turn_ready():
+            return True
         if self.tail_pass_handoff_ready():
             return True
 
@@ -1512,17 +1727,44 @@ class DirectInertialTesterAvoidanceMixin:
 
     # ------------------------------------------------------------------ mission helpers
     def mission_nominal_move_cmd(self, linear_mps):
-        if self.segment_heading is None or self.current_yaw is None:
+        if hasattr(self, '_mission_move_pd_terms'):
+            lat_term, head_term, _lateral_error, heading_error = self._mission_move_pd_terms()
+            head_deg = abs(math.degrees(heading_error))
+            angular = lat_term + head_term
+            if lat_term * head_term < 0.0 and head_deg < 12.0:
+                if head_deg < 5.0:
+                    angular = head_term
+                else:
+                    angular = 0.35 * lat_term + head_term
+            if head_deg > 20.0:
+                angular = self.clamp(angular, min(self.max_angular_speed, 0.45))
+            angular = self.clamp(angular, self.max_angular_speed)
+            linear = float(linear_mps) * max(0.55, math.cos(heading_error))
+            return linear, angular
+
+        nav_yaw = (
+            self.world_navigation_yaw()
+            if hasattr(self, 'world_navigation_yaw')
+            else self.current_yaw
+        )
+        if self.segment_heading is None or nav_yaw is None:
             return float(linear_mps), 0.0
         lateral_error = self.segment_lateral_offset_m()
-        heading_error = self.angle_error(self.segment_heading, self.current_yaw)
+        heading_error = self.angle_error(self.segment_heading, nav_yaw)
         lat_gain = 2.4
         head_deg = abs(math.degrees(heading_error))
         # 横偏大时仍保留航向项；否则只拧横向会把 yaw 拧飞（见 MOVE 日志 STEER_FLIP）。
         lat_eff = lat_gain
         if head_deg > 8.0:
             lat_eff = lat_gain * max(0.20, 1.0 - (head_deg - 8.0) / 28.0)
-        angular = lat_eff * (-lateral_error) + self.heading_kp * heading_error
+        lat_term = lat_eff * (-lateral_error)
+        head_term = self.heading_kp * heading_error
+        angular = lat_term + head_term
+        if lat_term * head_term < 0 and head_deg < 12.0:
+            if head_deg < 5.0:
+                angular = head_term
+            else:
+                angular = 0.35 * lat_term + head_term
         if head_deg > 20.0:
             angular = self.clamp(angular, min(self.max_angular_speed, 0.45))
         angular = self.clamp(angular, self.max_angular_speed)
@@ -1644,13 +1886,27 @@ class DirectInertialTesterAvoidanceMixin:
     def avoidance_enter(self, now_sec):
         self.avoidance_active = True
         self.avoidance_started_at = now_sec
+        self.avoidance_clear_streak = 0
+        self.avoidance_obstacle_passed = False
+        self.avoid_pre_corner_upcoming_segment = None
+        self._saved_mission_plan_frame = None
+        if self.pre_corner_early_avoidance_applies():
+            info = self.upcoming_move_obstacle_near_entry()
+            if info is not None:
+                self._activate_pre_corner_avoidance_plan_frame(info[0])
+                self.write_debug_log(
+                    'DECISION',
+                    (
+                        f'PRE_CORNER_ENTER current={self.current_segment.get("description", "?")} '
+                        f'upcoming={info[0]} obs_along={info[1]:.2f}m '
+                        f'remain={self.move_segment_remaining_m():.2f}m'
+                    ),
+                )
         self.avoidance_entry_progress = self.projected_distance()
         nearest = self.template_blocker_distance_m()
         self.avoidance_entry_nearest_m = (
             float(nearest) if math.isfinite(nearest) else 99.0
         )
-        self.avoidance_clear_streak = 0
-        self.avoidance_obstacle_passed = False
         self.lock_avoidance_geometry()
         self.locked_bypass_side_at_enter = self.locked_bypass_side
         self._last_avoid_cmd_log_at = -1.0
@@ -1667,6 +1923,11 @@ class DirectInertialTesterAvoidanceMixin:
         )
 
     def avoidance_exit(self, reason):
+        pre_corner = getattr(self, 'avoid_pre_corner_upcoming_segment', None)
+        if pre_corner and self.next_plan_segment_is_turn():
+            self._post_turn_require_bypass = True
+        self._deactivate_pre_corner_avoidance_plan_frame()
+        self.avoid_pre_corner_upcoming_segment = None
         direct_cut = getattr(self, 'need_direct_cut', False)
         if reason in ('segment_complete', 'recovered', 'direct_cut', 'corner_shortcut') and getattr(
             self, 'locked_obstacle_world_xy', None
@@ -1717,7 +1978,11 @@ class DirectInertialTesterAvoidanceMixin:
                 self.prepare_direct_cut_corner_handoff()
             if direct_cut and self.next_plan_segment_is_turn():
                 self._corner_shortcut_turn_target = self.upcoming_corner_target_yaw()
-            exit_reason = 'direct_cut' if direct_cut else 'segment_complete'
+            exit_reason = (
+                'corner_shortcut'
+                if direct_cut and self.next_plan_segment_is_turn()
+                else ('direct_cut' if direct_cut else 'segment_complete')
+            )
             self.avoidance_exit(exit_reason)
             if direct_cut and self.next_plan_segment_is_turn():
                 self.start_segment(self.plan_index + 1)

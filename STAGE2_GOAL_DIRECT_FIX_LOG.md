@@ -328,6 +328,18 @@ if dist <= 0.12:   # 或 0.15；勿再用 0.40
 
 **保留**：段内 PD / 绕障仍用 P0+ψ；**仅末段 finish 判定**用世界点距离。
 
+### Run F — 删除 `pre_corner_scenario_static_match` 捷径（2026-05-30）
+
+| 项 | 值 |
+|----|-----|
+| 改动 | `avoidance_should_enter` 去掉 `pre_corner_scenario_static_match()` 段名即进；删除该函数 |
+| 命令 | `auto_offline_test --group full` |
+| PASS/FAIL | **4 / 15** |
+| 对比 Run D baseline | `rect_return_50` **-0.280→-0.020 PASS**（回程段正常 AVOID_ENTER/EXIT，不再 side_2 误记 passed）；`side_2` 全程无 AVOID |
+| 仍 FAIL | 多为 clearance 略负（-0.02～-0.18 m），无 stuck |
+| PASS | `full_ring_no_obstacle`, `rect_return_50`, `rect_top_25`, `rect_top_90` |
+| 日志 | `log/stage2_param_test/汇总/test_summary.txt` |
+
 ---
 
-*最后更新：2026-05-25 · 当前 full baseline：11 PASS / 9 FAIL（Run D）· finish_proximity 待 Run E 替换*
+*最后更新：2026-05-30 · full：`auto_offline_test --group full` 4 PASS / 15 FAIL（Run F）*
