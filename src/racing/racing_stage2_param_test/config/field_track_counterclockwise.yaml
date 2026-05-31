@@ -1,0 +1,30 @@
+# 逆时针 — map 世界坐标
+# Stage1 结束 ψ=90° → rect_enter_align −90° → ψ=0° → 第一段沿 +X
+frame: map
+direction: counterclockwise
+channel_entry:
+  xy: [2.50, 3.20]
+  yaw_deg: 90.0
+segments:
+  rect_first_leg:
+    start: [2.62, 3.32]
+    end: [3.72, 3.32]
+    heading_deg: 0.0
+  # 竖边与 CW 对称：0.58m（原 0.80m）
+  rect_side_1:
+    start: [3.72, 3.32]
+    end: [3.72, 3.90]
+    heading_deg: 90.0
+  rect_top:
+    start: [3.72, 3.90]
+    end: [1.13, 3.90]
+    heading_deg: 180.0
+  rect_side_2:
+    start: [1.13, 3.90]
+    end: [1.13, 3.32]
+    heading_deg: -90.0
+  rect_return_origin:
+    start: [1.13, 3.32]
+    end: [2.62, 3.32]
+    heading_deg: 0.0
+mission_finish_segment: rect_return_origin

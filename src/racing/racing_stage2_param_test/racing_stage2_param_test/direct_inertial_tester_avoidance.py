@@ -275,23 +275,20 @@ class DirectInertialTesterAvoidanceMixin:
         geo = self._ring_track_geometry_kwargs()
         endpoints = segment_endpoints_world(
             geo['direction'],
-            geo['first_leg_m'],
-            geo['side_leg_m'],
-            geo['top_leg_m'],
-            origin_xy=geo.get('origin_xy', (0.0, 0.0)),
-            origin_yaw=geo.get('origin_yaw', 0.0),
+            config_path=geo.get('config_path'),
         )
         if name in endpoints:
             return endpoints[name][0]
         if (
-            self.current_position is not None
+            self.world_navigation_xy() is not None
             and self.segment_heading is not None
             and self.next_plan_segment_is_turn()
         ):
+            wx, wy = self.world_navigation_xy()
             next_turn = self.plan[self.plan_index + 1]
             x, y, next_heading = apply_turn_arc_world(
-                float(self.current_position[0]),
-                float(self.current_position[1]),
+                float(wx),
+                float(wy),
                 float(self.segment_heading),
                 float(next_turn.get('angle_deg', 0.0)),
             )
@@ -535,11 +532,7 @@ class DirectInertialTesterAvoidanceMixin:
             segment_name,
             geo['direction'],
             inward,
-            geo['first_leg_m'],
-            geo['side_leg_m'],
-            geo['top_leg_m'],
-            origin_xy=geo.get('origin_xy', (0.0, 0.0)),
-            origin_yaw=geo.get('origin_yaw', 0.0),
+            config_path=geo.get('config_path'),
         )
         if exit_goal is None:
             exit_goal = self.segment_progress_to_world(seg_len_plan, 0.0)
@@ -674,10 +667,10 @@ class DirectInertialTesterAvoidanceMixin:
         return self.move_segment_follows_corner_turn()
 
     def segment_still_at_move_entry(self):
-        progress = self.projected_distance()
+        travel = float(getattr(self, 'segment_integrated_distance_m', 0.0))
         settle = float(getattr(self, 'move_heading_settle_m', 0.0))
         window = max(self.ENTRY_DIRECT_PROGRESS_WINDOW_M, settle + 0.10)
-        return progress <= window
+        return travel <= window
 
     def entry_direct_entry_reach_m(self):
         settle = float(getattr(self, 'move_heading_settle_m', 0.0))
@@ -698,6 +691,9 @@ class DirectInertialTesterAvoidanceMixin:
             return False
         if not self.segment_still_at_move_entry():
             return False
+        # 首段/弯后横偏大时先贴回 plan，勿 ENTRY_DIRECT（场边 radar 会误判为挡路）。
+        if abs(self.segment_lateral_offset_m()) > 0.12:
+            return False
         s_obs = self.locked_obstacle_along_s_m()
         if s_obs is None:
             return False
@@ -714,31 +710,21 @@ class DirectInertialTesterAvoidanceMixin:
         return self.insufficient_remain_for_rejoin()
 
     def segment_end_obstacle_passed(self, margin_m=0.08):
-        """段末障碍：沿程 pass 可能顶满段长；到 E 附近且已有绕开横偏即视为过锥。"""
+        """段末障碍：必须靠近 plan 固定 E，且已有绕开横偏。"""
         if not self.insufficient_remain_for_rejoin():
             return False
-        target = float((self.current_segment or {}).get('distance_m', 0.0))
-        seg_tol = float(self.distance_tolerance)
-        progress = self.projected_distance()
         offset = float(self.avoid_target_offset_m)
         at_seg_end = (
-            progress + seg_tol >= max(0.0, target - seg_tol)
-            or self.distance_to_segment_plan_end_m() <= self.SEGMENT_END_REACH_M * 1.15
+            self.distance_to_segment_plan_end_m() <= self.SEGMENT_END_REACH_M * 1.15
         )
         lat_ok = abs(self.segment_lateral_offset_m()) >= offset * 0.32
         return at_seg_end and lat_ok
 
     def tail_pass_near_corner_m(self):
-        """尾段 handoff：世界坐标距 plan 段末 E 或沿程达标（不用场景比例/固定角点区）。"""
-        seg_tol = float(self.distance_tolerance)
-        target = float((self.current_segment or {}).get('distance_m', 0.0))
-        progress = self.projected_distance()
-        end_thresh = self.segment_end_progress_threshold_m(target, seg_tol)
+        """尾段 handoff：仅认世界距 plan 段末 E（禁止沿程虚高提前切角）。"""
         end_reach = self.SEGMENT_END_REACH_M * 1.25
-        return (
-            self.distance_to_segment_plan_end_m() <= end_reach
-            or progress + seg_tol >= end_thresh
-        )
+        dist_e = self.distance_to_segment_plan_end_m()
+        return math.isfinite(dist_e) and dist_e <= end_reach
 
     def corner_direct_cut_on_handoff(self):
         """过锥后是否直接交下一段 turn（短段 exit 或任意尾段 bypass→pass）。"""
@@ -752,6 +738,7 @@ class DirectInertialTesterAvoidanceMixin:
             and getattr(self, 'goal_direct_phase', '') == 'pass'
             and self.obstacle_passed_for_handoff(margin_m=0.06)
             and self.tail_pass_near_corner_m()
+            and abs(self.segment_lateral_offset_m()) <= self.exit_handoff_lat_limit_m()
         ):
             return True
         return (
@@ -868,13 +855,9 @@ class DirectInertialTesterAvoidanceMixin:
         return max(float(target_m) - tol, float(target_m) * 0.88)
 
     def direct_cut_at_segment_end(self, seg_tol=None):
-        """段末：名义沿程达标或已靠近 plan 终点 E。"""
-        tol = float(seg_tol if seg_tol is not None else self.distance_tolerance)
-        target = float((self.current_segment or {}).get('distance_m', 0.0))
-        progress = self.projected_distance()
-        along_ok = progress + tol >= self.segment_end_progress_threshold_m(target, tol)
-        end_ok = self.distance_to_segment_plan_end_m() <= self.SEGMENT_END_REACH_M
-        return along_ok or end_ok
+        """段末：必须靠近 plan 固定终点 E（世界坐标）。"""
+        dist_e = self.distance_to_segment_plan_end_m()
+        return math.isfinite(dist_e) and dist_e <= self.SEGMENT_END_REACH_M
 
     def dynamic_rejoin_goal_xy(self):
         """Rejoin target stays ahead of progress (never behind the robot)."""
@@ -990,7 +973,10 @@ class DirectInertialTesterAvoidanceMixin:
         remaining = max(0.0, end_thresh - progress)
         target_lat = self.current_exit_lateral_m()
         lateral_error = self.segment_lateral_offset_m() - target_lat
-        heading_error = self.angle_error(self.segment_heading, self.current_yaw)
+        if hasattr(self, '_mission_move_heading_error_rad'):
+            heading_error = self._mission_move_heading_error_rad()
+        else:
+            heading_error = self.angle_error(self.segment_heading, self.current_yaw)
         head_deg = abs(math.degrees(heading_error))
         lat_gain = 2.4
         if progress >= end_thresh and abs(lateral_error) > 0.06 and head_deg <= 20.0:
@@ -1001,8 +987,9 @@ class DirectInertialTesterAvoidanceMixin:
             if head_deg > 8.0:
                 lat_gain_eff = lat_gain * max(0.35, 1.0 - (head_deg - 8.0) / 32.0)
             head_kp_eff = self.heading_kp * (0.45 if head_deg > 15.0 else 0.70)
+        lat_term = self.segment_lateral_pd_omega(lateral_error, lat_gain_eff)
         angular = self.clamp(
-            lat_gain_eff * (-lateral_error) + head_kp_eff * heading_error,
+            lat_term + head_kp_eff * heading_error,
             self.avoid_max_angular_speed,
         )
         v_max = self.goal_direct_base_speed_mps()
@@ -1019,8 +1006,9 @@ class DirectInertialTesterAvoidanceMixin:
             linear = min(linear, v_max * 0.55)
         if not self.avoid_template_feasible:
             linear = 0.0
+            lat_term = self.segment_lateral_pd_omega(lateral_error, lat_gain * 0.6)
             angular = self.clamp(
-                lat_gain * 0.6 * (-lateral_error) + self.heading_kp * 0.6 * heading_error,
+                lat_term + self.heading_kp * 0.6 * heading_error,
                 self.avoid_max_angular_speed * 0.6,
             )
         if not self.goal_motion_allows_cmd(linear, angular):
@@ -1058,9 +1046,10 @@ class DirectInertialTesterAvoidanceMixin:
 
     def distance_to_active_goal_m(self):
         goal = self.active_avoidance_goal_xy()
-        if goal is None or self.current_position is None:
+        world_xy = self.world_navigation_xy()
+        if goal is None or world_xy is None:
             return float('inf')
-        return math.hypot(goal[0] - self.current_position[0], goal[1] - self.current_position[1])
+        return math.hypot(goal[0] - world_xy[0], goal[1] - world_xy[1])
 
     def goal_reach_tolerance_m(self):
         return float(getattr(self, 'avoid_goal_reach_tol_m', 0.07))
@@ -1139,11 +1128,35 @@ class DirectInertialTesterAvoidanceMixin:
             return float(
                 scenario_circle.get('nearest_distance', scenario_circle.get('closest_x', 99.0))
             )
-        nearest = self.detour_nearest_obstacle_distance_m()
-        circle = self.active_obstacle_circle
-        if circle is not None:
-            return float(circle.get('nearest_distance', circle.get('closest_x', nearest)))
-        return nearest
+        return self.detour_nearest_obstacle_distance_m()
+
+    def avoidance_enter_distance_m(self):
+        return max(
+            float(self.avoid_watch_distance_m),
+            float(self.detour_obstacle_detect_distance) * 0.72,
+        )
+
+    def avoidance_in_approach_envelope(self):
+        if self.avoidance_active or not self.avoidance_can_run():
+            return False
+        if getattr(self, 'post_turn_edge_guard_active', lambda: False)():
+            return False
+        if hasattr(self, 'approaching_turn_segment_end') and self.approaching_turn_segment_end():
+            return False
+        if not self.dwa_path_blocker_imminent():
+            return False
+        nearest = self.template_blocker_distance_m()
+        if not math.isfinite(nearest):
+            return False
+        enter_dist = self.avoidance_enter_distance_m()
+        approach_far = min(
+            float(self.detour_obstacle_detect_distance),
+            enter_dist + 0.28,
+        )
+        return (
+            nearest > float(self.avoid_watch_distance_m)
+            and nearest <= approach_far
+        )
 
     def scenario_obstacle_applies_to_current_segment(self):
         target_segment = getattr(self, 'scenario_obstacle_segment', '')
@@ -1177,9 +1190,7 @@ class DirectInertialTesterAvoidanceMixin:
         if not self.scenario_obstacle_applies_to_current_segment():
             return False
         if hasattr(self, 'approaching_turn_segment_end') and self.approaching_turn_segment_end():
-            circle = self.active_obstacle_circle
-            if circle is None or not self.circle_blocks_segment_path(circle):
-                return False
+            return False
         now_sec = self.control_now_sec() if hasattr(self, 'control_now_sec') else 0.0
         if now_sec < getattr(self, 'detour_cooldown_until', 0.0):
             return False
@@ -1189,23 +1200,20 @@ class DirectInertialTesterAvoidanceMixin:
             return False
         if self.obstacle_already_passed_in_mission():
             return False
-        if not self.dwa_path_blocker_imminent():
-            return False
-        nearest = self.template_blocker_distance_m()
-        return math.isfinite(nearest) and nearest <= self.avoid_watch_distance_m
-
-    def avoidance_in_approach_envelope(self):
-        if self.avoidance_active or not self.avoidance_can_run():
+        if (
+            (self.current_segment or {}).get('type') == 'move'
+            and abs(self.segment_lateral_offset_m()) > 0.12
+            and self.move_segment_at_entry_context()
+        ):
             return False
         if not self.dwa_path_blocker_imminent():
             return False
         nearest = self.template_blocker_distance_m()
-        if not math.isfinite(nearest):
-            return False
-        return (
-            nearest > self.avoid_watch_distance_m
-            and nearest <= self.detour_obstacle_detect_distance
-        )
+        enter_dist = self.avoidance_enter_distance_m()
+        seg_len = float((self.current_segment or {}).get('distance_m', 99.0))
+        if seg_len <= 0.68:
+            enter_dist = min(enter_dist, 0.65)
+        return math.isfinite(nearest) and nearest <= enter_dist
 
     def mission_obstacle_linear_cap_mps(self):
         if not self.avoidance_in_approach_envelope():
@@ -1255,14 +1263,16 @@ class DirectInertialTesterAvoidanceMixin:
     def obstacle_center_world_xy(self, circle):
         if circle is None:
             return None
-        if self.current_position is None or self.current_yaw is None:
+        world_xy = self.world_navigation_xy()
+        nav_yaw = self.world_navigation_yaw()
+        if world_xy is None or nav_yaw is None:
             return None
         cx = float(circle.get('center_x', 0.0))
         cy = float(circle.get('center_y', 0.0))
-        cos_y = math.cos(self.current_yaw)
-        sin_y = math.sin(self.current_yaw)
-        wx = self.current_position[0] + cos_y * cx - sin_y * cy
-        wy = self.current_position[1] + sin_y * cx + cos_y * cy
+        cos_y = math.cos(nav_yaw)
+        sin_y = math.sin(nav_yaw)
+        wx = world_xy[0] + cos_y * cx - sin_y * cy
+        wy = world_xy[1] + sin_y * cx + cos_y * cy
         return wx, wy
 
     def locked_obstacle_physically_passed(self):
@@ -1304,13 +1314,21 @@ class DirectInertialTesterAvoidanceMixin:
         del margin_m
         return self.robot_passed_locked_obstacle()
 
-    def recover_track_complete(self):
+    def avoidance_mission_heading_err_rad(self):
+        """Mission move 同款航向误差（odom 物理角 vs 段 ψ→odom）。"""
+        if hasattr(self, '_mission_move_heading_error_rad'):
+            return abs(float(self._mission_move_heading_error_rad()))
         if self.segment_heading is None or self.current_yaw is None:
-            return False
-        heading_err = abs(self.angle_error(self.segment_heading, self.current_yaw))
+            return float('inf')
+        return abs(self.angle_error(self.segment_heading, self.current_yaw))
+
+    def avoidance_heading_rejoin_ok(self):
+        return self.avoidance_mission_heading_err_rad() <= self.avoid_rejoin_heading_tol
+
+    def recover_track_complete(self):
         lateral_err = abs(self.segment_lateral_offset_m())
         return (
-            heading_err <= self.avoid_rejoin_heading_tol
+            self.avoidance_heading_rejoin_ok()
             and lateral_err <= self.avoid_rejoin_lateral_tol_m
         )
 
@@ -1346,8 +1364,7 @@ class DirectInertialTesterAvoidanceMixin:
         if phase == 'exit' and getattr(self, 'need_direct_cut', False):
             if not passed_ok:
                 return False
-            end_thresh = self.segment_end_progress_threshold_m(target, seg_tol)
-            if progress + seg_tol < end_thresh and self.distance_to_segment_plan_end_m() > self.SEGMENT_END_REACH_M:
+            if self.distance_to_segment_plan_end_m() > self.SEGMENT_END_REACH_M:
                 return False
             handoff_lat = self.exit_handoff_lat_limit_m()
             if abs(self.segment_lateral_offset_m()) > handoff_lat:
@@ -1362,16 +1379,21 @@ class DirectInertialTesterAvoidanceMixin:
         if phase == 'rejoin':
             self.dynamic_rejoin_goal_xy()
             rejoin_along = getattr(self, 'goal_rejoin_along_m', None)
-            if rejoin_along is not None and progress + seg_tol >= float(rejoin_along) and lat_ok:
+            if (
+                rejoin_along is not None
+                and progress + seg_tol >= float(rejoin_along)
+                and lat_ok
+                and self.avoidance_heading_rejoin_ok()
+            ):
                 return self.avoidance_clear_streak >= 1
 
         if dist > tol * 1.35 and phase != 'next_leg':
             return False
         if self.recover_track_complete():
             return self.avoidance_clear_streak >= 1
-        if lat_ok:
+        if lat_ok and self.avoidance_heading_rejoin_ok():
             return self.avoidance_clear_streak >= 1
-        return dist <= tol * 0.85
+        return dist <= tol * 0.85 and self.avoidance_heading_rejoin_ok()
 
     def segment_avoidance_handoff_ready(self):
         return self.goal_direct_handoff_ready()
@@ -1575,7 +1597,7 @@ class DirectInertialTesterAvoidanceMixin:
 
     def goal_direct_cmd(self, now_sec):
         del now_sec
-        if self.current_position is None or self.current_yaw is None:
+        if self.world_navigation_xy() is None or self.current_yaw is None:
             return 0.0, 0.0
 
         self.update_goal_direct_phase()
@@ -1593,10 +1615,16 @@ class DirectInertialTesterAvoidanceMixin:
             return 0.0, 0.0
 
         gx, gy = float(goal[0]), float(goal[1])
-        x, y = float(self.current_position[0]), float(self.current_position[1])
+        world_xy = self.world_navigation_xy()
+        if world_xy is None:
+            return 0.0, 0.0
+        x, y = float(world_xy[0]), float(world_xy[1])
         dist = math.hypot(gx - x, gy - y)
         heading_cmd = math.atan2(gy - y, gx - x)
-        heading_err = self.angle_error(heading_cmd, self.current_yaw)
+        nav_yaw = self.world_navigation_yaw()
+        if nav_yaw is None:
+            nav_yaw = self.current_yaw
+        heading_err = self.angle_error(heading_cmd, nav_yaw)
 
         kp = float(getattr(self, 'avoid_goal_heading_kp', self.heading_kp))
         if phase == 'bypass':
@@ -1643,6 +1671,23 @@ class DirectInertialTesterAvoidanceMixin:
             self.avoid_forbidden_linear_block = linear < 0.02
         else:
             self.avoid_forbidden_linear_block = False
+
+        if phase == 'rejoin' and self.robot_passed_locked_obstacle():
+            seg_head_err = 0.0
+            if hasattr(self, '_mission_move_heading_error_rad'):
+                seg_head_err = self._mission_move_heading_error_rad()
+            elif self.segment_heading is not None and self.current_yaw is not None:
+                seg_head_err = self.angle_error(self.segment_heading, self.current_yaw)
+            if abs(seg_head_err) > self.avoid_rejoin_heading_tol:
+                kp_seg = float(getattr(self, 'avoid_goal_heading_kp', self.heading_kp)) * 1.15
+                omega = self.clamp(kp_seg * seg_head_err, self.avoid_max_angular_speed)
+                head_scale = self._clamp01(1.0 - abs(seg_head_err) / math.radians(42.0))
+                linear = min(
+                    linear,
+                    self.avoid_speed_rejoin_mps * max(0.30, head_scale),
+                )
+                if not self.goal_motion_allows_cmd(linear, omega):
+                    linear = min(linear, self.avoid_approach_creep_speed_mps * 0.35)
 
         return max(0.0, linear), omega
 
@@ -1727,21 +1772,6 @@ class DirectInertialTesterAvoidanceMixin:
 
     # ------------------------------------------------------------------ mission helpers
     def mission_nominal_move_cmd(self, linear_mps):
-        if hasattr(self, '_mission_move_pd_terms'):
-            lat_term, head_term, _lateral_error, heading_error = self._mission_move_pd_terms()
-            head_deg = abs(math.degrees(heading_error))
-            angular = lat_term + head_term
-            if lat_term * head_term < 0.0 and head_deg < 12.0:
-                if head_deg < 5.0:
-                    angular = head_term
-                else:
-                    angular = 0.35 * lat_term + head_term
-            if head_deg > 20.0:
-                angular = self.clamp(angular, min(self.max_angular_speed, 0.45))
-            angular = self.clamp(angular, self.max_angular_speed)
-            linear = float(linear_mps) * max(0.55, math.cos(heading_error))
-            return linear, angular
-
         nav_yaw = (
             self.world_navigation_yaw()
             if hasattr(self, 'world_navigation_yaw')
@@ -1753,18 +1783,17 @@ class DirectInertialTesterAvoidanceMixin:
         heading_error = self.angle_error(self.segment_heading, nav_yaw)
         lat_gain = 2.4
         head_deg = abs(math.degrees(heading_error))
-        # 横偏大时仍保留航向项；否则只拧横向会把 yaw 拧飞（见 MOVE 日志 STEER_FLIP）。
+        lat_abs = abs(lateral_error)
         lat_eff = lat_gain
         if head_deg > 8.0:
             lat_eff = lat_gain * max(0.20, 1.0 - (head_deg - 8.0) / 28.0)
-        lat_term = lat_eff * (-lateral_error)
-        head_term = self.heading_kp * heading_error
-        angular = lat_term + head_term
-        if lat_term * head_term < 0 and head_deg < 12.0:
-            if head_deg < 5.0:
-                angular = head_term
-            else:
-                angular = 0.35 * lat_term + head_term
+        # 横偏 >12cm 时先压回弦线，暂 weaken 航向项，避免 STEER_FLIP 左右拧。
+        lat_term = self.segment_lateral_pd_omega(lateral_error, lat_eff)
+        if lat_abs > 0.12:
+            head_scale = max(0.15, 1.0 - (lat_abs - 0.12) / 0.20)
+            angular = lat_term + head_scale * self.heading_kp * heading_error
+        else:
+            angular = lat_term + self.heading_kp * heading_error
         if head_deg > 20.0:
             angular = self.clamp(angular, min(self.max_angular_speed, 0.45))
         angular = self.clamp(angular, self.max_angular_speed)
@@ -1798,13 +1827,13 @@ class DirectInertialTesterAvoidanceMixin:
         return abs(lateral) <= half_width
 
     def mission_passed_static_obstacle_adjustment(self, linear, angular):
-        if self.avoidance_active or self.current_position is None:
+        if self.avoidance_active or self.world_navigation_xy() is None:
             return linear, angular
         static = getattr(self, 'scenario_static_obstacles_world', [])
         passed = getattr(self, 'avoidance_passed_obstacles_world', [])
         if not static or not passed:
             return linear, angular
-        x, y = self.current_position
+        x, y = self.world_navigation_xy()
         body = self.robot_body_radius_m()
         best_cap = None
         for sx, sy, sr in static:
@@ -1910,6 +1939,8 @@ class DirectInertialTesterAvoidanceMixin:
         self.lock_avoidance_geometry()
         self.locked_bypass_side_at_enter = self.locked_bypass_side
         self._last_avoid_cmd_log_at = -1.0
+        if hasattr(self, 'log_obstacle_perception_snapshot'):
+            self.log_obstacle_perception_snapshot('AVOID_ENTER')
         self.write_debug_log(
             'DECISION',
             (
@@ -1937,17 +1968,24 @@ class DirectInertialTesterAvoidanceMixin:
             self.detour_cooldown_until = now_sec + float(getattr(self, 'detour_cooldown_sec', 2.0))
             if hasattr(self, 'segment_started_at') and self.segment_started_at is not None:
                 self.segment_started_at = now_sec
+        head_err_deg = math.degrees(self.avoidance_mission_heading_err_rad())
         self.write_debug_log(
             'DECISION',
             (
                 f'AVOID_EXIT reason={reason} mode={self.avoidance_phase} '
                 f'side={self.locked_bypass_side:+d} progress={self.projected_distance():.2f}m '
-                f'lat={self.segment_lateral_offset_m():.2f}m cut={direct_cut} '
+                f'lat={self.segment_lateral_offset_m():.2f}m head_err={head_err_deg:.1f}deg cut={direct_cut} '
                 f'| {self.format_goal_compact()} '
                 f'| {self.format_template_avoid_compact()} '
                 f'| {self.format_scan_ranges_compact()}'
             ),
         )
+        if reason in ('segment_complete', 'recovered', 'direct_cut', 'corner_shortcut'):
+            if self.avoidance_mission_heading_err_rad() > math.radians(8.0):
+                self.move_heading_settle_m = max(
+                    float(getattr(self, 'move_heading_settle_m', 0.4)),
+                    0.65,
+                )
         self.reset_avoidance_runtime()
 
     def avoidance_step(self, now_sec):

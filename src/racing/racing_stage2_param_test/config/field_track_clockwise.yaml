@@ -1,0 +1,30 @@
+# 顺时针 — map 世界坐标
+# Stage1 结束 corridor_goal (2.50, 3.20) ψ=90° → rect_enter_align +90° → ψ=180° → 第一段沿 -X
+frame: map
+direction: clockwise
+channel_entry:
+  xy: [2.50, 3.20]
+  yaw_deg: 90.0
+segments:
+  rect_first_leg:
+    start: [2.38, 3.32]
+    end: [1.28, 3.32]
+    heading_deg: 180.0
+  # 竖边场测校准：沿程≈0.58m 即到左上拐角（原 0.80m 偏长 0.22m）
+  rect_side_1:
+    start: [1.28, 3.32]
+    end: [1.28, 3.90]
+    heading_deg: 90.0
+  rect_top:
+    start: [1.28, 3.90]
+    end: [3.87, 3.90]
+    heading_deg: 0.0
+  rect_side_2:
+    start: [3.87, 3.90]
+    end: [3.87, 3.32]
+    heading_deg: -90.0
+  rect_return_origin:
+    start: [3.87, 3.32]
+    end: [2.38, 3.32]
+    heading_deg: 180.0
+mission_finish_segment: rect_return_origin

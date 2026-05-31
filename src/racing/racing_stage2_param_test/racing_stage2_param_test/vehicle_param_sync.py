@@ -17,11 +17,18 @@ def sync_stage2_runtime_parameters(node):
     node.distance_tolerance = float(node.get_parameter('distance_tolerance').value)
     node.heading_tolerance = math.radians(float(node.get_parameter('heading_tolerance_deg').value))
     node.segment_timeout = float(node.get_parameter('segment_timeout').value)
-    node.pre_loop_plan_json = node.get_parameter('pre_loop_plan_json').value
+    node.pre_loop_plan_json = '[]'
     node.use_corridor_path = bool(node.get_parameter('use_corridor_path').value)
     node.post_corridor_path_plan_json = node.get_parameter('post_corridor_path_plan_json').value
-    node.corridor_path_skip_pre_loop_plan = bool(
-        node.get_parameter('corridor_path_skip_pre_loop_plan').value
+    node.corridor_path_skip_pre_loop_plan = True
+    node.corridor_waypoints_json = node.get_parameter('corridor_waypoints_json').value
+    node.corridor_waypoints_are_global = bool(
+        node.get_parameter('corridor_waypoints_are_global').value
+    )
+    node.corridor_waypoints = node.parse_waypoints_json(
+        node.corridor_waypoints_json,
+        'corridor_waypoints_json',
+        node.corridor_linear_speed,
     )
     node.detour_obstacle_distance = float(node.get_parameter('detour_obstacle_distance').value)
 
@@ -29,14 +36,11 @@ def sync_stage2_runtime_parameters(node):
 def sync_tester_runtime_parameters(node):
     node.test_direction_raw = str(node.get_parameter('test_direction').value).strip()
     node.test_direction = node.resolve_test_direction(node.test_direction_raw)
-    node.test_start_mode = str(node.get_parameter('test_start_mode').value).strip().lower() or 'auto'
     node.assume_channel_entry_yaw = bool(node.get_parameter('assume_channel_entry_yaw').value)
     node.test_feedback_prefix = (
         str(node.get_parameter('test_feedback_prefix').value).strip() or '惯导参数测试'
     )
-    node.rectangle_first_leg_m = max(0.0, float(node.get_parameter('rectangle_first_leg_m').value))
-    node.rectangle_side_leg_m = max(0.0, float(node.get_parameter('rectangle_side_leg_m').value))
-    node.rectangle_top_leg_m = max(0.0, float(node.get_parameter('rectangle_top_leg_m').value))
+    node.field_track_config = str(node.get_parameter('field_track_config').value).strip()
     node.obstacle_circle_topic = (
         str(node.get_parameter('obstacle_circle_topic').value).strip() or 'detected_obstacle_circles'
     )

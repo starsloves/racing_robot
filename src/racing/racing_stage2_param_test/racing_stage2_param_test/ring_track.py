@@ -1,14 +1,24 @@
-"""回字形测试赛道几何（与 build_ring_plan 一致）。
+"""回字形测试赛道几何。
 
-坐标约定（惯导起点，odom）：
-- 通道后惯导起点默认 (0, 0), yaw=90° (+Y)。
-- 各 move 段世界名义端点由 simulate_plan_world_poses 链式推演（含 turn 弧线 ~12cm；弯后 reanchor 对齐实车 odom）。
+真值：`config/field_track_*.yaml` 中每段 S、E、ψ（map 世界坐标，与 inertial_stage2 corridor_goal 同系）。
+- `channel_entry` 仅 rect_enter_align 参考；move 段 S/E 见 YAML。
+- `simulate_plan_world_poses` 仅离线对照，不作控制用 nominal。
 """
 
 import math
 from typing import Dict, List, Optional, Tuple
 
 from racing_stage2_param_test import world_segment
+from racing_stage2_param_test.field_track import (
+    build_ring_move_distances,
+    field_channel_entry_xy,
+    field_channel_entry_yaw_rad,
+    field_corner_turn_deg,
+    field_entry_turn_deg,
+    field_mission_finish_xy,
+    field_move_segment_specs,
+    field_segment_endpoints,
+)
 
 Point = Tuple[float, float]
 
@@ -20,70 +30,12 @@ MOVE_SEGMENT_NAMES = (
     'rect_return_origin',
 )
 
-
-def build_world_ring_waypoints(
-    direction: str = 'clockwise',
-    first_leg_m: float = 1.10,
-    side_leg_m: float = 0.50,
-    top_leg_m: float = 2.80,
-    origin_xy: Point = (0.0, 0.0),
-) -> List[Point]:
-    """单套 odom 世界折线：入口→底边→…→回程（与 launch 边长一致，+Y/+X/-X/-Y）。"""
-    ox, oy = float(origin_xy[0]), float(origin_xy[1])
-    x, y = ox, oy
-    points: List[Point] = [(x, y)]
-    if direction == 'clockwise':
-        legs = (
-            (math.pi / 2.0, float(first_leg_m)),
-            (0.0, float(side_leg_m)),
-            (math.pi, float(top_leg_m)),
-            (-math.pi / 2.0, float(side_leg_m)),
-        )
-    else:
-        legs = (
-            (-math.pi / 2.0, float(first_leg_m)),
-            (math.pi, float(side_leg_m)),
-            (0.0, float(top_leg_m)),
-            (math.pi / 2.0, float(side_leg_m)),
-        )
-    for psi, length in legs:
-        x += math.cos(psi) * length
-        y += math.sin(psi) * length
-        points.append((float(x), float(y)))
-    sx, sy = points[-1]
-    ret_psi = math.atan2(oy - sy, ox - sx)
-    x += math.cos(ret_psi) * float(first_leg_m)
-    y += math.sin(ret_psi) * float(first_leg_m)
-    points.append((float(x), float(y)))
-    return points
-
-
-def world_ring_segment_endpoints(
-    segment_name: str,
-    direction: str = 'clockwise',
-    first_leg_m: float = 1.10,
-    side_leg_m: float = 0.50,
-    top_leg_m: float = 2.80,
-    origin_xy: Point = (0.0, 0.0),
-) -> Optional[Tuple[Point, Point]]:
-    """固定世界 S→E（段 i：waypoint[i]→waypoint[i+1]）。"""
-    name = str(segment_name or '').strip()
-    if name not in MOVE_SEGMENT_NAMES:
-        return None
-    idx = MOVE_SEGMENT_NAMES.index(name)
-    wps = build_world_ring_waypoints(
-        direction, first_leg_m, side_leg_m, top_leg_m, origin_xy=origin_xy
-    )
-    if idx + 1 >= len(wps):
-        return None
-    return wps[idx], wps[idx + 1]
-
 SEGMENT_LABELS_ZH = {
-    'rect_first_leg': '底边 +Y',
-    'rect_side_1': '左边 +X',
-    'rect_top': '顶边 -X',
-    'rect_side_2': '右边 -Y',
-    'rect_return_origin': '回程底边',
+    'rect_first_leg': '首段 −X',
+    'rect_side_1': '左边 +Y',
+    'rect_top': '顶边 +X',
+    'rect_side_2': '右边 −Y',
+    'rect_return_origin': '回程 −X',
 }
 
 CLOCKWISE_INWARD_BYPASS_SIDE: Dict[str, int] = {
@@ -95,7 +47,6 @@ CLOCKWISE_INWARD_BYPASS_SIDE: Dict[str, int] = {
     'rect_return_origin': -1,
 }
 
-RING_ENTRY_POINT: Point = (0.0, 0.0)
 RING_CHANNEL_ENTRY_YAW_RAD = math.pi / 2.0
 RING_FIRST_LEG_YAW_RAD = math.pi
 
@@ -105,6 +56,24 @@ DEFAULT_TURN_ANGULAR_RPS = 0.65
 DEFAULT_ENTRY_TURN_DEG = 90.0
 
 CORRIDOR_ENTRY_LENGTH_M = 0.80
+
+
+def ring_channel_entry(
+    direction: str = 'clockwise',
+    config_path: Optional[str] = None,
+) -> Point:
+    """Stage2 入口 map 坐标（yaml channel_entry.xy，默认 2.50, 3.20）。"""
+    return field_channel_entry_xy(direction, config_path)
+
+
+def _default_origin_xy(
+    origin_xy: Optional[Point],
+    direction: str = 'clockwise',
+    config_path: Optional[str] = None,
+) -> Point:
+    if origin_xy is not None:
+        return origin_xy
+    return ring_channel_entry(direction, config_path)
 
 
 def apply_turn_arc_world(
@@ -134,17 +103,23 @@ def apply_turn_arc_world(
     return x, y, yaw + angle_rad
 
 
+def ring_turn_angles(direction: str = 'clockwise') -> Tuple[float, float]:
+    entry = 90.0 if str(direction) == 'clockwise' else -90.0
+    return entry, -entry
+
+
 def build_ring_plan_for_sim(
     direction: str = 'clockwise',
-    first_leg_m: float = 1.10,
-    side_leg_m: float = 0.50,
-    top_leg_m: float = 2.80,
+    config_path: Optional[str] = None,
     ring_linear_speed: float = 0.24,
     turn_linear_speed: float = DEFAULT_TURN_LINEAR_MPS,
+    **_deprecated_leg_lengths,
 ) -> List[dict]:
-    """Mirror DirectInertialTester.build_ring_plan (move/turn only)."""
-    entry_turn = 90.0 if direction == 'clockwise' else -90.0
-    corner_turn = -entry_turn
+    """Mirror DirectInertialTester.build_ring_plan; move 段 distance 由 YAML 沿程长度派生。"""
+    del _deprecated_leg_lengths
+    entry_turn = field_entry_turn_deg(direction, config_path)
+    corner_turn = field_corner_turn_deg(direction, config_path)
+    dists = build_ring_move_distances(direction, config_path)
     return [
         {
             'type': 'turn',
@@ -154,50 +129,67 @@ def build_ring_plan_for_sim(
         },
         {
             'type': 'move',
-            'distance_m': first_leg_m,
+            'distance_m': dists['rect_first_leg'],
             'speed': ring_linear_speed,
             'description': 'rect_first_leg',
         },
         {'type': 'turn', 'angle_deg': corner_turn, 'description': 'rect_corner_1'},
         {
             'type': 'move',
-            'distance_m': side_leg_m,
+            'distance_m': dists['rect_side_1'],
             'speed': ring_linear_speed,
             'description': 'rect_side_1',
         },
         {'type': 'turn', 'angle_deg': corner_turn, 'description': 'rect_corner_2'},
         {
             'type': 'move',
-            'distance_m': top_leg_m,
+            'distance_m': dists['rect_top'],
             'speed': ring_linear_speed,
             'description': 'rect_top',
         },
         {'type': 'turn', 'angle_deg': corner_turn, 'description': 'rect_corner_3'},
         {
             'type': 'move',
-            'distance_m': side_leg_m,
+            'distance_m': dists['rect_side_2'],
             'speed': ring_linear_speed,
             'description': 'rect_side_2',
         },
         {'type': 'turn', 'angle_deg': corner_turn, 'description': 'rect_corner_4'},
         {
             'type': 'move',
-            'distance_m': first_leg_m,
+            'distance_m': dists['rect_return_origin'],
             'speed': ring_linear_speed,
             'description': 'rect_return_origin',
         },
     ]
 
 
+def move_segment_world_spec(
+    segment_name: str,
+    direction: str = 'clockwise',
+    config_path: Optional[str] = None,
+) -> Optional[dict]:
+    specs = field_move_segment_specs(direction, config_path)
+    return specs.get(str(segment_name or '').strip())
+
+
 def simulate_plan_world_poses(
     plan: List[dict],
-    origin_xy: Point = RING_ENTRY_POINT,
-    origin_yaw: float = RING_CHANNEL_ENTRY_YAW_RAD,
+    origin_xy: Optional[Point] = None,
+    origin_yaw: Optional[float] = None,
     turn_linear_mps: float = DEFAULT_TURN_LINEAR_MPS,
     turn_angular_rps: float = DEFAULT_TURN_ANGULAR_RPS,
+    direction: str = 'clockwise',
+    config_path: Optional[str] = None,
 ) -> Dict[str, object]:
     """Chain turn arcs + straight moves; return move segment world endpoints."""
-    x, y, yaw = float(origin_xy[0]), float(origin_xy[1]), float(origin_yaw)
+    ox, oy = _default_origin_xy(origin_xy, direction, config_path)
+    yaw = (
+        float(origin_yaw)
+        if origin_yaw is not None
+        else field_channel_entry_yaw_rad(direction, config_path)
+    )
+    x, y = float(ox), float(oy)
     poses: List[Tuple[float, float, float]] = [(x, y, yaw)]
     move_segments: Dict[str, Tuple[Point, Point, float]] = {}
 
@@ -235,47 +227,22 @@ def simulate_plan_world_poses(
 
 def segment_endpoints_world(
     direction: str = 'clockwise',
-    first_leg_m: float = 1.10,
-    side_leg_m: float = 0.50,
-    top_leg_m: float = 2.80,
-    origin_xy: Point = RING_ENTRY_POINT,
-    origin_yaw: float = RING_CHANNEL_ENTRY_YAW_RAD,
-    turn_linear_mps: float = DEFAULT_TURN_LINEAR_MPS,
-    turn_angular_rps: float = DEFAULT_TURN_ANGULAR_RPS,
+    config_path: Optional[str] = None,
+    **_deprecated,
 ) -> Dict[str, Tuple[Point, Point]]:
-    plan = build_ring_plan_for_sim(direction, first_leg_m, side_leg_m, top_leg_m)
-    sim = simulate_plan_world_poses(
-        plan,
-        origin_xy=origin_xy,
-        origin_yaw=origin_yaw,
-        turn_linear_mps=turn_linear_mps,
-        turn_angular_rps=turn_angular_rps,
-    )
-    move_segments = sim['move_segments']
-    return {
-        name: (data[0], data[1])
-        for name, data in move_segments.items()
-    }
+    del _deprecated
+    return field_segment_endpoints(direction, config_path)
 
 
 def expected_point_on_world_segment(
     segment_name: str,
     ratio: float = 0.5,
     direction: str = 'clockwise',
-    first_leg_m: float = 1.10,
-    side_leg_m: float = 0.50,
-    top_leg_m: float = 2.80,
-    origin_xy: Point = RING_ENTRY_POINT,
-    origin_yaw: float = RING_CHANNEL_ENTRY_YAW_RAD,
+    config_path: Optional[str] = None,
+    **_deprecated,
 ) -> Optional[Point]:
-    endpoints = segment_endpoints_world(
-        direction,
-        first_leg_m,
-        side_leg_m,
-        top_leg_m,
-        origin_xy=origin_xy,
-        origin_yaw=origin_yaw,
-    )
+    del _deprecated
+    endpoints = segment_endpoints_world(direction, config_path=config_path)
     if segment_name not in endpoints:
         return None
     start, end = endpoints[segment_name]
@@ -290,20 +257,17 @@ def segment_end_goal_world(
     segment_name: str,
     direction: str = 'clockwise',
     inward_margin_m: float = 0.17,
-    first_leg_m: float = 1.10,
-    side_leg_m: float = 0.50,
-    top_leg_m: float = 2.80,
-    origin_xy: Point = RING_ENTRY_POINT,
-    origin_yaw: float = RING_CHANNEL_ENTRY_YAW_RAD,
+    config_path: Optional[str] = None,
+    **_deprecated,
 ) -> Optional[Point]:
-    """Segment end goal on world polyline with inward margin along segment."""
-    plan = build_ring_plan_for_sim(direction, first_leg_m, side_leg_m, top_leg_m)
-    sim = simulate_plan_world_poses(plan, origin_xy=origin_xy, origin_yaw=origin_yaw)
-    move_segments = sim['move_segments']
-    if segment_name not in move_segments:
+    """Segment end goal on FIELD plan with inward margin along ψ."""
+    del _deprecated
+    spec = move_segment_world_spec(segment_name, direction, config_path)
+    if spec is None:
         return None
-    start_xy, end_xy, heading = move_segments[segment_name]
-    length = math.hypot(end_xy[0] - start_xy[0], end_xy[1] - start_xy[1])
+    start_xy = spec['start_xy']
+    heading = spec['heading_rad']
+    length = spec['length_m']
     margin = max(0.0, float(inward_margin_m))
     back = min(margin * 0.35, length * 0.12)
     along = max(0.0, length - back)
@@ -314,19 +278,30 @@ def segment_end_goal_world(
 
 def post_turn_pose_after_enter_align(
     direction: str = 'clockwise',
-    entry_point: Point = RING_ENTRY_POINT,
+    entry_point: Optional[Point] = None,
+    config_path: Optional[str] = None,
     turn_linear_mps: float = DEFAULT_TURN_LINEAR_MPS,
     turn_angular_rps: float = DEFAULT_TURN_ANGULAR_RPS,
-    entry_turn_deg: float = DEFAULT_ENTRY_TURN_DEG,
-    entry_yaw: float = RING_CHANNEL_ENTRY_YAW_RAD,
+    entry_turn_deg: Optional[float] = None,
+    entry_yaw: Optional[float] = None,
 ) -> Point:
-    """入环转弯弧线终点（惯导起点 yaw=90° 后 +90° enter_align）。"""
-    sign = 1.0 if direction == 'clockwise' else -1.0
+    """入环转弯弧线终点（channel_entry 航向 + entry_turn_deg）。"""
+    ex, ey = _default_origin_xy(entry_point, direction, config_path)
+    yaw0 = (
+        float(entry_yaw)
+        if entry_yaw is not None
+        else field_channel_entry_yaw_rad(direction, config_path)
+    )
+    turn_deg = (
+        float(entry_turn_deg)
+        if entry_turn_deg is not None
+        else field_entry_turn_deg(direction, config_path)
+    )
     x, y, _yaw = apply_turn_arc_world(
-        float(entry_point[0]),
-        float(entry_point[1]),
-        float(entry_yaw),
-        sign * abs(float(entry_turn_deg)),
+        float(ex),
+        float(ey),
+        yaw0,
+        float(turn_deg),
         turn_linear_mps=turn_linear_mps,
         turn_angular_rps=turn_angular_rps,
     )
@@ -335,32 +310,26 @@ def post_turn_pose_after_enter_align(
 
 def ring_post_turn_origin(
     direction: str = 'clockwise',
+    config_path: Optional[str] = None,
     turn_linear_mps: float = DEFAULT_TURN_LINEAR_MPS,
     turn_angular_rps: float = DEFAULT_TURN_ANGULAR_RPS,
 ) -> Point:
     return post_turn_pose_after_enter_align(
         direction,
+        config_path=config_path,
         turn_linear_mps=turn_linear_mps,
         turn_angular_rps=turn_angular_rps,
     )
 
 
-RING_POST_TURN_ORIGIN: Point = post_turn_pose_after_enter_align(
-    entry_point=RING_ENTRY_POINT,
-    turn_linear_mps=DEFAULT_TURN_LINEAR_MPS,
-    turn_angular_rps=DEFAULT_TURN_ANGULAR_RPS,
-)
-
-
 def nominal_mission_finish_pose(
     direction: str = 'clockwise',
-    first_leg_m: float = 1.10,
-    side_leg_m: float = 0.50,
-    top_leg_m: float = 2.80,
+    config_path: Optional[str] = None,
+    **_deprecated,
 ) -> Point:
-    """整圈结束时的名义终点（回程底边段末端）。"""
-    endpoints = segment_endpoints_world(direction, first_leg_m, side_leg_m, top_leg_m)
-    return endpoints['rect_return_origin'][1]
+    """整圈结束时的名义终点（YAML mission_finish_segment 的 E）。"""
+    del _deprecated
+    return field_mission_finish_xy(direction, config_path)
 
 
 def driven_segment_endpoints(
@@ -369,8 +338,8 @@ def driven_segment_endpoints(
     first_leg_m: float = 1.10,
     side_leg_m: float = 0.50,
     top_leg_m: float = 2.80,
-    origin_xy: Point = RING_ENTRY_POINT,
-    origin_yaw: float = RING_CHANNEL_ENTRY_YAW_RAD,
+    origin_xy: Optional[Point] = None,
+    origin_yaw: Optional[float] = None,
 ) -> Optional[Tuple[Point, Point]]:
     """链式世界折线段端点（兼容旧名 driven_segment_endpoints）。"""
     endpoints = segment_endpoints_world(
@@ -388,11 +357,16 @@ def signed_cross_track_on_driven_segment(
     first_leg_m: float = 1.10,
     side_leg_m: float = 0.50,
     top_leg_m: float = 2.80,
-    origin_xy: Point = RING_ENTRY_POINT,
-    origin_yaw: float = RING_CHANNEL_ENTRY_YAW_RAD,
+    origin_xy: Optional[Point] = None,
+    origin_yaw: Optional[float] = None,
 ) -> Optional[float]:
     plan = build_ring_plan_for_sim(direction, first_leg_m, side_leg_m, top_leg_m)
-    sim = simulate_plan_world_poses(plan, origin_xy=origin_xy, origin_yaw=origin_yaw)
+    sim = simulate_plan_world_poses(
+        plan,
+        origin_xy=origin_xy,
+        origin_yaw=origin_yaw,
+        direction=direction,
+    )
     move_segments = sim['move_segments']
     if segment_name not in move_segments:
         return None
@@ -406,8 +380,8 @@ def driven_segment_length_m(
     first_leg_m: float = 1.10,
     side_leg_m: float = 0.50,
     top_leg_m: float = 2.80,
-    origin_xy: Point = RING_ENTRY_POINT,
-    origin_yaw: float = RING_CHANNEL_ENTRY_YAW_RAD,
+    origin_xy: Optional[Point] = None,
+    origin_yaw: Optional[float] = None,
 ) -> Optional[float]:
     endpoints = driven_segment_endpoints(
         segment_name, direction, first_leg_m, side_leg_m, top_leg_m, origin_xy, origin_yaw
@@ -427,11 +401,16 @@ def point_on_driven_segment(
     first_leg_m: float = 1.10,
     side_leg_m: float = 0.50,
     top_leg_m: float = 2.80,
-    origin_xy: Point = RING_ENTRY_POINT,
-    origin_yaw: float = RING_CHANNEL_ENTRY_YAW_RAD,
+    origin_xy: Optional[Point] = None,
+    origin_yaw: Optional[float] = None,
 ) -> Optional[Point]:
     plan = build_ring_plan_for_sim(direction, first_leg_m, side_leg_m, top_leg_m)
-    sim = simulate_plan_world_poses(plan, origin_xy=origin_xy, origin_yaw=origin_yaw)
+    sim = simulate_plan_world_poses(
+        plan,
+        origin_xy=origin_xy,
+        origin_yaw=origin_yaw,
+        direction=direction,
+    )
     move_segments = sim['move_segments']
     if segment_name not in move_segments:
         return None
@@ -448,11 +427,16 @@ def progress_on_driven_segment_m(
     first_leg_m: float = 1.10,
     side_leg_m: float = 0.50,
     top_leg_m: float = 2.80,
-    origin_xy: Point = RING_ENTRY_POINT,
-    origin_yaw: float = RING_CHANNEL_ENTRY_YAW_RAD,
+    origin_xy: Optional[Point] = None,
+    origin_yaw: Optional[float] = None,
 ) -> Optional[float]:
     plan = build_ring_plan_for_sim(direction, first_leg_m, side_leg_m, top_leg_m)
-    sim = simulate_plan_world_poses(plan, origin_xy=origin_xy, origin_yaw=origin_yaw)
+    sim = simulate_plan_world_poses(
+        plan,
+        origin_xy=origin_xy,
+        origin_yaw=origin_yaw,
+        direction=direction,
+    )
     move_segments = sim['move_segments']
     if segment_name not in move_segments:
         return None
@@ -738,18 +722,22 @@ def ring_drive_reference_polyline(
     top_leg_m: float = 2.80,
 ) -> List[Point]:
     """整圈行驶顺序（仅当需要画全环时用）。"""
-    points = [RING_POST_TURN_ORIGIN]
+    points = [ring_post_turn_origin(direction)]
     for segment in ring_drive_segments(direction, first_leg_m, side_leg_m, top_leg_m):
         points.append(segment['end'])
     return points
 
 
 def corridor_to_ring_entry_polyline(
+    direction: str = 'clockwise',
+    config_path: Optional[str] = None,
     corridor_length_m: float = CORRIDOR_ENTRY_LENGTH_M,
 ) -> List[Point]:
-    """通道示意：沿 -X 进入 (0,0)，在 (0,0) 处完成入环转弯（不计入段内里程）。"""
+    """Stage1 通道示意：沿 -X 接近 channel_entry，再至 enter_align 弧后点。"""
+    entry = ring_channel_entry(direction, config_path)
     length = max(0.2, float(corridor_length_m))
-    return [(-length, 0.0), RING_POST_TURN_ORIGIN]
+    post_turn = ring_post_turn_origin(direction, config_path=config_path)
+    return [(entry[0] - length, entry[1]), entry, post_turn]
 
 
 def nominal_move_heading(
@@ -759,49 +747,11 @@ def nominal_move_heading(
     side_leg_m: float = 0.50,
     top_leg_m: float = 2.80,
 ) -> Optional[float]:
-    """Physical odom ψ for a move leg (AGENTS 顺时针：底边 +Y、左边 +X、顶边 -X、右边 -Y)。"""
-    return nominal_move_heading_rad(
-        segment_name, direction, first_leg_m, side_leg_m, top_leg_m
-    )
-
-
-def nominal_move_heading_rad(
-    segment_name: str,
-    direction: str = 'clockwise',
-    first_leg_m: float = 1.10,
-    side_leg_m: float = 0.50,
-    top_leg_m: float = 2.80,
-) -> Optional[float]:
-    """Physical chord heading in odom (raw IMU frame), independent of broken sim chain."""
-    name = str(segment_name or '').strip()
-    if not name:
+    endpoints = segment_endpoints_nominal(direction, first_leg_m, side_leg_m, top_leg_m)
+    if segment_name not in endpoints:
         return None
-    first = float(first_leg_m)
-    side = float(side_leg_m)
-    top = float(top_leg_m)
-    if direction == 'clockwise':
-        headings = {
-            'rect_first_leg': math.pi / 2.0,
-            'rect_side_1': 0.0,
-            'rect_top': math.pi,
-            'rect_side_2': -math.pi / 2.0,
-        }
-        if name == 'rect_return_origin':
-            p4 = (side - top, first - side)
-            p0 = (0.0, 0.0)
-            return math.atan2(p0[1] - p4[1], p0[0] - p4[0])
-        return headings.get(name)
-    headings = {
-        'rect_first_leg': -math.pi / 2.0,
-        'rect_side_1': math.pi,
-        'rect_top': 0.0,
-        'rect_side_2': math.pi / 2.0,
-    }
-    if name == 'rect_return_origin':
-        p4 = (top - side, first - side)
-        p0 = (0.0, 0.0)
-        return math.atan2(p0[1] - p4[1], p0[0] - p4[0])
-    return headings.get(name)
+    start, end = endpoints[segment_name]
+    return math.atan2(end[1] - start[1], end[0] - start[0])
 
 
 def obstacle_along_segment_nominal(
@@ -852,11 +802,11 @@ def preferred_bypass_side_for_segment(
 def scenario_obstacles(
     scenario: str,
     direction: str = 'clockwise',
-    first_leg_m: float = 1.10,
-    side_leg_m: float = 0.50,
-    top_leg_m: float = 2.80,
+    config_path: Optional[str] = None,
     radius: float = 0.12,
+    **_deprecated,
 ) -> List[dict]:
+    del _deprecated
     key = scenario.strip().lower()
     if key not in SCENARIO_SPECS:
         valid = ', '.join(sorted(SCENARIO_SPECS))
@@ -868,9 +818,7 @@ def scenario_obstacles(
         segment_name,
         ratio=ratio,
         direction=direction,
-        first_leg_m=first_leg_m,
-        side_leg_m=side_leg_m,
-        top_leg_m=top_leg_m,
+        config_path=config_path,
     )
     if center is None:
         center = expected_point_on_segment(

@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""规划线 = 名义路径；轨迹 = 实车/仿真全程（含入口转弯）。
-
-全环场景（如 rect_first_leg_50）画整圈名义折线；单段场景只画该段直行线。
-"""
+"""离线/实车轨迹图：只画实际行驶路径（trajectory.csv）与场景障碍。"""
 
 import csv
 import os
@@ -13,13 +10,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from racing_stage2_param_test.ring_track import (
-    RING_ENTRY_POINT,
-    corridor_to_ring_entry_polyline,
-    full_ring_plan_polyline,
-    nominal_mission_finish_pose,
-    scenario_obstacles,
-)
+from racing_stage2_param_test.ring_track import scenario_obstacles
 
 
 def load_trajectory(csv_path: str) -> List[dict]:
@@ -34,50 +25,27 @@ def plot_trajectory(
     output_png: str,
     scenario: str = '',
     direction: str = 'clockwise',
+    config_path: Optional[str] = None,
     first_leg_m: float = 1.10,
     side_leg_m: float = 0.50,
     top_leg_m: float = 2.80,
     obstacles: Optional[Sequence[dict]] = None,
 ):
+    del first_leg_m, side_leg_m, top_leg_m
     rows = load_trajectory(csv_path)
     xs = [float(row['x']) for row in rows if row.get('x')]
     ys = [float(row['y']) for row in rows if row.get('y')]
 
     fig, ax = plt.subplots(figsize=(7, 6))
 
-    scenario_key = scenario.strip().lower() if scenario else ''
-    if scenario_key:
-        entry = corridor_to_ring_entry_polyline()
-        ring = full_ring_plan_polyline(direction, first_leg_m, side_leg_m, top_leg_m)
-        plan = list(entry) + list(ring)
-    else:
-        plan = []
-    if len(plan) >= 2:
-        px, py = zip(*plan)
-        ax.plot(px, py, 'b--', linewidth=1.5, label='plan')
-        finish = nominal_mission_finish_pose(direction, first_leg_m, side_leg_m, top_leg_m)
-        ax.plot(
-            [RING_ENTRY_POINT[0], finish[0]],
-            [RING_ENTRY_POINT[1], finish[1]],
-            'k^',
-            markersize=7,
-            label='entry / finish',
-        )
-        ax.annotate('entry (0,0)', RING_ENTRY_POINT, fontsize=8, xytext=(4, 4), textcoords='offset points')
-        ax.annotate(
-            'nominal_finish',
-            finish,
-            fontsize=8,
-            xytext=(4, -10),
-            textcoords='offset points',
-        )
-
     if xs and ys:
         ax.plot(xs, ys, 'g-', linewidth=1.5, label='trajectory')
+        ax.plot(xs[0], ys[0], 'go', markersize=6, label='start')
+        ax.plot(xs[-1], ys[-1], 'rs', markersize=6, label='end')
 
     obs = list(obstacles or [])
     if not obs and scenario:
-        obs = scenario_obstacles(scenario, direction, first_leg_m, side_leg_m, top_leg_m)
+        obs = scenario_obstacles(scenario, direction, config_path=config_path)
     if obs:
         obstacle = obs[0]
         ax.add_patch(

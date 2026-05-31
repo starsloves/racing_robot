@@ -34,6 +34,7 @@ class DirectInertialTesterDebugLogMixin:
         self._last_mission_move_log_at = -1.0
         self._last_mission_move_phase = None
         self._last_mission_move_angular = None
+        self._last_turn_debug_log_at = -1.0
 
     def maybe_log_detour_cmd_throttled(
         self,
@@ -72,6 +73,61 @@ class DirectInertialTesterDebugLogMixin:
         if point is None:
             return f'{prefix}(nan,nan)'
         return f'{prefix}({float(point[0]):.2f},{float(point[1]):.2f})'
+
+    def format_where_am_i(self, ref_xy=None, ref_label=''):
+        """一行说清：现在 map 在哪、odom 在哪、相对参考点差多少。"""
+        world_xy = (
+            self.world_navigation_xy()
+            if hasattr(self, 'world_navigation_xy')
+            else None
+        )
+        raw = self.current_position
+        parts = []
+        if world_xy is not None:
+            parts.append(f'map=({world_xy[0]:.2f},{world_xy[1]:.2f})')
+        else:
+            parts.append('map=nan')
+        if raw is not None:
+            parts.append(f'odom=({raw[0]:.2f},{raw[1]:.2f})')
+        else:
+            parts.append('odom=nan')
+        if ref_xy is not None and world_xy is not None:
+            dx = float(world_xy[0]) - float(ref_xy[0])
+            dy = float(world_xy[1]) - float(ref_xy[1])
+            label = ref_label or '参考'
+            parts.append(f'Δ{label}=({dx:+.2f},{dy:+.2f})')
+        return ' '.join(parts)
+
+    def format_yaw_offset_note(self):
+        offset = float(getattr(self, 'world_yaw_offset_rad', 0.0))
+        return f'offset={math.degrees(offset):+.1f}°(plan=raw-offset)'
+
+    def log_turn_tick_snapshot(
+        self,
+        now_sec,
+        plan_yaw,
+        raw_yaw,
+        phys_target_rad,
+        error_rad,
+        angular,
+        linear_speed,
+    ):
+        del plan_yaw, raw_yaw, phys_target_rad, error_rad
+        period = max(0.25, float(getattr(self, 'detour_debug_log_period_sec', 0.5)))
+        if now_sec - getattr(self, '_last_turn_debug_log_at', -1.0) < period:
+            return
+        self._last_turn_debug_log_at = now_sec
+        segment = self.current_segment or {}
+        desc = segment.get('description', '?')
+        core = (
+            self.format_nav_core_line()
+            if hasattr(self, 'format_nav_core_line')
+            else 'nav=nan'
+        )
+        self.write_debug_log(
+            'TURN',
+            f'{desc} | {core} | cmd v={linear_speed:.3f} ω={angular:+.3f}',
+        )
 
     def circle_center_in_world(self, circle):
         if circle is None:
@@ -471,6 +527,8 @@ class DirectInertialTesterDebugLogMixin:
                         f'front_only_limit={self.front_only_detour_trigger_distance_m():.2f}m'
                     ),
                 )
+                if hasattr(self, 'log_obstacle_perception_snapshot'):
+                    self.log_obstacle_perception_snapshot(f'TRIGGER_ENTER mode={mode}')
         elif not active and self._obstacle_was_active:
             self.write_debug_log(
                 'TRIGGER',
@@ -511,6 +569,10 @@ class DirectInertialTesterDebugLogMixin:
                         f'{self.format_active_circle_compact()}{path_note}'
                     ),
                 )
+                if hasattr(self, 'log_obstacle_perception_snapshot'):
+                    self.log_obstacle_perception_snapshot(
+                        f'TRIGGER_SUPPRESS reason={suppress_reason}'
+                    )
         self._obstacle_was_active = active
         if hasattr(self, 'maybe_log_template_approach_envelope'):
             self.maybe_log_template_approach_envelope(now_sec)
@@ -610,10 +672,17 @@ class DirectInertialTesterDebugLogMixin:
     def _mission_move_phase_label(self, phase):
         labels = {
             'post_turn_settle': '弯后航向收敛(段内前0.4m,航向>5°则边转边走)',
-            'nominal_track': '直行贴实测弦线(PD:横偏+航向)',
-            'segment_end_trim': '段末停车对齐(里程够但横偏>10cm或航向>10°)',
+            'nominal_track': '直行贴世界弦线(PD:横偏+航向, target=段末E)',
+            'segment_end_trim': '段末停车对齐(沿程/距E达标但横偏>10cm或航向>10°)',
+            'finish_approach': '末段回程贴弦线收敛',
         }
         return labels.get(phase, phase)
+
+    def format_mission_world_nav_snapshot(self):
+        """兼容旧调用；主日志用 format_nav_core_line。"""
+        if hasattr(self, 'format_nav_core_line'):
+            return self.format_nav_core_line()
+        return 'nav=nan'
 
     def _mission_move_steer_explain(self, lateral_m, heading_err_rad, angular):
         parts = []
@@ -643,56 +712,32 @@ class DirectInertialTesterDebugLogMixin:
         prev_desc = 'none'
         if plan_index > 0 and hasattr(self, 'plan'):
             prev_desc = self.plan[plan_index - 1].get('description', 'none')
-        pose_xy = self.format_position_xy()
         along_m = 0.0
         lateral_m = 0.0
-        if hasattr(self, 'progress_along_segment_m') and self.current_position is not None:
-            along_val = self.progress_along_segment_m(self.current_position)
-            if along_val is not None:
-                along_m = float(along_val)
+        if hasattr(self, 'progress_along_segment_m'):
+            world_xy = self.world_navigation_xy() if hasattr(self, 'world_navigation_xy') else self.current_position
+            if world_xy is not None:
+                along_val = self.progress_along_segment_m(world_xy)
+                if along_val is not None:
+                    along_m = float(along_val)
         if hasattr(self, 'segment_lateral_offset_m'):
             lateral_m = float(self.segment_lateral_offset_m())
-        world_text = (
-            f'沿程={along_m:.2f}m '
-            f'横偏={lateral_m:+.2f}m(左正)'
-        )
         plan_s = getattr(self, 'segment_plan_start_xy', None)
         plan_e = getattr(self, 'segment_plan_end_xy', None)
-        if plan_s is not None and plan_e is not None:
-            plan_line = (
-                f'plan S=({plan_s[0]:.3f},{plan_s[1]:.3f}) '
-                f'E=({plan_e[0]:.3f},{plan_e[1]:.3f})'
-            )
-        else:
-            plan_line = 'plan S/E=unset'
-        target = self.navigation_target_xy() if hasattr(self, 'navigation_target_xy') else None
-        if target is not None:
-            plan_line += f' target=({target[0]:.3f},{target[1]:.3f})'
-        seg_h_rad = self.segment_heading
-        psi_text = self.format_yaw_deg(seg_h_rad) if seg_h_rad is not None else 'nan'
-        settle = getattr(self, 'move_heading_settle_m', 0.0)
-        nav_yaw = self.world_navigation_yaw() if hasattr(self, 'world_navigation_yaw') else None
-        raw_yaw = self.world_navigation_yaw_raw() if hasattr(self, 'world_navigation_yaw_raw') else None
-        seg_h = self.format_yaw_deg(self.segment_heading) if self.segment_heading is not None else 'nan'
-        head_err = 0.0
-        if self.segment_heading is not None and nav_yaw is not None:
-            head_err = math.degrees(self.angle_error(self.segment_heading, nav_yaw))
-        travel_m = (
-            float(self.segment_travel_progress_m())
-            if hasattr(self, 'segment_travel_progress_m')
-            else along_m
+        core = (
+            self.format_nav_core_line()
+            if hasattr(self, 'format_nav_core_line')
+            else 'nav=nan'
         )
+        yaml_line = ''
+        if plan_s is not None and plan_e is not None:
+            yaml_line = (
+                f' | 沿程={along_m:.2f}m 横偏={lateral_m:+.2f}m(左正) | '
+                f'yaml S=({plan_s[0]:.3f},{plan_s[1]:.3f}) E=({plan_e[0]:.3f},{plan_e[1]:.3f})'
+            )
         self.write_debug_log(
             'MOVE',
-            (
-                f'段开始 {name} | 上一段={prev_desc} | odom={pose_xy} '
-                f'raw_yaw={self.format_yaw_deg(raw_yaw)}deg nav_yaw={self.format_yaw_deg(nav_yaw)}deg '
-                f'段航向={seg_h}deg 航向误差={head_err:+.1f}deg | '
-                f'沿程={travel_m:.2f}m '
-                f'横偏={lateral_m:+.2f}m(左正) | {plan_line} ψ={psi_text}deg | '
-                f'弯后收敛距离={settle:.2f}m | '
-                f'说明:SIM_CHAIN 固定 S→E;控制=统一 nav_yaw;无障 target=段末 E'
-            ),
+            f'段开始 {name} | 上一段={prev_desc} | {core}{yaml_line}',
         )
 
     def log_turn_finished_enter_move(self):
@@ -752,21 +797,12 @@ class DirectInertialTesterDebugLogMixin:
         term_text = ''
         if lat_term is not None and head_term is not None:
             term_text = f' | 分项 lat项={lat_term:+.3f} head项={head_term:+.3f}'
-        yaw = (
-            self.world_navigation_yaw()
-            if hasattr(self, 'world_navigation_yaw')
-            else self.current_yaw
-        )
+        world_snap = self.format_mission_world_nav_snapshot()
+        seg_name = (self.current_segment or {}).get('description', '?')
         self.write_debug_log(
             'MOVE',
             (
-                f'phase={phase} {self._mission_move_phase_label(phase)} | '
-                f'段={self.current_segment.get("description", "?")} '
-                f'进度={progress_m:.2f}/{target_m:.2f}m | '
-                f'odom={self.format_position_xy()} yaw={self.format_yaw_deg(yaw)}deg '
-                f'段航向={self.format_yaw_deg(self.segment_heading)}deg | '
-                f'横偏={lateral_m:+.2f}m 航向误差={math.degrees(heading_err_rad):+.1f}deg | '
-                f'cmd v={linear:.3f} ω={angular:+.3f}{term_text} | '
-                f'{self._mission_move_steer_explain(lateral_m, heading_err_rad, angular)}'
+                f'{seg_name} | {world_snap} | '
+                f'cmd v={linear:.3f} ω={angular:+.3f}{term_text}'
             ),
         )

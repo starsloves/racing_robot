@@ -22,7 +22,6 @@ from racing_stage2_param_test.hardware_sim import (
 from racing_stage2_param_test.launch_param_loader import load_direct_inertial_test_params
 from racing_stage2_param_test.plot_ring_trajectory import plot_trajectory
 from racing_stage2_param_test.ring_track import (
-    RING_CHANNEL_ENTRY_YAW_RAD,
     SCENARIO_SPECS,
     nominal_mission_finish_pose,
     scenario_obstacles,
@@ -62,7 +61,6 @@ class OfflineDirectInertialTester(DirectInertialTester):
         key = self.scenario_name.strip().lower()
         spec = SCENARIO_SPECS.get(key, ('', 0.0))
         self.scenario_obstacle_segment = spec[0]
-        self.sim = DiffDriveSim(x=0.0, y=0.0, yaw=RING_CHANNEL_ENTRY_YAW_RAD)
         self.world_obstacles = list(world_obstacles)
         self.scenario_static_obstacles_world = [
             (float(obstacle['x']), float(obstacle['y']), float(obstacle['r']))
@@ -72,10 +70,13 @@ class OfflineDirectInertialTester(DirectInertialTester):
         self._trajectory_header_written = False
         self._pending_cmd = (0.0, 0.0)
         self._offline_sim_time = 0.0
+        self.sim = None
 
         super().__init__()
         self.set_parameters(dict_to_parameter_overrides(load_direct_inertial_test_params(debug_path)))
         self.apply_vehicle_parameters_from_ros()
+        self._bind_offline_hardware()
+
         self.phase = 2
         self.task_raw = self.test_direction_raw
         self.direction = self.test_direction
@@ -89,6 +90,11 @@ class OfflineDirectInertialTester(DirectInertialTester):
                 timer.cancel()
             except Exception:
                 pass
+
+    def _bind_offline_hardware(self):
+        """仅硬件仿真：初始位姿 = 实车 Stage1 结束后的 odom（corridor_goal 参数）。"""
+        spawn_x, spawn_y, spawn_yaw = self.stage1_corridor_goal_pose()
+        self.sim = DiffDriveSim(x=spawn_x, y=spawn_y, yaw=spawn_yaw)
 
     def publish_cmd_vel(self, linear_x=0.0, angular_z=0.0):
         self.record_trajectory(linear_x, angular_z)
@@ -121,7 +127,7 @@ class OfflineDirectInertialTester(DirectInertialTester):
             pass
 
     def record_trajectory(self, linear_x=0.0, angular_z=0.0):
-        if not hasattr(self, 'sim'):
+        if self.sim is None:
             return
         phase = self.avoidance_phase if getattr(self, 'avoidance_active', False) else 'idle'
         row = {
@@ -141,6 +147,8 @@ class OfflineDirectInertialTester(DirectInertialTester):
             writer.writerow(row)
 
     def inject_sensors(self):
+        if self.sim is None:
+            return
         stamp = self.get_clock().now().to_msg()
         self.current_position = (self.sim.x, self.sim.y)
         self.current_yaw = self.sim.yaw
@@ -149,6 +157,8 @@ class OfflineDirectInertialTester(DirectInertialTester):
         self.scan_callback(build_laserscan(self.sim, self.world_obstacles, stamp))
 
     def integration_step(self, dt):
+        if self.sim is None:
+            return
         linear, angular = self._pending_cmd
         self.sim.step(linear, angular, dt)
 
@@ -156,13 +166,11 @@ class OfflineDirectInertialTester(DirectInertialTester):
 def final_pose_finish_distance_m(
     final_pose,
     direction='clockwise',
-    first_leg_m=1.10,
-    side_leg_m=0.50,
-    top_leg_m=2.80,
+    config_path=None,
 ):
     if final_pose is None:
         return None
-    finish = nominal_mission_finish_pose(direction, first_leg_m, side_leg_m, top_leg_m)
+    finish = nominal_mission_finish_pose(direction, config_path=config_path)
     return math.hypot(final_pose[0] - finish[0], final_pose[1] - finish[1])
 
 
@@ -199,16 +207,15 @@ def evaluate_trajectory(rows, obstacles, body_margin=0.20):
         return metrics
 
     first = [row for row in rows if row.get('segment') == 'rect_first_leg']
-    prev_x = None
+    prev_y = None
     xs = []
     for row in first:
         x = float(row['x'])
         y = float(row['y'])
         xs.append(x)
-        # 底边沿 -X（通道后 enter_align）；x 增大视为倒车
-        if prev_x is not None and x > prev_x + 0.002:
+        if prev_y is not None and y < prev_y - 0.002:
             metrics['backward_steps'] += 1
-        prev_x = x
+        prev_y = y
     if xs:
         metrics['first_leg_max_x'] = max(xs)
         metrics['first_leg_min_x'] = min(xs)
@@ -233,7 +240,7 @@ def evaluate_trajectory(rows, obstacles, body_margin=0.20):
 def offline_stuck_watchdog_update(node, dt, checkpoint_xy, idle_elapsed_sec, net_move_m, stuck_time_sec):
     if not getattr(node, 'mission_active', False) or getattr(node, 'mission_finished', False):
         return checkpoint_xy, 0.0, False
-    if not hasattr(node, 'sim'):
+    if node.sim is None:
         return checkpoint_xy, 0.0, False
 
     x, y = float(node.sim.x), float(node.sim.y)
@@ -317,6 +324,7 @@ def run_offline_test(
         rclpy.init()
     node = OfflineDirectInertialTester(obstacles, trajectory_csv, debug_path, scenario_name=scenario)
     dt = 1.0 / max(node.control_rate_hz, 1.0)
+    corridor_goal = node.stage1_corridor_goal_pose()
 
     mission_finished = False
     stuck = False
@@ -377,13 +385,13 @@ def run_offline_test(
     metrics = evaluate_trajectory(rows, obstacles)
     metrics['stuck'] = bool(stuck)
     metrics['stuck_time_sec'] = float(stuck_elapsed_sec if stuck else 0.0)
+    field_config = node.resolved_field_track_config_path()
     plot_trajectory(
         trajectory_csv,
         output_png,
         scenario=scenario,
-        first_leg_m=node.rectangle_first_leg_m,
-        side_leg_m=node.rectangle_side_leg_m,
-        top_leg_m=node.rectangle_top_leg_m,
+        direction=node.test_direction,
+        config_path=field_config,
         obstacles=obstacles,
     )
     final_pose = None
@@ -404,22 +412,22 @@ def run_offline_test(
         if final_pose is not None:
             finish = nominal_mission_finish_pose(
                 node.test_direction,
-                node.rectangle_first_leg_m,
-                node.rectangle_side_leg_m,
-                node.rectangle_top_leg_m,
+                config_path=field_config,
             )
             dist_finish = final_pose_finish_distance_m(
                 final_pose,
                 node.test_direction,
-                node.rectangle_first_leg_m,
-                node.rectangle_side_leg_m,
-                node.rectangle_top_leg_m,
+                config_path=field_config,
             )
-            dist_origin = math.hypot(final_pose[0], final_pose[1])
+            dist_corridor = math.hypot(
+                final_pose[0] - corridor_goal[0],
+                final_pose[1] - corridor_goal[1],
+            )
             handle.write(
                 f'final=({final_pose[0]:.3f},{final_pose[1]:.3f}) '
                 f'dist_finish={dist_finish:.3f}m '
-                f'dist_origin={dist_origin:.3f}m '
+                f'dist_corridor_goal={dist_corridor:.3f}m '
+                f'corridor_goal=({corridor_goal[0]:.3f},{corridor_goal[1]:.3f}) '
                 f'nominal_finish=({finish[0]:.3f},{finish[1]:.3f})\n'
             )
         handle.write(f'trajectory={trajectory_csv}\n')

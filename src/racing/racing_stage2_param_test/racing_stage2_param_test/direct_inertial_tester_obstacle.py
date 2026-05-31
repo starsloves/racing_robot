@@ -37,6 +37,16 @@ class DirectInertialTesterObstacleMixin:
         return f'{math.degrees(self.normalize_angle(yaw)):.1f}'
 
     def format_position_xy(self):
+        if hasattr(self, 'world_navigation_xy'):
+            world_xy = self.world_navigation_xy()
+            if world_xy is not None:
+                raw = self.current_position
+                if raw is not None and getattr(self, 'world_pos_anchor_odom_xy', None) is not None:
+                    return (
+                        f'map({world_xy[0]:.2f},{world_xy[1]:.2f})'
+                        f' odom({raw[0]:.2f},{raw[1]:.2f})'
+                    )
+                return f'({world_xy[0]:.2f},{world_xy[1]:.2f})'
         if self.current_position is None:
             return '(nan,nan)'
         if isinstance(self.current_position, tuple) and len(self.current_position) >= 2:
@@ -68,6 +78,120 @@ class DirectInertialTesterObstacleMixin:
             f'/clear={self.format_distance(centerline_radius)}m'
             f'/closest_x={circle["closest_x"]:.2f}m'
         )
+
+    def _obstacle_circle_same(self, left, right):
+        if left is None or right is None:
+            return False
+        return (
+            abs(float(left.get('center_x', 0.0)) - float(right.get('center_x', 0.0))) < 0.03
+            and abs(float(left.get('center_y', 0.0)) - float(right.get('center_y', 0.0))) < 0.03
+            and abs(float(left.get('radius', 0.0)) - float(right.get('radius', 0.0))) < 0.03
+        )
+
+    def circle_filter_tags(self, circle):
+        """Why a cluster counts or is filtered (for debug)."""
+        if circle is None:
+            return ['none']
+        tags = []
+        if circle.get('scenario_static'):
+            tags.append('scenario_static')
+        if circle.get('pre_corner'):
+            tags.append('pre_corner')
+        if self.circle_is_edge_glance_after_turn(circle):
+            tags.append('edge_glance')
+        if not self.circle_intrudes_corridor(circle):
+            tags.append('outside_corridor')
+        if self.circle_is_side_fence(circle):
+            tags.append('side_fence')
+        if self.circle_is_opposite_far_wall(circle):
+            tags.append('opposite_wall')
+        if not self.circle_blocks_segment_path(circle):
+            tags.append('not_on_path')
+        if self.circle_conflicts_with_front_sector(circle):
+            tags.append('front_sector')
+        if self.circle_counts_for_detour_trigger(circle):
+            tags.append('TRIGGER_OK')
+        return tags or ['unclassified']
+
+    def format_obstacle_circle_detail_line(self, circle, index=0, is_active=False):
+        """One cluster: robot/map pose, bounding box, path projection, filter tags."""
+        world = (
+            self.obstacle_center_world_xy(circle)
+            if hasattr(self, 'obstacle_center_world_xy')
+            else None
+        )
+        wtext = f'({world[0]:.2f},{world[1]:.2f})' if world is not None else 'nan'
+        offset = self.circle_offset_in_segment_path_frame(circle)
+        if offset is not None:
+            path_text = f'path_along={offset[0]:.2f} path_lat={offset[1]:+.2f}'
+        else:
+            path_text = 'path=nan'
+        tags = ','.join(self.circle_filter_tags(circle))
+        mark = 'ACTIVE' if is_active else f'#{index}'
+        return (
+            f'{mark} robot=({circle["center_x"]:.2f},{circle["center_y"]:.2f}) '
+            f'map={wtext} r={circle["radius"]:.2f} '
+            f'span=({float(circle.get("span_x", 0.0)):.2f},'
+            f'{float(circle.get("span_y", 0.0)):.2f}) '
+            f'box_x=[{circle["closest_x"]:.2f},{float(circle.get("farthest_x", 0.0)):.2f}] '
+            f'box_y=[{float(circle.get("lateral_min", 0.0)):+.2f},'
+            f'{float(circle.get("lateral_max", 0.0)):+.2f}] '
+            f'nearest={float(circle.get("nearest_distance", 0.0)):.2f}m '
+            f'@{float(circle.get("angle_deg", 0.0)):.1f}deg {path_text} tags={tags}'
+        )
+
+    def log_obstacle_perception_snapshot(self, context):
+        """Print all lidar clusters + active selection when trigger/suppress/enter."""
+        segment = (self.current_segment or {}).get('description', '?')
+        circles = list(getattr(self, 'detected_obstacle_circles', []))
+        active = getattr(self, 'active_obstacle_circle', None)
+        suppress = (
+            self.obstacle_trigger_suppressed_reason()
+            if hasattr(self, 'obstacle_trigger_suppressed_reason')
+            else None
+        )
+        enter_dist = (
+            self.avoidance_enter_distance_m()
+            if hasattr(self, 'avoidance_enter_distance_m')
+            else float('inf')
+        )
+        self.write_debug_log(
+            'OBSTACLE',
+            (
+                f'--- {context} segment={segment} clusters={len(circles)} '
+                f'robot_map={self.format_position_xy()} ---'
+            ),
+        )
+        self.write_debug_log(
+            'OBSTACLE',
+            (
+                f'  scan front={self.format_distance(self.front_obstacle_distance)}m'
+                f'@{self.front_obstacle_angle_deg:.1f}deg '
+                f'raw_nearest={self.format_distance(self.raw_detour_nearest_obstacle_distance_m())}m '
+                f'filtered_nearest={self.format_distance(self.detour_nearest_obstacle_distance_m())}m '
+                f'enter<={enter_dist:.2f}m detect={self.detour_obstacle_detect_distance:.2f}m '
+                f'suppress={suppress or "none"} '
+                f'blocker_imminent={self.dwa_path_blocker_imminent()} '
+                f'approaching_turn_end={self.approaching_turn_segment_end()}'
+            ),
+        )
+        if active is not None and not any(
+            self._obstacle_circle_same(active, c) for c in circles
+        ):
+            self.write_debug_log(
+                'OBSTACLE',
+                '  ' + self.format_obstacle_circle_detail_line(active, -1, is_active=True),
+            )
+        if not circles:
+            if active is None:
+                self.write_debug_log('OBSTACLE', '  (no lidar clusters)')
+            return
+        for index, circle in enumerate(circles):
+            is_active = active is not None and self._obstacle_circle_same(active, circle)
+            self.write_debug_log(
+                'OBSTACLE',
+                '  ' + self.format_obstacle_circle_detail_line(circle, index, is_active),
+            )
 
     def sector_closest_obstacle(self, scan_msg, min_angle_deg, max_angle_deg):
         min_distance = float('inf')
@@ -144,7 +268,7 @@ class DirectInertialTesterObstacleMixin:
         if segment.get('type') != 'move' or segment.get('description', '') != target:
             return None
         sx, sy, sr = static[0]
-        if self.current_position is None or self.current_yaw is None:
+        if self.world_navigation_xy() is None or self.current_yaw is None:
             return None
         if not self.obstacle_on_active_segment_path(sx, sy, sr):
             return None
@@ -154,11 +278,15 @@ class DirectInertialTesterObstacleMixin:
             if progress > float(along_obs) + float(sr) + 0.10:
                 return None
         wx, wy = float(sx), float(sy)
-        rx, ry = float(self.current_position[0]), float(self.current_position[1])
+        world_xy = self.world_navigation_xy()
+        nav_yaw = self.world_navigation_yaw()
+        if world_xy is None or nav_yaw is None:
+            return None
+        rx, ry = float(world_xy[0]), float(world_xy[1])
         dx = wx - rx
         dy = wy - ry
-        cos_y = math.cos(self.current_yaw)
-        sin_y = math.sin(self.current_yaw)
+        cos_y = math.cos(nav_yaw)
+        sin_y = math.sin(nav_yaw)
         cx = cos_y * dx + sin_y * dy
         cy = -sin_y * dx + cos_y * dy
         radius = float(sr)
@@ -191,7 +319,7 @@ class DirectInertialTesterObstacleMixin:
         if not hasattr(self, 'next_plan_segment_is_turn') or not self.next_plan_segment_is_turn():
             return None
         info = self.upcoming_move_obstacle_near_entry()
-        if info is None or self.current_position is None or self.current_yaw is None:
+        if info is None or self.world_navigation_xy() is None or self.current_yaw is None:
             return None
         _name, _along, (wx, wy) = info
         static = getattr(self, 'scenario_static_obstacles_world', [])
@@ -200,11 +328,15 @@ class DirectInertialTesterObstacleMixin:
         sx, sy, sr = static[0]
         if math.hypot(wx - sx, wy - sy) > float(sr) + 0.08:
             return None
-        rx, ry = float(self.current_position[0]), float(self.current_position[1])
+        world_xy = self.world_navigation_xy()
+        nav_yaw = self.world_navigation_yaw()
+        if world_xy is None or nav_yaw is None:
+            return None
+        rx, ry = float(world_xy[0]), float(world_xy[1])
         dx = float(sx) - rx
         dy = float(sy) - ry
-        cos_y = math.cos(self.current_yaw)
-        sin_y = math.sin(self.current_yaw)
+        cos_y = math.cos(nav_yaw)
+        sin_y = math.sin(nav_yaw)
         cx = cos_y * dx + sin_y * dy
         cy = -sin_y * dx + cos_y * dy
         radius = float(sr)
@@ -375,12 +507,17 @@ class DirectInertialTesterObstacleMixin:
 
     def circle_offset_in_segment_path_frame(self, circle):
         """Project obstacle circle into the current segment driving / exit heading frame."""
-        if circle is None or self.current_yaw is None:
+        if circle is None:
             return None
-        path_heading = self.segment_path_heading_rad()
-        if path_heading is None:
+        phys_yaw = self.world_navigation_yaw_raw()
+        path_heading = (
+            self.segment_heading_odom_rad()
+            if hasattr(self, 'segment_heading_odom_rad')
+            else self.segment_path_heading_rad()
+        )
+        if path_heading is None or phys_yaw is None:
             return None
-        delta = self.angle_error(path_heading, self.current_yaw)
+        delta = self.angle_error(path_heading, phys_yaw)
         cos_d = math.cos(delta)
         sin_d = math.sin(delta)
         center_x = float(circle['center_x'])
@@ -432,50 +569,9 @@ class DirectInertialTesterObstacleMixin:
         target_distance = float(self.current_segment.get('distance_m', 0.0))
         return max(0.0, target_distance - self.projected_distance())
 
-    def obstacle_is_beside_not_in_path(self):
-        """人/障碍在车身旁但不在直行前方时，不触发绕障（底边前段常见）。"""
-        segment = self.current_segment or {}
-        if segment.get('type') != 'move':
-            return False
-        desc = str(segment.get('description', ''))
-        progress = float(self.projected_distance()) if hasattr(self, 'projected_distance') else 0.0
-        if desc == 'rect_first_leg' and progress > 0.35:
-            return False
-        if desc not in ('rect_first_leg', 'rect_return_origin') and progress > 0.20:
-            return False
-        front = float(getattr(self, 'front_obstacle_distance', float('inf')))
-        scan = getattr(self, 'latest_scan', None)
-        if scan is None:
-            left = float('inf')
-        else:
-            left = self.sector_min_distance(
-                scan,
-                self.detour_side_center_deg - self.detour_side_test_window_deg,
-                self.detour_side_center_deg + self.detour_side_test_window_deg,
-            )
-        if not math.isfinite(left):
-            left = float('inf')
-        nearest = self.raw_detour_nearest_obstacle_distance_m()
-        if not math.isfinite(nearest) or nearest > self.detour_obstacle_detect_distance:
-            return False
-        if front <= self.avoid_watch_distance_m:
-            return False
-        if left > 0.55:
-            return False
-        angle = abs(float(getattr(self, 'front_obstacle_angle_deg', 0.0)))
-        if angle <= max(12.0, self.detour_front_test_angle_deg):
-            return False
-        return True
-
     def approaching_turn_segment_end(self):
         """Near the end of a move leg before the next turn — finish the leg, do not start detour."""
         if self.current_segment is None or self.current_segment.get('type') != 'move':
-            return False
-        remaining = self.move_segment_remaining_m()
-        seg_len = float(self.current_segment.get('distance_m', 0.0))
-        # Short legs (e.g. rect_side_2 0.50 m): do not block avoidance for the whole segment.
-        gate_m = min(0.55, max(0.12, seg_len * 0.45))
-        if remaining is None or remaining > gate_m:
             return False
         next_index = self.plan_index + 1
         if next_index >= len(self.plan):
@@ -485,7 +581,23 @@ class DirectInertialTesterObstacleMixin:
         if hasattr(self, 'upcoming_move_obstacle_near_entry'):
             if self.upcoming_move_obstacle_near_entry() is not None:
                 return False
-        return True
+
+        remaining = self.move_segment_remaining_m()
+        seg_len = float(self.current_segment.get('distance_m', 0.0))
+        if seg_len <= 0.68:
+            gate_m = max(0.26, seg_len * 0.68)
+        else:
+            gate_m = min(0.55, max(0.18, seg_len * 0.45))
+
+        dist_e = float('inf')
+        if hasattr(self, 'distance_to_segment_plan_end_m'):
+            dist_e = self.distance_to_segment_plan_end_m()
+        reach = float(getattr(self, 'SEGMENT_END_REACH_M', 0.12))
+        dist_gate_m = max(0.28, reach * 2.5)
+
+        along_near = remaining is not None and remaining <= gate_m
+        world_near = math.isfinite(dist_e) and dist_e <= dist_gate_m
+        return bool(along_near or world_near)
 
     def previous_segment_is_ring_corner_turn(self):
         prev_index = self.plan_index - 1
@@ -493,8 +605,42 @@ class DirectInertialTesterObstacleMixin:
             return False
         return self.plan[prev_index].get('type') == 'turn'
 
+    def post_turn_edge_guard_active(self):
+        """Just after a corner turn, lidar often sees track edges ahead — not path blockers."""
+        if not self.previous_segment_is_ring_corner_turn():
+            return False
+        if self.current_segment is None or self.current_segment.get('type') != 'move':
+            return False
+        settle_m = max(
+            0.55,
+            float(getattr(self, 'move_heading_settle_m', 0.4)),
+        )
+        return self.projected_distance() < settle_m
+
+    def circle_is_edge_glance_after_turn(self, circle):
+        """Corner exit: forward wall/fence hit at shallow angle, not a centered cone."""
+        if circle is None or not self.post_turn_edge_guard_active():
+            return False
+        closest_x = float(circle.get('closest_x', 0.0))
+        if closest_x <= 0.50:
+            return False
+        abs_y = abs(float(circle['center_y']))
+        half_w = self.driving_corridor_half_width_m()
+        radius = float(circle.get('radius', 0.12))
+        if radius <= 0.14 and abs_y <= half_w * 0.28 and closest_x <= 0.85:
+            return False
+        if abs_y >= half_w * 0.32 and abs_y <= half_w + radius + 0.12:
+            return True
+        offset = self.circle_offset_in_segment_path_frame(circle)
+        if offset is None:
+            return False
+        _along, lateral = offset
+        return closest_x >= 0.55 and abs(lateral) >= half_w * 0.28
+
     def circle_counts_for_detour_trigger(self, circle):
         if circle is None:
+            return False
+        if self.circle_is_edge_glance_after_turn(circle):
             return False
         if not self.circle_intrudes_corridor(circle):
             return False
@@ -575,12 +721,7 @@ class DirectInertialTesterObstacleMixin:
             return None
         if self.is_turn_detour_segment():
             return 'turn_segment_no_detour'
-        if self.obstacle_is_beside_not_in_path():
-            return 'beside_not_in_path'
         if self.approaching_turn_segment_end():
-            circle = self.active_obstacle_circle
-            if circle is not None and self.circle_blocks_segment_path(circle):
-                return None
             return 'approaching_turn_end'
         # Only true while DWA is running — do not call obstacle_is_active() here
         # (it uses avoidance_should_enter and would recurse).
@@ -588,8 +729,14 @@ class DirectInertialTesterObstacleMixin:
             return None
         if self.template_path_blocker_imminent():
             return None
+        if self.active_obstacle_circle is not None and self.circle_counts_for_detour_trigger(
+            self.active_obstacle_circle
+        ):
+            return None
         for circle in self.detected_obstacle_circles:
             if not self.circle_counts_for_detour_trigger(circle):
+                if self.circle_is_edge_glance_after_turn(circle):
+                    return 'edge_glance_after_turn'
                 if self.circle_is_side_fence(circle):
                     return 'side_fence'
                 if self.circle_is_opposite_far_wall(circle):
@@ -674,6 +821,8 @@ class DirectInertialTesterObstacleMixin:
             if self.circle_is_side_fence(circle):
                 continue
             if self.circle_is_opposite_far_wall(circle):
+                continue
+            if self.circle_is_edge_glance_after_turn(circle):
                 continue
             if self.circle_conflicts_with_front_sector(circle):
                 continue
@@ -787,8 +936,15 @@ class DirectInertialTesterObstacleMixin:
                 log_file.write('=== direct_inertial_tester 避障/路径调试日志 ===\n')
                 log_file.write(f'log_path={self.debug_log_path}\n')
                 log_file.write(
-                    '字段说明: TRIGGER=避障触发/抑制 | DECISION=避障进入退出 | '
-                    'MOVE=直行贴线(非避障) | CMD=避障控制 | CONFIG=参数 | SEGMENT=段切换\n'
+                    '字段说明: TRIGGER=避障 | DECISION=避障决策 | MOVE=直行 | TURN=转弯 | '
+                    'CONFIG=参数 | SEGMENT=段切换\n'
+                )
+                log_file.write(
+                    '每行 TURN/MOVE 固定四元组(map世界坐标): '
+                    '当前点 目标点 当前角 目标角 | 距目标点 角差\n'
+                )
+                log_file.write(
+                    'move目标点=yaml段末E; turn目标点=下一段yaml起点S,目标角=转完plan_yaw\n'
                 )
                 log_file.write(
                     'MOVE: phase=弯后航向收敛|直行贴弦线|段末停车对齐 | '
@@ -799,6 +955,11 @@ class DirectInertialTesterObstacleMixin:
                     'goal_direct: phase=follow|bypass|pass|rejoin|exit|handoff | '
                     'goals=bypass pass rejoin|exit | need_direct_cut | '
                     'zone=角点区域 before_turn|post_apex\n'
+                )
+                log_file.write(
+                    'OBSTACLE: 激光簇详情 robot=车体系 map=世界坐标 '
+                    'box_x/box_y=簇包围盒 span=簇尺寸 path_along/lat=投影到当前段 '
+                    'tags=过滤原因(TRIGGER_OK=有效触发 outside_corridor/side_fence/edge_glance=边沿)\n'
                 )
         except OSError as exc:
             self.get_logger().warning(f'调试日志文件初始化失败: {exc}')

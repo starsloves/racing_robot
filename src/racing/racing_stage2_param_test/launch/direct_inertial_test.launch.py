@@ -22,25 +22,26 @@ def generate_launch_description():
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='false')
     imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/imu/data')
     test_direction_arg = DeclareLaunchArgument('test_direction', default_value='clockwise')
-    test_start_mode_arg = DeclareLaunchArgument('test_start_mode', default_value='auto')
-    # 无 Stage1：任务开始 IMU 补偿到通道口名义 90°（offset=90°-IMU_raw）。
+    # 无 Stage1：假定已在 corridor_goal；IMU 对齐 channel_entry 90°（map 2.50, 3.20）。
     assume_channel_entry_yaw_arg = DeclareLaunchArgument(
         'assume_channel_entry_yaw',
         default_value='true',
     )
-    rectangle_first_leg_arg = DeclareLaunchArgument('rectangle_first_leg_m', default_value='1.10')
-    rectangle_side_leg_arg = DeclareLaunchArgument('rectangle_side_leg_m', default_value='0.50')
-    rectangle_top_leg_arg = DeclareLaunchArgument('rectangle_top_leg_m', default_value='2.80')
+    field_track_config_arg = DeclareLaunchArgument(
+        'field_track_config',
+        default_value='',
+        description='空=按 test_direction 加载包内 config/field_track_*.yaml',
+    )
     enable_cmd_relay_arg = DeclareLaunchArgument('enable_cmd_relay', default_value='true')
     relay_input_topic_arg = DeclareLaunchArgument('relay_input_topic', default_value='/stage2_cmd_vel')
     relay_output_topic_arg = DeclareLaunchArgument('relay_output_topic', default_value='/cmd_vel')
     rgb_fps_arg = DeclareLaunchArgument('rgb_fps', default_value='15')
     resolution_mode_index_arg = DeclareLaunchArgument('resolution_mode_index', default_value='2')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
-    detour_detect_distance_arg = DeclareLaunchArgument('detour_obstacle_detect_distance', default_value='1.00')
-    detour_clear_distance_arg = DeclareLaunchArgument('detour_obstacle_clear_distance', default_value='0.65')
-    avoid_watch_distance_arg = DeclareLaunchArgument('avoid_watch_distance_m', default_value='0.45')
-    avoid_commit_distance_arg = DeclareLaunchArgument('avoid_commit_distance_m', default_value='0.30')
+    detour_detect_distance_arg = DeclareLaunchArgument('detour_obstacle_detect_distance', default_value='1.30')
+    detour_clear_distance_arg = DeclareLaunchArgument('detour_obstacle_clear_distance', default_value='0.75')
+    avoid_watch_distance_arg = DeclareLaunchArgument('avoid_watch_distance_m', default_value='0.80')
+    avoid_commit_distance_arg = DeclareLaunchArgument('avoid_commit_distance_m', default_value='0.45')
     avoid_corner_prefer_inside_arg = DeclareLaunchArgument('avoid_corner_prefer_inside', default_value='true')
 
     support_stack = IncludeLaunchDescription(
@@ -67,11 +68,10 @@ def generate_launch_description():
             {
                 'imu_topic': LaunchConfiguration('imu_topic'),
                 'test_direction': LaunchConfiguration('test_direction'),
-                'test_start_mode': LaunchConfiguration('test_start_mode'),
                 'assume_channel_entry_yaw': LaunchConfiguration('assume_channel_entry_yaw'),
-                'rectangle_first_leg_m': LaunchConfiguration('rectangle_first_leg_m'),
-                'rectangle_side_leg_m': LaunchConfiguration('rectangle_side_leg_m'),
-                'rectangle_top_leg_m': LaunchConfiguration('rectangle_top_leg_m'),
+                'field_track_config': LaunchConfiguration('field_track_config'),
+                'pre_loop_plan_json': '[]',
+                'corridor_path_skip_pre_loop_plan': True,
                 'detour_obstacle_detect_distance': LaunchConfiguration('detour_obstacle_detect_distance'),
                 'detour_obstacle_clear_distance': LaunchConfiguration('detour_obstacle_clear_distance'),
                 'avoid_watch_distance_m': LaunchConfiguration('avoid_watch_distance_m'),
@@ -102,11 +102,8 @@ def generate_launch_description():
         include_depth_arg,
         imu_topic_arg,
         test_direction_arg,
-        test_start_mode_arg,
         assume_channel_entry_yaw_arg,
-        rectangle_first_leg_arg,
-        rectangle_side_leg_arg,
-        rectangle_top_leg_arg,
+        field_track_config_arg,
         enable_cmd_relay_arg,
         relay_input_topic_arg,
         relay_output_topic_arg,
