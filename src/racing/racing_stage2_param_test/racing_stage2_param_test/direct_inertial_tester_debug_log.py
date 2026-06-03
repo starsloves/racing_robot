@@ -32,11 +32,16 @@ class DirectInertialTesterDebugLogMixin:
             self.get_logger().warning(f'调试日志文件写入失败: {exc}')
 
     def log_flow_mission_ready(self):
+        track = (
+            self.resolved_field_track_config_path()
+            if hasattr(self, 'resolved_field_track_config_path')
+            else 'odom/rectangle'
+        )
         self.write_debug_log(
             'FLOW',
             (
                 f'【就绪】方向={self.direction_text()} '
-                f'路点={self.resolved_field_track_config_path()} '
+                f'路点={track} '
                 f'避障={getattr(self, "detour_strategy", "?")}'
             ),
         )

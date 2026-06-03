@@ -22,30 +22,18 @@ def generate_launch_description():
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='false')
     imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/imu/data')
     test_direction_arg = DeclareLaunchArgument('test_direction', default_value='clockwise')
-    # 无 Stage1：假定已在 corridor_goal；IMU 对齐 channel_entry 90°（map 2.50, 3.20）。
-    assume_channel_entry_yaw_arg = DeclareLaunchArgument(
-        'assume_channel_entry_yaw',
-        default_value='true',
-    )
-    field_track_config_arg = DeclareLaunchArgument(
-        'field_track_config',
-        default_value='',
-        description='空=按 test_direction 加载包内 config/field_track_*.yaml',
-    )
+    test_start_mode_arg = DeclareLaunchArgument('test_start_mode', default_value='auto')
+    rectangle_first_leg_arg = DeclareLaunchArgument('rectangle_first_leg_m', default_value='1.10')
+    rectangle_side_leg_arg = DeclareLaunchArgument('rectangle_side_leg_m', default_value='0.50')
+    rectangle_top_leg_arg = DeclareLaunchArgument('rectangle_top_leg_m', default_value='2.80')
+    debug_log_path_arg = DeclareLaunchArgument('debug_log_path', default_value='')
+    debug_log_verbose_arg = DeclareLaunchArgument('debug_log_verbose', default_value='false')
     enable_cmd_relay_arg = DeclareLaunchArgument('enable_cmd_relay', default_value='true')
     relay_input_topic_arg = DeclareLaunchArgument('relay_input_topic', default_value='/stage2_cmd_vel')
     relay_output_topic_arg = DeclareLaunchArgument('relay_output_topic', default_value='/cmd_vel')
     rgb_fps_arg = DeclareLaunchArgument('rgb_fps', default_value='15')
     resolution_mode_index_arg = DeclareLaunchArgument('resolution_mode_index', default_value='2')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
-    detour_detect_distance_arg = DeclareLaunchArgument('detour_obstacle_detect_distance', default_value='0.55')
-    detour_clear_distance_arg = DeclareLaunchArgument('detour_obstacle_clear_distance', default_value='0.65')
-    avoid_watch_distance_arg = DeclareLaunchArgument('avoid_watch_distance_m', default_value='0.55')
-    avoid_triangle_trigger_arg = DeclareLaunchArgument('avoid_triangle_trigger_m', default_value='0.50')
-    avoid_triangle_bias_arg = DeclareLaunchArgument('avoid_triangle_bias_deg', default_value='30.0')
-    avoid_triangle_leg_arg = DeclareLaunchArgument('avoid_triangle_leg_m', default_value='0.80')
-    avoid_commit_distance_arg = DeclareLaunchArgument('avoid_commit_distance_m', default_value='0.45')
-    avoid_corner_prefer_inside_arg = DeclareLaunchArgument('avoid_corner_prefer_inside', default_value='true')
 
     support_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(support_launch_path),
@@ -71,25 +59,12 @@ def generate_launch_description():
             {
                 'imu_topic': LaunchConfiguration('imu_topic'),
                 'test_direction': LaunchConfiguration('test_direction'),
-                'assume_channel_entry_yaw': LaunchConfiguration('assume_channel_entry_yaw'),
-                'field_track_config': LaunchConfiguration('field_track_config'),
-                'pre_loop_plan_json': '[]',
-                'corridor_path_skip_pre_loop_plan': True,
-                'detour_obstacle_detect_distance': LaunchConfiguration('detour_obstacle_detect_distance'),
-                'detour_obstacle_clear_distance': LaunchConfiguration('detour_obstacle_clear_distance'),
-                'avoid_watch_distance_m': LaunchConfiguration('avoid_watch_distance_m'),
-                'avoid_commit_distance_m': LaunchConfiguration('avoid_commit_distance_m'),
-                'avoid_triangle_trigger_m': LaunchConfiguration('avoid_triangle_trigger_m'),
-                'avoid_triangle_bias_deg': LaunchConfiguration('avoid_triangle_bias_deg'),
-                'avoid_triangle_leg_m': LaunchConfiguration('avoid_triangle_leg_m'),
-                'avoid_corner_prefer_inside': LaunchConfiguration('avoid_corner_prefer_inside'),
-                'mission_move_heading_kp': 0.0,
-                'mission_move_max_angular_rps': 0.0,
-                'mission_move_min_angular_rps': 0.0,
-                'turn_linear_speed': 0.05,
-                'turn_angular_speed': 0.50,
-                'turn_min_angular_speed': 0.0,
-                'heading_tolerance_deg': 2.0,
+                'test_start_mode': LaunchConfiguration('test_start_mode'),
+                'rectangle_first_leg_m': LaunchConfiguration('rectangle_first_leg_m'),
+                'rectangle_side_leg_m': LaunchConfiguration('rectangle_side_leg_m'),
+                'rectangle_top_leg_m': LaunchConfiguration('rectangle_top_leg_m'),
+                'debug_log_path': LaunchConfiguration('debug_log_path'),
+                'debug_log_verbose': LaunchConfiguration('debug_log_verbose'),
             },
         ],
         output='screen',
@@ -115,22 +90,18 @@ def generate_launch_description():
         include_depth_arg,
         imu_topic_arg,
         test_direction_arg,
-        assume_channel_entry_yaw_arg,
-        field_track_config_arg,
+        test_start_mode_arg,
+        rectangle_first_leg_arg,
+        rectangle_side_leg_arg,
+        rectangle_top_leg_arg,
+        debug_log_path_arg,
+        debug_log_verbose_arg,
         enable_cmd_relay_arg,
         relay_input_topic_arg,
         relay_output_topic_arg,
         rgb_fps_arg,
         resolution_mode_index_arg,
         carto_slam_arg,
-        detour_detect_distance_arg,
-        detour_clear_distance_arg,
-        avoid_watch_distance_arg,
-        avoid_commit_distance_arg,
-        avoid_triangle_trigger_arg,
-        avoid_triangle_bias_arg,
-        avoid_triangle_leg_arg,
-        avoid_corner_prefer_inside_arg,
         support_stack,
         cmd_relay_node,
         tester_node,
