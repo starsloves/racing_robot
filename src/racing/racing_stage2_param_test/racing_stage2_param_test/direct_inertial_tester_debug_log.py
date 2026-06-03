@@ -2,11 +2,27 @@
 
 import math
 
+# 默认写 FLOW（关键节点）+ POSE（中途位置/航向）；verbose 时另写 CONFIG/MOVE/DETOUR 等。
+_DEFAULT_LOG_LEVELS = frozenset({'FLOW', 'POSE', 'WARN', 'ERROR'})
+
 
 class DirectInertialTesterDebugLogMixin:
     """Compact, decision-focused debug log for obstacle detours."""
 
+    _TRIANGLE_PHASE_LABELS = {
+        'tri_out_turn': '出弯转向',
+        'tri_out_run': '出弯直行',
+        'tri_return_turn': '回正转向',
+        'tri_return_run': '回正直行',
+        'tri_rejoin_turn': '对齐段ψ',
+    }
+
+    def debug_log_is_verbose(self):
+        return bool(getattr(self, 'debug_log_verbose', False))
+
     def write_debug_log(self, level, message):
+        if not self.debug_log_is_verbose() and level not in _DEFAULT_LOG_LEVELS:
+            return
         try:
             stamp = self.debug_log_timestamp()
             with open(self.debug_log_path, 'a', encoding='utf-8') as log_file:
@@ -14,6 +30,178 @@ class DirectInertialTesterDebugLogMixin:
                 log_file.flush()
         except OSError as exc:
             self.get_logger().warning(f'调试日志文件写入失败: {exc}')
+
+    def log_flow_mission_ready(self):
+        self.write_debug_log(
+            'FLOW',
+            (
+                f'【就绪】方向={self.direction_text()} '
+                f'路点={self.resolved_field_track_config_path()} '
+                f'避障={getattr(self, "detour_strategy", "?")}'
+            ),
+        )
+
+    def log_flow_segment_start(self, index, segment, label):
+        segment_type = segment.get('type', 'unknown')
+        desc = segment.get('description', '?')
+        core = self.format_nav_simple_line()
+        if segment_type == 'turn':
+            angle_deg = float(segment.get('angle_deg', 0.0))
+            turn_text = '左转' if angle_deg > 0.0 else '右转'
+            self.write_debug_log(
+                'FLOW',
+                f'【段{index}】{label} | {turn_text}{abs(angle_deg):.0f}° | {core}',
+            )
+            return
+        if segment_type == 'move':
+            dist_m = float(segment.get('distance_m', 0.0))
+            self.write_debug_log(
+                'FLOW',
+                f'【段{index}】{label} | 直行 {dist_m:.2f}m | {core}',
+            )
+            return
+        if segment_type == 'pause':
+            duration = float(segment.get('duration', 0.0))
+            self.write_debug_log(
+                'FLOW',
+                f'【段{index}】{label} | 停稳 {duration:.2f}s | {core}',
+            )
+            return
+        self.write_debug_log('FLOW', f'【段{index}】{label} | {core}')
+
+    def log_flow_turn_done(self, next_name, plan_yaw, plan_target, plan_err):
+        core = self.format_nav_simple_line()
+        target_deg = (
+            math.degrees(plan_target)
+            if plan_target is not None
+            else float('nan')
+        )
+        self.write_debug_log(
+            'FLOW',
+            (
+                f'【转弯完成】→ {next_name} | {core} | '
+                f'弯末={self.format_yaw_deg(plan_yaw)}° '
+                f'下段ψ={target_deg:.0f}° 残差={math.degrees(plan_err):+.1f}°'
+            ),
+        )
+
+    def log_flow_move_done(self, via_trim=False):
+        segment = self.current_segment or {}
+        name = segment.get('description', '?')
+        core = self.format_nav_simple_line()
+        note = '段末对齐完成' if via_trim else '到达段末'
+        self.write_debug_log('FLOW', f'【直行完成】{name} | {core} | {note}')
+
+    def log_flow_obstacle_watch(self):
+        if getattr(self, '_flow_obstacle_watch_logged', False):
+            return
+        self._flow_obstacle_watch_logged = True
+        nearest = (
+            self.template_blocker_distance_m()
+            if hasattr(self, 'template_blocker_distance_m')
+            else float('inf')
+        )
+        self.write_debug_log(
+            'FLOW',
+            (
+                f'【接近障碍】| {self.format_nav_simple_line()} | '
+                f'前方障碍={self.format_distance(nearest)}m → 减速待命'
+            ),
+        )
+
+    def log_flow_avoid_start(self):
+        segment = (self.current_segment or {}).get('description', '?')
+        nearest = (
+            self.template_blocker_distance_m()
+            if hasattr(self, 'template_blocker_distance_m')
+            else float('inf')
+        )
+        side = int(getattr(self, 'locked_bypass_side', 0) or 0)
+        side_text = '左' if side > 0 else ('右' if side < 0 else '自动')
+        bias = float(getattr(self, 'avoid_triangle_bias_deg', 30.0))
+        leg = float(getattr(self, 'avoid_triangle_leg_m', 0.80))
+        seg_psi = '?'
+        out_psi = '?'
+        ret_psi = '?'
+        if hasattr(self, 'tri_seg_heading_yaw') and self.tri_seg_heading_yaw is not None:
+            seg_psi = self.format_yaw_deg(self.tri_seg_heading_yaw)
+        if hasattr(self, 'tri_out_target_yaw') and self.tri_out_target_yaw is not None:
+            out_psi = self.format_yaw_deg(self.tri_out_target_yaw)
+        if hasattr(self, 'tri_return_target_yaw') and self.tri_return_target_yaw is not None:
+            ret_psi = self.format_yaw_deg(self.tri_return_target_yaw)
+        self.write_debug_log(
+            'FLOW',
+            (
+                f'【开始避障】段={segment} | {self.format_nav_simple_line()} | '
+                f'障碍={self.format_distance(nearest)}m 绕{side_text} '
+                f'bias={bias:.0f}° 单腿={leg:.2f}m | '
+                f'计划 出弯→{out_psi}° 回弯→{ret_psi}° 对齐→{seg_psi}°'
+            ),
+        )
+
+    def log_flow_avoid_phase(self, old_phase, new_phase):
+        old_label = self._TRIANGLE_PHASE_LABELS.get(old_phase, old_phase)
+        new_label = self._TRIANGLE_PHASE_LABELS.get(new_phase, new_phase)
+        lat = self.segment_lateral_offset_m()
+        head_err = 0.0
+        if hasattr(self, '_mission_move_heading_error_rad'):
+            head_err = math.degrees(self._mission_move_heading_error_rad())
+        self.write_debug_log(
+            'FLOW',
+            (
+                f'【避障阶段】{old_label}→{new_label} | {self.format_nav_simple_line()} | '
+                f'横偏={lat:+.2f}m 航向残差={head_err:+.1f}°'
+            ),
+        )
+
+    def log_flow_avoid_rejoin(self, reason):
+        segment = (self.current_segment or {}).get('description', '?')
+        lat = self.segment_lateral_offset_m()
+        head_err = math.degrees(self.avoidance_mission_heading_err_rad())
+        reason_map = {
+            'segment_complete': '绕障完成',
+            'recovered': '回正完成',
+            'direct_cut': '切回段内',
+            'corner_shortcut': '弯角捷径',
+            'segment_no_avoid': '段不支持避障',
+        }
+        reason_text = reason_map.get(reason, reason)
+        self.write_debug_log(
+            'FLOW',
+            (
+                f'【回正】段={segment} | {self.format_nav_simple_line()} | '
+                f'横偏={lat:+.2f}m 航向残差={head_err:+.1f}° | {reason_text}→恢复直行'
+            ),
+        )
+
+    def pose_log_period_sec(self):
+        return max(0.25, float(getattr(self, 'detour_debug_log_period_sec', 0.5)))
+
+    def log_pose_tick(self, now_sec, last_at_attr, mode_label, segment_name=None, extra=''):
+        """默认开启：周期性记录当前位置与航向。"""
+        last_at = float(getattr(self, last_at_attr, -1.0))
+        if now_sec - last_at < self.pose_log_period_sec():
+            return
+        setattr(self, last_at_attr, now_sec)
+        name = segment_name or (self.current_segment or {}).get('description', '?')
+        core = self.format_nav_simple_line()
+        msg = f'{mode_label} {name} | {core}'
+        if extra:
+            msg = f'{msg} | {extra}'
+        self.write_debug_log('POSE', msg)
+
+    def log_flow_avoid_pose_tick(self, now_sec):
+        phase = getattr(self, 'goal_direct_phase', '?')
+        phase_label = self._TRIANGLE_PHASE_LABELS.get(phase, phase)
+        lat = self.segment_lateral_offset_m()
+        segment = (self.current_segment or {}).get('description', '?')
+        self.log_pose_tick(
+            now_sec,
+            '_last_avoid_pose_log_at',
+            f'避障 {phase_label}',
+            segment,
+            f'横偏={lat:+.2f}m',
+        )
 
     def init_detour_debug_log_state(self):
         self.last_detour_follow_log_time = -1.0
@@ -35,6 +223,7 @@ class DirectInertialTesterDebugLogMixin:
         self._last_mission_move_phase = None
         self._last_mission_move_angular = None
         self._last_turn_debug_log_at = -1.0
+        self._last_avoid_pose_log_at = -1.0
 
     def maybe_log_detour_cmd_throttled(
         self,
@@ -112,22 +301,21 @@ class DirectInertialTesterDebugLogMixin:
         angular,
         linear_speed,
     ):
-        del plan_yaw, raw_yaw, phys_target_rad, error_rad
-        period = max(0.25, float(getattr(self, 'detour_debug_log_period_sec', 0.5)))
-        if now_sec - getattr(self, '_last_turn_debug_log_at', -1.0) < period:
-            return
-        self._last_turn_debug_log_at = now_sec
         segment = self.current_segment or {}
         desc = segment.get('description', '?')
-        core = (
-            self.format_nav_core_line()
-            if hasattr(self, 'format_nav_core_line')
-            else 'nav=nan'
-        )
-        self.write_debug_log(
-            'TURN',
-            f'{desc} | {core} | cmd v={linear_speed:.3f} ω={angular:+.3f}',
-        )
+        if self.debug_log_is_verbose():
+            del plan_yaw, raw_yaw, phys_target_rad, error_rad, angular, linear_speed
+            if now_sec - getattr(self, '_last_turn_debug_log_at', -1.0) < self.pose_log_period_sec():
+                return
+            self._last_turn_debug_log_at = now_sec
+            core = (
+                self.format_nav_simple_line()
+                if hasattr(self, 'format_nav_simple_line')
+                else self.format_nav_core_line()
+            )
+            self.write_debug_log('TURN', f'{desc} | {core}')
+            return
+        self.log_pose_tick(now_sec, '_last_turn_debug_log_at', '转弯', desc)
 
     def circle_center_in_world(self, circle):
         if circle is None:
@@ -704,41 +892,20 @@ class DirectInertialTesterDebugLogMixin:
         return '；'.join(parts)
 
     def log_mission_move_segment_begin(self, plan_index):
-        """弯后进入 move 段时必打一条，解释参考线/横偏从哪来。"""
-        segment = self.current_segment or {}
-        if segment.get('type') != 'move':
-            return
-        name = segment.get('description', '')
-        prev_desc = 'none'
-        if plan_index > 0 and hasattr(self, 'plan'):
-            prev_desc = self.plan[plan_index - 1].get('description', 'none')
-        along_m = 0.0
-        lateral_m = 0.0
-        if hasattr(self, 'progress_along_segment_m'):
-            world_xy = self.world_navigation_xy() if hasattr(self, 'world_navigation_xy') else self.current_position
-            if world_xy is not None:
-                along_val = self.progress_along_segment_m(world_xy)
-                if along_val is not None:
-                    along_m = float(along_val)
-        if hasattr(self, 'segment_lateral_offset_m'):
-            lateral_m = float(self.segment_lateral_offset_m())
-        plan_s = getattr(self, 'segment_plan_start_xy', None)
-        plan_e = getattr(self, 'segment_plan_end_xy', None)
-        core = (
-            self.format_nav_core_line()
-            if hasattr(self, 'format_nav_core_line')
-            else 'nav=nan'
-        )
-        yaml_line = ''
-        if plan_s is not None and plan_e is not None:
-            yaml_line = (
-                f' | 沿程={along_m:.2f}m 横偏={lateral_m:+.2f}m(左正) | '
-                f'yaml S=({plan_s[0]:.3f},{plan_s[1]:.3f}) E=({plan_e[0]:.3f},{plan_e[1]:.3f})'
+        del plan_index
+        if self.debug_log_is_verbose():
+            segment = self.current_segment or {}
+            if segment.get('type') != 'move':
+                return
+            name = segment.get('description', '')
+            self.write_debug_log(
+                'MOVE',
+                (
+                    f'段开始 {name} | 起点=当前位姿 | '
+                    f'{self.format_nav_simple_line()} | '
+                    f'计划沿程={float(getattr(self, "segment_plan_length_m", 0.0)):.2f}m'
+                ),
             )
-        self.write_debug_log(
-            'MOVE',
-            f'段开始 {name} | 上一段={prev_desc} | {core}{yaml_line}',
-        )
 
     def log_turn_finished_enter_move(self):
         if self.current_segment is None or self.current_segment.get('type') != 'move':
@@ -776,6 +943,19 @@ class DirectInertialTesterDebugLogMixin:
         self._last_mission_move_log_at = now_sec
         self._last_mission_move_phase = phase
 
+        seg_name = (self.current_segment or {}).get('description', '?')
+        if not self.debug_log_is_verbose():
+            head_deg = math.degrees(float(heading_err_rad))
+            self.write_debug_log(
+                'POSE',
+                (
+                    f'直行 {seg_name} | {self.format_nav_simple_line()} | '
+                    f'航向误差={head_deg:+.1f}° cmd_ω={float(angular):+.3f}'
+                ),
+            )
+            self._last_mission_move_angular = float(angular)
+            return
+
         prev_angular = getattr(self, '_last_mission_move_angular', None)
         if (
             prev_angular is not None
@@ -794,15 +974,14 @@ class DirectInertialTesterDebugLogMixin:
             )
         self._last_mission_move_angular = float(angular)
 
-        term_text = ''
-        if lat_term is not None and head_term is not None:
-            term_text = f' | 分项 lat项={lat_term:+.3f} head项={head_term:+.3f}'
-        world_snap = self.format_mission_world_nav_snapshot()
+        world_snap = self.format_nav_simple_line() if hasattr(self, 'format_nav_simple_line') else self.format_mission_world_nav_snapshot()
         seg_name = (self.current_segment or {}).get('description', '?')
+        cmd_note = (
+            f' cmd_ω={angular:+.3f}'
+            if phase in ('straight_open_loop', 'heading_hold_gentle')
+            else ''
+        )
         self.write_debug_log(
             'MOVE',
-            (
-                f'{seg_name} | {world_snap} | '
-                f'cmd v={linear:.3f} ω={angular:+.3f}{term_text}'
-            ),
+            f'{seg_name} | {world_snap}{cmd_note}',
         )

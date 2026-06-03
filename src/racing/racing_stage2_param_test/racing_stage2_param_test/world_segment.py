@@ -57,12 +57,9 @@ def clamp_along(along_m_value: float, segment_length_m: float) -> float:
 
 
 def lateral_pd_omega(lateral_m: float, heading_rad: float, gain: float) -> float:
-    """ω 项：把有符号横偏拉回弦线。ψ≈180° 时校正方向与 ψ≈0° 相反。"""
-    c = math.cos(float(heading_rad))
-    if c > 0.5:
-        sign = -1.0
-    elif c < -0.5:
-        sign = 1.0
-    else:
-        sign = -1.0
-    return float(gain) * sign * (-float(lateral_m))
+    """ω 项：把有符号横偏拉回弦线（左正）。
+
+    ``lateral_m`` 已按段 ψ 的 left-normal 计算，故 ω 恒为 ``-gain * lat``。
+    """
+    del heading_rad
+    return float(gain) * (-float(lateral_m))

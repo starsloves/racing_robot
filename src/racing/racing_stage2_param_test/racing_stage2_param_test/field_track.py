@@ -1,4 +1,4 @@
-"""Load ring move segments from YAML world-coordinate config (S, E, ψ)."""
+"""Load ring move segments from YAML world-coordinate config (E, ψ per segment)."""
 
 from __future__ import annotations
 
@@ -76,19 +76,20 @@ def field_move_segment_specs(
     direction: str = 'clockwise',
     config_path: Optional[str] = None,
 ) -> Dict[str, dict]:
-    """Per move segment: start_xy, end_xy, heading_rad, length_m (along ψ)."""
+    """Per move segment: end_xy, heading_rad, length_m；start_xy 仅离线链式估算。"""
     doc = load_field_track_document(direction, config_path)
     raw = doc.get('segments') or {}
     out: Dict[str, dict] = {}
+    prev_end: Optional[Point] = None
+    entry_xy = field_channel_entry_xy(direction, config_path)
     for name in MOVE_SEGMENT_ORDER:
         entry = raw.get(name)
         if not isinstance(entry, dict):
             continue
-        sx, sy = entry['start']
         ex, ey = entry['end']
-        start_xy = (float(sx), float(sy))
         end_xy = (float(ex), float(ey))
         heading_rad = math.radians(float(entry['heading_deg']))
+        start_xy = prev_end if prev_end is not None else entry_xy
         length_m = _along_length(start_xy, end_xy, heading_rad)
         out[name] = {
             'start_xy': start_xy,
@@ -96,6 +97,7 @@ def field_move_segment_specs(
             'heading_rad': heading_rad,
             'length_m': length_m,
         }
+        prev_end = end_xy
     return out
 
 
@@ -181,14 +183,11 @@ def field_ring_polyline(
     direction: str = 'clockwise',
     config_path: Optional[str] = None,
 ) -> List[Point]:
-    """折线：channel_entry → 各段 S→E（离线绘图）。"""
+    """折线：channel_entry → 各段 E（离线绘图）。"""
     points: List[Point] = [field_channel_entry_xy(direction, config_path)]
-    endpoints = field_segment_endpoints(direction, config_path)
+    specs = field_move_segment_specs(direction, config_path)
     for name in MOVE_SEGMENT_ORDER:
-        if name not in endpoints:
+        if name not in specs:
             continue
-        start_xy, end_xy = endpoints[name]
-        if not points or math.hypot(points[-1][0] - start_xy[0], points[-1][1] - start_xy[1]) > 0.02:
-            points.append(start_xy)
-        points.append(end_xy)
+        points.append(specs[name]['end_xy'])
     return points

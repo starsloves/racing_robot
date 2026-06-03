@@ -18,7 +18,8 @@ class DirectInertialTesterObstacleMixin:
             self.get_logger().warning(message)
         else:
             self.get_logger().info(message)
-        self.write_debug_log(level, message)
+        if level in ('WARN', 'ERROR') or getattr(self, 'debug_log_verbose', False):
+            self.write_debug_log(level, message)
 
     def log_debug_info(self, message):
         self.log_console_and_debug('INFO', message)
@@ -933,34 +934,12 @@ class DirectInertialTesterObstacleMixin:
         try:
             os.makedirs(os.path.dirname(self.debug_log_path), exist_ok=True)
             with open(self.debug_log_path, 'w', encoding='utf-8') as log_file:
-                log_file.write('=== direct_inertial_tester 避障/路径调试日志 ===\n')
+                log_file.write('=== Stage2 参数测试 — 执行日志 ===\n')
                 log_file.write(f'log_path={self.debug_log_path}\n')
                 log_file.write(
-                    '字段说明: TRIGGER=避障 | DECISION=避障决策 | MOVE=直行 | TURN=转弯 | '
-                    'CONFIG=参数 | SEGMENT=段切换\n'
+                    '格式: FLOW=段切换/避障/回正；POSE=中途位置航向(默认~0.5s)；map 世界坐标\n'
                 )
-                log_file.write(
-                    '每行 TURN/MOVE 固定四元组(map世界坐标): '
-                    '当前点 目标点 当前角 目标角 | 距目标点 角差\n'
-                )
-                log_file.write(
-                    'move目标点=yaml段末E; turn目标点=下一段yaml起点S,目标角=转完plan_yaw\n'
-                )
-                log_file.write(
-                    'MOVE: phase=弯后航向收敛|直行贴弦线|段末停车对齐 | '
-                    '横偏左正=在实测弦线左侧 | ω>0=逆时针/左转 ω<0=右转 | '
-                    'STEER_FLIP=转向符号反转(内外来回拧)\n'
-                )
-                log_file.write(
-                    'goal_direct: phase=follow|bypass|pass|rejoin|exit|handoff | '
-                    'goals=bypass pass rejoin|exit | need_direct_cut | '
-                    'zone=角点区域 before_turn|post_apex\n'
-                )
-                log_file.write(
-                    'OBSTACLE: 激光簇详情 robot=车体系 map=世界坐标 '
-                    'box_x/box_y=簇包围盒 span=簇尺寸 path_along/lat=投影到当前段 '
-                    'tags=过滤原因(TRIGGER_OK=有效触发 outside_corridor/side_fence/edge_glance=边沿)\n'
-                )
+                log_file.write('CONFIG/MOVE/DETOUR 全量需 launch 设 debug_log_verbose:=true\n')
         except OSError as exc:
             self.get_logger().warning(f'调试日志文件初始化失败: {exc}')
 

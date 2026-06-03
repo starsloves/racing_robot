@@ -136,6 +136,18 @@ def sync_tester_runtime_parameters(node):
         node.avoid_bias_yaw_deg,
         float(node.get_parameter('avoid_bias_yaw_max_deg').value),
     )
+    node.avoid_triangle_trigger_m = max(
+        0.25,
+        float(node.get_parameter('avoid_triangle_trigger_m').value),
+    )
+    node.avoid_triangle_bias_deg = max(
+        8.0,
+        min(45.0, float(node.get_parameter('avoid_triangle_bias_deg').value)),
+    )
+    node.avoid_triangle_leg_m = max(
+        0.40,
+        float(node.get_parameter('avoid_triangle_leg_m').value),
+    )
     node.avoid_pass_clearance_m = max(
         0.04,
         float(node.get_parameter('avoid_pass_clearance_m').value),
@@ -216,7 +228,22 @@ def sync_tester_runtime_parameters(node):
         0.05,
         float(node.get_parameter('avoid_goal_exit_inward_margin_m').value),
     )
-
+    node.mission_move_heading_deadband_deg = max(
+        0.5,
+        float(node.get_parameter('mission_move_heading_deadband_deg').value),
+    )
+    node.mission_move_heading_kp = max(
+        0.0,
+        float(node.get_parameter('mission_move_heading_kp').value),
+    )
+    node.mission_move_max_angular_rps = max(
+        0.0,
+        float(node.get_parameter('mission_move_max_angular_rps').value),
+    )
+    node.mission_move_min_angular_rps = max(
+        0.0,
+        float(node.get_parameter('mission_move_min_angular_rps').value),
+    )
     detect_raw = float(node.get_parameter('detour_obstacle_detect_distance').value)
     clear_raw = float(node.get_parameter('detour_obstacle_clear_distance').value)
     min_detect = node.detour_obstacle_distance + 0.12

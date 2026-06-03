@@ -38,9 +38,12 @@ def generate_launch_description():
     rgb_fps_arg = DeclareLaunchArgument('rgb_fps', default_value='15')
     resolution_mode_index_arg = DeclareLaunchArgument('resolution_mode_index', default_value='2')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
-    detour_detect_distance_arg = DeclareLaunchArgument('detour_obstacle_detect_distance', default_value='1.30')
-    detour_clear_distance_arg = DeclareLaunchArgument('detour_obstacle_clear_distance', default_value='0.75')
-    avoid_watch_distance_arg = DeclareLaunchArgument('avoid_watch_distance_m', default_value='0.80')
+    detour_detect_distance_arg = DeclareLaunchArgument('detour_obstacle_detect_distance', default_value='0.55')
+    detour_clear_distance_arg = DeclareLaunchArgument('detour_obstacle_clear_distance', default_value='0.65')
+    avoid_watch_distance_arg = DeclareLaunchArgument('avoid_watch_distance_m', default_value='0.55')
+    avoid_triangle_trigger_arg = DeclareLaunchArgument('avoid_triangle_trigger_m', default_value='0.50')
+    avoid_triangle_bias_arg = DeclareLaunchArgument('avoid_triangle_bias_deg', default_value='30.0')
+    avoid_triangle_leg_arg = DeclareLaunchArgument('avoid_triangle_leg_m', default_value='0.80')
     avoid_commit_distance_arg = DeclareLaunchArgument('avoid_commit_distance_m', default_value='0.45')
     avoid_corner_prefer_inside_arg = DeclareLaunchArgument('avoid_corner_prefer_inside', default_value='true')
 
@@ -76,7 +79,17 @@ def generate_launch_description():
                 'detour_obstacle_clear_distance': LaunchConfiguration('detour_obstacle_clear_distance'),
                 'avoid_watch_distance_m': LaunchConfiguration('avoid_watch_distance_m'),
                 'avoid_commit_distance_m': LaunchConfiguration('avoid_commit_distance_m'),
+                'avoid_triangle_trigger_m': LaunchConfiguration('avoid_triangle_trigger_m'),
+                'avoid_triangle_bias_deg': LaunchConfiguration('avoid_triangle_bias_deg'),
+                'avoid_triangle_leg_m': LaunchConfiguration('avoid_triangle_leg_m'),
                 'avoid_corner_prefer_inside': LaunchConfiguration('avoid_corner_prefer_inside'),
+                'mission_move_heading_kp': 0.0,
+                'mission_move_max_angular_rps': 0.0,
+                'mission_move_min_angular_rps': 0.0,
+                'turn_linear_speed': 0.05,
+                'turn_angular_speed': 0.50,
+                'turn_min_angular_speed': 0.0,
+                'heading_tolerance_deg': 2.0,
             },
         ],
         output='screen',
@@ -114,6 +127,9 @@ def generate_launch_description():
         detour_clear_distance_arg,
         avoid_watch_distance_arg,
         avoid_commit_distance_arg,
+        avoid_triangle_trigger_arg,
+        avoid_triangle_bias_arg,
+        avoid_triangle_leg_arg,
         avoid_corner_prefer_inside_arg,
         support_stack,
         cmd_relay_node,

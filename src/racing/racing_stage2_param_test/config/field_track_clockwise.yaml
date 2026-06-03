@@ -1,5 +1,5 @@
-# 顺时针 — map 世界坐标
-# Stage1 结束 corridor_goal (2.50, 3.20) ψ=90° → rect_enter_align +90° → ψ=180° → 第一段沿 -X
+# 顺时针 — map 世界坐标；move 段仅 end + ψ（起点=进段当前位姿）
+# 场测轨线（本圈日志 1780456260 校准）：左 x=0.23 右 x=4.65 底 y=3.31 顶 y=4.97
 frame: map
 direction: clockwise
 channel_entry:
@@ -7,24 +7,18 @@ channel_entry:
   yaw_deg: 90.0
 segments:
   rect_first_leg:
-    start: [2.38, 3.32]
-    end: [1.28, 3.32]
+    end: [0.23, 3.60]
     heading_deg: 180.0
-  # 竖边场测校准：沿程≈0.58m 即到左上拐角（原 0.80m 偏长 0.22m）
   rect_side_1:
-    start: [1.28, 3.32]
-    end: [1.28, 3.90]
+    end: [0.23, 4.97]
     heading_deg: 90.0
   rect_top:
-    start: [1.28, 3.90]
-    end: [3.87, 3.90]
+    end: [4.65, 4.97]
     heading_deg: 0.0
   rect_side_2:
-    start: [3.87, 3.90]
-    end: [3.87, 3.32]
+    end: [4.65, 3.31]
     heading_deg: -90.0
   rect_return_origin:
-    start: [3.87, 3.32]
-    end: [2.38, 3.32]
+    end: [2.38, 3.31]
     heading_deg: 180.0
 mission_finish_segment: rect_return_origin

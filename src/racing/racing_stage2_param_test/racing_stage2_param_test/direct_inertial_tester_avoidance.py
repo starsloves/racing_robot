@@ -1,7 +1,8 @@
-"""Goal-direct avoidance — pose + world waypoint targets.
+"""Move-segment avoidance: triangle detour (default) + goal_direct (pre-corner only).
 
-On enter: plan bypass → pass → (rejoin | exit) as odom (x,y) goals on nominal plan S→E.
-Segment along/lat use world_plan_nav (fixed plan chord, not per-entry P0).
+Triangle: trigger ≤0.5 m → turn 30° while moving → straight until leg=0.8 m
+(turn arc + straight); mirror return leg; map endpoints in world plan frame.
+Pre-corner early avoidance still uses goal_direct bypass/pass.
 """
 
 import math
@@ -19,6 +20,13 @@ class DirectInertialTesterAvoidanceMixin:
     """Unified goal_direct detour for straight move segments."""
 
     GOAL_PHASES = ('bypass', 'pass', 'rejoin', 'exit', 'next_leg')
+    TRIANGLE_PHASES = (
+        'tri_out_turn',
+        'tri_out_run',
+        'tri_return_turn',
+        'tri_return_run',
+        'tri_rejoin_turn',
+    )
     ENTRY_DIRECT_PROGRESS_WINDOW_M = 0.24
     ENTRY_DIRECT_SKIP_BYPASS_NEAREST_M = 0.16
 
@@ -64,13 +72,31 @@ class DirectInertialTesterAvoidanceMixin:
         self.avoid_entry_skipped_bypass = False
         self.avoid_pre_corner_upcoming_segment = None
         self._saved_mission_plan_frame = None
+        self.avoidance_algorithm = 'triangle'
+        self.tri_out_leg_travel_m = 0.0
+        self.tri_return_leg_travel_m = 0.0
+        self.tri_turn_arc_travel_m = 0.0
+        self.tri_entry_yaw = None
+        self.tri_seg_heading_yaw = None
+        self.tri_out_target_yaw = None
+        self.tri_return_target_yaw = None
+        self.tri_out_end_xy = None
+        self.tri_return_end_xy = None
+        self._tri_prev_xy = None
+
+    def use_triangle_avoidance(self):
+        return (
+            getattr(self, 'avoidance_active', False)
+            and getattr(self, 'avoidance_algorithm', 'triangle') == 'triangle'
+            and not getattr(self, 'avoid_pre_corner_upcoming_segment', None)
+        )
 
     @property
     def avoidance_phase(self):
         if not getattr(self, 'avoidance_active', False):
             return 'follow'
         phase = getattr(self, 'goal_direct_phase', 'follow')
-        if phase in self.GOAL_PHASES:
+        if phase in self.GOAL_PHASES or phase in self.TRIANGLE_PHASES:
             return phase
         return 'handoff'
 
@@ -889,6 +915,13 @@ class DirectInertialTesterAvoidanceMixin:
         return None
 
     def active_avoidance_goal_xy(self):
+        if self.use_triangle_avoidance():
+            phase = getattr(self, 'goal_direct_phase', '')
+            if phase.startswith('tri_out'):
+                return getattr(self, 'tri_out_end_xy', None)
+            if phase.startswith('tri_return'):
+                return getattr(self, 'tri_return_end_xy', None)
+            return getattr(self, 'tri_out_end_xy', None)
         phase = getattr(self, 'goal_direct_phase', '')
         if phase == 'bypass':
             if getattr(self, 'avoid_entry_direct_goal', False):
@@ -1200,19 +1233,10 @@ class DirectInertialTesterAvoidanceMixin:
             return False
         if self.obstacle_already_passed_in_mission():
             return False
-        if (
-            (self.current_segment or {}).get('type') == 'move'
-            and abs(self.segment_lateral_offset_m()) > 0.12
-            and self.move_segment_at_entry_context()
-        ):
-            return False
         if not self.dwa_path_blocker_imminent():
             return False
         nearest = self.template_blocker_distance_m()
-        enter_dist = self.avoidance_enter_distance_m()
-        seg_len = float((self.current_segment or {}).get('distance_m', 99.0))
-        if seg_len <= 0.68:
-            enter_dist = min(enter_dist, 0.65)
+        enter_dist = float(getattr(self, 'avoid_triangle_trigger_m', 0.50))
         return math.isfinite(nearest) and nearest <= enter_dist
 
     def mission_obstacle_linear_cap_mps(self):
@@ -1709,11 +1733,27 @@ class DirectInertialTesterAvoidanceMixin:
         if now_sec - self._last_goal_detour_log_at < self.detour_debug_log_period_sec:
             return
         self._last_goal_detour_log_at = now_sec
-        if hasattr(self, 'maybe_log_template_detour_snapshot'):
+        if hasattr(self, 'log_flow_avoid_pose_tick'):
+            self.log_flow_avoid_pose_tick(now_sec)
+        if self.debug_log_is_verbose() and hasattr(self, 'maybe_log_template_detour_snapshot'):
             self.maybe_log_template_detour_snapshot(now_sec)
 
     def avoidance_stuck_handoff_ready(self, now_sec):
         if not self.avoidance_active:
+            return False
+        if self.use_triangle_avoidance():
+            phase = getattr(self, 'goal_direct_phase', '')
+            if phase not in ('tri_return_run', 'tri_rejoin_turn'):
+                return False
+            if phase == 'tri_return_run':
+                leg_m = float(getattr(self, 'avoid_triangle_leg_m', 0.80))
+                if self.tri_return_leg_travel_m + 1e-3 < leg_m:
+                    return False
+            if not self.obstacle_passed_for_handoff(margin_m=0.06):
+                return False
+            elapsed = self.goal_direct_phase_elapsed_sec(now_sec)
+            if elapsed >= 8.0 and abs(self.segment_lateral_offset_m()) <= 0.14:
+                return True
             return False
         if not self.obstacle_passed_for_handoff(margin_m=0.08):
             return False
@@ -1763,12 +1803,280 @@ class DirectInertialTesterAvoidanceMixin:
                 return 'none'
             return f'({pt[0]:.2f},{pt[1]:.2f})'
 
+        if self.use_triangle_avoidance() or getattr(self, 'avoidance_algorithm', '') == 'triangle':
+            leg_m = float(getattr(self, 'avoid_triangle_leg_m', 0.80))
+            return (
+                f'algo=triangle phase={self.goal_direct_phase} '
+                f'side={getattr(self, "locked_bypass_side", 0):+d} '
+                f'out={self.tri_out_leg_travel_m:.2f}/{leg_m:.2f}m '
+                f'return={self.tri_return_leg_travel_m:.2f}/{leg_m:.2f}m '
+                f'arc={self.tri_turn_arc_travel_m:.2f}m '
+                f'out_end={fmt(self.tri_out_end_xy)} ret_end={fmt(self.tri_return_end_xy)}'
+            )
         return (
             f'phase={self.goal_direct_phase} cut={self.need_direct_cut} '
             f'bypass={fmt(self.goal_bypass_xy)} pass={fmt(self.goal_pass_xy)} '
             f'rejoin={fmt(self.goal_rejoin_xy)} exit={fmt(self.goal_exit_xy)} '
             f'next_leg={fmt(self.goal_next_leg_xy)}'
         )
+
+    # ------------------------------------------------------------------ triangle detour (default)
+    def triangle_bias_rad(self):
+        side = float(getattr(self, 'locked_bypass_side', 1) or 1)
+        bias_deg = float(getattr(self, 'avoid_triangle_bias_deg', 30.0))
+        return side * math.radians(bias_deg)
+
+    def estimate_triangle_turn_arc_m(self):
+        """Nominal arc length while turning bias_deg at avoid out speed."""
+        v = float(getattr(self, 'avoid_speed_out_mps', 0.08))
+        omega = max(0.08, float(getattr(self, 'avoid_max_angular_speed', 0.42)))
+        return v / omega * abs(self.triangle_bias_rad())
+
+    def arc_offset_world(self, origin_xy, heading_rad, delta_heading_rad, arc_length_m):
+        """Circular-arc displacement in world frame (left turn = +delta)."""
+        ox, oy = float(origin_xy[0]), float(origin_xy[1])
+        if abs(delta_heading_rad) < 1e-6 or arc_length_m <= 1e-6:
+            return (
+                ox + math.cos(heading_rad) * arc_length_m,
+                oy + math.sin(heading_rad) * arc_length_m,
+            )
+        radius = arc_length_m / abs(delta_heading_rad)
+        sign = 1.0 if delta_heading_rad > 0.0 else -1.0
+        cx = ox - sign * radius * math.sin(heading_rad)
+        cy = oy + sign * radius * math.cos(heading_rad)
+        end_heading = heading_rad + delta_heading_rad
+        ex = cx + sign * radius * math.sin(end_heading)
+        ey = cy - sign * radius * math.cos(end_heading)
+        return ex, ey
+
+    def triangle_leg_endpoint_world(self, origin_xy, heading_rad, delta_heading_rad, leg_total_m):
+        """World end of one triangle leg: turn arc + straight = leg_total_m."""
+        arc_m = min(float(leg_total_m), self.estimate_triangle_turn_arc_m())
+        straight_m = max(0.0, float(leg_total_m) - arc_m)
+        mid_x, mid_y = self.arc_offset_world(origin_xy, heading_rad, delta_heading_rad, arc_m)
+        end_heading = heading_rad + delta_heading_rad
+        return (
+            mid_x + math.cos(end_heading) * straight_m,
+            mid_y + math.sin(end_heading) * straight_m,
+        )
+
+    def lock_triangle_obstacle(self):
+        circle = self.active_obstacle_circle
+        self.locked_obstacle_along_s = None
+        self.locked_obstacle_world_xy = None
+        if circle is None:
+            self.locked_obstacle_circle = None
+            return
+        self.locked_obstacle_circle = dict(circle)
+        static = getattr(self, 'scenario_static_obstacles_world', [])
+        for sx, sy, _sr in static:
+            along = self.progress_along_segment_m((sx, sy))
+            seg_len = float((self.current_segment or {}).get('distance_m', 99.0))
+            if along is not None and -0.05 <= along <= seg_len + 0.20:
+                self.locked_obstacle_world_xy = (float(sx), float(sy))
+                break
+        if self.locked_obstacle_world_xy is None:
+            world = self.obstacle_center_world_xy(circle)
+            if world is None and self.segment_start_pose is not None:
+                along = self.obstacle_along_segment_m(circle)
+                if along is not None and self.segment_heading is not None:
+                    world = (
+                        float(self.segment_start_pose[0])
+                        + math.cos(self.segment_heading) * float(along),
+                        float(self.segment_start_pose[1])
+                        + math.sin(self.segment_heading) * float(along),
+                    )
+            self.locked_obstacle_world_xy = world
+        self.locked_obstacle_along_s = self.resolve_locked_obstacle_along_s_m(circle)
+        self.locked_obstacle_lost_at = None
+
+    def lock_triangle_avoidance(self):
+        """Plan isosceles triangle in world coords on nominal segment ψ."""
+        leg_m = float(getattr(self, 'avoid_triangle_leg_m', 0.80))
+        bias_deg = float(getattr(self, 'avoid_triangle_bias_deg', 30.0))
+        required_lat = leg_m * math.sin(math.radians(bias_deg * 0.5))
+        self.avoid_target_offset_m = max(0.20, required_lat)
+        self.locked_bypass_side, self.avoid_template_feasible = self.select_bypass_side(
+            self.avoid_target_offset_m
+        )
+        if self.locked_bypass_side == 0:
+            self.locked_bypass_side = 1
+        self.lock_triangle_obstacle()
+        self.avoidance_algorithm = 'triangle'
+        seg_h = self.segment_heading
+        if seg_h is None and self.segment_plan_heading_rad is not None:
+            seg_h = self.segment_plan_heading_rad
+        nav_yaw = self.world_navigation_yaw() if hasattr(self, 'world_navigation_yaw') else None
+        if nav_yaw is None:
+            nav_yaw = self.current_yaw
+        self.tri_seg_heading_yaw = float(seg_h) if seg_h is not None else float(nav_yaw)
+        self.tri_entry_yaw = float(nav_yaw) if nav_yaw is not None else self.tri_seg_heading_yaw
+        self.tri_out_target_yaw = self.normalize_angle(
+            self.tri_seg_heading_yaw + self.triangle_bias_rad()
+        )
+        # 等腰三角：出弯 ψ±bias，回弯 ψ∓bias（例：180° 右绕 → 150° 再 210°，非两次都对 180°）。
+        self.tri_return_target_yaw = self.normalize_angle(
+            self.tri_seg_heading_yaw - self.triangle_bias_rad()
+        )
+        self.tri_out_leg_travel_m = 0.0
+        self.tri_return_leg_travel_m = 0.0
+        self.tri_turn_arc_travel_m = 0.0
+        self._tri_prev_xy = self.world_navigation_xy() if hasattr(self, 'world_navigation_xy') else None
+        entry_xy = self._tri_prev_xy
+        if entry_xy is not None:
+            self.tri_out_end_xy = self.triangle_leg_endpoint_world(
+                entry_xy,
+                self.tri_seg_heading_yaw,
+                self.triangle_bias_rad(),
+                leg_m,
+            )
+            if self.tri_out_end_xy is not None:
+                return_delta = self.normalize_angle(
+                    self.tri_return_target_yaw - self.tri_out_target_yaw
+                )
+                self.tri_return_end_xy = self.triangle_leg_endpoint_world(
+                    self.tri_out_end_xy,
+                    self.tri_out_target_yaw,
+                    return_delta,
+                    leg_m,
+                )
+        else:
+            self.tri_out_end_xy = None
+            self.tri_return_end_xy = None
+        self.goal_direct_phase = 'tri_out_turn'
+        self.goal_direct_sequence = list(self.TRIANGLE_PHASES)
+        self.goal_direct_index = 0
+        self._mark_goal_direct_phase_started()
+        self.need_direct_cut = False
+
+    def _integrate_triangle_travel(self):
+        world = self.world_navigation_xy() if hasattr(self, 'world_navigation_xy') else None
+        if world is None:
+            return
+        prev = getattr(self, '_tri_prev_xy', None)
+        if prev is not None:
+            ds = math.hypot(float(world[0]) - float(prev[0]), float(world[1]) - float(prev[1]))
+            phase = getattr(self, 'goal_direct_phase', '')
+            if phase.startswith('tri_out'):
+                self.tri_out_leg_travel_m += ds
+            elif phase.startswith('tri_return'):
+                self.tri_return_leg_travel_m += ds
+        self._tri_prev_xy = (float(world[0]), float(world[1]))
+
+    def _triangle_heading_reached(self, target_yaw, tol_rad=None):
+        nav_yaw = self.world_navigation_yaw() if hasattr(self, 'world_navigation_yaw') else None
+        if nav_yaw is None:
+            nav_yaw = self.current_yaw
+        if nav_yaw is None or target_yaw is None:
+            return False
+        tol = tol_rad
+        if tol is None:
+            tol = math.radians(max(3.0, float(getattr(self, 'heading_tolerance_deg', 3.5))))
+        return abs(self.angle_error(float(target_yaw), float(nav_yaw))) <= tol
+
+    def update_triangle_phase(self):
+        phase = getattr(self, 'goal_direct_phase', 'tri_out_turn')
+        leg_m = float(getattr(self, 'avoid_triangle_leg_m', 0.80))
+        if phase == 'tri_out_turn':
+            if self._triangle_heading_reached(self.tri_out_target_yaw):
+                self.tri_turn_arc_travel_m = float(self.tri_out_leg_travel_m)
+                self.goal_direct_phase = 'tri_out_run'
+                if hasattr(self, 'log_flow_avoid_phase'):
+                    self.log_flow_avoid_phase('tri_out_turn', 'tri_out_run')
+                self._mark_goal_direct_phase_started()
+            return
+        if phase == 'tri_out_run':
+            if self.tri_out_leg_travel_m + 1e-3 >= leg_m:
+                self.goal_direct_phase = 'tri_return_turn'
+                if hasattr(self, 'log_flow_avoid_phase'):
+                    self.log_flow_avoid_phase('tri_out_run', 'tri_return_turn')
+                self._mark_goal_direct_phase_started()
+            return
+        if phase == 'tri_return_turn':
+            if self._triangle_heading_reached(self.tri_return_target_yaw):
+                self.goal_direct_phase = 'tri_return_run'
+                if hasattr(self, 'log_flow_avoid_phase'):
+                    self.log_flow_avoid_phase('tri_return_turn', 'tri_return_run')
+                self._mark_goal_direct_phase_started()
+            return
+        if phase == 'tri_return_run':
+            if self.tri_return_leg_travel_m + 1e-3 >= leg_m:
+                self.goal_direct_phase = 'tri_rejoin_turn'
+                if hasattr(self, 'log_flow_avoid_phase'):
+                    self.log_flow_avoid_phase('tri_return_run', 'tri_rejoin_turn')
+                self._mark_goal_direct_phase_started()
+            return
+        if phase == 'tri_rejoin_turn':
+            if self._triangle_heading_reached(self.tri_seg_heading_yaw):
+                pass
+            return
+
+    def triangle_avoidance_cmd(self, now_sec):
+        del now_sec
+        self.update_triangle_phase()
+        phase = getattr(self, 'goal_direct_phase', 'tri_out_turn')
+        side = float(getattr(self, 'locked_bypass_side', 1) or 1)
+        v_turn = float(getattr(self, 'avoid_speed_out_mps', 0.08))
+        v_run = float(getattr(self, 'avoid_speed_pass_mps', 0.10))
+        omega_max = float(getattr(self, 'avoid_max_angular_speed', 0.42))
+        kp = float(getattr(self, 'avoid_goal_heading_kp', self.heading_kp))
+
+        if phase == 'tri_out_turn':
+            return v_turn, side * omega_max
+
+        nav_yaw = self.world_navigation_yaw() if hasattr(self, 'world_navigation_yaw') else None
+        if nav_yaw is None:
+            nav_yaw = self.current_yaw
+
+        if phase == 'tri_out_run':
+            if nav_yaw is None:
+                return 0.0, 0.0
+            head_err = self.angle_error(self.tri_out_target_yaw, nav_yaw)
+            omega = self.clamp(kp * 1.15 * head_err, omega_max)
+            return v_run, omega
+
+        if phase == 'tri_return_turn':
+            if nav_yaw is None or self.tri_return_target_yaw is None:
+                return 0.0, 0.0
+            head_err = self.angle_error(self.tri_return_target_yaw, nav_yaw)
+            omega = self.clamp(kp * 1.15 * head_err, omega_max)
+            return v_turn * 0.85, omega
+
+        if phase == 'tri_return_run':
+            if nav_yaw is None or self.tri_return_target_yaw is None:
+                return 0.0, 0.0
+            head_err = self.angle_error(self.tri_return_target_yaw, nav_yaw)
+            omega = self.clamp(kp * 1.15 * head_err, omega_max)
+            return v_run, omega
+
+        if phase == 'tri_rejoin_turn':
+            if nav_yaw is None or self.tri_seg_heading_yaw is None:
+                return 0.0, 0.0
+            head_err = self.angle_error(self.tri_seg_heading_yaw, nav_yaw)
+            omega = self.clamp(kp * 1.15 * head_err, omega_max)
+            return v_turn * 0.75, omega
+
+        return 0.0, 0.0
+
+    def triangle_handoff_ready(self):
+        phase = getattr(self, 'goal_direct_phase', '')
+        if phase != 'tri_rejoin_turn':
+            return False
+        if not self._triangle_heading_reached(self.tri_seg_heading_yaw):
+            return False
+        if not (
+            self.obstacle_passed_for_handoff(margin_m=0.06)
+            or self.locked_obstacle_physically_passed()
+            or self.segment_along_past_locked_obstacle(margin_m=0.06)
+        ):
+            return False
+        lat_limit = max(
+            float(getattr(self, 'avoid_rejoin_lateral_tol_m', 0.06)) * 2.5,
+            0.12,
+        )
+        if abs(self.segment_lateral_offset_m()) > lat_limit:
+            return False
+        return self.avoidance_clear_streak >= 1
 
     # ------------------------------------------------------------------ mission helpers
     def mission_nominal_move_cmd(self, linear_mps):
@@ -1936,22 +2244,32 @@ class DirectInertialTesterAvoidanceMixin:
         self.avoidance_entry_nearest_m = (
             float(nearest) if math.isfinite(nearest) else 99.0
         )
-        self.lock_avoidance_geometry()
+        if self.pre_corner_early_avoidance_applies():
+            self.avoidance_algorithm = 'goal_direct'
+            self.lock_avoidance_geometry()
+        else:
+            self.lock_triangle_avoidance()
         self.locked_bypass_side_at_enter = self.locked_bypass_side
         self._last_avoid_cmd_log_at = -1.0
-        if hasattr(self, 'log_obstacle_perception_snapshot'):
+        if self.debug_log_is_verbose() and hasattr(self, 'log_obstacle_perception_snapshot'):
             self.log_obstacle_perception_snapshot('AVOID_ENTER')
-        self.write_debug_log(
-            'DECISION',
-            (
-                f'AVOID_ENTER segment={self.current_segment.get("description", "?")} '
-                f'algorithm=goal_direct nearest={self.format_distance(nearest)}m '
-                f'side={self.locked_bypass_side:+d} offset={self.avoid_target_offset_m:.2f}m '
-                f'| {self.format_goal_compact()} '
-                f'| {self.format_template_avoid_compact()} '
-                f'| {self.format_scan_ranges_compact()}'
-            ),
-        )
+        self.log_flow_avoid_start()
+        if self.debug_log_is_verbose():
+            algo = getattr(self, 'avoidance_algorithm', 'triangle')
+            nearest = self.template_blocker_distance_m()
+            self.write_debug_log(
+                'DECISION',
+                (
+                    f'AVOID_ENTER segment={self.current_segment.get("description", "?")} '
+                    f'algorithm={algo} nearest={self.format_distance(nearest)}m '
+                    f'side={self.locked_bypass_side:+d} '
+                    f'bias={float(getattr(self, "avoid_triangle_bias_deg", 30.0)):.0f}deg '
+                    f'leg={float(getattr(self, "avoid_triangle_leg_m", 0.80)):.2f}m '
+                    f'| {self.format_goal_compact()} '
+                    f'| {self.format_template_avoid_compact()} '
+                    f'| {self.format_scan_ranges_compact()}'
+                ),
+            )
 
     def avoidance_exit(self, reason):
         pre_corner = getattr(self, 'avoid_pre_corner_upcoming_segment', None)
@@ -1969,17 +2287,19 @@ class DirectInertialTesterAvoidanceMixin:
             if hasattr(self, 'segment_started_at') and self.segment_started_at is not None:
                 self.segment_started_at = now_sec
         head_err_deg = math.degrees(self.avoidance_mission_heading_err_rad())
-        self.write_debug_log(
-            'DECISION',
-            (
-                f'AVOID_EXIT reason={reason} mode={self.avoidance_phase} '
-                f'side={self.locked_bypass_side:+d} progress={self.projected_distance():.2f}m '
-                f'lat={self.segment_lateral_offset_m():.2f}m head_err={head_err_deg:.1f}deg cut={direct_cut} '
-                f'| {self.format_goal_compact()} '
-                f'| {self.format_template_avoid_compact()} '
-                f'| {self.format_scan_ranges_compact()}'
-            ),
-        )
+        self.log_flow_avoid_rejoin(reason)
+        if self.debug_log_is_verbose():
+            self.write_debug_log(
+                'DECISION',
+                (
+                    f'AVOID_EXIT reason={reason} mode={self.avoidance_phase} '
+                    f'side={self.locked_bypass_side:+d} progress={self.projected_distance():.2f}m '
+                    f'lat={self.segment_lateral_offset_m():.2f}m head_err={head_err_deg:.1f}deg cut={direct_cut} '
+                    f'| {self.format_goal_compact()} '
+                    f'| {self.format_template_avoid_compact()} '
+                    f'| {self.format_scan_ranges_compact()}'
+                ),
+            )
         if reason in ('segment_complete', 'recovered', 'direct_cut', 'corner_shortcut'):
             if self.avoidance_mission_heading_err_rad() > math.radians(8.0):
                 self.move_heading_settle_m = max(
@@ -2009,6 +2329,19 @@ class DirectInertialTesterAvoidanceMixin:
             self.avoidance_clear_streak += 1
         else:
             self.avoidance_clear_streak = 0
+
+        if self.use_triangle_avoidance():
+            self._integrate_triangle_travel()
+            if self.triangle_handoff_ready():
+                self.avoidance_exit('segment_complete')
+                return True
+            if self.avoidance_stuck_handoff_ready(now_sec):
+                self.avoidance_exit('segment_complete')
+                return True
+            self.maybe_log_goal_direct_snapshot(now_sec)
+            linear, angular = self.triangle_avoidance_cmd(now_sec)
+            self.publish_goal_direct_cmd(linear, angular, now_sec)
+            return True
 
         if self.goal_direct_handoff_ready():
             direct_cut = self.corner_direct_cut_on_handoff()

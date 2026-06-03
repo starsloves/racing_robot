@@ -1,8 +1,7 @@
 """World-plan navigation for stage2 param test (pose + waypoint targets).
 
-All straight segments use fixed nominal S→E from ``ring_track`` (odom frame).
-Progress and lateral error are projections onto that plan chord, clamped along
-length — not re-anchored per-segment odometry entry.
+Move 段运行时：起点 = 进段时刻当前 map 位姿；终点 E 与 ψ 来自 yaml。
+沿程/段长相对当前点计算，不用 yaml 的 S 当真值。
 
 See ``docs/NAVIGATION.md``.
 """
@@ -30,7 +29,7 @@ class DirectInertialTesterWorldPlanMixin:
         self.segment_plan_length_m: float = 0.0
 
     def lookup_move_segment_world_plan(self, segment_name: str):
-        """Nominal S, E, ψ, length from field_track YAML."""
+        """Nominal E, ψ, length from field_track YAML."""
         name = str(segment_name or '').strip()
         if not name:
             return None
@@ -76,20 +75,18 @@ class DirectInertialTesterWorldPlanMixin:
             self.segment_start_pose = seg_start
 
     def apply_move_segment_world_plan(self, segment_name: str) -> bool:
-        """Load nominal plan frame for ``segment_name`` (current mission segment unchanged)."""
+        """Load yaml E、ψ；起点由 anchor_move_segment_at_current_pose 写入。"""
         spec = self.lookup_move_segment_world_plan(segment_name)
         if spec is None:
             return False
-        self.segment_plan_start_xy = spec['start_xy']
         self.segment_plan_end_xy = spec['end_xy']
         self.segment_plan_heading_rad = spec['heading_rad']
-        self.segment_plan_length_m = spec['length_m']
+        self.segment_plan_length_m = float(spec['length_m'])
         self.segment_heading = spec['heading_rad']
-        self.segment_start_pose = spec['start_xy']
         return True
 
     def load_move_segment_world_plan(self):
-        """Cache nominal S, E, ψ for the active move segment."""
+        """Cache yaml E、ψ；起点锚在当前 map 位姿。"""
         self.reset_segment_world_plan()
         segment = self.current_segment or {}
         if segment.get('type') != 'move':
@@ -99,6 +96,25 @@ class DirectInertialTesterWorldPlanMixin:
             return
         if not self.apply_move_segment_world_plan(name):
             return
+        self.anchor_move_segment_at_current_pose()
+
+    def anchor_move_segment_at_current_pose(self):
+        """段 S = 当前 (x,y)；段长 = 沿 ψ 从当前点到 yaml E 的沿程距离。"""
+        world_xy = self.world_navigation_xy()
+        if (
+            world_xy is None
+            or self.segment_plan_end_xy is None
+            or self.segment_plan_heading_rad is None
+        ):
+            return
+        self.segment_plan_start_xy = (float(world_xy[0]), float(world_xy[1]))
+        self.segment_start_pose = self.segment_plan_start_xy
+        along_to_e = world_segment.along_m(
+            self.segment_plan_end_xy,
+            self.segment_plan_start_xy,
+            self.segment_plan_heading_rad,
+        )
+        self.segment_plan_length_m = max(0.05, float(along_to_e))
 
     def world_navigation_yaw_raw(self) -> Optional[float]:
         """Raw yaw from odom (preferred) or IMU, before channel-entry alignment."""
@@ -254,7 +270,7 @@ class DirectInertialTesterWorldPlanMixin:
         return None
 
     def next_move_segment_start_xy(self) -> Optional[Point]:
-        """下一段 move 的 yaml 起点 S（转弯时作为 map 目标位置）。"""
+        """转弯阶段 map 参考点：下一段 yaml E（仅日志）。"""
         if not hasattr(self, 'plan'):
             return None
         for i in range(int(getattr(self, 'plan_index', 0)) + 1, len(self.plan)):
@@ -263,7 +279,7 @@ class DirectInertialTesterWorldPlanMixin:
                 continue
             spec = self.lookup_move_segment_world_plan(str(seg.get('description', '')))
             if spec is not None:
-                return spec['start_xy']
+                return spec['end_xy']
         return None
 
     def navigation_target_yaw_plan(self) -> Optional[float]:
@@ -308,48 +324,110 @@ class DirectInertialTesterWorldPlanMixin:
             'ang_err_deg': ang_err_deg,
         }
 
-    def format_nav_core_line(self) -> str:
-        """一行四要素：当前点、目标点、当前角、目标角（均为 map 世界坐标）。"""
-        s = self.nav_core_map_state()
-        cur_xy = s['cur_xy']
-        tgt_xy = s['tgt_xy']
-        cur_yaw = s['cur_yaw_rad']
-        tgt_yaw = s['tgt_yaw_rad']
-        cur_p = (
-            f'({cur_xy[0]:.2f},{cur_xy[1]:.2f})'
-            if cur_xy is not None
-            else 'nan'
-        )
-        tgt_p = (
-            f'({tgt_xy[0]:.2f},{tgt_xy[1]:.2f})'
-            if tgt_xy is not None
-            else 'nan'
-        )
-        cur_a = (
-            f'{self.format_yaw_deg(cur_yaw)}°'
-            if cur_yaw is not None
-            else 'nan'
-        )
-        tgt_a = (
+    def format_nav_simple_line(self) -> str:
+        """一行：当前 (x,y)、目标 (x,y)；move 段另标 段ψ(目标) 与 实测(里程计)。"""
+        cur_xy = self.world_navigation_xy()
+        cur_yaw = self.world_navigation_yaw()
+        tgt_xy = self.navigation_target_xy()
+        seg = self.current_segment or {}
+        if cur_xy is None:
+            return '当前=(?,?) 目标=(?,?) 航向=?'
+        cx, cy = float(cur_xy[0]), float(cur_xy[1])
+        meas_a = f'{self.format_yaw_deg(cur_yaw)}°' if cur_yaw is not None else '?'
+        tgt_yaw = self.navigation_target_yaw_plan()
+        plan_a = (
             f'{self.format_yaw_deg(tgt_yaw)}°'
             if tgt_yaw is not None
-            else 'nan'
+            else '?'
         )
-        dist_m = s['dist_m']
-        dist_text = f'{dist_m:.2f}m' if math.isfinite(dist_m) else 'nan'
-        ang_err = s['ang_err_deg']
-        ang_text = f'{ang_err:+.1f}°' if math.isfinite(ang_err) else 'nan'
-        return (
-            f'当前点={cur_p} 目标点={tgt_p} '
-            f'当前角={cur_a} 目标角={tgt_a} '
-            f'距目标点={dist_text} 角差={ang_text}'
+        if tgt_xy is not None:
+            tx, ty = float(tgt_xy[0]), float(tgt_xy[1])
+            if seg.get('type') == 'move':
+                return (
+                    f'当前=({cx:.2f},{cy:.2f}) 目标=({tx:.2f},{ty:.2f}) '
+                    f'段ψ={plan_a} 实测={meas_a}'
+                )
+            return f'当前=({cx:.2f},{cy:.2f}) 目标=({tx:.2f},{ty:.2f}) 航向={meas_a}'
+        return f'当前=({cx:.2f},{cy:.2f}) 航向={meas_a}'
+
+    def format_nav_core_line(self) -> str:
+        """兼容旧调用；用户可见日志请用 format_nav_simple_line。"""
+        return self.format_nav_simple_line()
+
+    def next_move_plan_yaw_rad(self) -> Optional[float]:
+        """下一段 move 的 yaml heading_deg（转弯完成判据）。"""
+        if not hasattr(self, 'plan'):
+            return None
+        return self.world_plan_heading_after_turn(int(getattr(self, 'plan_index', 0)))
+
+    def turn_heading_matches_next_move(self, tolerance_rad: Optional[float] = None) -> bool:
+        """当前 map 航向是否已达下一段 move 的 ψ。"""
+        target = self.next_move_plan_yaw_rad()
+        current = self.world_navigation_yaw()
+        if target is None or current is None:
+            return False
+        tol = float(tolerance_rad if tolerance_rad is not None else self.heading_tolerance)
+        return abs(self.angle_error(target, current)) <= tol
+
+    def move_reached_plan_end(self, reach_m: Optional[float] = None) -> bool:
+        """到 E 或沿 ψ 走满计划长度；正交段额外防沿 ψ 冲过 E 的坐标。"""
+        if not self._segment_plan_frame_ready():
+            return False
+        reach = float(reach_m if reach_m is not None else self.SEGMENT_END_REACH_M)
+        dist_e = self.distance_to_segment_plan_end_m()
+        if math.isfinite(dist_e) and dist_e <= reach:
+            return True
+        world_xy = self.world_navigation_xy()
+        if world_xy is None or self.segment_plan_end_xy is None:
+            return False
+        lat = abs(self.segment_lateral_offset_m())
+        lat_tol = 0.12
+        tol = float(getattr(self, 'distance_tolerance', 0.04))
+        overshoot_tol = max(tol, 0.06)
+        along = world_segment.along_m(
+            world_xy,
+            self.segment_plan_start_xy,
+            self.segment_plan_heading_rad,
         )
+        length = float(self.segment_plan_length_m)
+        if length <= 0.0:
+            return False
+        ex, ey = self.segment_plan_end_xy
+        px, py = float(world_xy[0]), float(world_xy[1])
+        heading = float(self.segment_plan_heading_rad)
+        axis_tol = reach + tol
+        axis_overshoot = max(overshoot_tol, reach)
+        # 正交直行：沿主轴越过 E 即停（顶边 +X 勿冲到 4.2+ 再转弯）
+        if abs(math.cos(heading)) > 0.95:
+            if math.cos(heading) > 0.0 and px >= float(ex) - axis_tol:
+                return True
+            if math.cos(heading) < 0.0 and px <= float(ex) + axis_tol:
+                return True
+            if math.cos(heading) > 0.0 and px > float(ex) + axis_overshoot:
+                return True
+            if math.cos(heading) < 0.0 and px < float(ex) - axis_overshoot:
+                return True
+        if abs(math.sin(heading)) > 0.95:
+            if math.sin(heading) > 0.0 and py >= float(ey) - axis_tol:
+                return True
+            if math.sin(heading) < 0.0 and py <= float(ey) + axis_tol:
+                return True
+            if math.sin(heading) > 0.0 and py > float(ey) + axis_overshoot:
+                return True
+            if math.sin(heading) < 0.0 and py < float(ey) - axis_overshoot:
+                return True
+        if float(along) + tol >= length and lat <= lat_tol:
+            return True
+        if float(along) > length + overshoot_tol:
+            return True
+        return False
 
     def segment_move_complete_on_plan(
         self,
         along_tol: Optional[float] = None,
         lat_tol: float = 0.10,
         end_reach_m: Optional[float] = None,
+        require_lateral: bool = True,
     ) -> bool:
         if not self._segment_plan_frame_ready():
             return False
@@ -359,7 +437,8 @@ class DirectInertialTesterWorldPlanMixin:
         dist_e = self.distance_to_segment_plan_end_m()
         if not math.isfinite(dist_e) or dist_e > reach:
             return False
-        lat = abs(self.segment_lateral_offset_m())
-        if lat > lat_tol:
-            return False
+        if require_lateral:
+            lat = abs(self.segment_lateral_offset_m())
+            if lat > lat_tol:
+                return False
         return True
