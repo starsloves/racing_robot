@@ -1,0 +1,238 @@
+[2.150s] Invoking command in '/home/sunrise/dev_ws/build/ackermann_msgs': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /home/sunrise/dev_ws/src/origincar/3rdparty/ackermann_msgs-ros2 -DAMENT_CMAKE_SYMLINK_INSTALL=1 -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/ackermann_msgs
+[4.753s] -- The C compiler identification is GNU 11.2.0
+[4.754s] -- The CXX compiler identification is GNU 11.2.0
+[4.755s] -- Detecting C compiler ABI info
+[4.755s] -- Detecting C compiler ABI info - done
+[4.756s] -- Check for working C compiler: /usr/bin/cc - skipped
+[4.757s] -- Detecting C compile features
+[4.758s] -- Detecting C compile features - done
+[4.759s] -- Detecting CXX compiler ABI info
+[4.760s] -- Detecting CXX compiler ABI info - done
+[4.760s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[4.761s] -- Detecting CXX compile features
+[4.762s] -- Detecting CXX compile features - done
+[4.763s] -- Found ament_cmake: 1.3.14 (/opt/ros/humble/share/ament_cmake/cmake)
+[5.255s] -- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+[5.863s] -- Override CMake install command with custom implementation using symlinks instead of copying resources
+[6.045s] -- Found rosidl_default_generators: 1.2.1 (/opt/ros/humble/share/rosidl_default_generators/cmake)
+[6.099s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[6.147s] -- Found rosidl_adapter: 3.1.8 (/opt/ros/humble/share/rosidl_adapter/cmake)
+[6.452s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[6.729s] -- Found std_msgs: 4.9.1 (/opt/ros/humble/share/std_msgs/cmake)
+[9.086s] -- Found ament_cmake_cppcheck: 0.12.15 (/opt/ros/humble/share/ament_cmake_cppcheck/cmake)
+[9.098s] -- Found ament_cmake_cpplint: 0.12.15 (/opt/ros/humble/share/ament_cmake_cpplint/cmake)
+[9.111s] -- Found ament_cmake_uncrustify: 0.12.15 (/opt/ros/humble/share/ament_cmake_uncrustify/cmake)
+[9.127s] -- Found ament_cmake_ros: 0.10.0 (/opt/ros/humble/share/ament_cmake_ros/cmake)
+[11.139s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[14.181s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[14.397s] -- Found PythonInterp: /usr/bin/python3 (found suitable version "3.10.12", minimum required is "3.6") 
+[14.417s] -- Found python_cmake_module: 0.10.0 (/opt/ros/humble/share/python_cmake_module/cmake)
+[14.643s] -- Found PythonLibs: /usr/lib/aarch64-linux-gnu/libpython3.10.so (found suitable version "3.10.12", minimum required is "3.5") 
+[14.645s] -- Using PYTHON_EXECUTABLE: /usr/bin/python3
+[14.645s] -- Using PYTHON_INCLUDE_DIRS: /usr/include/python3.10
+[14.646s] -- Using PYTHON_LIBRARIES: /usr/lib/aarch64-linux-gnu/libpython3.10.so
+[14.841s] -- Found PythonExtra: .so  
+[15.277s] -- Found ament_cmake_flake8: 0.12.15 (/opt/ros/humble/share/ament_cmake_flake8/cmake)
+[15.290s] -- Found ament_cmake_pep257: 0.12.15 (/opt/ros/humble/share/ament_cmake_pep257/cmake)
+[15.926s] -- Configuring done
+[16.122s] -- Generating done
+[16.195s] -- Build files have been written to: /home/sunrise/dev_ws/build/ackermann_msgs
+[18.711s] Invoked command in '/home/sunrise/dev_ws/build/ackermann_msgs' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /home/sunrise/dev_ws/src/origincar/3rdparty/ackermann_msgs-ros2 -DAMENT_CMAKE_SYMLINK_INSTALL=1 -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/ackermann_msgs
+[18.718s] Invoking command in '/home/sunrise/dev_ws/build/ackermann_msgs': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /home/sunrise/dev_ws/build/ackermann_msgs -- -j8 -l8
+[18.945s] [  2%] [34m[1mGenerating C code for ROS interfaces[0m
+[19.080s] [  5%] [34m[1mGenerating C++ code for ROS interfaces[0m
+[19.156s] [  7%] [34m[1mGenerating Rust code for ROS interfaces[0m
+[19.161s] [  7%] Built target ament_cmake_python_symlink_ackermann_msgs
+[23.883s] running egg_info
+[23.890s] creating ackermann_msgs.egg-info
+[23.891s] writing ackermann_msgs.egg-info/PKG-INFO
+[23.893s] writing dependency_links to ackermann_msgs.egg-info/dependency_links.txt
+[23.894s] writing top-level names to ackermann_msgs.egg-info/top_level.txt
+[23.896s] writing manifest file 'ackermann_msgs.egg-info/SOURCES.txt'
+[23.910s] reading manifest file 'ackermann_msgs.egg-info/SOURCES.txt'
+[23.914s] writing manifest file 'ackermann_msgs.egg-info/SOURCES.txt'
+[24.643s] [  7%] Built target ament_cmake_python_build_ackermann_msgs_egg
+[25.985s] [  7%] Built target ackermann_msgs__rs
+[26.487s] [  7%] Built target ackermann_msgs__cpp
+[26.596s] [ 10%] [34m[1mGenerating C++ introspection for ROS interfaces[0m
+[26.612s] [ 12%] [34m[1mGenerating C++ type support dispatch for ROS interfaces[0m
+[26.617s] [ 15%] [34m[1mGenerating C++ type support for eProsima Fast-RTPS[0m
+[26.765s] [ 17%] [32mBuilding C object CMakeFiles/ackermann_msgs__rosidl_generator_c.dir/rosidl_generator_c/ackermann_msgs/msg/detail/ackermann_drive__functions.c.o[0m
+[26.833s] [ 20%] [32mBuilding C object CMakeFiles/ackermann_msgs__rosidl_generator_c.dir/rosidl_generator_c/ackermann_msgs/msg/detail/ackermann_drive_stamped__functions.c.o[0m
+[27.545s] [ 22%] [32m[1mLinking C shared library libackermann_msgs__rosidl_generator_c.so[0m
+[28.140s] [ 22%] Built target ackermann_msgs__rosidl_generator_c
+[28.236s] [ 25%] [34m[1mGenerating C type support for eProsima Fast-RTPS[0m
+[28.304s] [ 27%] [34m[1mGenerating C introspection for ROS interfaces[0m
+[28.326s] [ 30%] [34m[1mGenerating C type support dispatch for ROS interfaces[0m
+[34.118s] [ 32%] [32mBuilding CXX object CMakeFiles/ackermann_msgs__rosidl_typesupport_introspection_cpp.dir/rosidl_typesupport_introspection_cpp/ackermann_msgs/msg/detail/ackermann_drive__type_support.cpp.o[0m
+[34.195s] [ 35%] [32mBuilding CXX object CMakeFiles/ackermann_msgs__rosidl_typesupport_introspection_cpp.dir/rosidl_typesupport_introspection_cpp/ackermann_msgs/msg/detail/ackermann_drive_stamped__type_support.cpp.o[0m
+[35.139s] [ 37%] [32mBuilding CXX object CMakeFiles/ackermann_msgs__rosidl_typesupport_cpp.dir/rosidl_typesupport_cpp/ackermann_msgs/msg/ackermann_drive_stamped__type_support.cpp.o[0m
+[35.178s] [ 40%] [32mBuilding CXX object CMakeFiles/ackermann_msgs__rosidl_typesupport_cpp.dir/rosidl_typesupport_cpp/ackermann_msgs/msg/ackermann_drive__type_support.cpp.o[0m
+[36.280s] [ 42%] [32mBuilding CXX object CMakeFiles/ackermann_msgs__rosidl_typesupport_fastrtps_cpp.dir/rosidl_typesupport_fastrtps_cpp/ackermann_msgs/msg/detail/dds_fastrtps/ackermann_drive__type_support.cpp.o[0m
+[38.248s] [ 45%] [32mBuilding CXX object CMakeFiles/ackermann_msgs__rosidl_typesupport_c.dir/rosidl_typesupport_c/ackermann_msgs/msg/ackermann_drive__type_support.cpp.o[0m
+[38.355s] [ 47%] [32mBuilding CXX object CMakeFiles/ackermann_msgs__rosidl_typesupport_fastrtps_c.dir/rosidl_typesupport_fastrtps_c/ackermann_msgs/msg/detail/ackermann_drive__type_support_c.cpp.o[0m
+[38.719s] [ 50%] [32mBuilding CXX object CMakeFiles/ackermann_msgs__rosidl_typesupport_c.dir/rosidl_typesupport_c/ackermann_msgs/msg/ackermann_drive_stamped__type_support.cpp.o[0m
+[39.374s] [ 52%] [32m[1mLinking CXX shared library libackermann_msgs__rosidl_typesupport_c.so[0m
+[39.983s] [ 52%] Built target ackermann_msgs__rosidl_typesupport_c
+[40.388s] [ 55%] [32mBuilding C object CMakeFiles/ackermann_msgs__rosidl_typesupport_introspection_c.dir/rosidl_typesupport_introspection_c/ackermann_msgs/msg/detail/ackermann_drive__type_support.c.o[0m
+[40.709s] [ 57%] [32mBuilding C object CMakeFiles/ackermann_msgs__rosidl_typesupport_introspection_c.dir/rosidl_typesupport_introspection_c/ackermann_msgs/msg/detail/ackermann_drive_stamped__type_support.c.o[0m
+[41.279s] [ 60%] [32m[1mLinking C shared library libackermann_msgs__rosidl_typesupport_introspection_c.so[0m
+[41.729s] [ 60%] Built target ackermann_msgs__rosidl_typesupport_introspection_c
+[41.910s] [ 62%] [32m[1mLinking CXX shared library libackermann_msgs__rosidl_typesupport_cpp.so[0m
+[42.426s] [ 62%] Built target ackermann_msgs__rosidl_typesupport_cpp
+[44.560s] [ 65%] [32m[1mLinking CXX shared library libackermann_msgs__rosidl_typesupport_introspection_cpp.so[0m
+[45.438s] [ 67%] [32mBuilding CXX object CMakeFiles/ackermann_msgs__rosidl_typesupport_fastrtps_cpp.dir/rosidl_typesupport_fastrtps_cpp/ackermann_msgs/msg/detail/dds_fastrtps/ackermann_drive_stamped__type_support.cpp.o[0m
+[45.607s] [ 67%] Built target ackermann_msgs__rosidl_typesupport_introspection_cpp
+[45.870s] [ 70%] [32mBuilding CXX object CMakeFiles/ackermann_msgs__rosidl_typesupport_fastrtps_c.dir/rosidl_typesupport_fastrtps_c/ackermann_msgs/msg/detail/ackermann_drive_stamped__type_support_c.cpp.o[0m
+[49.693s] [ 72%] [32m[1mLinking CXX shared library libackermann_msgs__rosidl_typesupport_fastrtps_c.so[0m
+[50.207s] [ 75%] [32m[1mLinking CXX shared library libackermann_msgs__rosidl_typesupport_fastrtps_cpp.so[0m
+[50.698s] [ 75%] Built target ackermann_msgs__rosidl_typesupport_fastrtps_c
+[50.960s] [ 75%] Built target ackermann_msgs__rosidl_typesupport_fastrtps_cpp
+[51.067s] [ 75%] Built target ackermann_msgs
+[51.244s] [ 77%] [34m[1mGenerating Python code for ROS interfaces[0m
+[56.958s] [ 77%] Built target ackermann_msgs__py
+[57.104s] [ 80%] [32mBuilding C object CMakeFiles/ackermann_msgs__rosidl_generator_py.dir/rosidl_generator_py/ackermann_msgs/msg/_ackermann_drive_s.c.o[0m
+[57.913s] [ 82%] [32mBuilding C object CMakeFiles/ackermann_msgs__rosidl_generator_py.dir/rosidl_generator_py/ackermann_msgs/msg/_ackermann_drive_stamped_s.c.o[0m
+[58.750s] [ 85%] [32m[1mLinking C shared library rosidl_generator_py/ackermann_msgs/libackermann_msgs__rosidl_generator_py.so[0m
+[59.062s] [ 85%] Built target ackermann_msgs__rosidl_generator_py
+[59.181s] [ 87%] [32mBuilding C object CMakeFiles/ackermann_msgs__rosidl_typesupport_fastrtps_c__pyext.dir/rosidl_generator_py/ackermann_msgs/_ackermann_msgs_s.ep.rosidl_typesupport_fastrtps_c.c.o[0m
+[59.847s] [ 90%] [32m[1mLinking C shared library rosidl_generator_py/ackermann_msgs/ackermann_msgs_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so[0m
+[60.196s] [ 90%] Built target ackermann_msgs__rosidl_typesupport_fastrtps_c__pyext
+[60.322s] [ 92%] [32mBuilding C object CMakeFiles/ackermann_msgs__rosidl_typesupport_c__pyext.dir/rosidl_generator_py/ackermann_msgs/_ackermann_msgs_s.ep.rosidl_typesupport_c.c.o[0m
+[61.047s] [ 95%] [32m[1mLinking C shared library rosidl_generator_py/ackermann_msgs/ackermann_msgs_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so[0m
+[61.390s] [ 95%] Built target ackermann_msgs__rosidl_typesupport_c__pyext
+[61.501s] [ 97%] [32mBuilding C object CMakeFiles/ackermann_msgs__rosidl_typesupport_introspection_c__pyext.dir/rosidl_generator_py/ackermann_msgs/_ackermann_msgs_s.ep.rosidl_typesupport_introspection_c.c.o[0m
+[62.148s] [100%] [32m[1mLinking C shared library rosidl_generator_py/ackermann_msgs/ackermann_msgs_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so[0m
+[62.407s] [100%] Built target ackermann_msgs__rosidl_typesupport_introspection_c__pyext
+[62.486s] Invoked command in '/home/sunrise/dev_ws/build/ackermann_msgs' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /home/sunrise/dev_ws/build/ackermann_msgs -- -j8 -l8
+[62.489s] Invoking command in '/home/sunrise/dev_ws/build/ackermann_msgs': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /home/sunrise/dev_ws/build/ackermann_msgs
+[62.526s] -- Install configuration: ""
+[62.529s] -- Execute custom install script
+[62.531s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ament_index/resource_index/rosidl_interfaces/ackermann_msgs
+[62.580s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/ackermann_drive.h
+[62.635s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/ackermann_drive_stamped.h
+[62.686s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__functions.h
+[62.723s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__struct.h
+[62.768s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__type_support.h
+[62.813s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__functions.h
+[62.855s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__struct.h
+[62.898s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__type_support.h
+[62.944s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/rosidl_generator_c__visibility_control.h
+[62.988s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/environment/library_path.sh
+[63.032s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/environment/library_path.dsv
+[63.077s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__rosidl_typesupport_fastrtps_c.h
+[63.121s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__rosidl_typesupport_fastrtps_c.h
+[63.165s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/rosidl_typesupport_fastrtps_c__visibility_control.h
+[63.210s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__rosidl_typesupport_introspection_c.h
+[63.253s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__rosidl_typesupport_introspection_c.h
+[63.297s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/rosidl_typesupport_introspection_c__visibility_control.h
+[63.340s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/ackermann_drive.hpp
+[63.382s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/ackermann_drive_stamped.hpp
+[63.425s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__builder.hpp
+[63.465s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__struct.hpp
+[63.507s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__traits.hpp
+[63.550s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__type_support.hpp
+[63.592s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__builder.hpp
+[63.633s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__struct.hpp
+[63.710s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__traits.hpp
+[63.751s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__type_support.hpp
+[63.794s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/rosidl_generator_cpp__visibility_control.hpp
+[63.840s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__rosidl_typesupport_fastrtps_cpp.hpp
+[63.886s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__rosidl_typesupport_fastrtps_cpp.hpp
+[63.930s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/rosidl_typesupport_fastrtps_cpp__visibility_control.h
+[63.974s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive__rosidl_typesupport_introspection_cpp.hpp
+[64.019s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/include/ackermann_msgs/ackermann_msgs/msg/detail/ackermann_drive_stamped__rosidl_typesupport_introspection_cpp.hpp
+[64.064s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/environment/pythonpath.sh
+[64.108s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/environment/pythonpath.dsv
+[64.153s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs-2.0.2-py3.10.egg-info/PKG-INFO
+[64.198s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs-2.0.2-py3.10.egg-info/SOURCES.txt
+[64.240s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs-2.0.2-py3.10.egg-info/dependency_links.txt
+[64.283s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs-2.0.2-py3.10.egg-info/top_level.txt
+[64.331s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/__init__.py
+[64.376s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/_ackermann_msgs_s.ep.rosidl_typesupport_c.c
+[64.421s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/_ackermann_msgs_s.ep.rosidl_typesupport_fastrtps_c.c
+[64.463s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/_ackermann_msgs_s.ep.rosidl_typesupport_introspection_c.c
+[64.508s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/ackermann_msgs_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so
+[64.551s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/ackermann_msgs_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so
+[64.596s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/ackermann_msgs_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so
+[64.641s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/libackermann_msgs__rosidl_generator_py.so
+[64.684s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/msg/__init__.py
+[64.729s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/msg/_ackermann_drive.py
+[64.775s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/msg/_ackermann_drive_s.c
+[64.818s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/msg/_ackermann_drive_stamped.py
+[64.863s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/msg/_ackermann_drive_stamped_s.c
+[64.909s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/ackermann_msgs_s__rosidl_typesupport_fastrtps_c.cpython-310-aarch64-linux-gnu.so
+[64.911s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/ackermann_msgs_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so
+[64.913s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/ackermann_msgs_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so
+[64.914s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ament_index/resource_index/rust_packages/ackermann_msgs
+[64.960s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/rust/Cargo.toml
+[65.004s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/rust/build.rs
+[65.049s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/rust/src/lib.rs
+[65.095s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/rust/src/msg.rs
+[65.138s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/rust/src/msg/rmw.rs
+[65.182s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/msg/AckermannDrive.idl
+[65.228s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/msg/AckermannDriveStamped.idl
+[65.275s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/msg/AckermannDrive.msg
+[65.321s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/msg/AckermannDriveStamped.msg
+[65.378s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ament_index/resource_index/package_run_dependencies/ackermann_msgs
+[65.408s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ament_index/resource_index/parent_prefix_path/ackermann_msgs
+[65.452s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/environment/ament_prefix_path.sh
+[65.497s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/environment/ament_prefix_path.dsv
+[65.542s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/environment/path.sh
+[65.587s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/environment/path.dsv
+[65.630s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/local_setup.bash
+[65.676s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/local_setup.sh
+[65.719s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/local_setup.zsh
+[65.763s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/local_setup.dsv
+[65.808s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/package.dsv
+[65.853s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ament_index/resource_index/packages/ackermann_msgs
+[65.896s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/rosidl_cmake-extras.cmake
+[65.942s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ament_cmake_export_dependencies-extras.cmake
+[65.986s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ament_cmake_export_include_directories-extras.cmake
+[66.030s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ament_cmake_export_libraries-extras.cmake
+[66.075s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ament_cmake_export_targets-extras.cmake
+[66.120s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/rosidl_cmake_export_typesupport_targets-extras.cmake
+[66.163s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/rosidl_cmake_export_typesupport_libraries-extras.cmake
+[66.204s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ackermann_msgsConfig.cmake
+[66.250s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ackermann_msgsConfig-version.cmake
+[66.294s] -- Symlinking: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/package.xml
+[66.338s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_generator_c.so
+[66.340s] -- Set runtime path of "/home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_generator_c.so" to ""
+[66.341s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_fastrtps_c.so
+[66.343s] -- Set runtime path of "/home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_fastrtps_c.so" to ""
+[66.344s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_introspection_c.so
+[66.345s] -- Set runtime path of "/home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_introspection_c.so" to ""
+[66.346s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_c.so
+[66.347s] -- Set runtime path of "/home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_c.so" to ""
+[66.348s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_fastrtps_cpp.so
+[66.350s] -- Set runtime path of "/home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_fastrtps_cpp.so" to ""
+[66.351s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_introspection_cpp.so
+[66.352s] -- Set runtime path of "/home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_introspection_cpp.so" to ""
+[66.353s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_cpp.so
+[66.354s] -- Set runtime path of "/home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_typesupport_cpp.so" to ""
+[66.673s] Listing '/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs'...
+[66.673s] Compiling '/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/__init__.py'...
+[66.674s] Listing '/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/msg'...
+[66.675s] Compiling '/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/msg/__init__.py'...
+[66.675s] Compiling '/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/msg/_ackermann_drive.py'...
+[66.676s] Compiling '/home/sunrise/dev_ws/install/ackermann_msgs/local/lib/python3.10/dist-packages/ackermann_msgs/msg/_ackermann_drive_stamped.py'...
+[66.729s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_generator_py.so
+[66.731s] -- Set runtime path of "/home/sunrise/dev_ws/install/ackermann_msgs/lib/libackermann_msgs__rosidl_generator_py.so" to ""
+[66.732s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/export_ackermann_msgs__rosidl_generator_cExport.cmake
+[66.733s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/export_ackermann_msgs__rosidl_generator_cExport-noconfig.cmake
+[66.734s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/export_ackermann_msgs__rosidl_typesupport_fastrtps_cExport.cmake
+[66.735s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/export_ackermann_msgs__rosidl_typesupport_fastrtps_cExport-noconfig.cmake
+[66.736s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ackermann_msgs__rosidl_typesupport_introspection_cExport.cmake
+[66.737s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ackermann_msgs__rosidl_typesupport_introspection_cExport-noconfig.cmake
+[66.738s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ackermann_msgs__rosidl_typesupport_cExport.cmake
+[66.739s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ackermann_msgs__rosidl_typesupport_cExport-noconfig.cmake
+[66.742s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/export_ackermann_msgs__rosidl_generator_cppExport.cmake
+[66.743s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/export_ackermann_msgs__rosidl_typesupport_fastrtps_cppExport.cmake
+[66.743s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/export_ackermann_msgs__rosidl_typesupport_fastrtps_cppExport-noconfig.cmake
+[66.744s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ackermann_msgs__rosidl_typesupport_introspection_cppExport.cmake
+[66.745s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ackermann_msgs__rosidl_typesupport_introspection_cppExport-noconfig.cmake
+[66.746s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ackermann_msgs__rosidl_typesupport_cppExport.cmake
+[66.746s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/ackermann_msgs__rosidl_typesupport_cppExport-noconfig.cmake
+[66.747s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/export_ackermann_msgs__rosidl_generator_pyExport.cmake
+[66.748s] -- Installing: /home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/cmake/export_ackermann_msgs__rosidl_generator_pyExport-noconfig.cmake
+[66.763s] Invoked command in '/home/sunrise/dev_ws/build/ackermann_msgs' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /home/sunrise/dev_ws/build/ackermann_msgs

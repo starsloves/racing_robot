@@ -1,4 +1,1 @@
-source;share/origincar_base/environment/ament_prefix_path.sh
-source;share/origincar_base/environment/library_path.sh
-source;share/origincar_base/environment/path.sh
-source;share/origincar_base/environment/pythonpath.sh
+/home/sunrise/dev_ws/build/origincar_base/ament_cmake_environment_hooks/local_setup.dsv

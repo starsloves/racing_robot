@@ -1,0 +1,71 @@
+[4.586s] Invoking command in '/home/sunrise/dev_ws/build/serial': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /home/sunrise/dev_ws/src/origincar/3rdparty/serial_ros2 -DAMENT_CMAKE_SYMLINK_INSTALL=1 -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/serial
+[4.992s] -- The C compiler identification is GNU 11.2.0
+[5.407s] -- The CXX compiler identification is GNU 11.2.0
+[5.470s] -- Detecting C compiler ABI info
+[5.981s] -- Detecting C compiler ABI info - done
+[6.038s] -- Check for working C compiler: /usr/bin/cc - skipped
+[6.041s] -- Detecting C compile features
+[6.045s] -- Detecting C compile features - done
+[6.070s] -- Detecting CXX compiler ABI info
+[6.608s] -- Detecting CXX compiler ABI info - done
+[6.661s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[6.662s] -- Detecting CXX compile features
+[6.665s] -- Detecting CXX compile features - done
+[6.679s] -- Found rosidl_default_generators: 1.2.1 (/opt/ros/humble/share/rosidl_default_generators/cmake)
+[6.686s] -- Found ament_cmake_core: 1.3.14 (/opt/ros/humble/share/ament_cmake_core/cmake)
+[7.996s] -- Found Python3: /usr/bin/python3 (found version "3.10.12") found components: Interpreter 
+[8.509s] -- Override CMake install command with custom implementation using symlinks instead of copying resources
+[8.539s] -- Using all available rosidl_typesupport_c: rosidl_typesupport_fastrtps_c;rosidl_typesupport_introspection_c
+[8.587s] -- Found rosidl_adapter: 3.1.8 (/opt/ros/humble/share/rosidl_adapter/cmake)
+[8.980s] -- Using all available rosidl_typesupport_cpp: rosidl_typesupport_fastrtps_cpp;rosidl_typesupport_introspection_cpp
+[9.862s] -- Configuring done
+[9.902s] -- Generating done
+[9.919s] -- Build files have been written to: /home/sunrise/dev_ws/build/serial
+[9.956s] Invoked command in '/home/sunrise/dev_ws/build/serial' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /home/sunrise/dev_ws/src/origincar/3rdparty/serial_ros2 -DAMENT_CMAKE_SYMLINK_INSTALL=1 -DCMAKE_INSTALL_PREFIX=/home/sunrise/dev_ws/install/serial
+[9.964s] Invoking command in '/home/sunrise/dev_ws/build/serial': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /home/sunrise/dev_ws/build/serial -- -j8 -l8
+[10.335s] [ 25%] [32mBuilding CXX object CMakeFiles/serial.dir/src/serial.cc.o[0m
+[10.358s] [ 50%] [32mBuilding CXX object CMakeFiles/serial.dir/src/impl/unix.cc.o[0m
+[10.375s] [ 75%] [32mBuilding CXX object CMakeFiles/serial.dir/src/impl/list_ports/list_ports_linux.cc.o[0m
+[12.909s] [01m[K/home/sunrise/dev_ws/src/origincar/3rdparty/serial_ros2/src/impl/list_ports/list_ports_linux.cc:[m[K In function ‘[01m[Kstd::vector<std::__cxx11::basic_string<char> > glob(const std::vector<std::__cxx11::basic_string<char> >&)[m[K’:
+[12.910s] [01m[K/home/sunrise/dev_ws/src/origincar/3rdparty/serial_ros2/src/impl/list_ports/list_ports_linux.cc:66:40:[m[K [01;35m[Kwarning: [m[Kcomparison of integer expressions of different signedness: ‘[01m[Kint[m[K’ and ‘[01m[Ksize_t[m[K’ {aka ‘[01m[Klong unsigned int[m[K’} [[01;35m[K]8;;https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html#index-Wsign-compare-Wsign-compare]8;;[m[K]
+[12.910s]    66 |     for(int path_index = 0; [01;35m[Kpath_index < glob_results.gl_pathc[m[K; path_index++)
+[12.911s]       |                             [01;35m[K~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~[m[K
+[12.913s] [01m[K/home/sunrise/dev_ws/src/origincar/3rdparty/serial_ros2/src/impl/list_ports/list_ports_linux.cc:57:9:[m[K [01;35m[Kwarning: [m[Kvariable ‘[01m[Kglob_retval[m[K’ set but not used [[01;35m[K]8;;https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html#index-Wunused-but-set-variable-Wunused-but-set-variable]8;;[m[K]
+[12.913s]    57 |     int [01;35m[Kglob_retval[m[K = glob(patterns[0].c_str(), 0, NULL, &glob_results);
+[12.914s]       |         [01;35m[K^~~~~~~~~~~[m[K
+[12.955s] [01m[K/home/sunrise/dev_ws/src/origincar/3rdparty/serial_ros2/src/impl/list_ports/list_ports_linux.cc:[m[K In function ‘[01m[Kstd::string format(const char*, ...)[m[K’:
+[12.956s] [01m[K/home/sunrise/dev_ws/src/origincar/3rdparty/serial_ros2/src/impl/list_ports/list_ports_linux.cc:246:31:[m[K [01;35m[Kwarning: [m[Kcomparison of integer expressions of different signedness: ‘[01m[Kint[m[K’ and ‘[01m[Ksize_t[m[K’ {aka ‘[01m[Klong unsigned int[m[K’} [[01;35m[K]8;;https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html#index-Wsign-compare-Wsign-compare]8;;[m[K]
+[12.957s]   246 |         else if( [01;35m[Kreturn_value >= buffer_size_bytes[m[K )
+[12.958s]       |                  [01;35m[K~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~[m[K
+[14.374s] [100%] [32m[1mLinking CXX static library libserial.a[0m
+[14.619s] [100%] Built target serial
+[18.552s] Invoked command in '/home/sunrise/dev_ws/build/serial' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /home/sunrise/dev_ws/build/serial -- -j8 -l8
+[18.558s] Invoking command in '/home/sunrise/dev_ws/build/serial': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /home/sunrise/dev_ws/build/serial
+[18.638s] -- Install configuration: ""
+[18.640s] -- Execute custom install script
+[18.641s] -- Symlinking: /home/sunrise/dev_ws/install/serial/lib/libserial.a
+[18.643s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/environment/library_path.sh
+[18.690s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/environment/library_path.dsv
+[18.740s] -- Symlinking: /home/sunrise/dev_ws/install/serial/include/serial/impl/unix.h
+[18.870s] -- Symlinking: /home/sunrise/dev_ws/install/serial/include/serial/impl/win.h
+[18.970s] -- Symlinking: /home/sunrise/dev_ws/install/serial/include/serial/serial.h
+[19.149s] -- Symlinking: /home/sunrise/dev_ws/install/serial/include/serial/v8stdint.h
+[19.255s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/ament_index/resource_index/package_run_dependencies/serial
+[19.432s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/ament_index/resource_index/parent_prefix_path/serial
+[19.541s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/environment/ament_prefix_path.sh
+[19.660s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/environment/ament_prefix_path.dsv
+[19.780s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/environment/path.sh
+[19.896s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/environment/path.dsv
+[19.951s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/local_setup.bash
+[20.018s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/local_setup.sh
+[20.082s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/local_setup.zsh
+[20.161s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/local_setup.dsv
+[20.320s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/package.dsv
+[20.433s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/ament_index/resource_index/packages/serial
+[20.486s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/cmake/ament_cmake_export_include_directories-extras.cmake
+[20.533s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/cmake/ament_cmake_export_libraries-extras.cmake
+[20.613s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/cmake/ament_cmake_export_dependencies-extras.cmake
+[20.740s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/cmake/serialConfig.cmake
+[20.839s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/cmake/serialConfig-version.cmake
+[20.959s] -- Symlinking: /home/sunrise/dev_ws/install/serial/share/serial/package.xml
+[29.438s] Invoked command in '/home/sunrise/dev_ws/build/serial' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /home/sunrise/dev_ws/build/serial

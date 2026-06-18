@@ -1,5 +1,1 @@
-# Raw Leishen LIDAR packet.
-
-builtin_interfaces/Time stamp              # packet timestamp
-uint8[2000] data        # packet contents
-
+/home/sunrise/dev_ws/src/LSLIDAR_X_ROS2-20240228/src/lslidar_msgs/msg/LslidarPacket.msg

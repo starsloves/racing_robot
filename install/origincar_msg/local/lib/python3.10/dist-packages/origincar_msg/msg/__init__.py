@@ -1,2 +1,1 @@
-from origincar_msg.msg._data import Data  # noqa: F401
-from origincar_msg.msg._sign import Sign  # noqa: F401
+/home/sunrise/dev_ws/build/origincar_msg/rosidl_generator_py/origincar_msg/msg/__init__.py

@@ -1,0 +1,1 @@
+/home/sunrise/dev_ws/build/voice_driver/rosidl_typesupport_fastrtps_cpp/voice_driver/msg/rosidl_typesupport_fastrtps_cpp__visibility_control.h

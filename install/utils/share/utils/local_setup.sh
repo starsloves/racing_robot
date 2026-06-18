@@ -1,0 +1,1 @@
+/home/sunrise/dev_ws/build/utils/ament_cmake_environment_hooks/local_setup.sh

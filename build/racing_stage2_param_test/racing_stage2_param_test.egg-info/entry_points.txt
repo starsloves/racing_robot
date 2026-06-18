@@ -1,4 +1,8 @@
 [console_scripts]
+avoidance_straight_tester = racing_stage2_param_test.avoidance_straight_tester:main
+camera_video_recorder = racing_stage2_param_test.camera_video_recorder:main
+data_recorder = racing_stage2_param_test.data_recorder:main
 direct_inertial_tester = racing_stage2_param_test.direct_inertial_tester:main
 twist_cmd_relay = racing_stage2_param_test.twist_cmd_relay:main
+vision_inertial_tester = racing_stage2_param_test.vision_inertial_tester:main
 

@@ -1,0 +1,16 @@
+running develop
+running egg_info
+writing racing_stage2.egg-info/PKG-INFO
+writing dependency_links to racing_stage2.egg-info/dependency_links.txt
+writing entry points to racing_stage2.egg-info/entry_points.txt
+writing requirements to racing_stage2.egg-info/requires.txt
+writing top-level names to racing_stage2.egg-info/top_level.txt
+reading manifest file 'racing_stage2.egg-info/SOURCES.txt'
+writing manifest file 'racing_stage2.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/sunrise/dev_ws/install/racing_stage2/lib/python3.10/site-packages/racing-stage2.egg-link (link to .)
+Installing lidar_obstacle_circle_markers script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2
+Installing stage2_inertial_navigator script to /home/sunrise/dev_ws/install/racing_stage2/lib/racing_stage2
+
+Installed /home/sunrise/dev_ws/build/racing_stage2
+running symlink_data

@@ -1,12 +1,1 @@
-#![allow(non_camel_case_types)]
-#![allow(clippy::derive_partial_eq_without_eq)]
-#![allow(clippy::upper_case_acronyms)]
-
-#[path = "msg.rs"]
-mod msg_idiomatic;
-pub mod msg {
-    pub use super::msg_idiomatic::*;
-    pub mod rmw;
-}
-
-
+/home/sunrise/dev_ws/build/origincar_base/rosidl_generator_rs/origincar_base/rust/src/lib.rs

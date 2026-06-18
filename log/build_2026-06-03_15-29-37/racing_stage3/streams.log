@@ -1,0 +1,29 @@
+[9.074s] Invoking command in '/home/sunrise/dev_ws/build/racing_stage3': PYTHONPATH=/home/sunrise/dev_ws/build/racing_stage3/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/sunrise/dev_ws/build/racing_stage3/build --no-deps symlink_data
+[11.641s] running develop
+[13.579s] running egg_info
+[13.580s] creating racing_stage3.egg-info
+[13.581s] writing racing_stage3.egg-info/PKG-INFO
+[13.583s] writing dependency_links to racing_stage3.egg-info/dependency_links.txt
+[13.584s] writing entry points to racing_stage3.egg-info/entry_points.txt
+[13.585s] writing requirements to racing_stage3.egg-info/requires.txt
+[13.586s] writing top-level names to racing_stage3.egg-info/top_level.txt
+[13.588s] writing manifest file 'racing_stage3.egg-info/SOURCES.txt'
+[13.603s] reading manifest file 'racing_stage3.egg-info/SOURCES.txt'
+[13.608s] writing manifest file 'racing_stage3.egg-info/SOURCES.txt'
+[13.620s] running build_ext
+[13.623s] Creating /home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages/racing-stage3.egg-link (link to .)
+[13.630s] Installing stage3_return_navigator script to /home/sunrise/dev_ws/install/racing_stage3/lib/racing_stage3
+[13.632s] 
+[13.633s] Installed /home/sunrise/dev_ws/build/racing_stage3
+[13.634s] running symlink_data
+[13.635s] creating /home/sunrise/dev_ws/install/racing_stage3/share/ament_index
+[13.636s] creating /home/sunrise/dev_ws/install/racing_stage3/share/ament_index/resource_index
+[13.636s] creating /home/sunrise/dev_ws/install/racing_stage3/share/ament_index/resource_index/packages
+[13.638s] symbolically linking /home/sunrise/dev_ws/build/racing_stage3/resource/racing_stage3 -> /home/sunrise/dev_ws/install/racing_stage3/share/ament_index/resource_index/packages
+[13.639s] symbolically linking /home/sunrise/dev_ws/build/racing_stage3/package.xml -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3
+[13.640s] creating /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/launch
+[13.642s] symbolically linking /home/sunrise/dev_ws/build/racing_stage3/launch/competition_support.launch.py -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/launch
+[13.642s] symbolically linking /home/sunrise/dev_ws/build/racing_stage3/launch/competition_stage3.launch.py -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/launch
+[13.643s] creating /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/config
+[13.644s] symbolically linking /home/sunrise/dev_ws/build/racing_stage3/config/return_stage3.yaml -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/config
+[13.994s] Invoked command in '/home/sunrise/dev_ws/build/racing_stage3' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/racing_stage3/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/sunrise/dev_ws/build/racing_stage3/build --no-deps symlink_data

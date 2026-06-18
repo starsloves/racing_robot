@@ -1,1 +1,1 @@
-lslidar_msgs
+/home/sunrise/dev_ws/build/lslidar_msgs/ament_cmake_python/lslidar_msgs/lslidar_msgs.egg-info/top_level.txt

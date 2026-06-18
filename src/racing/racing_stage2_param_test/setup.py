@@ -24,11 +24,11 @@ setup(
     entry_points={
         'console_scripts': [
             'direct_inertial_tester = racing_stage2_param_test.direct_inertial_tester:main',
+            'avoidance_straight_tester = racing_stage2_param_test.avoidance_straight_tester:main',
+            'camera_video_recorder = racing_stage2_param_test.camera_video_recorder:main',
             'twist_cmd_relay = racing_stage2_param_test.twist_cmd_relay:main',
-            'offline_ring_test = racing_stage2_param_test.offline_ring_test:main',
-            'real_logic_sim = racing_stage2_param_test.real_logic_sim:main',
-            'auto_offline_test = racing_stage2_param_test.auto_offline_test:main',
-            'plot_scenario_matrix = racing_stage2_param_test.plot_scenario_matrix:main',
+            'vision_inertial_tester = racing_stage2_param_test.vision_inertial_tester:main',
+            'data_recorder = racing_stage2_param_test.data_recorder:main',
         ],
     },
 )

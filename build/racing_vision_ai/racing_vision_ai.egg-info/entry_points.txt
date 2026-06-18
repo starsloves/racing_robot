@@ -1,0 +1,3 @@
+[console_scripts]
+vision_ai_node = racing_vision_ai.vision_ai_node:main
+

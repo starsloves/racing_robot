@@ -1,0 +1,1 @@
+/home/sunrise/dev_ws/build/voice_driver/rosidl_generator_rs/voice_driver/rust/src/srv.rs

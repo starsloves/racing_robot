@@ -1,0 +1,30 @@
+running develop
+running egg_info
+creating racing_stage3_param_test.egg-info
+writing racing_stage3_param_test.egg-info/PKG-INFO
+writing dependency_links to racing_stage3_param_test.egg-info/dependency_links.txt
+writing entry points to racing_stage3_param_test.egg-info/entry_points.txt
+writing requirements to racing_stage3_param_test.egg-info/requires.txt
+writing top-level names to racing_stage3_param_test.egg-info/top_level.txt
+writing manifest file 'racing_stage3_param_test.egg-info/SOURCES.txt'
+reading manifest file 'racing_stage3_param_test.egg-info/SOURCES.txt'
+writing manifest file 'racing_stage3_param_test.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/sunrise/dev_ws/install/racing_stage3_param_test/lib/python3.10/site-packages/racing-stage3-param-test.egg-link (link to .)
+Installing phase3_test_trigger script to /home/sunrise/dev_ws/install/racing_stage3_param_test/lib/racing_stage3_param_test
+Installing stage3_return_navigator script to /home/sunrise/dev_ws/install/racing_stage3_param_test/lib/racing_stage3_param_test
+
+Installed /home/sunrise/dev_ws/build/racing_stage3_param_test
+running symlink_data
+creating /home/sunrise/dev_ws/install/racing_stage3_param_test/share/ament_index
+creating /home/sunrise/dev_ws/install/racing_stage3_param_test/share/ament_index/resource_index
+creating /home/sunrise/dev_ws/install/racing_stage3_param_test/share/ament_index/resource_index/packages
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3_param_test/resource/racing_stage3_param_test -> /home/sunrise/dev_ws/install/racing_stage3_param_test/share/ament_index/resource_index/packages
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3_param_test/package.xml -> /home/sunrise/dev_ws/install/racing_stage3_param_test/share/racing_stage3_param_test
+creating /home/sunrise/dev_ws/install/racing_stage3_param_test/share/racing_stage3_param_test/launch
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3_param_test/launch/direct_return_test.launch.py -> /home/sunrise/dev_ws/install/racing_stage3_param_test/share/racing_stage3_param_test/launch
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3_param_test/launch/competition_support.launch.py -> /home/sunrise/dev_ws/install/racing_stage3_param_test/share/racing_stage3_param_test/launch
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3_param_test/launch/competition_stage3.launch.py -> /home/sunrise/dev_ws/install/racing_stage3_param_test/share/racing_stage3_param_test/launch
+creating /home/sunrise/dev_ws/install/racing_stage3_param_test/share/racing_stage3_param_test/config
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3_param_test/config/return_track_clockwise.yaml -> /home/sunrise/dev_ws/install/racing_stage3_param_test/share/racing_stage3_param_test/config
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3_param_test/config/return_stage3.yaml -> /home/sunrise/dev_ws/install/racing_stage3_param_test/share/racing_stage3_param_test/config

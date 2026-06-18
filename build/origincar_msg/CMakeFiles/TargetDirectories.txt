@@ -9,7 +9,7 @@
 /home/sunrise/dev_ws/build/origincar_msg/CMakeFiles/origincar_msg__rosidl_typesupport_fastrtps_cpp.dir
 /home/sunrise/dev_ws/build/origincar_msg/CMakeFiles/origincar_msg__rosidl_typesupport_introspection_cpp.dir
 /home/sunrise/dev_ws/build/origincar_msg/CMakeFiles/origincar_msg__rosidl_typesupport_cpp.dir
-/home/sunrise/dev_ws/build/origincar_msg/CMakeFiles/ament_cmake_python_copy_origincar_msg.dir
+/home/sunrise/dev_ws/build/origincar_msg/CMakeFiles/ament_cmake_python_symlink_origincar_msg.dir
 /home/sunrise/dev_ws/build/origincar_msg/CMakeFiles/ament_cmake_python_build_origincar_msg_egg.dir
 /home/sunrise/dev_ws/build/origincar_msg/CMakeFiles/origincar_msg__rosidl_generator_py.dir
 /home/sunrise/dev_ws/build/origincar_msg/CMakeFiles/origincar_msg__rosidl_typesupport_fastrtps_c__pyext.dir

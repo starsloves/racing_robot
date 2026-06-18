@@ -315,17 +315,17 @@ origincar_base__rosidl_typesupport_cpp/fast:
 .PHONY : origincar_base__rosidl_typesupport_cpp/fast
 
 #=============================================================================
-# Target rules for targets named ament_cmake_python_copy_origincar_base
+# Target rules for targets named ament_cmake_python_symlink_origincar_base
 
 # Build rule for target.
-ament_cmake_python_copy_origincar_base: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 ament_cmake_python_copy_origincar_base
-.PHONY : ament_cmake_python_copy_origincar_base
+ament_cmake_python_symlink_origincar_base: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 ament_cmake_python_symlink_origincar_base
+.PHONY : ament_cmake_python_symlink_origincar_base
 
 # fast build rule for target.
-ament_cmake_python_copy_origincar_base/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/ament_cmake_python_copy_origincar_base.dir/build.make CMakeFiles/ament_cmake_python_copy_origincar_base.dir/build
-.PHONY : ament_cmake_python_copy_origincar_base/fast
+ament_cmake_python_symlink_origincar_base/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ament_cmake_python_symlink_origincar_base.dir/build.make CMakeFiles/ament_cmake_python_symlink_origincar_base.dir/build
+.PHONY : ament_cmake_python_symlink_origincar_base/fast
 
 #=============================================================================
 # Target rules for targets named ament_cmake_python_build_origincar_base_egg
@@ -757,7 +757,7 @@ help:
 	@echo "... rebuild_cache"
 	@echo "... test"
 	@echo "... ament_cmake_python_build_origincar_base_egg"
-	@echo "... ament_cmake_python_copy_origincar_base"
+	@echo "... ament_cmake_python_symlink_origincar_base"
 	@echo "... origincar_base"
 	@echo "... origincar_base__cpp"
 	@echo "... origincar_base__py"

@@ -1,0 +1,33 @@
+[4.768s] Invoking command in '/home/sunrise/dev_ws/build/racing_stage2_param_test': PYTHONPATH=/home/sunrise/dev_ws/build/racing_stage2_param_test/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_stage2_param_test/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/sunrise/dev_ws/build/racing_stage2_param_test/build --no-deps symlink_data
+[6.780s] running develop
+[7.977s] running egg_info
+[7.977s] creating racing_stage2_param_test.egg-info
+[7.978s] writing racing_stage2_param_test.egg-info/PKG-INFO
+[7.980s] writing dependency_links to racing_stage2_param_test.egg-info/dependency_links.txt
+[7.981s] writing entry points to racing_stage2_param_test.egg-info/entry_points.txt
+[7.982s] writing requirements to racing_stage2_param_test.egg-info/requires.txt
+[7.982s] writing top-level names to racing_stage2_param_test.egg-info/top_level.txt
+[7.983s] writing manifest file 'racing_stage2_param_test.egg-info/SOURCES.txt'
+[7.993s] reading manifest file 'racing_stage2_param_test.egg-info/SOURCES.txt'
+[7.997s] writing manifest file 'racing_stage2_param_test.egg-info/SOURCES.txt'
+[8.009s] running build_ext
+[8.010s] Creating /home/sunrise/dev_ws/install/racing_stage2_param_test/lib/python3.10/site-packages/racing-stage2-param-test.egg-link (link to .)
+[8.014s] Installing avoidance_straight_tester script to /home/sunrise/dev_ws/install/racing_stage2_param_test/lib/racing_stage2_param_test
+[8.016s] Installing direct_inertial_tester script to /home/sunrise/dev_ws/install/racing_stage2_param_test/lib/racing_stage2_param_test
+[8.016s] Installing twist_cmd_relay script to /home/sunrise/dev_ws/install/racing_stage2_param_test/lib/racing_stage2_param_test
+[8.018s] 
+[8.019s] Installed /home/sunrise/dev_ws/build/racing_stage2_param_test
+[8.021s] running symlink_data
+[8.022s] creating /home/sunrise/dev_ws/install/racing_stage2_param_test/share
+[8.022s] creating /home/sunrise/dev_ws/install/racing_stage2_param_test/share/ament_index
+[8.023s] creating /home/sunrise/dev_ws/install/racing_stage2_param_test/share/ament_index/resource_index
+[8.023s] creating /home/sunrise/dev_ws/install/racing_stage2_param_test/share/ament_index/resource_index/packages
+[8.023s] symbolically linking /home/sunrise/dev_ws/build/racing_stage2_param_test/resource/racing_stage2_param_test -> /home/sunrise/dev_ws/install/racing_stage2_param_test/share/ament_index/resource_index/packages
+[8.024s] creating /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test
+[8.024s] symbolically linking /home/sunrise/dev_ws/build/racing_stage2_param_test/package.xml -> /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test
+[8.025s] creating /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test/launch
+[8.025s] symbolically linking /home/sunrise/dev_ws/build/racing_stage2_param_test/launch/direct_inertial_test.launch.py -> /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test/launch
+[8.026s] symbolically linking /home/sunrise/dev_ws/build/racing_stage2_param_test/launch/avoidance_straight_test.launch.py -> /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test/launch
+[8.026s] creating /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test/config
+[8.026s] symbolically linking /home/sunrise/dev_ws/build/racing_stage2_param_test/config/avoidance_straight_test.yaml -> /home/sunrise/dev_ws/install/racing_stage2_param_test/share/racing_stage2_param_test/config
+[8.273s] Invoked command in '/home/sunrise/dev_ws/build/racing_stage2_param_test' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/racing_stage2_param_test/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/racing_stage2_param_test/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/sunrise/dev_ws/build/racing_stage2_param_test/build --no-deps symlink_data

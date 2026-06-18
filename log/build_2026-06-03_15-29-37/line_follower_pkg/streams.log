@@ -1,0 +1,24 @@
+[16.110s] Invoking command in '/home/sunrise/dev_ws/build/line_follower_pkg': PYTHONPATH=/home/sunrise/dev_ws/build/line_follower_pkg/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/line_follower_pkg/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/sunrise/dev_ws/build/line_follower_pkg/build --no-deps symlink_data
+[23.063s] running develop
+[29.968s] running egg_info
+[29.985s] creating line_follower_pkg.egg-info
+[29.988s] writing line_follower_pkg.egg-info/PKG-INFO
+[29.991s] writing dependency_links to line_follower_pkg.egg-info/dependency_links.txt
+[29.993s] writing entry points to line_follower_pkg.egg-info/entry_points.txt
+[29.995s] writing requirements to line_follower_pkg.egg-info/requires.txt
+[29.996s] writing top-level names to line_follower_pkg.egg-info/top_level.txt
+[29.999s] writing manifest file 'line_follower_pkg.egg-info/SOURCES.txt'
+[30.011s] reading manifest file 'line_follower_pkg.egg-info/SOURCES.txt'
+[30.030s] writing manifest file 'line_follower_pkg.egg-info/SOURCES.txt'
+[30.042s] running build_ext
+[30.044s] Creating /home/sunrise/dev_ws/install/line_follower_pkg/lib/python3.10/site-packages/line-follower-pkg.egg-link (link to .)
+[30.071s] Installing line_follower script to /home/sunrise/dev_ws/install/line_follower_pkg/lib/line_follower_pkg
+[30.074s] 
+[30.075s] Installed /home/sunrise/dev_ws/build/line_follower_pkg
+[30.076s] running symlink_data
+[30.077s] creating /home/sunrise/dev_ws/install/line_follower_pkg/share/ament_index
+[30.077s] creating /home/sunrise/dev_ws/install/line_follower_pkg/share/ament_index/resource_index
+[30.079s] creating /home/sunrise/dev_ws/install/line_follower_pkg/share/ament_index/resource_index/packages
+[30.079s] symbolically linking /home/sunrise/dev_ws/build/line_follower_pkg/resource/line_follower_pkg -> /home/sunrise/dev_ws/install/line_follower_pkg/share/ament_index/resource_index/packages
+[30.080s] symbolically linking /home/sunrise/dev_ws/build/line_follower_pkg/package.xml -> /home/sunrise/dev_ws/install/line_follower_pkg/share/line_follower_pkg
+[34.281s] Invoked command in '/home/sunrise/dev_ws/build/line_follower_pkg' returned '0': PYTHONPATH=/home/sunrise/dev_ws/build/line_follower_pkg/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/sunrise/dev_ws/install/line_follower_pkg/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/sunrise/dev_ws/build/line_follower_pkg/build --no-deps symlink_data

@@ -1,0 +1,27 @@
+running develop
+running egg_info
+creating racing_stage3.egg-info
+writing racing_stage3.egg-info/PKG-INFO
+writing dependency_links to racing_stage3.egg-info/dependency_links.txt
+writing entry points to racing_stage3.egg-info/entry_points.txt
+writing requirements to racing_stage3.egg-info/requires.txt
+writing top-level names to racing_stage3.egg-info/top_level.txt
+writing manifest file 'racing_stage3.egg-info/SOURCES.txt'
+reading manifest file 'racing_stage3.egg-info/SOURCES.txt'
+writing manifest file 'racing_stage3.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/sunrise/dev_ws/install/racing_stage3/lib/python3.10/site-packages/racing-stage3.egg-link (link to .)
+Installing stage3_return_navigator script to /home/sunrise/dev_ws/install/racing_stage3/lib/racing_stage3
+
+Installed /home/sunrise/dev_ws/build/racing_stage3
+running symlink_data
+creating /home/sunrise/dev_ws/install/racing_stage3/share/ament_index
+creating /home/sunrise/dev_ws/install/racing_stage3/share/ament_index/resource_index
+creating /home/sunrise/dev_ws/install/racing_stage3/share/ament_index/resource_index/packages
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3/resource/racing_stage3 -> /home/sunrise/dev_ws/install/racing_stage3/share/ament_index/resource_index/packages
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3/package.xml -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3
+creating /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/launch
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3/launch/competition_support.launch.py -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/launch
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3/launch/competition_stage3.launch.py -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/launch
+creating /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/config
+symbolically linking /home/sunrise/dev_ws/build/racing_stage3/config/return_stage3.yaml -> /home/sunrise/dev_ws/install/racing_stage3/share/racing_stage3/config

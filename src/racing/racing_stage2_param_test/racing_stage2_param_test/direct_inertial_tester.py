@@ -1,219 +1,625 @@
-"""Main controller for the standalone stage2 inertial parameter tester.
-
-Navigation: world odom + waypoint targets (see docs/NAVIGATION.md, world_plan_nav.py).
-
-Submodules:
-- `direct_inertial_tester_navigation.py`: MISSION vs AVOID handoff.
-- `direct_inertial_tester_avoidance.py`: goal_direct waypoint detour.
-- `direct_inertial_tester_obstacle.py`: lidar perception, markers, trigger logging.
-"""
-
 import math
-import os
-from typing import Optional
 
 import rclpy
-from visualization_msgs.msg import MarkerArray
+from nav_msgs.msg import Odometry
 
 from racing_stage2.stage2_inertial_navigator import Stage2InertialNavigator
-
-from .direct_inertial_tester_avoidance import DirectInertialTesterAvoidanceMixin
-from .direct_inertial_tester_cmd_safety import DirectInertialTesterCmdSafetyMixin
-from .direct_inertial_tester_debug_log import DirectInertialTesterDebugLogMixin
-from .direct_inertial_tester_navigation import DirectInertialTesterNavigationMixin
-from .direct_inertial_tester_obstacle import DirectInertialTesterObstacleMixin
-from .world_plan_nav import DirectInertialTesterWorldPlanMixin
-from .field_track import (
-    field_channel_entry_xy,
-    field_channel_entry_yaw_rad,
-    field_corner_turn_deg,
-    field_entry_turn_deg,
-    resolve_config_path,
+from racing_stage2_param_test.s1_geometry import (
+    build_s1_plan,
+    cross_segment_m,
+    obstacle_is_left,
 )
-from .ring_track import (
-    build_ring_plan_for_sim,
-    nominal_mission_finish_pose,
-    segment_endpoints_world,
-)
-from . import world_segment
-
-# Run E: 末段名义终点与世界距离一致；勿再用 0.40m 误 finish（见 STAGE2_GOAL_DIRECT_FIX_LOG §8）
-FINISH_WORLD_DIST_M = 0.15
-# origincar Ackermann: cmd_vel_to_ackermann 在 vel==0 时 steering=0，不能 turn_linear_speed=0。
-ACKERMANN_TURN_MIN_LINEAR_MPS = 0.05
-FINISH_SKIP_TRIM_LAT_M = 0.10
-FINISH_SKIP_TRIM_HEAD_RAD = math.radians(10.0)
-# 无障直行：段 ψ hold（线速度不变）；正交段窄死区 + 较大 ω 便于场测可见纠角。
-MISSION_MOVE_HEADING_DEADBAND_DEG = 0.5
-MISSION_MOVE_HEADING_DEADBAND_AXIS_DEG = 0.3
-MISSION_MOVE_HEADING_KP = 2.20
-MISSION_MOVE_MAX_ANGULAR_RPS = 0.58
-MISSION_MOVE_MIN_ANGULAR_RPS = 0.10
-from .test_log_paths import debug_log_path as default_debug_log_path
-from .vehicle_param_sync import sync_stage2_runtime_parameters, sync_tester_runtime_parameters
+from racing_stage2_param_test.session_file_log import SessionFileLog
 
 
-class DirectInertialTester(
-    DirectInertialTesterNavigationMixin,
-    DirectInertialTesterAvoidanceMixin,
-    DirectInertialTesterWorldPlanMixin,
-    DirectInertialTesterObstacleMixin,
-    DirectInertialTesterDebugLogMixin,
-    DirectInertialTesterCmdSafetyMixin,
-    Stage2InertialNavigator,
-):
-    """Standalone parameter-tuning node for the stage2 inertial loop."""
-
+class DirectInertialTester(Stage2InertialNavigator):
     def __init__(self):
         super().__init__()
-        self.declare_parameter(
-            'debug_log_path',
-            os.path.join(os.getcwd(), 'log', 'direct_inertial_tester_debug.log'),
-        )
-        self.declare_parameter('detour_debug_log_period_sec', 0.50)
-        self.declare_parameter('debug_log_verbose', False)
 
-        self.debug_log_path = (
-            str(self.get_parameter('debug_log_path').value).strip() or default_debug_log_path()
-        )
-        self.debug_log_verbose = bool(self.get_parameter('debug_log_verbose').value)
-        self.reset_debug_log()
-
-        # Test-mission parameters.
         self.declare_parameter('test_direction', 'clockwise')
-        self.declare_parameter('assume_channel_entry_yaw', True)
+        self.declare_parameter('test_start_mode', 'auto')
         self.declare_parameter('test_feedback_prefix', '惯导参数测试')
-        # 空字符串 → share/config/field_track_{clockwise|counterclockwise}.yaml
-        self.declare_parameter('field_track_config', '')
+        self.declare_parameter('rectangle_first_leg_m', 1.20)
+        self.declare_parameter('rectangle_side_leg_m', 0.60)
+        self.declare_parameter('rectangle_top_leg_m', 2.80)
+        # 第一个转角（rect_enter_align）的目标角度，默认 95°（替代原 90°）
+        # sign 由方向决定：clockwise→+，counterclockwise→-
+        # 仅影响第 1 段；后 4 个 corner 仍是 ∓90°
+        self.declare_parameter('rect_enter_align_deg', 95.0)
 
-        # Obstacle-circle perception parameters.
-        self.declare_parameter('obstacle_circle_topic', 'detected_obstacle_circles')
-        self.declare_parameter('obstacle_circle_cluster_distance_threshold', 0.18)
-        self.declare_parameter('obstacle_circle_min_cluster_points', 3)
-        self.declare_parameter('obstacle_circle_min_range_m', 0.10)
-        self.declare_parameter('obstacle_circle_max_range_m', 2.50)
-        self.declare_parameter('obstacle_circle_padding_m', 0.04)
-        self.declare_parameter('obstacle_circle_min_radius_m', 0.10)
-        self.declare_parameter('obstacle_circle_max_radius_m', 0.50)
-        self.declare_parameter('obstacle_circle_max_cluster_span_m', 0.90)
-        self.declare_parameter('obstacle_circle_marker_height_m', 0.05)
-        self.declare_parameter('obstacle_circle_path_half_width_m', 0.18)
-        self.declare_parameter('obstacle_corridor_body_half_width_m', 0.12)
-        self.declare_parameter('obstacle_side_fence_center_y_m', 0.30)
-        self.declare_parameter('obstacle_opposite_wall_min_center_x_m', 0.85)
-        self.declare_parameter('detour_turn_max_trigger_distance_m', 0.55)
-        self.declare_parameter('obstacle_opposite_front_min_distance_m', 0.70)
-        self.declare_parameter('obstacle_circle_planning_margin_m', 0.03)
-        self.declare_parameter('obstacle_circle_forward_margin_m', 0.12)
-        # Early detect starts replan; clear distance (hysteresis) allows rejoin to main route.
-        self.declare_parameter('detour_obstacle_detect_distance', 0.55)
-        self.declare_parameter('detour_obstacle_clear_distance', 0.75)
-        self.declare_parameter('detour_follow_min_linear_m', 0.14)
+        # 第二个转角（rect_corner_1，第 1 个 corner）的目标角度，默认 80°
+        self.declare_parameter('rect_corner_1_deg', 80.0)
+        self.declare_parameter('rect_corner_2_deg', 85.0)
+        self.declare_parameter('rect_corner_3_deg', 85.0)
+        self.declare_parameter('rect_corner_4_deg', 85.0)
 
-        # goal_direct avoidance (move segments only).
-        self.declare_parameter('avoid_watch_distance_m', 0.80)
-        self.declare_parameter('avoid_commit_distance_m', 0.45)
-        self.declare_parameter('avoid_bias_yaw_deg', 30.0)
-        self.declare_parameter('avoid_bias_yaw_max_deg', 30.0)
-        self.declare_parameter('avoid_triangle_trigger_m', 0.50)
-        self.declare_parameter('avoid_triangle_bias_deg', 30.0)
-        self.declare_parameter('avoid_triangle_leg_m', 0.80)
-        self.declare_parameter('avoid_pass_clearance_m', 0.10)
-        self.declare_parameter('avoid_bypass_max_lateral_m', 0.34)
-        self.declare_parameter('avoid_parallel_front_margin_m', 0.18)
-        self.declare_parameter('avoid_rejoin_heading_tol_deg', 6.0)
-        self.declare_parameter('avoid_rejoin_lateral_tol_m', 0.06)
-        self.declare_parameter('avoid_corner_zone_before_m', 0.55)
-        self.declare_parameter('avoid_corner_zone_after_m', 0.45)
-        self.declare_parameter('avoid_corner_apex_box_m', 0.35)
-        self.declare_parameter('avoid_corner_prefer_inside', True)
-        self.declare_parameter('avoid_corner_outside_margin_m', 0.12)
-        self.declare_parameter('avoid_speed_out_mps', 0.08)
-        self.declare_parameter('avoid_speed_pass_mps', 0.10)
-        self.declare_parameter('avoid_speed_rejoin_mps', 0.08)
-        self.declare_parameter('avoid_corner_speed_mps', 0.09)
-        self.declare_parameter('avoid_corner_speed_slow_mps', 0.07)
-        self.declare_parameter('avoid_max_angular_speed', 0.42)
-        self.declare_parameter('avoid_perception_loss_hold_sec', 0.40)
-        self.declare_parameter('avoid_approach_creep_speed_mps', 0.10)
-        self.declare_parameter('avoid_approach_speed_ratio', 0.35)
-        # goal_direct avoidance (Pure Pursuit style waypoints).
-        self.declare_parameter('avoid_goal_bypass_offset_m', 0.0)
-        self.declare_parameter('avoid_goal_pass_margin_m', 0.12)
-        self.declare_parameter('avoid_goal_cut_segment_len_m', 0.68)
-        self.declare_parameter('avoid_goal_reach_tol_m', 0.07)
-        self.declare_parameter('avoid_goal_heading_kp', 0.0)
-        self.declare_parameter('avoid_pre_corner_upcoming_obs_max_along_m', 0.45)
-        self.declare_parameter('avoid_pre_corner_approach_remaining_m', 0.50)
-        self.declare_parameter('avoid_pre_corner_min_upcoming_seg_m', 0.95)
-        self.declare_parameter('avoid_goal_exit_inward_margin_m', 0.17)
-        self.declare_parameter('mission_move_heading_deadband_deg', MISSION_MOVE_HEADING_DEADBAND_DEG)
-        self.declare_parameter('mission_move_heading_kp', MISSION_MOVE_HEADING_KP)
-        self.declare_parameter('mission_move_max_angular_rps', MISSION_MOVE_MAX_ANGULAR_RPS)
-        self.declare_parameter('mission_move_min_angular_rps', MISSION_MOVE_MIN_ANGULAR_RPS)
-        self._sync_stage2_runtime_parameters()
-        self._sync_tester_runtime_parameters()
 
-        # Main runtime state.
+        # Stage1 边转边避参数（子类可重新声明覆盖默认值）
+        self.declare_parameter('avoid_leg_heading_offset_deg', 30.0)
+        self.declare_parameter('avoid_leg1_distance_m', 0.30)
+        self.declare_parameter('avoid_leg2_distance_m', 0.40)
+        self.declare_parameter('avoid_leg_linear_speed', 0.10)
+        self.declare_parameter('avoid_turn_linear_speed', 0.08)
+        self.declare_parameter('avoid_leg_distance_tol_m', 0.04)
+        self.declare_parameter('avoid_turn_angular_speed', 0.40)
+
+        self.test_direction_raw = str(self.get_parameter('test_direction').value).strip()
+        self.test_direction = self.resolve_test_direction(self.test_direction_raw)
+        self.test_start_mode = str(self.get_parameter('test_start_mode').value).strip().lower() or 'auto'
+        self.test_feedback_prefix = str(self.get_parameter('test_feedback_prefix').value).strip() or '惯导参数测试'
+        self.rectangle_first_leg_m = max(
+            0.0,
+            float(self.get_parameter('rectangle_first_leg_m').value),
+        )
+        self.rectangle_side_leg_m = max(
+            0.0,
+            float(self.get_parameter('rectangle_side_leg_m').value),
+        )
+        self.rectangle_top_leg_m = max(
+            0.0,
+            float(self.get_parameter('rectangle_top_leg_m').value),
+        )
+
+        self.rect_enter_align_deg = float(self.get_parameter('rect_enter_align_deg').value)
+
+        self.rect_corner_1_deg = float(self.get_parameter('rect_corner_1_deg').value)
+        self.rect_corner_2_deg = float(self.get_parameter('rect_corner_2_deg').value)
+        self.rect_corner_3_deg = float(self.get_parameter('rect_corner_3_deg').value)
+        self.rect_corner_4_deg = float(self.get_parameter('rect_corner_4_deg').value)
+
+        # Stage1 边转边避几何与执行参数
+        self._avoid_offset_deg = float(self.get_parameter('avoid_leg_heading_offset_deg').value)
+        self._avoid_offset_rad = math.radians(self._avoid_offset_deg)
+        self._avoid_leg1_distance_m = max(0.05, float(self.get_parameter('avoid_leg1_distance_m').value))
+        self._avoid_leg2_distance_m = max(0.05, float(self.get_parameter('avoid_leg2_distance_m').value))
+        self._avoid_leg_linear_speed = max(0.02, float(self.get_parameter('avoid_leg_linear_speed').value))
+        self._avoid_turn_linear_speed = max(0.02, float(self.get_parameter('avoid_turn_linear_speed').value))
+        self._avoid_distance_tol_m = max(0.0, float(self.get_parameter('avoid_leg_distance_tol_m').value))
+        self._avoid_turn_angular_speed = max(0.1, float(self.get_parameter('avoid_turn_angular_speed').value))
+
         self.phase = 2
         self.task_raw = self.test_direction_raw
         self.direction = self.test_direction
+
         self.reported_waiting_pose = False
         self.reported_start_delay = False
         self.last_progress_bucket = -1
+        self.detour_front_confirm_count = 0
         self.detour_front_test_angle_deg = min(self.detour_front_angle_deg, 35.0)
         self.detour_side_test_window_deg = min(self.detour_side_window_deg, 16.0)
-        self.detour_strategy = 'triangle'
-        self.detour_debug_log_period_sec = max(
-            0.10,
-            float(self.get_parameter('detour_debug_log_period_sec').value),
-        )
-        self.init_detour_debug_log_state()
-        self.init_cmd_vel_safety()
+        self.detour_heading_gate_rad = math.radians(12.0)
+        self.detour_confirm_required = 3
+        self.detour_turn_settle_sec = 0.30
+        self.detour_realign_pause_sec = 2.0
+        self.detour_turn_heading_tolerance = min(self.heading_tolerance, math.radians(1.5))
+        self.detour_turn_linear_speed = self.turn_linear_speed
+        self.detour_lane_change_angle_deg = 60.0
+        self.active_turn_heading_tolerance = self.heading_tolerance
+        self.last_detour_turn_log_time = 0.0
+        self.detour_detection_locked = False
+        self.detour_resume_yaw = None
         self.front_obstacle_angle_deg = 0.0
-        self.detected_obstacle_circles = []
-        self.active_obstacle_circle = None
-        self.last_obstacle_circle_marker_count = 0
-        self.avoid_bypass_max_lateral_m = 0.34
-        self.segment_integrated_distance_m = 0.0
-        self._segment_integrated_prev_xy = None
-        self.ring_origin_world = None
-        self.world_yaw_offset_rad = 0.0
-        self.world_yaw_entry_raw = None
-        self.world_pos_anchor_odom_xy = None
-        self._turn_start_phys_yaw = None
-        self._last_turn_debug_log_at = -1.0
-        self.reset_avoidance_runtime()
-        self.reset_segment_world_plan()
-        self._last_search_log_at = 0.0
 
-        self.obstacle_circle_pub = self.create_publisher(MarkerArray, self.obstacle_circle_topic, 10)
-        self.log_parameter_snapshot()
-        self.log_flow_mission_ready()
+        # Stage1 风格边转边避状态机
+        self._avoid_state = 'idle'
+        self._avoid_plan = None
+        self._avoid_leg_start_xy = None
+        self._avoid_turn_accum_rad = 0.0
+        self._avoid_turn_required_rad = 0.0
+        self._avoid_turn_sign = 1.0
+        self._avoid_prev_yaw = None
+        self._avoid_turn_target_yaw = None
+        self._avoid_cooldown_until = 0.0
+
+        self._setup_wheel_odom_position()
+        self._setup_session_log()
 
         self.get_logger().info(
             f'{self.test_feedback_prefix}节点已就绪，方向={self.direction_text()}，'
             f'模式={self.start_mode_text()}，'
-            f'路点配置={self.resolved_field_track_config_path()}，'
-            f'避障算法={self.detour_strategy}（等腰三角：{getattr(self, "avoid_triangle_trigger_m", 0.5):.2f}m 触发 / '
-            f'{getattr(self, "avoid_triangle_bias_deg", 30.0):.0f}° / '
-            f'{getattr(self, "avoid_triangle_leg_m", 0.8):.2f}m 单腿），'
-            f'触发距离={self.detour_obstacle_detect_distance:.2f}m，'
-            f'清除距离={self.detour_obstacle_clear_distance:.2f}m，'
-            f'前向检测角±{self.detour_front_test_angle_deg:.0f}度，'
-            f'debug_log={self.debug_log_path}'
+            f'矩形参数=({self.rectangle_first_leg_m:.2f}, '
+            f'{self.rectangle_side_leg_m:.2f}, {self.rectangle_top_leg_m:.2f})m，'
+            f'避障=Stage1边转边避 ±{self._avoid_offset_deg:.0f}deg×'
+            f'{self._avoid_leg1_distance_m:.2f}m/{self._avoid_leg2_distance_m:.2f}m，'
+            f'前向检测角±{self.detour_front_test_angle_deg:.0f}度'
+        )
+        self._log_session(
+            'CONFIG',
+            f'方向={self.direction_text()} 模式={self.start_mode_text()} '
+            f'矩形=({self.rectangle_first_leg_m:.2f},{self.rectangle_side_leg_m:.2f},'
+            f'{self.rectangle_top_leg_m:.2f})m '
+            f'避障±{self._avoid_offset_deg:.0f}deg '
+            f'L1={self._avoid_leg1_distance_m:.2f}m L2={self._avoid_leg2_distance_m:.2f}m '
+            f'pose_source={self._navigation_pose_source} '
+            f'wheel={self._wheel_odom_topic} ekf={self.odom_topic} '
+            f'ring_v={self.ring_linear_speed:.2f} turn_v={self.turn_linear_speed:.2f} '
+            f'turn_w={self.turn_angular_speed:.2f} head_kp={self.heading_kp:.2f} '
+            f'dist_tol={self.distance_tolerance:.3f} '
+            f'head_tol={math.degrees(self.heading_tolerance):.1f}deg '
+            f'detour_d={self.detour_obstacle_distance:.2f}m '
+            f'segment_timeout={self.segment_timeout:.1f}s',
         )
 
-    def _sync_stage2_runtime_parameters(self):
-        sync_stage2_runtime_parameters(self)
+    def _setup_session_log(self) -> None:
+        self.declare_parameter('session_log_subdir', 'direct_inertial_test')
+        self.declare_parameter('session_log_filename', 'latest.log')
+        self.declare_parameter('session_telemetry_interval_sec', 0.25)
+        subdir = (
+            str(self.get_parameter('session_log_subdir').value).strip()
+            or 'direct_inertial_test'
+        )
+        filename = (
+            str(self.get_parameter('session_log_filename').value).strip() or 'latest.log'
+        )
+        self._telemetry_interval_sec = max(
+            0.05, float(self.get_parameter('session_telemetry_interval_sec').value)
+        )
+        self._session_log = SessionFileLog(
+            subdir,
+            filename,
+            session_title='direct inertial test session',
+        )
+        self._last_telemetry_sec = 0.0
+        self._last_wait_log_sec = 0.0
+        self._wheel_warmup_logged = False
+        self._last_avoid_state_logged = 'idle'
+        self._last_ekf_position = None
+        self._wheel_twist = None
+        self._ekf_twist = None
+        self._last_cmd_linear = 0.0
+        self._last_cmd_angular = 0.0
+        self.get_logger().info(
+            f'{self.test_feedback_prefix}会话日志: {self._session_log.path}'
+        )
+        self._log_session('CONFIG', f'日志路径={self._session_log.path}')
 
-    def _sync_tester_runtime_parameters(self):
-        sync_tester_runtime_parameters(self)
+    def destroy_node(self):
+        if getattr(self, '_session_log', None) is not None:
+            self._session_log.close()
+            self._session_log = None
+        super().destroy_node()
 
-    def apply_vehicle_parameters_from_ros(self):
-        """set_parameters(yaml+launch) 后重读，离线仿真与实车 launch 对齐。"""
-        self._sync_stage2_runtime_parameters()
-        self._sync_tester_runtime_parameters()
+    def _log_session(self, tag: str, message: str) -> None:
+        if getattr(self, '_session_log', None) is None:
+            return
+        self._session_log.write(f'[{tag}] {message}')
+
+    def publish_feedback(self, text: str) -> None:
+        super().publish_feedback(text)
+        self._log_session('FEEDBACK', text)
+
+    def create_twist(self, linear_x=0.0, angular_z=0.0):
+        self._last_cmd_linear = float(linear_x)
+        self._last_cmd_angular = float(angular_z)
+        return super().create_twist(linear_x, angular_z)
+
+    def navigation_yaw(self):
+        """统一位姿航向（current_yaw）；轮速模式下由 /odom 写入，IMU 仅诊断。"""
+        return self.current_yaw
+
+    def _wheel_pose_source_active(self) -> bool:
+        return (
+            getattr(self, '_navigation_pose_source', 'wheel') == 'wheel'
+            and self._use_wheel_odom_for_distance
+        )
+
+    def _sync_unified_pose_from_wheel(self) -> None:
+        if not self._wheel_pose_source_active():
+            return
+        if self.current_wheel_yaw is None:
+            return
+        self.current_yaw = self.current_wheel_yaw
+
+    def imu_callback(self, msg):
+        self.imu_yaw = self.quaternion_to_yaw(msg.orientation)
+        if not self._wheel_pose_source_active():
+            self.current_yaw = self.imu_yaw
+        self.try_start_mission()
+
+    def _fmt_num(self, value, prec=3):
+        if value is None:
+            return 'nan'
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return 'nan'
+        if not math.isfinite(number):
+            return 'inf' if math.isinf(number) else 'nan'
+        return f'{number:.{prec}f}'
+
+    def _raw_projected_distance(self) -> float:
+        if (
+            self.segment_start_pose is None
+            or self.current_position is None
+            or self.segment_heading is None
+        ):
+            return 0.0
+        dx = self.current_position[0] - self.segment_start_pose[0]
+        dy = self.current_position[1] - self.segment_start_pose[1]
+        return (
+            dx * math.cos(self.segment_heading)
+            + dy * math.sin(self.segment_heading)
+        )
+
+    def _cross_track_m(self) -> float:
+        if (
+            self.segment_start_pose is None
+            or self.current_position is None
+            or self.segment_heading is None
+        ):
+            return 0.0
+        return cross_segment_m(
+            self.segment_start_pose,
+            self.segment_heading,
+            self.current_position,
+        )
+
+    def _full_telemetry(self) -> str:
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        segment = self.current_segment or {}
+        seg_type = str(segment.get('type', 'none'))
+        seg_desc = str(segment.get('description', 'none'))
+
+        wx = wy = 'nan'
+        if self.current_position is not None:
+            wx = self._fmt_num(self.current_position[0])
+            wy = self._fmt_num(self.current_position[1])
+
+        ekf_x = ekf_y = 'nan'
+        if self._last_ekf_position is not None:
+            ekf_x = self._fmt_num(self._last_ekf_position[0])
+            ekf_y = self._fmt_num(self._last_ekf_position[1])
+
+        sx = sy = 'nan'
+        if self.segment_start_pose is not None:
+            sx = self._fmt_num(self.segment_start_pose[0])
+            sy = self._fmt_num(self.segment_start_pose[1])
+
+        wvx = wvy = wwz = 'nan'
+        if self._wheel_twist is not None:
+            wvx = self._fmt_num(self._wheel_twist[0])
+            wvy = self._fmt_num(self._wheel_twist[1])
+            wwz = self._fmt_num(self._wheel_twist[2])
+
+        evx = evy = ewz = 'nan'
+        if self._ekf_twist is not None:
+            evx = self._fmt_num(self._ekf_twist[0])
+            evy = self._fmt_num(self._ekf_twist[1])
+            ewz = self._fmt_num(self._ekf_twist[2])
+
+        along = self.projected_distance() if self.current_position is not None else 0.0
+        raw_along = self._raw_projected_distance() if self.current_position is not None else 0.0
+        cross_cm = self._cross_track_m() * 100.0 if self.current_position is not None else 0.0
+
+        target_m = seg_speed = 0.0
+        if seg_type == 'move':
+            target_m = float(segment.get('distance_m', 0.0))
+            seg_speed = float(segment.get('speed', 0.0))
+
+        avoid_leg_m = 0.0
+        if self._avoid_leg_start_xy is not None and self.current_position is not None:
+            avoid_leg_m = self._avoid_leg_traveled_m(
+                self.current_position[0], self.current_position[1]
+            )
+
+        nav_yaw = self.navigation_yaw()
+        heading_err_deg = 'nan'
+        if self.segment_heading is not None and nav_yaw is not None:
+            heading_err_deg = self._fmt_num(
+                math.degrees(self.angle_error(self.segment_heading, nav_yaw)),
+                prec=1,
+            )
+
+        turn_err_deg = 'nan'
+        if self.segment_target_yaw is not None and nav_yaw is not None:
+            turn_err_deg = self._fmt_num(
+                math.degrees(self.angle_error(self.segment_target_yaw, nav_yaw)),
+                prec=1,
+            )
+
+        imu_wheel_err_deg = 'nan'
+        if self.imu_yaw is not None and self.current_wheel_yaw is not None:
+            imu_wheel_err_deg = self._fmt_num(
+                math.degrees(self.angle_error(self.imu_yaw, self.current_wheel_yaw)),
+                prec=1,
+            )
+
+        seg_elapsed = 'nan'
+        if self.segment_started_at is not None:
+            seg_elapsed = self._fmt_num(now_sec - self.segment_started_at, prec=2)
+
+        parts = [
+            (
+                f't={now_sec:.3f} mission={int(self.mission_active)} '
+                f'done={int(self.mission_finished)} '
+                f'plan={self.plan_index}/{max(len(self.plan) - 1, 0)} '
+                f'seg={seg_type}:{seg_desc} seg_t={seg_elapsed}s'
+            ),
+            f'wheel_xy=({wx},{wy}) ekf_xy=({ekf_x},{ekf_y}) anchor=({sx},{sy})',
+            (
+                f'yaw={self.format_yaw_deg(self.current_yaw)} '
+                f'yaw_wheel={self.format_yaw_deg(self.current_wheel_yaw)} '
+                f'yaw_imu={self.format_yaw_deg(self.imu_yaw)} '
+                f'yaw_ekf={self.format_yaw_deg(self.current_odom_yaw)} '
+                f'yaw_leg={self.format_yaw_deg(self.segment_heading)} '
+                f'yaw_seg0={self.format_yaw_deg(self.segment_start_yaw)} '
+                f'yaw_tgt={self.format_yaw_deg(self.segment_target_yaw)} '
+                f'imu_off={imu_wheel_err_deg} '
+                f'head_err={heading_err_deg} turn_err={turn_err_deg}'
+            ),
+            (
+                f'wheel_v=({wvx},{wvy},{wwz}) ekf_v=({evx},{evy},{ewz}) '
+                f'cmd_v=({self._fmt_num(self._last_cmd_linear)},{self._fmt_num(self._last_cmd_angular)}) '
+                f'seg_v={self._fmt_num(seg_speed)}'
+            ),
+            (
+                f'along={self._fmt_num(along)}/{self._fmt_num(target_m)}m '
+                f'raw_along={self._fmt_num(raw_along)}m cross={cross_cm:+.1f}cm '
+                f'dist_tol={self._fmt_num(self.distance_tolerance)}'
+            ),
+            (
+                f'avoid={self._avoid_state} avoid_leg={self._fmt_num(avoid_leg_m)}m '
+                f'avoid_turn={self._fmt_num(math.degrees(self._avoid_turn_accum_rad), prec=1)}/'
+                f'{self._fmt_num(math.degrees(self._avoid_turn_required_rad), prec=1)}deg '
+                f'detour_lock={int(self.detour_detection_locked)}'
+            ),
+            (
+                f'front={self.format_distance(self.front_obstacle_distance)}m '
+                f'@ {self._fmt_num(self.front_obstacle_angle_deg, prec=1)}deg '
+                f'left={self.format_distance(self.left_clearance_distance)}m '
+                f'right={self.format_distance(self.right_clearance_distance)}m '
+                f'detour_trig={self._fmt_num(self.detour_obstacle_distance)}m'
+            ),
+            (
+                f'wheel_n={self._wheel_odom_msg_count} wheel_ready={int(self._wheel_odom_ready)} '
+                f'frame={self.odom_frame_id}'
+            ),
+        ]
+        return ' | '.join(parts)
+
+    def _pose_diagnostic(self) -> str:
+        return self._full_telemetry()
+
+    def _maybe_log_telemetry(self, reason: str) -> None:
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        if self.mission_active:
+            interval = self._telemetry_interval_sec
+        elif self._wheel_odom_msg_count > 0:
+            interval = 1.0
+        else:
+            return
+        if now_sec - self._last_telemetry_sec < interval:
+            return
+        self._last_telemetry_sec = now_sec
+        self._log_session('TELEM', f'{reason} | {self._full_telemetry()}')
+
+    def _log_segment_enter(self, segment) -> None:
+        if segment is None:
+            return
+        seg_type = segment.get('type', '?')
+        desc = segment.get('description', '?')
+        idx = self.plan_index
+        parts = [f'#{idx} type={seg_type} desc={desc}']
+        if seg_type == 'move':
+            parts.append(f"L={float(segment.get('distance_m', 0.0)):.2f}m")
+            parts.append(f"v={float(segment.get('speed', 0.0)):.2f}")
+        elif seg_type == 'turn':
+            parts.append(f"angle={float(segment.get('angle_deg', 0.0)):.0f}deg")
+            if self.segment_target_yaw is not None:
+                parts.append(
+                    f"target_yaw={self.format_yaw_deg(self.segment_target_yaw)}deg"
+                )
+        elif seg_type == 'pause':
+            parts.append(f"duration={float(segment.get('duration', 0.0)):.2f}s")
+        parts.append(self._pose_diagnostic())
+        self._log_session('SEGMENT', ' '.join(parts))
+
+    def _log_plan_summary(self, nav_succeeded: bool) -> None:
+        lines = [f'nav_succeeded={nav_succeeded} 共{len(self.plan)}段:']
+        for index, segment in enumerate(self.plan):
+            seg_type = segment.get('type', '?')
+            desc = segment.get('description', '?')
+            if seg_type == 'move':
+                lines.append(
+                    f'  [{index}] move {desc} '
+                    f'L={float(segment.get("distance_m", 0.0)):.2f}m '
+                    f'v={float(segment.get("speed", 0.0)):.2f} '
+                    f'detour={bool(segment.get("allow_detour", True))}'
+                )
+            elif seg_type == 'turn':
+                lines.append(
+                    f'  [{index}] turn {desc} '
+                    f'{float(segment.get("angle_deg", 0.0)):.0f}deg'
+                )
+            elif seg_type == 'pause':
+                lines.append(
+                    f'  [{index}] pause {desc} '
+                    f'{float(segment.get("duration", 0.0)):.2f}s'
+                )
+            else:
+                lines.append(f'  [{index}] {seg_type} {desc}')
+        self._log_session('PLAN', '\n'.join(lines))
+
+    def _setup_wheel_odom_position(self) -> None:
+        """位姿/航向/计程/控制统一用轮速 /odom；EKF/IMU 仅诊断。"""
+        self.declare_parameter('navigation_pose_source', 'wheel')
+        self.declare_parameter('wheel_odom_topic', '/odom')
+        self.declare_parameter('wheel_odom_warmup_sec', 0.40)
+        self.declare_parameter('wheel_odom_warmup_min_msgs', 5)
+        self._navigation_pose_source = (
+            str(self.get_parameter('navigation_pose_source').value).strip().lower() or 'wheel'
+        )
+        self._wheel_odom_topic = str(self.get_parameter('wheel_odom_topic').value).strip()
+        self._wheel_odom_warmup_sec = max(
+            0.0, float(self.get_parameter('wheel_odom_warmup_sec').value)
+        )
+        self._wheel_odom_warmup_min_msgs = max(
+            1, int(self.get_parameter('wheel_odom_warmup_min_msgs').value)
+        )
+        self._wheel_odom_ready = False
+        self._wheel_odom_msg_count = 0
+        self._wheel_odom_first_rx_sec = None
+        self.current_wheel_yaw = None
+        self.imu_yaw = None
+        self._use_wheel_odom_for_distance = bool(
+            self._wheel_odom_topic and self._wheel_odom_topic != self.odom_topic
+        )
+        if self._use_wheel_odom_for_distance:
+            self.create_subscription(
+                Odometry, self._wheel_odom_topic, self._wheel_odom_callback, 10
+            )
+            self.get_logger().info(
+                f'{self.test_feedback_prefix}统一位姿源={self._navigation_pose_source} '
+                f'topic={self._wheel_odom_topic} '
+                f'(xy+yaw+计程+控制同源; IMU/EKF {self.odom_topic} 仅日志; '
+                f'warmup {self._wheel_odom_warmup_sec:.2f}s×'
+                f'{self._wheel_odom_warmup_min_msgs}条)'
+            )
+
+    def _wheel_odom_warmed_up(self) -> bool:
+        if not self._use_wheel_odom_for_distance:
+            return self.current_position is not None
+        if self._wheel_odom_first_rx_sec is None:
+            return False
+        if self._wheel_odom_msg_count < self._wheel_odom_warmup_min_msgs:
+            return False
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        return (now_sec - self._wheel_odom_first_rx_sec) >= self._wheel_odom_warmup_sec
+
+    def _wheel_odom_callback(self, msg: Odometry) -> None:
+        position = msg.pose.pose.position
+        twist = msg.twist.twist
+        self.current_position = (float(position.x), float(position.y))
+        self.current_wheel_yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
+        self._wheel_twist = (
+            float(twist.linear.x),
+            float(twist.linear.y),
+            float(twist.angular.z),
+        )
+        self._sync_unified_pose_from_wheel()
+        self._wheel_odom_msg_count += 1
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        if self._wheel_odom_first_rx_sec is None:
+            self._wheel_odom_first_rx_sec = now_sec
+            self._log_session(
+                'ODOM_WHEEL',
+                f'首条 {self._wheel_odom_topic} '
+                f'pos=({position.x:.3f},{position.y:.3f}) '
+                f'yaw={self.format_yaw_deg(self.current_wheel_yaw)}deg '
+                f'v=({twist.linear.x:.3f},{twist.linear.y:.3f},{twist.angular.z:.3f})',
+            )
+        was_ready = self._wheel_odom_ready
+        if self._wheel_odom_warmed_up():
+            self._wheel_odom_ready = True
+        if self._wheel_odom_ready and not was_ready and not self._wheel_warmup_logged:
+            self._wheel_warmup_logged = True
+            elapsed = now_sec - self._wheel_odom_first_rx_sec
+            self._log_session(
+                'ODOM_WHEEL',
+                f'warmup 完成 msgs={self._wheel_odom_msg_count} '
+                f'elapsed={elapsed:.2f}s | {self._full_telemetry()}',
+            )
+        self._maybe_log_telemetry('wheel_odom')
+        self.try_start_mission()
+
+    def odom_callback(self, msg):
+        ekf_pos = msg.pose.pose.position
+        ekf_twist = msg.twist.twist
+        self._last_ekf_position = (float(ekf_pos.x), float(ekf_pos.y))
+        self._ekf_twist = (
+            float(ekf_twist.linear.x),
+            float(ekf_twist.linear.y),
+            float(ekf_twist.angular.z),
+        )
+        self.current_odom_yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
+        self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
+        if not self._wheel_pose_source_active() or not self._wheel_odom_ready:
+            self.current_position = self._last_ekf_position
+            if not self._wheel_pose_source_active():
+                self.current_yaw = self.current_odom_yaw
+        self.try_start_mission()
+
+    def projected_distance(self):
+        if (
+            self.segment_start_pose is None
+            or self.current_position is None
+            or self.segment_heading is None
+        ):
+            return 0.0
+        dx = self.current_position[0] - self.segment_start_pose[0]
+        dy = self.current_position[1] - self.segment_start_pose[1]
+        along = (
+            dx * math.cos(self.segment_heading)
+            + dy * math.sin(self.segment_heading)
+        )
+        return max(0.0, along)
+
+    def _unify_segment_pose(self, segment) -> None:
+        """段起点/航向/计程轴与 current_yaw(current_position) 完全对齐。"""
+        if not segment or self.current_yaw is None:
+            return
+        yaw = self.normalize_angle(self.current_yaw)
+        seg_type = segment.get('type')
+
+        if seg_type == 'turn':
+            if 'force_start_yaw' in segment:
+                self.segment_start_yaw = self.normalize_angle(
+                    float(segment['force_start_yaw'])
+                )
+            else:
+                self.segment_start_yaw = yaw
+            if 'force_target_yaw' in segment:
+                self.segment_target_yaw = self.normalize_angle(
+                    float(segment['force_target_yaw'])
+                )
+            else:
+                self.segment_target_yaw = self.normalize_angle(
+                    self.segment_start_yaw
+                    + math.radians(float(segment.get('angle_deg', 0.0)))
+                )
+            return
+
+        if seg_type != 'move':
+            return
+
+        if self.current_position is not None:
+            self.segment_start_pose = self.current_position
+        if 'force_segment_heading' in segment:
+            heading = self.normalize_angle(float(segment['force_segment_heading']))
+            self.segment_heading = heading
+            self.segment_start_yaw = heading
+        else:
+            self.segment_heading = yaw
+            self.segment_start_yaw = yaw
+
+        if self.segment_start_pose is None:
+            return
+        x0, y0 = self.segment_start_pose
+        anchor_line = (
+            f'desc={segment.get("description", "?")} '
+            f'start=({x0:.3f},{y0:.3f}) yaw={self.format_yaw_deg(yaw)}deg '
+            f'yaw_imu={self.format_yaw_deg(self.imu_yaw)}deg '
+            f'L={float(segment.get("distance_m", 0.0)):.2f}m'
+        )
+        self.get_logger().info(f'{self.test_feedback_prefix}里程锚点: {anchor_line}')
+        self._log_session('ODOM_ANCHOR', anchor_line)
+
+    def _missing_pose_inputs(self):
+        missing = []
+        if self._wheel_pose_source_active():
+            if not self._wheel_odom_warmed_up():
+                missing.append(
+                    f'wheel_odom({self._wheel_odom_topic} '
+                    f'{self._wheel_odom_msg_count}/{self._wheel_odom_warmup_min_msgs})'
+                )
+            elif self.current_yaw is None:
+                missing.append('wheel_yaw')
+        else:
+            if self.current_position is None:
+                missing.append(str(self.odom_topic))
+            if self.current_yaw is None:
+                missing.append('imu')
+        return missing
 
     def resolve_test_direction(self, raw_value):
         normalized = str(raw_value).strip().lower()
@@ -226,503 +632,483 @@ class DirectInertialTester(
         if parsed is not None:
             return parsed
 
-        self.log_debug_warning(f'无法识别测试方向 "{raw_value}"，回退到顺时针')
+        self.get_logger().warning(
+            f'无法识别测试方向 "{raw_value}"，回退到顺时针'
+        )
         return 'clockwise'
 
     def direction_text(self):
         return '顺时针' if self.test_direction == 'clockwise' else '逆时针'
 
-    def resolved_field_track_config_path(self) -> str:
-        return resolve_config_path(self.test_direction, self.field_track_config or None)
-
-    def stage1_corridor_goal_pose(self) -> tuple:
-        """Stage1 结束位姿：与实车相同，读 inertial_stage2 corridor_waypoints_json 末点（map）。"""
-        if self.corridor_waypoints:
-            waypoint = self.corridor_waypoints[-1]
-            return (
-                float(waypoint['x']),
-                float(waypoint['y']),
-                math.radians(float(waypoint.get('yaw_deg', 90.0))),
-            )
-        return field_channel_entry_xy(
-            self.test_direction,
-            self.field_track_config or None,
-        ) + (field_channel_entry_yaw_rad(
-            self.test_direction,
-            self.field_track_config or None,
-        ),)
-
-    def nominal_channel_entry_xy(self) -> tuple:
-        x, y, _yaw = self.stage1_corridor_goal_pose()
-        return float(x), float(y)
-
-    def nominal_channel_entry_yaw_rad(self) -> float:
-        _x, _y, yaw = self.stage1_corridor_goal_pose()
-        return float(yaw)
-
-    def _move_segment_length_m(self, segment_name: str) -> float:
-        spec = self.lookup_move_segment_world_plan(str(segment_name))
-        if spec is None:
-            return 0.0
-        return float(spec['length_m'])
+    def nav_succeeded_for_test_start(self):
+        if self.test_start_mode in ('after_corridor', 'nav_succeeded', 'corridor', 'true'):
+            return True
+        if self.test_start_mode in ('full_entry', 'pre_loop', 'nav_failed', 'false'):
+            return False
+        return bool(self.use_corridor_path)
 
     def start_mode_text(self):
-        x, y, _yaw = self.stage1_corridor_goal_pose()
-        return f'Stage1 已到 corridor_goal map ({x:.2f}, {y:.2f})，停稳后入环'
+        if self.nav_succeeded_for_test_start():
+            return '按比赛到达通道口后的惯导入口开始'
+        return '按比赛未经过通道口时的完整入环动作开始'
 
-    def log_parameter_snapshot(self):
-        if not self.debug_log_verbose:
-            return
-        sections = {
-            'topics': {
-                'phase_topic': self.phase_topic,
-                'task_topic': self.task_topic,
-                'odom_topic': self.odom_topic,
-                'imu_topic': self.imu_topic,
-                'scan_topic': self.scan_topic,
-                'cmd_topic': self.cmd_topic,
-                'feedback_topic': self.feedback_topic,
-                'state_topic': self.state_topic,
-                'obstacle_circle_topic': self.obstacle_circle_topic,
-            },
-            'test': {
-                'test_direction_raw': self.test_direction_raw,
-                'resolved_direction': self.test_direction,
-                'nav_start_mode': self.start_mode_text(),
-                'test_feedback_prefix': self.test_feedback_prefix,
-                'field_track_config': self.field_track_config,
-                'field_track_resolved': self.resolved_field_track_config_path(),
-            },
-            'motion': {
-                'control_rate_hz': f'{self.control_rate_hz:.3f}',
-                'start_delay_sec': f'{self.start_delay_sec:.3f}',
-                'corridor_linear_speed': f'{self.corridor_linear_speed:.3f}',
-                'ring_linear_speed': f'{self.ring_linear_speed:.3f}',
-                'turn_linear_speed': f'{self.turn_linear_speed:.3f}',
-                'turn_angular_speed': f'{self.turn_angular_speed:.3f}',
-                'turn_min_angular_speed': f'{self.turn_min_angular_speed:.3f}',
-                'turn_kp': f'{self.turn_kp:.3f}',
-                'heading_kp': f'{self.heading_kp:.3f}',
-                'max_angular_speed': f'{self.max_angular_speed:.3f}',
-                'distance_tolerance': f'{self.distance_tolerance:.3f}',
-                'heading_tolerance_deg': f'{math.degrees(self.heading_tolerance):.3f}',
-                'segment_timeout': f'{self.segment_timeout:.3f}',
-                'pure_pursuit_lookahead_m': f'{self.pure_pursuit_lookahead_m:.3f}',
-                'pure_pursuit_heading_stop_deg': f'{math.degrees(self.pure_pursuit_heading_stop):.3f}',
-                'pure_pursuit_turn_kp': f'{self.pure_pursuit_turn_kp:.3f}',
-            },
-            'debug': {
-                'debug_log_path': self.debug_log_path,
-                'detour_debug_log_period_sec': f'{self.detour_debug_log_period_sec:.3f}',
-            },
-            'obstacle': {
-                'detour_enabled': self.detour_enabled,
-                'detour_strategy': self.detour_strategy,
-                'detour_obstacle_distance': f'{self.detour_obstacle_distance:.3f}',
-                'detour_obstacle_detect_distance': f'{self.detour_obstacle_detect_distance:.3f}',
-                'detour_obstacle_clear_distance': f'{self.detour_obstacle_clear_distance:.3f}',
-                'detour_front_angle_deg': f'{self.detour_front_angle_deg:.3f}',
-                'detour_front_test_angle_deg': f'{self.detour_front_test_angle_deg:.3f}',
-                'detour_side_center_deg': f'{self.detour_side_center_deg:.3f}',
-                'detour_side_window_deg': f'{self.detour_side_window_deg:.3f}',
-                'detour_side_test_window_deg': f'{self.detour_side_test_window_deg:.3f}',
-                'detour_min_side_clearance': f'{self.detour_min_side_clearance:.3f}',
-                'detour_lateral_distance_m': f'{self.detour_lateral_distance_m:.3f}',
-                'detour_forward_distance_m': f'{self.detour_forward_distance_m:.3f}',
-                'detour_cooldown_sec': f'{self.detour_cooldown_sec:.3f}',
-                'obstacle_circle_cluster_distance_threshold': f'{self.obstacle_circle_cluster_distance_threshold:.3f}',
-                'obstacle_circle_min_cluster_points': self.obstacle_circle_min_cluster_points,
-                'obstacle_circle_min_range_m': f'{self.obstacle_circle_min_range_m:.3f}',
-                'obstacle_circle_max_range_m': f'{self.obstacle_circle_max_range_m:.3f}',
-                'obstacle_circle_padding_m': f'{self.obstacle_circle_padding_m:.3f}',
-                'obstacle_circle_min_radius_m': f'{self.obstacle_circle_min_radius_m:.3f}',
-                'obstacle_circle_max_radius_m': f'{self.obstacle_circle_max_radius_m:.3f}',
-                'obstacle_circle_max_cluster_span_m': f'{self.obstacle_circle_max_cluster_span_m:.3f}',
-                'obstacle_circle_marker_height_m': f'{self.obstacle_circle_marker_height_m:.3f}',
-                'obstacle_circle_path_half_width_m': f'{self.obstacle_circle_path_half_width_m:.3f}',
-                'obstacle_corridor_body_half_width_m': f'{self.obstacle_corridor_body_half_width_m:.3f}',
-                'obstacle_side_fence_center_y_m': f'{self.obstacle_side_fence_center_y_m:.3f}',
-                'obstacle_opposite_wall_min_center_x_m': f'{self.obstacle_opposite_wall_min_center_x_m:.3f}',
-                'detour_turn_max_trigger_distance_m': f'{self.detour_turn_max_trigger_distance_m:.3f}',
-                'obstacle_opposite_front_min_distance_m': f'{self.obstacle_opposite_front_min_distance_m:.3f}',
-                'obstacle_circle_planning_margin_m': f'{self.obstacle_circle_planning_margin_m:.3f}',
-                'obstacle_circle_forward_margin_m': f'{self.obstacle_circle_forward_margin_m:.3f}',
-            },
-            'corridor_avoid': {
-                'avoid_watch_distance_m': f'{self.avoid_watch_distance_m:.3f}',
-                'avoid_commit_distance_m': f'{self.avoid_commit_distance_m:.3f}',
-                'avoid_bias_yaw_deg': f'{self.avoid_bias_yaw_deg:.3f}',
-                'avoid_bias_yaw_max_deg': f'{self.avoid_bias_yaw_max_deg:.3f}',
-                'avoid_triangle_trigger_m': f'{getattr(self, "avoid_triangle_trigger_m", 0.5):.3f}',
-                'avoid_triangle_bias_deg': f'{getattr(self, "avoid_triangle_bias_deg", 30.0):.3f}',
-                'avoid_triangle_leg_m': f'{getattr(self, "avoid_triangle_leg_m", 0.8):.3f}',
-                'avoid_pass_clearance_m': f'{self.avoid_pass_clearance_m:.3f}',
-                'avoid_parallel_front_margin_m': f'{self.avoid_parallel_front_margin_default_m:.3f}',
-                'avoid_rejoin_heading_tol_deg': f'{math.degrees(self.avoid_rejoin_heading_tol):.3f}',
-                'avoid_rejoin_lateral_tol_m': f'{self.avoid_rejoin_lateral_tol_m:.3f}',
-                'avoid_corner_zone_before_m': f'{self.avoid_corner_zone_before_m:.3f}',
-                'avoid_corner_zone_after_m': f'{self.avoid_corner_zone_after_m:.3f}',
-                'avoid_corner_apex_box_m': f'{self.avoid_corner_apex_box_m:.3f}',
-                'avoid_corner_prefer_inside': self.avoid_corner_prefer_inside,
-                'avoid_corner_outside_margin_m': f'{self.avoid_corner_outside_margin_m:.3f}',
-                'avoid_speed_out_mps': f'{self.avoid_speed_out_mps:.3f}',
-                'avoid_speed_pass_mps': f'{self.avoid_speed_pass_mps:.3f}',
-                'avoid_speed_rejoin_mps': f'{self.avoid_speed_rejoin_mps:.3f}',
-                'avoid_corner_speed_mps': f'{self.avoid_corner_speed_mps:.3f}',
-                'avoid_max_angular_speed': f'{self.avoid_max_angular_speed:.3f}',
-                'avoid_approach_creep_speed_mps': f'{self.avoid_approach_creep_speed_mps:.3f}',
-                'avoid_approach_speed_ratio': f'{self.avoid_approach_speed_ratio:.3f}',
-            },
-        }
-        self.write_debug_log('CONFIG', 'startup_parameter_snapshot_begin')
-        for section_name, items in sections.items():
-            summary = '，'.join(f'{key}={value}' for key, value in items.items())
-            self.write_debug_log('CONFIG', f'{section_name}: {summary}')
-        self.write_debug_log('CONFIG', 'startup_parameter_snapshot_end')
+    def format_distance(self, value):
+        if not math.isfinite(value):
+            return 'inf'
+        return f'{value:.2f}'
 
-    def log_segment_debug_snapshot(self, index, segment, label):
-        self.log_flow_segment_start(index, segment, label)
-        if not self.debug_log_verbose:
+    def format_yaw_deg(self, yaw):
+        if yaw is None or not math.isfinite(yaw):
+            return 'nan'
+        return f'{math.degrees(self.normalize_angle(yaw)):.1f}'
+
+    def sector_closest_obstacle(self, scan_msg, min_angle_deg, max_angle_deg):
+        min_distance = float('inf')
+        min_angle = 0.0
+        for index, distance in enumerate(scan_msg.ranges):
+            if math.isinf(distance) or math.isnan(distance) or distance <= 0.0:
+                continue
+
+            angle_deg = math.degrees(scan_msg.angle_min + index * scan_msg.angle_increment)
+            angle_deg = (angle_deg + 180.0) % 360.0 - 180.0
+            if angle_deg < min_angle_deg or angle_deg > max_angle_deg:
+                continue
+
+            if distance < min_distance:
+                min_distance = distance
+                min_angle = angle_deg
+
+        return min_distance, min_angle
+
+    def is_detour_segment(self, segment):
+        description = str((segment or {}).get('description', ''))
+        return description.startswith('detour_') or bool((segment or {}).get('is_detour', False))
+
+    def log_detour(self, message):
+        line = f'{self.test_feedback_prefix}避障: {message}'
+        self.get_logger().info(line)
+        self._log_session('DETOUR', f'{message} | {self._pose_diagnostic()}')
+
+    def current_segment_allows_stage1_avoidance(self):
+        if not self.detour_enabled or self.current_segment is None:
+            return False
+        if self.current_segment.get('type') != 'move':
+            return False
+        if not bool(self.current_segment.get('allow_detour', True)):
+            return False
+        return True
+
+    # ─── Stage1 风格边转边避状态机 ───────────────────────────────
+
+    @property
+    def _avoid_active(self) -> bool:
+        return self._avoid_state != 'idle'
+
+    def _reset_avoid(self) -> None:
+        prev_state = self._avoid_state
+        self._avoid_state = 'idle'
+        self._avoid_plan = None
+        self._avoid_leg_start_xy = None
+        self._avoid_turn_accum_rad = 0.0
+        self._avoid_turn_required_rad = 0.0
+        self._avoid_turn_sign = 1.0
+        self._avoid_prev_yaw = None
+        self._avoid_turn_target_yaw = None
+        self._avoid_cooldown_until = 0.0
+        if prev_state != 'idle' and prev_state != self._last_avoid_state_logged:
+            self._log_session(
+                'AVOID',
+                f'状态 {prev_state} → idle | {self._pose_diagnostic()}',
+            )
+            self._last_avoid_state_logged = 'idle'
+
+    # ── 开环转角积分（过滤 IMU 跳变 >15°） ──
+
+    def _avoid_begin_turn(self, target_yaw: float, yaw: float) -> None:
+        err = self.angle_error(target_yaw, yaw)
+        self._avoid_turn_required_rad = abs(err)
+        self._avoid_turn_sign = math.copysign(1.0, err) if abs(err) > 1e-6 else 1.0
+        self._avoid_turn_accum_rad = 0.0
+        self._avoid_prev_yaw = yaw
+        self._avoid_turn_target_yaw = target_yaw
+
+    def _avoid_accumulate_turn(self, yaw: float) -> None:
+        if self._avoid_prev_yaw is None:
+            self._avoid_prev_yaw = yaw
             return
-        segment_type = segment.get('type', 'unknown')
-        extra = ''
-        if segment_type == 'move':
-            extra = f'distance_m={float(segment.get("distance_m", 0.0)):.3f}'
-        elif segment_type == 'turn':
-            extra = f'angle_deg={float(segment.get("angle_deg", 0.0)):.3f}'
-        elif segment_type == 'pause':
-            extra = f'duration={float(segment.get("duration", 0.0)):.3f}'
-        core = (
-            self.format_nav_core_line()
-            if hasattr(self, 'format_nav_core_line')
-            else self.format_position_xy()
+        # normalize(current - prev)：正值=左转，负值=右转
+        step = self.angle_error(yaw, self._avoid_prev_yaw)
+        self._avoid_prev_yaw = yaw
+        # 单帧 >15° 视为 IMU 跳变，不计入开环转角
+        if abs(step) > math.radians(15.0):
+            return
+        # step 与 turn_sign 同号才累计（机器人确实在朝目标方向转）
+        if self._avoid_turn_sign * step > 0.0:
+            self._avoid_turn_accum_rad += abs(step)
+
+    def _avoid_turn_done(self) -> bool:
+        need = max(0.0, self._avoid_turn_required_rad - math.radians(2.0))
+        return self._avoid_turn_accum_rad >= need
+
+    # ── 直行距离计数 ──
+
+    def _avoid_mark_leg_start(self, x: float, y: float) -> None:
+        self._avoid_leg_start_xy = (x, y)
+
+    def _avoid_leg_traveled_m(self, x: float, y: float) -> float:
+        if self._avoid_leg_start_xy is None:
+            return 0.0
+        dx = x - self._avoid_leg_start_xy[0]
+        dy = y - self._avoid_leg_start_xy[1]
+        return math.hypot(dx, dy)
+
+    def _avoid_leg_done(self, x: float, y: float, target_m: float) -> bool:
+        return self._avoid_leg_traveled_m(x, y) >= target_m - self._avoid_distance_tol_m
+
+    # ── 触发判断 ──
+
+    def _estimate_avoid_projection_m(self) -> float:
+        """估算完整避障沿段航向 vx 方向消耗的投影里程（m）。
+        用于在触发前预判剩余距离是否够用。
+        """
+        offset = self._avoid_offset_rad
+        vt = self._avoid_turn_linear_speed
+        w = self._avoid_turn_angular_speed
+        leg1 = self._avoid_leg1_distance_m
+        leg2 = self._avoid_leg2_distance_m
+
+        if w < 1e-6:
+            return leg1 + leg2 + 0.5
+
+        # 转向阶段精确投影 = (vt/w) * ∫cos(θ)dθ
+        ta_proj = (vt / w) * math.sin(offset)                     # TURN_AWAY：0 → +offset
+        leg1_proj = leg1 * math.cos(offset)                        # LEG1
+        tb_proj = (vt / w) * (math.sin(offset) - math.sin(-offset))  # TURN_BACK：+offset → -offset
+        leg2_proj = leg2 * math.cos(offset)                        # LEG2
+        tr_proj = (vt / w) * (0.0 - math.sin(-offset))             # TURN_RECOVER：-offset → 0
+        fine_proj = 0.02                                           # FINE_ALIGN 小修正
+        return ta_proj + leg1_proj + tb_proj + leg2_proj + tr_proj + fine_proj
+
+    def _should_trigger_avoid(self) -> bool:
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        if now_sec < self._avoid_cooldown_until:
+            return False
+        if not self.current_segment_allows_stage1_avoidance():
+            return False
+        if not math.isfinite(self.front_obstacle_distance):
+            return False
+        if self.front_obstacle_distance > self.detour_obstacle_distance:
+            return False
+        nav_yaw = self.navigation_yaw()
+        if self.segment_heading is not None and nav_yaw is not None:
+            if abs(self.angle_error(self.segment_heading, nav_yaw)) > self.detour_heading_gate_rad:
+                return False
+
+        # 预计算剩余里程是否够完成完整避障 zigzag
+        if self.current_segment is not None and self.current_segment.get('type') == 'move':
+            remaining = float(self.current_segment['distance_m']) - self.projected_distance()
+            needed = self._estimate_avoid_projection_m()
+            if remaining < needed - 0.05:  # 宽容 5cm（估算 vs 实际差异）
+                self.log_detour(
+                    f'剩余里程 {remaining:.2f}m 不足（避障需约 {needed:.2f}m），跳过触发'
+                )
+                return False
+        return True
+
+    # ── 启动避障 ──
+
+    def _start_avoid(self, x: float, y: float, yaw: float) -> None:
+        if self.segment_heading is None or self.segment_start_pose is None:
+            self.log_detour('避障未启动：缺少段航向或段起点')
+            self._avoid_state = 'idle'
+            return
+
+        obstacle_left = obstacle_is_left(self.front_obstacle_angle_deg)
+        plan = build_s1_plan(
+            psi0_rad=self.segment_heading,
+            leg1_distance_m=self._avoid_leg1_distance_m,
+            leg2_distance_m=self._avoid_leg2_distance_m,
+            offset_rad=self._avoid_offset_rad,
+            obstacle_left=obstacle_left,
         )
-        self.write_debug_log(
-            'SEGMENT',
-            (
-                f'index={index}，label={label}，description={segment.get("description", "unknown")}，'
-                f'type={segment_type}，{extra} | {core}'
-            ),
+        self._avoid_plan = plan
+        self._avoid_state = 'turn_away'
+        self._avoid_begin_turn(plan.psi1, yaw)
+        dir_text = '左' if obstacle_left else '右'
+        self.log_detour(
+            f'Stage1 边转边避启动 obstacle={dir_text} '
+            f'ψ₀={math.degrees(plan.psi0):.1f}° '
+            f'→ ψ₁={math.degrees(plan.psi1):.1f}° '
+            f'→ ψ₂={math.degrees(plan.psi2):.1f}° '
+            f'L₁={plan.leg1_distance_m:.2f}m L₂={plan.leg2_distance_m:.2f}m'
         )
+
+    # ── 主步进 ──
+
+    def _try_avoid_step(self) -> bool:
+        """Stage1 风格边转边避状态机。
+
+        Returns:
+            True  — 避障接管了本帧控制（调用方应 return 不执行正常直行）
+            False — 避障未激活，正常控制继续
+        """
+        nav_yaw = self.navigation_yaw()
+        if self.current_position is None or nav_yaw is None:
+            if self._avoid_active:
+                self.cmd_pub.publish(self.create_twist())
+            return self._avoid_active
+
+        x, y = self.current_position
+        yaw = nav_yaw
+
+        # ── IDLE：检查触发 ──
+        if self._avoid_state == 'idle':
+            if not self._should_trigger_avoid():
+                return False
+            if self.segment_heading is None or self.segment_start_pose is None:
+                self.log_detour('避障未启动：缺少段航向或段起点')
+                return False
+            self._start_avoid(x, y, yaw)
+            if self._avoid_state != self._last_avoid_state_logged:
+                self._last_avoid_state_logged = self._avoid_state
+            # fall through 执行首帧
+
+        plan = self._avoid_plan
+        if plan is None:
+            self._reset_avoid()
+            return False
+
+        # ── 里程超限：避障中已超过段终点 → 终止避障，段自然过渡 ──
+        if self._avoid_state not in ('idle', 'fine_align'):
+            if self.current_segment is not None and self.current_segment.get('type') == 'move':
+                target_m = float(self.current_segment['distance_m'])
+                if self.projected_distance() >= target_m - self.distance_tolerance:
+                    progress = self.projected_distance()
+                    self.log_detour(
+                        f'里程超限 {progress:.2f}/{target_m:.2f}m → '
+                        f'终止避障，段自然过渡到下段'
+                    )
+                    # 预置下段起始偏航角 = 段航向（避免当前偏航角污染转弯目标）
+                    if hasattr(self, 'pending_segment_start_yaw'):
+                        self.pending_segment_start_yaw = self.segment_heading
+                    self._reset_avoid()
+                    return False
+
+        # ── TURN_AWAY：转向 offset 角，边减速前进 ──
+        if self._avoid_state == 'turn_away':
+            if self._avoid_turn_required_rad <= 0.0:
+                self._avoid_begin_turn(plan.psi1, yaw)
+            self._avoid_accumulate_turn(yaw)
+            omega = self._avoid_turn_sign * self._avoid_turn_angular_speed
+            self.cmd_pub.publish(self.create_twist(self._avoid_turn_linear_speed, omega))
+            if self._avoid_turn_done():
+                self.log_detour(
+                    f'TURN_AWAY 完成 yaw={math.degrees(yaw):.1f}° '
+                    f'(目标 ψ₁={math.degrees(plan.psi1):.1f}°) → LEG1 {plan.leg1_distance_m:.2f}m'
+                )
+                self._avoid_state = 'leg1'
+                self._avoid_mark_leg_start(x, y)
+            return True
+
+        # ── LEG1：直行 ω=0，不纠航 ──
+        if self._avoid_state == 'leg1':
+            self.cmd_pub.publish(self.create_twist(self._avoid_leg_linear_speed, 0.0))
+            if self._avoid_leg_done(x, y, plan.leg1_distance_m):
+                self.log_detour(
+                    f'LEG1 完成 {self._avoid_leg_traveled_m(x, y):.2f}m → TURN_BACK ψ₂={math.degrees(plan.psi2):.1f}°'
+                )
+                self._avoid_state = 'turn_back'
+                self._avoid_begin_turn(plan.psi2, yaw)
+            return True
+
+        # ── TURN_BACK：反向转 2*offset，减速前进 ──
+        if self._avoid_state == 'turn_back':
+            if self._avoid_turn_required_rad <= 0.0:
+                self._avoid_begin_turn(plan.psi2, yaw)
+            self._avoid_accumulate_turn(yaw)
+            omega = self._avoid_turn_sign * self._avoid_turn_angular_speed
+            self.cmd_pub.publish(self.create_twist(self._avoid_turn_linear_speed, omega))
+            if self._avoid_turn_done():
+                self.log_detour(
+                    f'TURN_BACK 完成 yaw={math.degrees(yaw):.1f}° '
+                    f'(目标 ψ₂={math.degrees(plan.psi2):.1f}°) → LEG2 {plan.leg2_distance_m:.2f}m'
+                )
+                self._avoid_state = 'leg2'
+                self._avoid_mark_leg_start(x, y)
+            return True
+
+        # ── LEG2：直行 ω=0 ──
+        if self._avoid_state == 'leg2':
+            self.cmd_pub.publish(self.create_twist(self._avoid_leg_linear_speed, 0.0))
+            if self._avoid_leg_done(x, y, plan.leg2_distance_m):
+                self.log_detour(
+                    f'LEG2 完成 {self._avoid_leg_traveled_m(x, y):.2f}m → TURN_RECOVER ψ₀={math.degrees(plan.psi0):.1f}°'
+                )
+                self._avoid_state = 'turn_recover'
+                self._avoid_begin_turn(plan.psi0, yaw)
+            return True
+
+        # ── TURN_RECOVER：开环回身 offset，减速前进 ──
+        if self._avoid_state == 'turn_recover':
+            if self._avoid_turn_required_rad <= 0.0:
+                self._avoid_begin_turn(plan.psi0, yaw)
+            self._avoid_accumulate_turn(yaw)
+            omega = self._avoid_turn_sign * self._avoid_turn_angular_speed
+            self.cmd_pub.publish(self.create_twist(self._avoid_turn_linear_speed, omega))
+            if self._avoid_turn_done():
+                err_deg = math.degrees(abs(self.angle_error(plan.psi0, yaw)))
+                self.log_detour(
+                    f'TURN_RECOVER 开环完成 yaw={math.degrees(yaw):.1f}° '
+                    f'(ψ₀={math.degrees(plan.psi0):.1f}° err={err_deg:.1f}°) → FINE_ALIGN 闭环修正'
+                )
+                self._avoid_state = 'fine_align'
+            return True
+
+        # ── FINE_ALIGN：闭环 KP 修正残余航向偏差 ──
+        if self._avoid_state == 'fine_align':
+            err = self.angle_error(plan.psi0, yaw)
+            if abs(err) <= self.heading_tolerance:
+                self._avoid_cooldown_until = (
+                    self.get_clock().now().nanoseconds / 1e9 + self.detour_cooldown_sec
+                )
+                self.log_detour(
+                    f'FINE_ALIGN 完成 yaw={math.degrees(yaw):.1f}° '
+                    f'(ψ₀={math.degrees(plan.psi0):.1f}° err={math.degrees(err):.1f}°) → 避障结束 '
+                    f'(冷却 {self.detour_cooldown_sec:.0f}s)'
+                )
+                self._avoid_state = 'idle'
+                self._avoid_plan = None
+                self.cmd_pub.publish(self.create_twist())
+            else:
+                omega = self.clamp(self.heading_kp * err, self._avoid_turn_angular_speed)
+                if abs(omega) < 0.1:
+                    omega = math.copysign(0.1, err)
+                self.cmd_pub.publish(self.create_twist(self._avoid_turn_linear_speed, omega))
+            return True
+
+        return self._avoid_active
+
+    # ─── 段控制覆盖 ───────────────────────────────────────────────
+
+    def begin_inertial_plan_after_nav(self, nav_succeeded):
+        self._reset_avoid()
+        self._sync_unified_pose_from_wheel()
+        super().begin_inertial_plan_after_nav(nav_succeeded)
+        self._log_plan_summary(nav_succeeded)
 
     def reset_mission(self, clear_task):
-        self.reset_avoidance_runtime()
-        self.world_pos_anchor_odom_xy = None
-        self.world_yaw_entry_raw = None
-        self._turn_start_phys_yaw = None
+        self.detour_detection_locked = False
+        self.detour_resume_yaw = None
+        self._reset_avoid()
         super().reset_mission(clear_task)
 
     def rectangle_segment_label(self, segment):
         description = str(segment.get('description', 'unknown'))
-        length_m = self._move_segment_length_m(description)
-        length_text = f' {length_m:.2f}m' if length_m > 0.0 else ''
+
+        detour_labels = {
+            'detour_right_shift_out_turn': '右侧避障外摆转向',
+            'detour_right_shift_out_move': '右侧避障侧移离开原路线',
+            'detour_right_forward_align': '右侧避障回正到原始航向',
+            'detour_right_forward_align_wait': '右侧避障回正前等待',
+            'detour_right_pass_obstacle': '右侧避障沿原始航向通过障碍',
+            'detour_right_return_turn': '右侧避障转向准备回到原路线',
+            'detour_right_return_move': '右侧避障侧移回到原路线',
+            'detour_right_resume_align': '右侧避障最终回正到原始航向',
+            'detour_right_resume_align_wait': '右侧避障最终回正前等待',
+            'detour_right_settle_before_turn': '右侧避障结束停稳',
+            'detour_left_shift_out_turn': '左侧避障外摆转向',
+            'detour_left_shift_out_move': '左侧避障侧移离开原路线',
+            'detour_left_forward_align': '左侧避障回正到原始航向',
+            'detour_left_forward_align_wait': '左侧避障回正前等待',
+            'detour_left_pass_obstacle': '左侧避障沿原始航向通过障碍',
+            'detour_left_return_turn': '左侧避障转向准备回到原路线',
+            'detour_left_return_move': '左侧避障侧移回到原路线',
+            'detour_left_resume_align': '左侧避障最终回正到原始航向',
+            'detour_left_resume_align_wait': '左侧避障最终回正前等待',
+            'detour_left_settle_before_turn': '左侧避障结束停稳',
+        }
+        if description in detour_labels:
+            return detour_labels[description]
+        if description.endswith('_resume'):
+            return '避障后回到原路线'
+
         if self.direction == 'clockwise':
             labels = {
-                'rect_enter_align': '入口对齐',
-                'rect_first_leg': f'首段−X{length_text} →E',
-                'rect_corner_1': '拐角1',
-                'rect_side_1': f'竖边+Y{length_text} →E',
-                'rect_corner_2': '拐角2',
-                'rect_top': f'顶边+X{length_text} →E',
-                'rect_corner_3': '拐角3',
-                'rect_side_2': f'竖边−Y{length_text} →E',
-                'rect_corner_4': '拐角4',
-                'rect_return_origin': f'回程−X{length_text} →E',
+                'rect_enter_align': '通道后起点入口对齐',
+                'rect_first_leg': f'底边向左 {self.rectangle_first_leg_m:.2f}m 段',
+                'rect_corner_1': '左下拐角',
+                'rect_side_1': f'左边向上 {self.rectangle_side_leg_m:.2f}m 段',
+                'rect_corner_2': '左上拐角',
+                'rect_top': f'顶边向右 {self.rectangle_top_leg_m:.2f}m 段',
+                'rect_corner_3': '右上拐角',
+                'rect_side_2': f'右边向下 {self.rectangle_side_leg_m:.2f}m 段',
+                'rect_corner_4': '右下拐角',
+                'rect_return_origin': f'底边回起点 {self.rectangle_first_leg_m:.2f}m 段',
             }
         else:
             labels = {
-                'rect_enter_align': '入口对齐',
-                'rect_first_leg': f'首段+X{length_text} →E',
-                'rect_corner_1': '拐角1',
-                'rect_side_1': f'竖边+Y{length_text} →E',
-                'rect_corner_2': '拐角2',
-                'rect_top': f'顶边−X{length_text} →E',
-                'rect_corner_3': '拐角3',
-                'rect_side_2': f'竖边−Y{length_text} →E',
-                'rect_corner_4': '拐角4',
-                'rect_return_origin': f'回程+X{length_text} →E',
+                'rect_enter_align': '通道后起点入口对齐',
+                'rect_first_leg': f'底边向右 {self.rectangle_first_leg_m:.2f}m 段',
+                'rect_corner_1': '右下拐角',
+                'rect_side_1': f'右边向上 {self.rectangle_side_leg_m:.2f}m 段',
+                'rect_corner_2': '右上拐角',
+                'rect_top': f'顶边向左 {self.rectangle_top_leg_m:.2f}m 段',
+                'rect_corner_3': '左上拐角',
+                'rect_side_2': f'左边向下 {self.rectangle_side_leg_m:.2f}m 段',
+                'rect_corner_4': '左下拐角',
+                'rect_return_origin': f'底边回起点 {self.rectangle_first_leg_m:.2f}m 段',
             }
         return labels.get(description, description)
 
-    def build_inertial_plan(self, nav_succeeded=None):
-        """Stage1 已到 corridor_goal；仅停稳 + 回字环（无 pre_loop / scan_leave）。"""
-        del nav_succeeded
-        return self.parse_post_corridor_path_plan() + self.build_ring_plan()
-
-    def _capture_world_yaw_offset_at_inertial_entry(self):
-        """实车 raw 航向映射到名义通道入口 90°（同一 odom 世界 plan 系）。"""
-        raw_yaw = self.world_navigation_yaw_raw()
-        if raw_yaw is None:
-            self.world_yaw_offset_rad = 0.0
-            self.world_yaw_entry_raw = None
-            return
-        self.world_yaw_entry_raw = float(raw_yaw)
-        if not getattr(self, 'assume_channel_entry_yaw', True):
-            self.world_yaw_offset_rad = 0.0
-            return
-        self.world_yaw_offset_rad = self.normalize_angle(
-            float(raw_yaw) - self.nominal_channel_entry_yaw_rad()
-        )
-        self.write_debug_log(
-            'CONFIG',
-            (
-                f'通道入口假定90°: raw_odom={math.degrees(raw_yaw):+.1f}° '
-                f'offset={math.degrees(self.world_yaw_offset_rad):+.1f}° → '
-                f'plan_yaw=raw-offset(入口≈90°; rect_enter_align+90°后 plan≈180°)'
-            ),
-        )
-
-    def _capture_world_pos_anchor_at_inertial_entry(self):
-        """实车 odom 原点 → map：effective_xy = odom − anchor + corridor_goal。"""
-        if self.current_position is None:
-            self.world_pos_anchor_odom_xy = None
-            return
-        ax, ay = float(self.current_position[0]), float(self.current_position[1])
-        self.world_pos_anchor_odom_xy = (ax, ay)
-        nx, ny = self.nominal_channel_entry_xy()
-        eff = self.world_navigation_xy()
-        eff_text = f'({eff[0]:.2f},{eff[1]:.2f})' if eff is not None else '(nan,nan)'
-        rot_deg = math.degrees(self._entry_odom_to_map_rotation_rad())
-        self.write_debug_log(
-            'CONFIG',
-            (
-                f'通道入口锚点: 此刻odom=({ax:.2f},{ay:.2f}) 当作map=({nx:.2f},{ny:.2f}) '
-                f'rot={rot_deg:+.1f}deg(odomΔ旋入map) → 之后 map=入口+旋转(odom−锚点)'
-            ),
-        )
-
-    def segment_heading_odom_rad(self) -> Optional[float]:
-        """Map 段航向 ψ → odom 物理航向（与 /odom_combined 转角一致）。"""
-        if self.segment_heading is None:
-            return None
-        entry_raw = getattr(self, 'world_yaw_entry_raw', None)
-        if entry_raw is None:
-            return float(self.segment_heading)
-        return self.normalize_angle(
-            float(self.segment_heading)
-            - self.nominal_channel_entry_yaw_rad()
-            + float(entry_raw)
-        )
-
-    def turn_target_odom_rad(self, segment) -> Optional[float]:
-        """Turn until plan ψ matches yaml next-leg heading (not start+angle drift)."""
-        plan_target = self.world_plan_heading_after_turn(self.plan_index)
-        if plan_target is not None and getattr(self, 'assume_channel_entry_yaw', True):
-            offset = float(getattr(self, 'world_yaw_offset_rad', 0.0))
-            return self.normalize_angle(float(plan_target) + offset)
-        start_phys = getattr(self, '_turn_start_phys_yaw', None)
-        if start_phys is None:
-            start_phys = self.world_navigation_yaw_raw()
-        if start_phys is None:
-            return None
-        return self.normalize_angle(
-            float(start_phys) + math.radians(float(segment.get('angle_deg', 0.0)))
-        )
-
-    def _log_move_segment_start_world_error(self, segment_name: str):
-        """记录进段位姿相对 yaml 链式名义 S 的偏差（yaml 无 start，S 仅离线估算）。"""
-        spec = self.lookup_move_segment_world_plan(segment_name)
-        world_xy = self.world_navigation_xy()
-        if spec is None or world_xy is None:
-            return
-        sx, sy = spec['start_xy']
-        ex, ey = spec['end_xy']
-        heading = float(spec['heading_rad'])
-        dx = float(world_xy[0]) - float(sx)
-        dy = float(world_xy[1]) - float(sy)
-        if math.hypot(dx, dy) < 0.04:
-            return
-        along = world_segment.along_m(world_xy, spec['start_xy'], heading)
-        lat = abs(world_segment.lateral_m(world_xy, spec['start_xy'], heading))
-        self.write_debug_log(
-            'CONFIG',
-            (
-                f'段首偏差 {segment_name} | {self.format_nav_core_line()} | '
-                f'名义S=({sx:.2f},{sy:.2f}) E=({ex:.2f},{ey:.2f}) '
-                f'沿程={along:+.2f}m 横偏={lat:.2f}m'
-            ),
-        )
-
-    def resolve_turn_segment_target_yaw(self, index, segment) -> Optional[float]:
-        """Plan-frame turn target: yaml 下一段 ψ（非 当前角+angle，避免误差累积）。"""
-        desc = str(segment.get('description', ''))
-        if desc == 'rect_enter_align' and getattr(self, 'assume_channel_entry_yaw', True):
-            start_plan_yaw = self.nominal_channel_entry_yaw_rad()
-            self._turn_start_plan_yaw = float(start_plan_yaw)
-            angle_deg = float(segment.get('angle_deg', 0.0))
-            return self.normalize_angle(start_plan_yaw + math.radians(angle_deg))
-
-        plan_heading = self.world_plan_heading_after_turn(index)
-        if plan_heading is not None:
-            self._turn_start_plan_yaw = self.world_navigation_yaw()
-            if self._turn_start_plan_yaw is None and index > 0:
-                prev = self.plan[index - 1]
-                if prev.get('type') == 'move':
-                    spec = self.lookup_move_segment_world_plan(str(prev.get('description', '')))
-                    if spec is not None:
-                        self._turn_start_plan_yaw = float(spec['heading_rad'])
-            return float(plan_heading)
-
-        angle_deg = float(segment.get('angle_deg', 0.0))
-        start_plan_yaw = self.world_navigation_yaw()
-        if start_plan_yaw is None and index > 0:
-            prev = self.plan[index - 1]
-            if prev.get('type') == 'move':
-                spec = self.lookup_move_segment_world_plan(str(prev.get('description', '')))
-                if spec is not None:
-                    start_plan_yaw = float(spec['heading_rad'])
-        if start_plan_yaw is None:
-            return None
-        self._turn_start_plan_yaw = float(start_plan_yaw)
-        return self.normalize_angle(start_plan_yaw + math.radians(angle_deg))
-
-    def _ring_entry_yaw_for_world_plan(self) -> float:
-        """Nominal channel-entry yaw for the fixed world plan (odom frame)."""
-        if getattr(self, 'assume_channel_entry_yaw', True):
-            return self.nominal_channel_entry_yaw_rad()
-        yaw = self.world_navigation_yaw()
-        if yaw is not None:
-            return float(yaw)
-        return self.nominal_channel_entry_yaw_rad()
-
-    def _ring_track_geometry_kwargs(self):
-        ex, ey = self.nominal_channel_entry_xy()
-        origin = getattr(self, 'ring_origin_world', None) or (
-            float(ex),
-            float(ey),
-            self.nominal_channel_entry_yaw_rad(),
-        )
-        config_path = self.resolved_field_track_config_path()
-        return {
-            'direction': getattr(self, 'test_direction', 'clockwise'),
-            'config_path': config_path,
-            'origin_xy': (float(origin[0]), float(origin[1])),
-            'origin_yaw': self._ring_entry_yaw_for_world_plan(),
-        }
-
-    def reset_segment_integrated_distance(self):
-        self.segment_integrated_distance_m = 0.0
-        self._segment_integrated_prev_xy = None
-
-    def odom_callback(self, msg):
-        prev = self.current_position
-        super().odom_callback(msg)
-        if (
-            self.current_segment is not None
-            and self.current_segment.get('type') == 'move'
-            and prev is not None
-            and self.current_position is not None
-        ):
-            step = math.hypot(
-                self.current_position[0] - prev[0],
-                self.current_position[1] - prev[1],
-            )
-            if step > 1e-6:
-                self.segment_integrated_distance_m += step
-
-    def nominal_segment_geometry(self):
-        geo = self._ring_track_geometry_kwargs()
-        return segment_endpoints_world(geo['direction'], config_path=geo['config_path'])
-
-    def begin_inertial_plan_after_nav(self, nav_succeeded):
-        self.reset_corridor_path_state()
-        self.pending_segment_start_pose = self.current_position
-        self._capture_world_yaw_offset_at_inertial_entry()
-        self._capture_world_pos_anchor_at_inertial_entry()
-        if getattr(self, 'assume_channel_entry_yaw', True):
-            # channel_entry 名义航向 90°；与 field_track 世界 plan 一致
-            self.pending_segment_start_yaw = self.nominal_channel_entry_yaw_rad()
-        else:
-            self.pending_segment_start_yaw = self.current_yaw
-        ex, ey = self.nominal_channel_entry_xy()
-        self.ring_origin_world = (
-            float(ex),
-            float(ey),
-            self.nominal_channel_entry_yaw_rad(),
-        )
-
-        self.plan = self.build_inertial_plan(nav_succeeded)
-        if not self.plan:
-            self.publish_feedback('第二阶段没有可执行段，直接结束')
-            self.finish_mission()
-            return
-
-        self.start_segment(0)
-
-    def control_now_sec(self):
-        if hasattr(self, '_offline_sim_time'):
-            return float(self._offline_sim_time)
-        return self.get_clock().now().nanoseconds / 1e9
-
-    def offline_sim_advance(self, dt):
-        self._offline_sim_time = float(getattr(self, '_offline_sim_time', 0.0)) + float(dt)
-
     def start_segment(self, index):
-        post_turn_bypass = getattr(self, '_post_turn_require_bypass', False)
-        self.reset_avoidance_runtime()
-        self._post_turn_require_bypass = post_turn_bypass
-        self.reset_segment_integrated_distance()
         super().start_segment(index)
-        # 离线仿真用 control_now_sec；实车与 wall clock 一致。
-        self.segment_started_at = self.control_now_sec()
         self.last_progress_bucket = -1
-        self._flow_obstacle_watch_logged = False
-        self.active_turn_heading_tolerance = float(self.heading_tolerance)
-        self.move_heading_settle_m = 0.0
-        if self.current_segment and self.current_segment.get('type') == 'move':
-            if getattr(self, '_corner_shortcut_move_progress_reset', False):
-                self._corner_shortcut_move_progress_reset = False
+        self.detour_front_confirm_count = 0
+        self.active_turn_heading_tolerance = self.heading_tolerance
+        self.last_detour_turn_log_time = 0.0
+        self._reset_avoid()
 
         if self.current_segment is None or self.plan_index != index:
             return
 
         segment = self.current_segment
         segment_type = segment.get('type')
-        if segment_type == 'turn' and getattr(self, '_corner_shortcut_turn_target', None) is not None:
-            if self.segment_heading is not None:
-                self.segment_start_yaw = self.normalize_angle(float(self.segment_heading))
-            elif self.current_yaw is not None:
-                self.segment_start_yaw = self.normalize_angle(float(self.current_yaw))
-            self.segment_target_yaw = self.normalize_angle(float(self._corner_shortcut_turn_target))
-            if hasattr(self, 'sim') and self.segment_heading is not None:
-                self.sim.yaw = float(self.segment_heading)
-                self.current_yaw = self.sim.yaw
-            self._corner_shortcut_turn_target = None
-        if segment_type == 'turn' and 'force_start_yaw' in segment:
-            self.segment_start_yaw = self.normalize_angle(float(segment['force_start_yaw']))
-            self.segment_target_yaw = self.normalize_angle(
-                self.segment_start_yaw + math.radians(float(segment.get('angle_deg', 0.0)))
+        self._sync_unified_pose_from_wheel()
+        if segment_type == 'turn' and 'heading_tolerance_rad' in segment:
+            self.active_turn_heading_tolerance = max(
+                1e-3, float(segment['heading_tolerance_rad'])
             )
-        if segment_type == 'turn' and 'force_target_yaw' in segment:
-            self.segment_target_yaw = self.normalize_angle(float(segment['force_target_yaw']))
-        if (
-            segment_type == 'turn'
-            and getattr(self, '_corner_shortcut_turn_target', None) is None
-            and 'force_target_yaw' not in segment
-            and 'force_start_yaw' not in segment
-        ):
-            turn_target = self.resolve_turn_segment_target_yaw(index, segment)
-            if turn_target is not None:
-                self.segment_target_yaw = turn_target
-                self.segment_start_yaw = float(self._turn_start_plan_yaw)
-        elif segment_type == 'turn':
-            self._turn_start_plan_yaw = self.world_navigation_yaw()
-        if segment_type == 'turn':
-            self._turn_start_phys_yaw = self.world_navigation_yaw_raw()
-        if segment_type == 'move' and 'force_segment_heading' in segment:
-            forced_heading = self.normalize_angle(float(segment['force_segment_heading']))
-            self.segment_start_yaw = forced_heading
-            self.segment_heading = forced_heading
+        self._unify_segment_pose(segment)
 
-        if segment_type == 'move':
-            self.load_move_segment_world_plan()
-            if self.current_segment is not None and self.segment_plan_length_m > 0.0:
-                self.current_segment['distance_m'] = float(self.segment_plan_length_m)
-        else:
-            self.reset_segment_world_plan()
+        self._log_segment_enter(segment)
+        if self._avoid_state != self._last_avoid_state_logged:
+            self._last_avoid_state_logged = self._avoid_state
 
         label = self.rectangle_segment_label(segment)
-        self.log_segment_debug_snapshot(index, segment, label)
+
+        if self.is_detour_segment(segment):
+            if segment_type == 'turn':
+                self.log_detour(
+                    f'进入 {segment.get("description", "detour_turn")}，'
+                    f'yaw={self.format_yaw_deg(self.current_yaw)}deg，'
+                    f'start_yaw={self.format_yaw_deg(self.segment_start_yaw)}deg，'
+                    f'target_yaw={self.format_yaw_deg(self.segment_target_yaw)}deg，'
+                    f'tol={math.degrees(self.active_turn_heading_tolerance):.1f}deg'
+                )
+            elif segment_type == 'move':
+                self.log_detour(
+                    f'进入 {segment.get("description", "detour_move")}，'
+                    f'distance={float(segment.get("distance_m", 0.0)):.2f}m，'
+                    f'heading={self.format_yaw_deg(self.segment_heading)}deg，'
+                    f'yaw={self.format_yaw_deg(self.current_yaw)}deg'
+                )
+            elif segment_type == 'pause':
+                self.log_detour(
+                    f'进入 {segment.get("description", "detour_pause")}，'
+                    f'duration={float(segment.get("duration", 0.0)):.2f}s，'
+                    f'yaw={self.format_yaw_deg(self.current_yaw)}deg'
+                )
+
         if segment_type == 'turn':
             angle_deg = float(segment.get('angle_deg', 0.0))
             turn_text = '左转' if angle_deg > 0.0 else '右转'
@@ -733,7 +1119,6 @@ class DirectInertialTester(
 
         if segment_type == 'move':
             distance_m = float(segment.get('distance_m', 0.0))
-            self.log_mission_move_segment_begin(index)
             self.publish_feedback(
                 f'{self.test_feedback_prefix}当前位置: {label}，目标直行 {distance_m:.2f}m'
             )
@@ -742,209 +1127,294 @@ class DirectInertialTester(
         if segment_type == 'pause':
             self.publish_feedback(f'{self.test_feedback_prefix}当前位置: {label}，短暂停稳')
 
-    def control_loop(self):
-        if self.corridor_path_active:
-            self.run_corridor_path_stage()
-            return
-
-        if not self.mission_active or self.current_segment is None:
-            self.publish_cmd_vel()
-            return
-
-        now_sec = self.control_now_sec()
-        last_move_await_finish = (
-            self.plan_index >= len(self.plan) - 1
-            and (self.current_segment or {}).get('type') == 'move'
-            and not self.mission_last_segment_finish_pose_ready()
+    def scan_callback(self, msg):
+        self.latest_scan = msg
+        self.scan_frame_id = msg.header.frame_id
+        self.front_obstacle_distance, self.front_obstacle_angle_deg = self.sector_closest_obstacle(
+            msg,
+            -self.detour_front_test_angle_deg,
+            self.detour_front_test_angle_deg,
         )
-        if (
-            self.segment_started_at is not None
-            and not getattr(self, 'avoidance_active', False)
-            and now_sec - self.segment_started_at > self.segment_timeout
-            and not last_move_await_finish
-        ):
-            self.publish_feedback(f'段超时，强制切换: {self.current_segment.get("description", "unknown")}')
-            self.start_segment(self.plan_index + 1)
-            return
-
-        if self.navigation_step(now_sec):
-            return
-
-        # Hold mission move while a trigger is pending (avoidance enters next tick).
-        if (
-            self.current_segment.get('type') == 'move'
-            and self.avoidance_should_enter()
-        ):
-            self.log_flow_obstacle_watch()
-            self.publish_cmd_vel(0.0, 0.0)
-            return
-
-        segment_type = self.current_segment['type']
-        if segment_type == 'turn':
-            self.run_turn_segment()
-            return
-        if segment_type == 'move':
-            self.run_move_segment()
-            return
-        if segment_type == 'pause':
-            self.run_pause_segment(now_sec)
-            return
-
-        self.start_segment(self.plan_index + 1)
-
-    def _mission_move_heading_error_rad(self):
-        """段 ψ 与当前 plan 航向之差（map 系，避免 ±180° odom 换算炸角）。"""
-        plan_yaw = self.world_navigation_yaw()
-        seg_h = self.segment_heading
-        if seg_h is None or plan_yaw is None:
-            return 0.0
-        return self.angle_error(float(seg_h), plan_yaw)
-
-    def _mission_move_heading_deadband_rad(self):
-        base = math.radians(
-            float(getattr(self, 'mission_move_heading_deadband_deg', MISSION_MOVE_HEADING_DEADBAND_DEG))
+        half_window = self.detour_side_test_window_deg / 2.0
+        self.left_clearance_distance = self.sector_min_distance(
+            msg,
+            self.detour_side_center_deg - half_window,
+            self.detour_side_center_deg + half_window,
         )
-        axis = math.radians(MISSION_MOVE_HEADING_DEADBAND_AXIS_DEG)
-        seg_h = self.segment_heading
-        if seg_h is None:
-            return base
-        seg_h = float(seg_h)
-        if abs(math.cos(seg_h)) > 0.95 or abs(math.sin(seg_h)) > 0.95:
-            return min(base, axis)
-        return base
+        self.right_clearance_distance = self.sector_min_distance(
+            msg,
+            -self.detour_side_center_deg - half_window,
+            -self.detour_side_center_deg + half_window,
+        )
 
-    def _mission_move_heading_hold_cmd(self, linear_mps):
-        """无障直行：保持段 ψ；只调 ω，线速度保持 segment 设定值。"""
-        heading_error = self._mission_move_heading_error_rad()
-        kp = float(getattr(self, 'mission_move_heading_kp', MISSION_MOVE_HEADING_KP))
-        omega_max = float(getattr(self, 'mission_move_max_angular_rps', MISSION_MOVE_MAX_ANGULAR_RPS))
-        if kp <= 0.0 or omega_max <= 0.0:
-            return float(linear_mps), 0.0, 0.0, heading_error
-        deadband = self._mission_move_heading_deadband_rad()
-        if abs(heading_error) <= deadband:
-            return float(linear_mps), 0.0, 0.0, heading_error
-        omega_min = float(getattr(self, 'mission_move_min_angular_rps', MISSION_MOVE_MIN_ANGULAR_RPS))
-        head_term = kp * heading_error
-        angular = self.clamp(head_term, omega_max)
-        if omega_min > 0.0 and abs(angular) < omega_min:
-            angular = math.copysign(omega_min, heading_error)
-        return float(linear_mps), angular, head_term, heading_error
+    def detour_side_text(self, side):
+        return '左侧' if side == 'left' else '右侧'
 
-    def nominal_finish_xy_world(self):
-        geo = self._ring_track_geometry_kwargs()
-        return nominal_mission_finish_pose(geo['direction'], config_path=geo['config_path'])
+    def side_clearance_metric(self, clearance):
+        if math.isnan(clearance):
+            return float('-inf')
+        return clearance
 
-    def mission_return_finish_along_ok(self):
-        """E2: 回程段沿名义弦线已足够前进，防 exit 绕障中途误 finish。"""
-        seg = self.current_segment or {}
-        if str(seg.get('description', '')) != 'rect_return_origin':
+    def side_clearance_ok(self, clearance):
+        if math.isnan(clearance):
+            return False
+        if math.isinf(clearance):
             return True
-        world_xy = self.world_navigation_xy()
-        if world_xy is None or self.segment_heading is None:
-            return False
-        geo = self._ring_track_geometry_kwargs()
-        ep = segment_endpoints_world(geo['direction'], config_path=geo['config_path'])
-        start_xy, _end_xy = ep['rect_return_origin']
-        along = world_segment.along_m(world_xy, start_xy, self.segment_heading)
-        target = float(seg.get('distance_m', 0.0))
-        seg_tol = float(self.distance_tolerance)
-        end_thresh = self.segment_end_progress_threshold_m(target, seg_tol)
-        return along + seg_tol >= end_thresh
+        return clearance >= self.detour_min_side_clearance
 
-    def _finish_approach_cmd(self):
-        """末段无障：小步直线 + 轻量 hold 段 ψ。"""
-        if self.segment_heading is None or self.world_navigation_yaw() is None:
-            return 0.0, 0.0
-        heading_error = self._mission_move_heading_error_rad()
-        head_deg = abs(math.degrees(heading_error))
-        lat_abs = abs(self.segment_lateral_offset_m())
-        if head_deg > 20.0 or lat_abs > FINISH_SKIP_TRIM_LAT_M:
-            return 0.0, 0.0
-        fx, fy = self.nominal_finish_xy_world()
-        world_xy = self.world_navigation_xy()
-        if world_xy is None:
-            return 0.0, 0.0
-        dist_finish = math.hypot(world_xy[0] - fx, world_xy[1] - fy)
-        linear = min(0.08, 0.03 + 0.25 * max(0.0, dist_finish - FINISH_WORLD_DIST_M))
-        _lin, angular, _, _ = self._mission_move_heading_hold_cmd(linear)
-        return linear, angular
+    def select_detour_side(self):
+        left_clear = self.left_clearance_distance
+        right_clear = self.right_clearance_distance
+        left_ok = self.side_clearance_ok(left_clear)
+        right_ok = self.side_clearance_ok(right_clear)
 
-    def mission_last_segment_finish_pose_ready(self):
-        """末 move 且里程达标、世界距终点近、沿回程 enough（E1+E2）。"""
-        if self.plan_index < len(self.plan) - 1:
+        if left_ok and right_ok:
+            return 'left' if self.side_clearance_metric(left_clear) >= self.side_clearance_metric(right_clear) else 'right'
+        if left_ok:
+            return 'left'
+        if right_ok:
+            return 'right'
+        return None
+
+    def maybe_inject_detour(self):
+        if self.detour_detection_locked:
+            self.detour_front_confirm_count = 0
             return False
-        if (self.current_segment or {}).get('type') != 'move':
+
+        if not self.current_segment_allows_detour():
+            self.detour_front_confirm_count = 0
             return False
-        world_xy = self.world_navigation_xy()
-        if world_xy is None:
+
+        if not math.isfinite(self.front_obstacle_distance) or self.front_obstacle_distance > self.detour_obstacle_distance:
+            self.detour_front_confirm_count = 0
             return False
-        target_distance = float((self.current_segment or {}).get('distance_m', 0.0))
+
+        nav_yaw = self.navigation_yaw()
+        if self.segment_heading is not None and nav_yaw is not None:
+            heading_error = self.angle_error(self.segment_heading, nav_yaw)
+            if abs(heading_error) > self.detour_heading_gate_rad:
+                self.detour_front_confirm_count = 0
+                return False
+
+        self.detour_front_confirm_count = min(
+            self.detour_front_confirm_count + 1,
+            self.detour_confirm_required,
+        )
+        if self.detour_front_confirm_count < self.detour_confirm_required:
+            return False
+
+        side = self.select_detour_side()
+        if side is None:
+            self.log_detour(
+                f'等待，front={self.format_distance(self.front_obstacle_distance)}m，'
+                f'left={self.format_distance(self.left_clearance_distance)}m，'
+                f'right={self.format_distance(self.right_clearance_distance)}m，'
+                f'min_clear={self.detour_min_side_clearance:.2f}m，'
+                '未找到可安全绕行侧'
+            )
+            self.publish_state('detour_waiting')
+            self.cmd_pub.publish(self.create_twist())
+            return True
+
         progress = self.projected_distance()
-        tol = float(self.distance_tolerance)
-        if progress < target_distance - tol:
+        target_distance = float(self.current_segment['distance_m'])
+        remaining_distance = max(0.0, target_distance - progress)
+        if remaining_distance <= self.distance_tolerance:
+            self.detour_front_confirm_count = 0
             return False
-        fx, fy = self.nominal_finish_xy_world()
-        dist_finish = math.hypot(world_xy[0] - fx, world_xy[1] - fy)
-        if dist_finish > FINISH_WORLD_DIST_M:
-            return False
-        return self.mission_return_finish_along_ok()
 
-    def _log_mission_move_tick(
-        self,
-        phase,
-        linear,
-        angular,
-        lat_term=None,
-        head_term=None,
-    ):
-        segment = self.current_segment or {}
-        self.maybe_log_mission_move_control(
-            self.control_now_sec(),
-            phase,
-            float(linear),
-            float(angular),
-            self.segment_lateral_offset_m(),
-            self._mission_move_heading_error_rad(),
-            self.projected_distance(),
-            float(segment.get('distance_m', 0.0)),
-            lat_term=lat_term,
-            head_term=head_term,
+        forward_distance = min(self.detour_forward_distance_m, remaining_distance)
+        resume_distance = max(0.0, remaining_distance - forward_distance)
+        detour_segments = self.build_detour_segments(side, forward_distance, resume_distance)
+        entry_yaw = self.segment_heading if self.segment_heading is not None else self.segment_start_yaw
+        self.detour_detection_locked = True
+        self.detour_resume_yaw = self.normalize_angle(entry_yaw) if entry_yaw is not None else None
+        self.log_detour(
+            f'触发，front={self.format_distance(self.front_obstacle_distance)}m，'
+            f'left={self.format_distance(self.left_clearance_distance)}m，'
+            f'right={self.format_distance(self.right_clearance_distance)}m，'
+            f'选侧={self.detour_side_text(side)}，'
+            f'entry_yaw={self.format_yaw_deg(entry_yaw)}deg，'
+            f'progress={progress:.2f}/{target_distance:.2f}m，'
+            f'forward={forward_distance:.2f}m，resume={resume_distance:.2f}m，'
+            f'锁定检测直到回到 {self.format_yaw_deg(self.detour_resume_yaw)}deg'
+        )
+        self.plan = self.plan[:self.plan_index] + detour_segments + self.plan[self.plan_index + 1:]
+        self.detour_cooldown_until = self.get_clock().now().nanoseconds / 1e9 + self.detour_cooldown_sec
+        self.detour_front_confirm_count = 0
+        self.publish_feedback(
+            f'检测到前方障碍，选择更通畅的{self.detour_side_text(side)}避障，随后回归原线路并回到避障前yaw角'
+        )
+        self.start_segment(self.plan_index)
+        return True
+
+    def build_detour_segments(self, side, forward_distance, resume_distance):
+        detour_entry_yaw = self.segment_heading if self.segment_heading is not None else self.segment_start_yaw
+        if detour_entry_yaw is None:
+            return []
+
+        detour_entry_yaw = self.normalize_angle(detour_entry_yaw)
+        side_sign = 1.0 if side == 'left' else -1.0
+        lane_change_angle_rad = math.radians(self.detour_lane_change_angle_deg)
+        shift_heading = self.normalize_angle(detour_entry_yaw + side_sign * lane_change_angle_rad)
+        return_heading = self.normalize_angle(detour_entry_yaw - side_sign * lane_change_angle_rad)
+
+        total_remaining_distance = max(0.0, forward_distance + resume_distance)
+        max_lateral_distance = (total_remaining_distance * math.tan(lane_change_angle_rad)) / 2.0
+        effective_lateral_distance = min(self.detour_lateral_distance_m, max(0.0, max_lateral_distance))
+
+        if effective_lateral_distance <= self.distance_tolerance:
+            self.log_detour(
+                f'剩余距离不足以执行绕障，remaining={total_remaining_distance:.2f}m，'
+                f'angle={self.detour_lane_change_angle_deg:.0f}deg'
+            )
+            return []
+
+        lane_change_move_distance = effective_lateral_distance / math.sin(lane_change_angle_rad)
+        lane_change_forward_progress = lane_change_move_distance * math.cos(lane_change_angle_rad) * 2.0
+        remaining_after_lane_change = max(0.0, total_remaining_distance - lane_change_forward_progress)
+        pass_distance = min(forward_distance, remaining_after_lane_change)
+        resume_distance_after_detour = max(0.0, remaining_after_lane_change - pass_distance)
+
+        detour_segments = [
+            {
+                'type': 'turn',
+                'angle_deg': side_sign * self.detour_lane_change_angle_deg,
+                'description': f'detour_{side}_shift_out_turn',
+                'force_start_yaw': detour_entry_yaw,
+                'force_target_yaw': shift_heading,
+                'heading_tolerance_rad': self.detour_turn_heading_tolerance,
+                'turn_linear_speed': self.detour_turn_linear_speed,
+            },
+            {
+                'type': 'move',
+                'distance_m': lane_change_move_distance,
+                'speed': self.corridor_linear_speed,
+                'description': f'detour_{side}_shift_out_move',
+                'allow_detour': False,
+                'is_detour': True,
+                'force_segment_heading': shift_heading,
+            },
+            {
+                'type': 'pause',
+                'duration': self.detour_realign_pause_sec,
+                'description': f'detour_{side}_forward_align_wait',
+            },
+            {
+                'type': 'turn',
+                'angle_deg': -side_sign * self.detour_lane_change_angle_deg,
+                'description': f'detour_{side}_forward_align',
+                'force_start_yaw': shift_heading,
+                'force_target_yaw': detour_entry_yaw,
+                'heading_tolerance_rad': self.detour_turn_heading_tolerance,
+                'turn_linear_speed': self.detour_turn_linear_speed,
+            },
+            {
+                'type': 'move',
+                'distance_m': pass_distance,
+                'speed': self.corridor_linear_speed,
+                'description': f'detour_{side}_pass_obstacle',
+                'allow_detour': False,
+                'is_detour': True,
+                'force_segment_heading': detour_entry_yaw,
+            },
+            {
+                'type': 'turn',
+                'angle_deg': -side_sign * self.detour_lane_change_angle_deg,
+                'description': f'detour_{side}_return_turn',
+                'force_start_yaw': detour_entry_yaw,
+                'force_target_yaw': return_heading,
+                'heading_tolerance_rad': self.detour_turn_heading_tolerance,
+                'turn_linear_speed': self.detour_turn_linear_speed,
+            },
+            {
+                'type': 'move',
+                'distance_m': lane_change_move_distance,
+                'speed': self.corridor_linear_speed,
+                'description': f'detour_{side}_return_move',
+                'allow_detour': False,
+                'is_detour': True,
+                'force_segment_heading': return_heading,
+            },
+            {
+                'type': 'pause',
+                'duration': self.detour_realign_pause_sec,
+                'description': f'detour_{side}_resume_align_wait',
+            },
+            {
+                'type': 'turn',
+                'angle_deg': side_sign * self.detour_lane_change_angle_deg,
+                'description': f'detour_{side}_resume_align',
+                'force_start_yaw': return_heading,
+                'force_target_yaw': detour_entry_yaw,
+                'heading_tolerance_rad': self.detour_turn_heading_tolerance,
+                'turn_linear_speed': self.detour_turn_linear_speed,
+            },
+        ]
+
+        if pass_distance <= self.distance_tolerance:
+            detour_segments = [
+                segment for segment in detour_segments
+                if segment.get('description') != f'detour_{side}_pass_obstacle'
+            ]
+
+        if resume_distance_after_detour > self.distance_tolerance:
+            detour_segments.append({
+                'type': 'move',
+                'distance_m': resume_distance_after_detour,
+                'speed': float(self.current_segment.get('speed', self.corridor_linear_speed)),
+                'description': f'{self.current_segment.get("description", "segment")}_resume',
+                'allow_detour': False,
+                'force_segment_heading': detour_entry_yaw,
+            })
+
+        self.log_detour(
+            f'绕障几何，angle={self.detour_lane_change_angle_deg:.0f}deg，'
+            f'lateral={effective_lateral_distance:.2f}m，'
+            f'lane_change_move={lane_change_move_distance:.2f}m，'
+            f'forward_after_lane_change={remaining_after_lane_change:.2f}m，'
+            f'pass={pass_distance:.2f}m，resume={resume_distance_after_detour:.2f}m'
         )
 
-    def _segment_move_complete_debug_text(self, via_trim=False):
-        """Explain why a move leg ended (world along / distance-to-E)."""
-        along = self.projected_distance()
-        length = float(getattr(self, 'segment_plan_length_m', 0.0))
-        dist_e = self.distance_to_segment_plan_end_m()
-        tol = float(self.distance_tolerance)
-        reach = float(self.SEGMENT_END_REACH_M)
-        end_ok = math.isfinite(dist_e) and dist_e <= reach
-        along_ok = length > 0.0 and along + tol >= length
-        overshoot_ok = length > 0.0 and along > length + max(tol, 0.06)
-        reasons = []
-        if end_ok:
-            reasons.append(f'世界距E<={reach:.2f}m(现{dist_e:.2f}m)')
-        if along_ok:
-            reasons.append(f'沿程达标({along:.2f}/{length:.2f}m,tol={tol:.2f}m)')
-        if overshoot_ok and not along_ok:
-            reasons.append(f'越过段末({along:.2f}>{length:.2f}m)')
-        if via_trim:
-            reasons.append('段末trim/对齐完成')
-        if not reasons:
-            reasons.append('判据触发(见沿程/距E)')
-        core = self.format_nav_simple_line()
-        return (
-            f'段结束→下一段 | {self.current_segment.get("description", "?")} | '
-            f'{core} | {"; ".join(reasons)}'
-        )
+        next_segment_index = self.plan_index + 1
+        next_segment = self.plan[next_segment_index] if next_segment_index < len(self.plan) else None
 
-    def _finish_move_segment_and_advance(self, via_trim=False):
-        self.log_flow_move_done(via_trim=via_trim)
-        self.publish_cmd_vel()
-        self.start_segment(self.plan_index + 1)
+        if (
+            detour_entry_yaw is not None
+            and next_segment is not None
+            and next_segment.get('type') == 'turn'
+        ):
+            next_segment['force_start_yaw'] = detour_entry_yaw
+            next_segment['force_target_yaw'] = self.normalize_angle(
+                detour_entry_yaw + math.radians(float(next_segment.get('angle_deg', 0.0)))
+            )
+            self.log_detour(
+                f'原始转弯锚定，segment={next_segment.get("description", "turn")}，'
+                f'start_yaw={self.format_yaw_deg(detour_entry_yaw)}deg，'
+                f'target_yaw={self.format_yaw_deg(next_segment["force_target_yaw"])}deg'
+            )
+
+        if next_segment is not None and next_segment.get('type') == 'turn':
+            detour_segments.append({
+                'type': 'pause',
+                'duration': self.detour_turn_settle_sec,
+                'description': f'detour_{side}_settle_before_turn',
+            })
+
+        return detour_segments
+
+
+    def _compute_move_lateral_angular(self) -> float:
+        """计算直行段横向角速度。子类可覆盖以替换视觉居中。"""
+        if self.current_position is None or self.segment_heading is None:
+            return 0.0
+        nav_yaw = self.navigation_yaw()
+        if nav_yaw is None:
+            return 0.0
+        heading_error = self.angle_error(self.segment_heading, nav_yaw)
+        return self.clamp(self.heading_kp * heading_error, self.max_angular_speed)
 
     def run_move_segment(self):
-        """直行：turn 在 5° 内停转；无障时线速度不变、仅轻量 hold 段 ψ。"""
         if self.current_segment is not None and self.current_segment.get('type') == 'move':
             target_distance = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
             progress = max(0.0, min(self.projected_distance(), target_distance))
@@ -959,182 +1429,247 @@ class DirectInertialTester(
 
             if bucket > self.last_progress_bucket:
                 self.last_progress_bucket = bucket
-                self.log_debug_info(
-                    f'{self.test_feedback_prefix}'
-                    f'{self.rectangle_segment_label(self.current_segment)} | '
-                    f'{self.format_nav_simple_line()}'
-                )
+                if bucket >= 0:
+                    label = self.rectangle_segment_label(self.current_segment)
+                    progress_line = (
+                        f'{label} 进度 {bucket * 25}% '
+                        f'({progress:.2f}/{target_distance:.2f}m)'
+                    )
+                    self.get_logger().info(
+                        f'{self.test_feedback_prefix}当前位置: {progress_line}'
+                    )
+                    self._log_session(
+                        'PROGRESS',
+                        f'{progress_line} | {self._pose_diagnostic()}',
+                    )
 
-            if (
-                progress >= target_distance - self.distance_tolerance
-                and self.last_progress_bucket < 4
-                and self.move_reached_plan_end()
-            ):
+            if progress >= target_distance - self.distance_tolerance and self.last_progress_bucket < 4:
                 self.last_progress_bucket = 4
                 self.publish_feedback(
-                    f'{self.test_feedback_prefix}'
-                    f'{self.rectangle_segment_label(self.current_segment)} | '
-                    f'{self.format_nav_simple_line()} | 已到目标点'
+                    f'{self.test_feedback_prefix}当前位置: '
+                    f'{self.rectangle_segment_label(self.current_segment)}，'
+                    f'直行到位，准备切换到下一段'
                 )
 
+        # Stage1 风格边转边避（替代旧的 run_stage1_style_obstacle_avoidance）
+        if self._try_avoid_step():
+            if self._avoid_state != self._last_avoid_state_logged:
+                self._log_session(
+                    'AVOID',
+                    f'状态 → {self._avoid_state} | {self._pose_diagnostic()}',
+                )
+                self._last_avoid_state_logged = self._avoid_state
+            self._maybe_log_telemetry('avoid_active')
+            return
+
         if self.current_position is None or self.segment_heading is None:
-            self.publish_cmd_vel()
+            self.cmd_pub.publish(self.create_twist())
+            self._maybe_log_telemetry('move_no_pose')
             return
 
         progress = self.projected_distance()
         target_distance = float(self.current_segment['distance_m'])
-        tol = float(self.distance_tolerance)
-        if self.move_reached_plan_end():
-            last_move = self.plan_index >= len(self.plan) - 1
-            if last_move and not self.mission_last_segment_finish_pose_ready():
-                linear, angular = self._finish_approach_cmd()
-                heading_error = self._mission_move_heading_error_rad()
-                self._log_mission_move_tick(
-                    'finish_approach',
-                    linear,
-                    angular,
-                    lat_term=0.0,
-                    head_term=self.heading_kp * heading_error,
-                )
-                self.publish_cmd_vel(linear, angular)
-                return
-            self._finish_move_segment_and_advance()
+        if progress >= target_distance - self.distance_tolerance:
+            self._log_session(
+                'SEGMENT_DONE',
+                f'{self.current_segment.get("description", "?")} '
+                f'{progress:.3f}/{target_distance:.2f}m | {self._pose_diagnostic()}',
+            )
+            self.cmd_pub.publish(self.create_twist())
+            self.start_segment(self.plan_index + 1)
             return
 
+        angular = self._compute_move_lateral_angular()
         linear = float(self.current_segment.get('speed', self.corridor_linear_speed))
-        approach_cap = self.mission_obstacle_linear_cap_mps()
-        if approach_cap is not None:
-            linear = min(linear, approach_cap)
-            self.maybe_log_template_approach_cap(self.control_now_sec(), approach_cap, linear)
-        nearest = self.detour_nearest_obstacle_distance_m()
-        if math.isfinite(nearest) and nearest < 0.70:
-            linear = min(linear, max(self.detour_follow_min_linear_m, nearest * 0.18))
-        linear, angular, head_term, heading_error = self._mission_move_heading_hold_cmd(linear)
-        linear, angular = self.mission_passed_static_obstacle_adjustment(linear, angular)
-        self._log_mission_move_tick(
-            'heading_hold_gentle',
-            linear,
-            angular,
-            lat_term=0.0,
-            head_term=head_term,
-        )
-        self.publish_cmd_vel(linear, angular)
-
-    def run_pause_segment(self, now_sec):
-        self.publish_cmd_vel()
-        duration = float(self.current_segment.get('duration', 0.0))
-        if self.segment_started_at is not None and now_sec - self.segment_started_at >= duration:
-            self.start_segment(self.plan_index + 1)
-
-    def _advance_turn_to_next_segment(self, segment, plan_yaw, plan_target, plan_err):
-        self.publish_feedback(
-            f'{self.test_feedback_prefix}当前位置: '
-            f'{self.rectangle_segment_label(segment)}，'
-            f'转弯完成(残差{math.degrees(plan_err):+.1f}°)，进入下一段'
-        )
-        next_index = self.plan_index + 1
-        if next_index < len(self.plan):
-            next_name = self.plan[next_index].get('description', '?')
-            self.log_flow_turn_done(next_name, plan_yaw, plan_target, plan_err)
-        self.publish_cmd_vel()
-        self.start_segment(next_index)
+        self.cmd_pub.publish(self.create_twist(linear, angular))
+        self._maybe_log_telemetry('move')
 
     def run_turn_segment(self):
-        """慢速转弯：航向到下一段 ψ（容差内）→ 停车 → 下一段直行（直行不纠偏）。"""
-        segment = self.current_segment or {}
-        plan_yaw = self.world_navigation_yaw()
-        plan_target = self.next_move_plan_yaw_rad()
-        if plan_yaw is None or plan_target is None:
-            self.publish_cmd_vel()
-            return
-
-        plan_err = self.angle_error(plan_target, plan_yaw)
-        tol = float(self.heading_tolerance)
-
-        if abs(plan_err) <= tol:
-            phys_yaw = self.world_navigation_yaw_raw()
-            phys_target = self.turn_target_odom_rad(segment)
-            phys_err = (
-                self.angle_error(phys_target, phys_yaw)
-                if phys_yaw is not None and phys_target is not None
-                else 0.0
-            )
-            self.log_turn_tick_snapshot(
-                self.control_now_sec(),
-                plan_yaw,
-                phys_yaw,
-                phys_target,
-                phys_err,
-                0.0,
-                0.0,
-            )
-            self._advance_turn_to_next_segment(segment, plan_yaw, plan_target, plan_err)
-            return
-
+        turn_tolerance = self.active_turn_heading_tolerance
         linear_speed = float(
-            segment.get('turn_linear_speed', self.turn_linear_speed)
+            (self.current_segment or {}).get('turn_linear_speed', self.turn_linear_speed)
         )
-        if linear_speed < ACKERMANN_TURN_MIN_LINEAR_MPS:
-            linear_speed = ACKERMANN_TURN_MIN_LINEAR_MPS
-        angular = self.clamp(self.turn_kp * plan_err, self.turn_angular_speed)
 
-        phys_yaw = self.world_navigation_yaw_raw()
-        phys_target = self.turn_target_odom_rad(segment)
-        phys_err = (
-            self.angle_error(phys_target, phys_yaw)
-            if phys_yaw is not None and phys_target is not None
-            else plan_err
+        # 转角障碍检测：前方障碍过近 → 原地转向不前移
+        if (math.isfinite(self.front_obstacle_distance)
+                and self.front_obstacle_distance < self.detour_obstacle_distance * 0.5):
+            linear_speed = 0.0
+
+        nav_yaw = self.navigation_yaw()
+        if nav_yaw is None or self.segment_target_yaw is None:
+            self.cmd_pub.publish(self.create_twist())
+            return
+
+        error = self.angle_error(self.segment_target_yaw, nav_yaw)
+        if abs(error) <= turn_tolerance:
+            if self.is_detour_segment(self.current_segment):
+                description = str((self.current_segment or {}).get('description', ''))
+                self.log_detour(
+                    f'完成 {self.current_segment.get("description", "detour_turn")}，'
+                    f'nav_yaw={self.format_yaw_deg(nav_yaw)}deg，'
+                    f'target_yaw={self.format_yaw_deg(self.segment_target_yaw)}deg，'
+                    f'error={math.degrees(error):.2f}deg'
+                )
+                if description.endswith('_resume_align'):
+                    self.detour_detection_locked = False
+                    self.log_detour(
+                        f'已回到避障前yaw，恢复障碍检测，resume_yaw={self.format_yaw_deg(self.detour_resume_yaw)}deg，'
+                        f'nav_yaw={self.format_yaw_deg(nav_yaw)}deg'
+                    )
+                    self.detour_resume_yaw = None
+            self.publish_feedback(
+                f'{self.test_feedback_prefix}当前位置: '
+                f'{self.rectangle_segment_label(self.current_segment or {})}，'
+                '转弯完成，进入下一段'
+            )
+            self.cmd_pub.publish(self.create_twist())
+            self.start_segment(self.plan_index + 1)
+            return
+
+        angular = self.clamp(self.turn_kp * error, self.turn_angular_speed)
+        if abs(error) > turn_tolerance and abs(angular) < self.turn_min_angular_speed:
+            angular = math.copysign(self.turn_min_angular_speed, error)
+
+        if self.is_detour_segment(self.current_segment):
+            now_sec = self.get_clock().now().nanoseconds / 1e9
+            if now_sec - self.last_detour_turn_log_time >= 0.5:
+                self.last_detour_turn_log_time = now_sec
+                self.log_detour(
+                    f'执行 {self.current_segment.get("description", "detour_turn")}，'
+                    f'nav_yaw={self.format_yaw_deg(nav_yaw)}deg，'
+                    f'target_yaw={self.format_yaw_deg(self.segment_target_yaw)}deg，'
+                    f'error={math.degrees(error):.2f}deg，'
+                    f'angular={angular:.2f}rad/s，'
+                    f'linear={linear_speed:.2f}m/s'
+                )
+
+        self.cmd_pub.publish(self.create_twist(linear_speed, angular))
+        self._maybe_log_telemetry(
+            f'turn err={math.degrees(error):.1f}deg'
         )
-        self.log_turn_tick_snapshot(
-            self.control_now_sec(),
-            plan_yaw,
-            phys_yaw,
-            phys_target,
-            phys_err,
-            angular,
-            linear_speed,
-        )
-        self.publish_cmd_vel(linear_speed, angular)
+
+    def finish_mission(self):
+        self._log_session('MISSION', f'完成 | {self._pose_diagnostic()}')
+        super().finish_mission()
+
+    def control_loop(self):
+        if self.corridor_path_active:
+            self.run_corridor_path_stage()
+            return
+
+        if not self.mission_active or self.current_segment is None:
+            if not self.mission_active:
+                self.cmd_pub.publish(self.create_twist())
+            self._maybe_log_telemetry('idle')
+            return
+
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        if (
+            not self._avoid_active
+            and self.segment_started_at is not None
+            and now_sec - self.segment_started_at > self.segment_timeout
+        ):
+            desc = self.current_segment.get('description', 'unknown')
+            self._log_session(
+                'TIMEOUT',
+                f'段超时 {desc} | {self._pose_diagnostic()}',
+            )
+            self.publish_feedback(
+                f'{self.test_feedback_prefix}段超时: {desc}'
+            )
+            self._reset_avoid()
+            self.start_segment(self.plan_index + 1)
+            return
+
+        segment_type = self.current_segment['type']
+        if segment_type == 'turn':
+            self.run_turn_segment()
+        elif segment_type == 'move':
+            self.run_move_segment()
+        elif segment_type == 'pause':
+            self.run_pause_segment(now_sec)
+            self._maybe_log_telemetry('pause')
+        else:
+            self.start_segment(self.plan_index + 1)
 
     def build_ring_plan(self):
-        geo = self._ring_track_geometry_kwargs()
-        plan = build_ring_plan_for_sim(
-            geo['direction'],
-            config_path=geo['config_path'],
-            ring_linear_speed=self.ring_linear_speed,
-            turn_linear_speed=self.turn_linear_speed,
-        )
-        for segment in plan:
-            if segment.get('type') == 'move':
-                segment['allow_detour'] = True
-            elif segment.get('type') == 'turn':
-                segment['allow_detour'] = False
-                segment['turn_linear_speed'] = ACKERMANN_TURN_MIN_LINEAR_MPS
-        return plan
+        # 5 段转角独立 yaml 可调：rect_enter_align_deg / rect_corner_{1,2,3,4}_deg
+        sign = 1.0 if self.direction == 'clockwise' else -1.0
+        entry_turn = sign * self.rect_enter_align_deg
+        corner1_turn = -sign * self.rect_corner_1_deg
+        corner2_turn = -sign * self.rect_corner_2_deg
+        corner3_turn = -sign * self.rect_corner_3_deg
+        corner4_turn = -sign * self.rect_corner_4_deg
+
+        return [
+            {
+                'type': 'turn',
+                'angle_deg': entry_turn,
+                'description': 'rect_enter_align',
+            },
+            {
+                'type': 'move',
+                'distance_m': self.rectangle_first_leg_m,
+                'speed': self.ring_linear_speed,
+                'description': 'rect_first_leg',
+                'allow_detour': True,
+            },
+            {
+                'type': 'turn',
+                'angle_deg': corner1_turn,
+                'description': 'rect_corner_1',
+            },
+            {
+                'type': 'move',
+                'distance_m': self.rectangle_side_leg_m,
+                'speed': self.ring_linear_speed,
+                'description': 'rect_side_1',
+                'allow_detour': True,
+            },
+            {
+                'type': 'turn',
+                'angle_deg': corner2_turn,
+                'description': 'rect_corner_2',
+            },
+            {
+                'type': 'move',
+                'distance_m': self.rectangle_top_leg_m,
+                'speed': self.ring_linear_speed,
+                'description': 'rect_top',
+                'allow_detour': True,
+            },
+            {
+                'type': 'turn',
+                'angle_deg': corner3_turn,
+                'description': 'rect_corner_3',
+            },
+            {
+                'type': 'move',
+                'distance_m': self.rectangle_side_leg_m,
+                'speed': self.ring_linear_speed,
+                'description': 'rect_side_2',
+                'allow_detour': True,
+            },
+            {
+                'type': 'turn',
+                'angle_deg': corner4_turn,
+                'description': 'rect_corner_4',
+            },
+            {
+                'type': 'move',
+                'distance_m': self.rectangle_first_leg_m,
+                'speed': self.ring_linear_speed,
+                'description': 'rect_return_origin',
+                'allow_detour': True,
+            },
+        ]
 
     def phase_callback(self, msg):
         self.phase = 2
 
     def task_callback(self, msg):
-        self.task_raw = str(msg.data).strip()
-        parsed = self.parse_direction(self.task_raw)
-        if parsed is not None:
-            self.direction = parsed
-            self.test_direction = parsed
-            entry = field_entry_turn_deg(parsed, self.field_track_config or None)
-            corner = field_corner_turn_deg(parsed, self.field_track_config or None)
-            self.write_debug_log(
-                'CONFIG',
-                (
-                    f'QR/任务方向 task="{self.task_raw}" → {parsed} '
-                    f'channel_yaw={math.degrees(self.nominal_channel_entry_yaw_rad()):+.0f}deg '
-                    f'entry={entry:+.0f}deg corner={corner:+.0f}deg '
-                    f'config={self.resolved_field_track_config_path()}'
-                ),
-            )
-        else:
-            self.direction = self.test_direction
-            self.task_raw = self.test_direction_raw
+        self.task_raw = self.test_direction_raw
+        self.direction = self.test_direction
 
     def try_start_mission(self):
         if self.mission_active or self.mission_finished:
@@ -1143,27 +1678,36 @@ class DirectInertialTester(
         self.phase = 2
         self.direction = self.test_direction
 
-        missing_inputs = []
-        if self.current_position is None:
-            missing_inputs.append('odom')
-        if self.current_yaw is None:
-            missing_inputs.append('imu')
+        missing_inputs = self._missing_pose_inputs()
 
         if missing_inputs:
-            if not self.reported_waiting_pose:
-                self.publish_feedback(
-                    f'{self.test_feedback_prefix}等待输入就绪: {", ".join(missing_inputs)}'
-                )
-                self.reported_waiting_pose = True
+            now_sec = self.get_clock().now().nanoseconds / 1e9
+            if now_sec - self._last_wait_log_sec >= 3.0:
+                self._last_wait_log_sec = now_sec
+                wait_line = f'等待: {", ".join(missing_inputs)}'
+                if not self.reported_waiting_pose:
+                    self.publish_feedback(
+                        f'{self.test_feedback_prefix}等待输入就绪: '
+                        f'{", ".join(missing_inputs)}'
+                    )
+                    self.reported_waiting_pose = True
+                self._log_session('STARTUP', f'{wait_line} | {self._full_telemetry()}')
+            self._maybe_log_telemetry('startup_wait')
             return
 
-        current_time = self.control_now_sec()
+        current_time = self.get_clock().now().nanoseconds / 1e9
         if self.start_after_time is None:
             self.start_after_time = current_time + self.start_delay_sec
             if not self.reported_start_delay:
-                self.publish_feedback(
-                    f'{self.test_feedback_prefix}位姿已就绪，{self.start_delay_sec:.2f}s 后开始'
+                ready_line = (
+                    f'位姿就绪 delay={self.start_delay_sec:.2f}s | '
+                    f'{self._pose_diagnostic()}'
                 )
+                self.publish_feedback(
+                    f'{self.test_feedback_prefix}位姿已就绪，'
+                    f'{self.start_delay_sec:.2f}s 后开始'
+                )
+                self._log_session('STARTUP', ready_line)
                 self.reported_start_delay = True
             return
 
@@ -1172,27 +1716,46 @@ class DirectInertialTester(
 
         self.mission_active = True
         self.reported_start = True
+        self._log_session(
+            'MISSION',
+            f'任务开始 方向={self.direction_text()} | {self._pose_diagnostic()}',
+        )
         self.publish_feedback(
             f'{self.test_feedback_prefix}开始执行，方向: {self.direction_text()}，'
             f'模式: {self.start_mode_text()}，'
-            f'路点: {self.resolved_field_track_config_path()}'
+            f'矩形圈: 左/右横边{self.rectangle_first_leg_m:.2f}m，'
+            f'竖边{self.rectangle_side_leg_m:.2f}m，'
+            f'顶部横边{self.rectangle_top_leg_m:.2f}m'
         )
-        self.begin_inertial_plan_after_nav(nav_succeeded=True)
+        self.begin_inertial_plan_after_nav(nav_succeeded=self.nav_succeeded_for_test_start())
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    import threading
+
+    from racing_stage2_param_test.cmd_vel_stop import (
+        init_without_ros_signal_handler,
+        install_stop_event,
+        publish_stop,
+        spin_until_stop,
+    )
+
+    init_without_ros_signal_handler(args)
     node = DirectInertialTester()
+    stop_event = threading.Event()
+
+    request_stop = install_stop_event(
+        stop_event,
+        lambda: publish_stop(node.cmd_pub),
+        cli_topics=['/cmd_vel', '/stage2_cmd_vel'],
+    )
+
     try:
-        rclpy.spin(node)
+        spin_until_stop(node, stop_event)
     except KeyboardInterrupt:
-        pass
+        request_stop()
     finally:
-        if rclpy.ok():
-            try:
-                node.publish_emergency_stop('main_finally')
-            except Exception:
-                pass
+        request_stop()
         try:
             node.destroy_node()
         except Exception:

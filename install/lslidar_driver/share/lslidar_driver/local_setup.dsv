@@ -1,2 +1,1 @@
-source;share/lslidar_driver/environment/ament_prefix_path.sh
-source;share/lslidar_driver/environment/path.sh
+/home/sunrise/dev_ws/build/lslidar_driver/ament_cmake_environment_hooks/local_setup.dsv

@@ -1,0 +1,285 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"childIndexes" : 
+					[
+						1,
+						2
+					],
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-0301af9982031ff7d3ef.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						8,
+						9,
+						10,
+						11,
+						12,
+						13,
+						14,
+						15,
+						16,
+						17,
+						18,
+						20,
+						21
+					]
+				},
+				{
+					"build" : "voice_driver__py",
+					"jsonFile" : "directory-voice_driver__py-79d276358b986d0734b3.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 0,
+					"source" : "/home/sunrise/dev_ws/build/voice_driver/voice_driver__py",
+					"targetIndexes" : 
+					[
+						7
+					]
+				},
+				{
+					"build" : "voice_driver__rs",
+					"jsonFile" : "directory-voice_driver__rs-00bfaa391e859eaf1205.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 0,
+					"source" : "/home/sunrise/dev_ws/build/voice_driver/voice_driver__rs",
+					"targetIndexes" : 
+					[
+						19
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0,
+						1,
+						2
+					],
+					"name" : "voice_driver",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9,
+						10,
+						11,
+						12,
+						13,
+						14,
+						15,
+						16,
+						17,
+						18,
+						19,
+						20,
+						21
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_build_voice_api_egg::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_build_voice_api_egg-44ef9afc952efd032c3b.json",
+					"name" : "ament_cmake_python_build_voice_api_egg",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_build_voice_driver_egg::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_build_voice_driver_egg-233d025bf10c4626a1bc.json",
+					"name" : "ament_cmake_python_build_voice_driver_egg",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_symlink_voice_api::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_symlink_voice_api-cd0ff5017020adf8d858.json",
+					"name" : "ament_cmake_python_symlink_voice_api",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_symlink_voice_driver::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_symlink_voice_driver-731e74bd198d3375642a.json",
+					"name" : "ament_cmake_python_symlink_voice_driver",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-a5b155bc7980cbe5e2de.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver-ea812d0e1d0209aeece9.json",
+					"name" : "voice_driver",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__cpp-672ed080ac0056e3dd2a.json",
+					"name" : "voice_driver__cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 1,
+					"id" : "voice_driver__py::@baf84ffcfa9d2d90b426",
+					"jsonFile" : "target-voice_driver__py-53095009ba00bfa3031b.json",
+					"name" : "voice_driver__py",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_generator_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_generator_c-b8f2c50957c9f30ec349.json",
+					"name" : "voice_driver__rosidl_generator_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_generator_py::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_generator_py-914ff3676d3df13d0271.json",
+					"name" : "voice_driver__rosidl_generator_py",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_typesupport_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_typesupport_c-aee1d75beb8421b20bdd.json",
+					"name" : "voice_driver__rosidl_typesupport_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_typesupport_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_typesupport_c__pyext-75356037cf17e6d163c2.json",
+					"name" : "voice_driver__rosidl_typesupport_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_typesupport_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_typesupport_cpp-d88c7389f6581b3c0cce.json",
+					"name" : "voice_driver__rosidl_typesupport_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_typesupport_fastrtps_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_typesupport_fastrtps_c-3b62bb1f299b27507afb.json",
+					"name" : "voice_driver__rosidl_typesupport_fastrtps_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_typesupport_fastrtps_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_typesupport_fastrtps_c__pyext-75a204ea13d0f8ea5581.json",
+					"name" : "voice_driver__rosidl_typesupport_fastrtps_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_typesupport_fastrtps_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_typesupport_fastrtps_cpp-a7a528a7bc2870140007.json",
+					"name" : "voice_driver__rosidl_typesupport_fastrtps_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_typesupport_introspection_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_typesupport_introspection_c-203806b80788a96ef919.json",
+					"name" : "voice_driver__rosidl_typesupport_introspection_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_typesupport_introspection_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_typesupport_introspection_c__pyext-bbf16cd382382f085c6b.json",
+					"name" : "voice_driver__rosidl_typesupport_introspection_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver__rosidl_typesupport_introspection_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver__rosidl_typesupport_introspection_cpp-f4c83c27049d26f5f459.json",
+					"name" : "voice_driver__rosidl_typesupport_introspection_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 2,
+					"id" : "voice_driver__rs::@3757575d2cf9a8c691e9",
+					"jsonFile" : "target-voice_driver__rs-b725bb1b7531ce075583.json",
+					"name" : "voice_driver__rs",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_driver_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_driver_uninstall-17d73940a872380adf6a.json",
+					"name" : "voice_driver_uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "voice_node::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-voice_node-ec572669823bee6b4e83.json",
+					"name" : "voice_node",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/sunrise/dev_ws/build/voice_driver",
+		"source" : "/home/sunrise/dev_ws/src/racing/voice_driver"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

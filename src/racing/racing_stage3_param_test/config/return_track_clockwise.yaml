@@ -1,0 +1,29 @@
+# 顺时针 Stage2 整圈终点 → P 点 (0.20, 0.20)
+# 起点 = field_track_clockwise mission_finish E (2.38, 3.32)，ψ=180°
+# 中间航点由旧局部返航路径在 map 系变换得到，末段延伸至 P 点
+frame: map
+direction: clockwise
+mission_start_xy: [2.38, 3.32]
+mission_start_yaw_deg: 180.0
+goal_xy: [0.20, 0.20]
+goal_yaw_deg: 100.0
+waypoints:
+  - xy: [1.83, 3.22]
+    speed: 0.16
+    description: return_wp_1
+  - xy: [1.33, 2.77]
+    speed: 0.17
+    description: return_wp_2
+  - xy: [0.93, 2.12]
+    speed: 0.16
+    description: return_wp_3
+  - xy: [0.55, 1.35]
+    speed: 0.14
+    description: return_wp_4
+  - xy: [0.30, 0.70]
+    speed: 0.12
+    description: return_wp_5
+  - xy: [0.20, 0.20]
+    speed: 0.10
+    yaw_deg: 100.0
+    description: return_goal

@@ -1,10 +1,1 @@
-msg/LslidarDifop.idl
-msg/LslidarDifop.msg
-msg/LslidarPacket.idl
-msg/LslidarPacket.msg
-msg/LslidarPoint.idl
-msg/LslidarPoint.msg
-msg/LslidarScan.idl
-msg/LslidarScan.msg
-msg/LslidarSweep.idl
-msg/LslidarSweep.msg
+/home/sunrise/dev_ws/build/lslidar_msgs/ament_cmake_index/share/ament_index/resource_index/rosidl_interfaces/lslidar_msgs

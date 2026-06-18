@@ -1,0 +1,33 @@
+[2.370s] Invoking command in '/home/sunrise/dev_ws/build/origincar_description': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/simple_avoidance:/home/sunrise/dev_ws/install/racing_stage2_param_test:/home/sunrise/dev_ws/install/racing_vision_ai:/home/sunrise/dev_ws/install/racing_stage3_param_test:/home/sunrise/dev_ws/install/racing_bringup:/home/sunrise/dev_ws/install/racing_stage3:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/line_follower_pkg:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /home/sunrise/dev_ws/build/origincar_description -- -j8 -l8
+[5.494s] Invoked command in '/home/sunrise/dev_ws/build/origincar_description' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/simple_avoidance:/home/sunrise/dev_ws/install/racing_stage2_param_test:/home/sunrise/dev_ws/install/racing_vision_ai:/home/sunrise/dev_ws/install/racing_stage3_param_test:/home/sunrise/dev_ws/install/racing_bringup:/home/sunrise/dev_ws/install/racing_stage3:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/line_follower_pkg:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /home/sunrise/dev_ws/build/origincar_description -- -j8 -l8
+[5.505s] Invoking command in '/home/sunrise/dev_ws/build/origincar_description': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/simple_avoidance:/home/sunrise/dev_ws/install/racing_stage2_param_test:/home/sunrise/dev_ws/install/racing_vision_ai:/home/sunrise/dev_ws/install/racing_stage3_param_test:/home/sunrise/dev_ws/install/racing_bringup:/home/sunrise/dev_ws/install/racing_stage3:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/line_follower_pkg:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /home/sunrise/dev_ws/build/origincar_description
+[5.597s] -- Install configuration: ""
+[5.601s] -- Execute custom install script
+[5.606s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch/display.launch
+[5.612s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch/display.launch.py
+[5.636s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/launch/gazebo.launch
+[5.639s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/urdf/origincar.urdf
+[5.640s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/urdf/origincar.xacro
+[5.643s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/rviz/README
+[5.644s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/rviz/display.rviz
+[5.645s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/base_link.STL
+[5.646s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/down_left_Link.STL
+[5.648s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/down_right_Link.STL
+[5.649s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/up_left_Link.STL
+[5.650s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/meshes/up_right_Link.STL
+[5.651s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/ament_index/resource_index/package_run_dependencies/origincar_description
+[5.653s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/ament_index/resource_index/parent_prefix_path/origincar_description
+[5.654s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/ament_prefix_path.sh
+[5.662s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/ament_prefix_path.dsv
+[5.663s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/path.sh
+[5.664s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/environment/path.dsv
+[5.678s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.bash
+[5.679s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.sh
+[5.680s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.zsh
+[5.681s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/local_setup.dsv
+[5.685s] -- Symlinking: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/package.dsv
+[5.707s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/ament_index/resource_index/packages/origincar_description
+[5.709s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/cmake/origincar_descriptionConfig.cmake
+[5.710s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/cmake/origincar_descriptionConfig-version.cmake
+[5.711s] -- Up-to-date symlink: /home/sunrise/dev_ws/install/origincar_description/share/origincar_description/package.xml
+[5.951s] Invoked command in '/home/sunrise/dev_ws/build/origincar_description' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/sunrise/dev_ws/install/simple_avoidance:/home/sunrise/dev_ws/install/racing_stage2_param_test:/home/sunrise/dev_ws/install/racing_vision_ai:/home/sunrise/dev_ws/install/racing_stage3_param_test:/home/sunrise/dev_ws/install/racing_bringup:/home/sunrise/dev_ws/install/racing_stage3:/home/sunrise/dev_ws/install/racing_stage2:/home/sunrise/dev_ws/install/racing_stage1:/home/sunrise/dev_ws/install/qr_scanner:/home/sunrise/dev_ws/install/line_follower_pkg:/home/sunrise/dev_ws/install/bno055:/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /home/sunrise/dev_ws/build/origincar_description

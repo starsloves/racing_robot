@@ -1,0 +1,1 @@
+/home/sunrise/dev_ws/build/voice_driver/rosidl_cmake/rosidl_cmake_export_typesupport_libraries-extras.cmake

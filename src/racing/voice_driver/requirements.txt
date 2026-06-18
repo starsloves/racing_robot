@@ -1,0 +1,10 @@
+volcengine-python-sdk[ark]
+opencv-python
+pillow
+numpy
+python-dotenv
+requests
+edge-tts
+smbus2
+pyserial
+websockets

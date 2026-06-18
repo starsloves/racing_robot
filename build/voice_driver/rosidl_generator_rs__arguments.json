@@ -1,0 +1,28 @@
+{
+  "package_name": "voice_driver",
+  "output_dir": "/home/sunrise/dev_ws/build/voice_driver/rosidl_generator_rs/voice_driver",
+  "template_dir": "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource",
+  "idl_tuples": [
+    "/home/sunrise/dev_ws/build/voice_driver/rosidl_adapter/voice_driver:srv/PlayVoice.idl"
+  ],
+  "ros_interface_files": [
+    "/home/sunrise/dev_ws/build/voice_driver/rosidl_adapter/voice_driver/srv/PlayVoice.idl"
+  ],
+  "target_dependencies": [
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../../../lib/rosidl_generator_rs/rosidl_generator_rs",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../../../local/lib/python3.10/dist-packages/rosidl_generator_rs/__init__.py",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource/action.rs.em",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource/action/rmw.rs.em",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource/msg.rs.em",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource/msg/rmw.rs.em",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource/srv.rs.em",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource/srv/rmw.rs.em",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource/templates/msg_idiomatic.rs.em",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource/templates/msg_rmw.rs.em",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource/templates/srv_idiomatic.rs.em",
+    "/opt/ros/humble/share/rosidl_generator_rs/cmake/../resource/templates/srv_rmw.rs.em",
+    "/home/sunrise/dev_ws/build/voice_driver/rosidl_adapter/voice_driver/srv/PlayVoice.idl",
+    "/home/sunrise/dev_ws/build/voice_driver/rosidl_adapter/voice_driver/srv/PlayVoice.idl"
+  ],
+  "package_version": "0.1.0"
+}

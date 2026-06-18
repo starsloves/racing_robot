@@ -1,6 +1,1 @@
-setup.py
-ackermann_msgs/__init__.py
-ackermann_msgs.egg-info/PKG-INFO
-ackermann_msgs.egg-info/SOURCES.txt
-ackermann_msgs.egg-info/dependency_links.txt
-ackermann_msgs.egg-info/top_level.txt
+/home/sunrise/dev_ws/build/ackermann_msgs/ament_cmake_python/ackermann_msgs/ackermann_msgs.egg-info/SOURCES.txt

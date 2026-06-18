@@ -1,0 +1,6 @@
+{
+  "package_name": "voice_driver",
+  "non_idl_tuples": [
+    "/home/sunrise/dev_ws/src/racing/voice_driver:srv/PlayVoice.srv"
+  ]
+}

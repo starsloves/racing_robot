@@ -1,4 +1,1 @@
-std_msgs/Header header
-
-# The 0th scan is at the bottom
-LslidarScan[16] scans
+/home/sunrise/dev_ws/src/LSLIDAR_X_ROS2-20240228/src/lslidar_msgs/msg/LslidarSweep.msg

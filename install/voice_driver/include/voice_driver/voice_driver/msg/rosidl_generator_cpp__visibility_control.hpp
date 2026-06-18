@@ -1,0 +1,1 @@
+/home/sunrise/dev_ws/build/voice_driver/rosidl_generator_cpp/voice_driver/msg/rosidl_generator_cpp__visibility_control.hpp

@@ -1,0 +1,40 @@
+stage3_return_navigator:
+  ros__parameters:
+    phase_topic: competition_phase
+    odom_topic: /odom_combined
+    imu_topic: /imu/data
+    map_topic: /map
+    scan_topic: /scan
+    cmd_topic: /cmd_vel
+    return_path_topic: /stage3_return_path
+    state_topic: stage3_state
+    feedback_topic: competition_feedback
+    start_delay_sec: 0.5
+    # 空 = 按 test_direction 加载 config/return_track_*.yaml
+    return_track_config: ''
+    test_direction: clockwise
+    return_waypoints_are_global: true
+    global_frame_id: map
+    global_yaw_source: odom
+    global_yaw_disagreement_deg: 45.0
+    return_waypoint_tolerance: 0.18
+    return_goal_tolerance: 0.10
+    return_goal_standoff_m: 0.0
+    return_goal_yaw_tolerance_deg: 8.0
+    return_path_timeout_sec: 90.0
+    pure_pursuit_linear_speed: 0.18
+    pure_pursuit_lookahead_m: 0.45
+    pure_pursuit_heading_stop_deg: 70.0
+    pure_pursuit_turn_kp: 1.8
+    turn_linear_speed: 0.08
+    turn_min_angular_speed: 0.45
+    max_angular_speed: 0.8
+    use_occupancy_grid_planner: true
+    planner_downsample: 4
+    planner_occupied_threshold: 50
+    planner_unknown_is_occupied: true
+    planner_obstacle_inflation_m: 0.14
+    planner_dynamic_obstacle_box_size_m: 0.25
+    planner_dynamic_obstacle_inflation_m: 0.12
+    planner_dynamic_obstacle_range_m: 2.5
+    planner_replan_period_sec: 0.25

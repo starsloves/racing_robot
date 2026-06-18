@@ -1,1 +1,1 @@
-int32 sign_data
+/home/sunrise/dev_ws/src/origincar/origincar_msg/msg/Sign.msg

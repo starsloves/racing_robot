@@ -1,0 +1,27 @@
+cd /home/sunrise/dev_ws
+source /opt/ros/humble/setup.bash
+
+# ═══════════════════════════════════════════════════════════════
+# 视觉赛道控制 — vision_inertial_tester
+# ═══════════════════════════════════════════════════════════════
+# plan段序列 + 开环转向 + 视觉居中PID
+
+# 编译
+colcon build --symlink-install --packages-select racing_stage2_param_test
+source install/setup.bash
+
+# 顺时针
+ros2 launch racing_stage2_param_test vision_inertial_test.launch.py
+
+# 逆时针
+ros2 launch racing_stage2_param_test vision_inertial_test.launch.py test_direction:=counterclockwise
+
+# ──────────────────────────────────────────────────────────
+# 惯导（对比用）
+# ──────────────────────────────────────────────────────────
+ros2 launch racing_stage2_param_test direct_inertial_test.launch.py
+
+# ──────────────────────────────────────────────────────────
+# 紧急停车
+# ──────────────────────────────────────────────────────────
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"

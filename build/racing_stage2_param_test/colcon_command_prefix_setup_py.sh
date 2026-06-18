@@ -1,5 +1,13 @@
 # generated from colcon_core/shell/template/command_prefix.sh.em
+. "/home/sunrise/dev_ws/install/ackermann_msgs/share/ackermann_msgs/package.sh"
+. "/home/sunrise/dev_ws/install/bno055/share/bno055/package.sh"
+. "/home/sunrise/dev_ws/install/lslidar_msgs/share/lslidar_msgs/package.sh"
 . "/home/sunrise/dev_ws/install/origincar_bringup/share/origincar_bringup/package.sh"
+. "/home/sunrise/dev_ws/install/origincar_description/share/origincar_description/package.sh"
+. "/home/sunrise/dev_ws/install/origincar_msg/share/origincar_msg/package.sh"
 . "/home/sunrise/dev_ws/install/qr_scanner/share/qr_scanner/package.sh"
+. "/home/sunrise/dev_ws/install/serial/share/serial/package.sh"
+. "/home/sunrise/dev_ws/install/lslidar_driver/share/lslidar_driver/package.sh"
+. "/home/sunrise/dev_ws/install/origincar_base/share/origincar_base/package.sh"
 . "/home/sunrise/dev_ws/install/racing_stage1/share/racing_stage1/package.sh"
 . "/home/sunrise/dev_ws/install/racing_stage2/share/racing_stage2/package.sh"

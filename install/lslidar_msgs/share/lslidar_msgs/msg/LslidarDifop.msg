@@ -1,2 +1,1 @@
-int64 temperature
-int64 rpm
+/home/sunrise/dev_ws/src/LSLIDAR_X_ROS2-20240228/src/lslidar_msgs/msg/LslidarDifop.msg

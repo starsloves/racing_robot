@@ -1,5 +1,1 @@
-## Time stamped drive command for robots with Ackermann steering.
-#  $Id$
-
-std_msgs/Header header
-AckermannDrive  drive
+/home/sunrise/dev_ws/src/origincar/3rdparty/ackermann_msgs-ros2/msg/AckermannDriveStamped.msg

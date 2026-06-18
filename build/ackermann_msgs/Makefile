@@ -315,17 +315,17 @@ ackermann_msgs__rosidl_typesupport_cpp/fast:
 .PHONY : ackermann_msgs__rosidl_typesupport_cpp/fast
 
 #=============================================================================
-# Target rules for targets named ament_cmake_python_copy_ackermann_msgs
+# Target rules for targets named ament_cmake_python_symlink_ackermann_msgs
 
 # Build rule for target.
-ament_cmake_python_copy_ackermann_msgs: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 ament_cmake_python_copy_ackermann_msgs
-.PHONY : ament_cmake_python_copy_ackermann_msgs
+ament_cmake_python_symlink_ackermann_msgs: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 ament_cmake_python_symlink_ackermann_msgs
+.PHONY : ament_cmake_python_symlink_ackermann_msgs
 
 # fast build rule for target.
-ament_cmake_python_copy_ackermann_msgs/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/ament_cmake_python_copy_ackermann_msgs.dir/build.make CMakeFiles/ament_cmake_python_copy_ackermann_msgs.dir/build
-.PHONY : ament_cmake_python_copy_ackermann_msgs/fast
+ament_cmake_python_symlink_ackermann_msgs/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ament_cmake_python_symlink_ackermann_msgs.dir/build.make CMakeFiles/ament_cmake_python_symlink_ackermann_msgs.dir/build
+.PHONY : ament_cmake_python_symlink_ackermann_msgs/fast
 
 #=============================================================================
 # Target rules for targets named ament_cmake_python_build_ackermann_msgs_egg
@@ -893,7 +893,7 @@ help:
 	@echo "... ackermann_msgs__rs"
 	@echo "... ackermann_msgs_uninstall"
 	@echo "... ament_cmake_python_build_ackermann_msgs_egg"
-	@echo "... ament_cmake_python_copy_ackermann_msgs"
+	@echo "... ament_cmake_python_symlink_ackermann_msgs"
 	@echo "... uninstall"
 	@echo "... ackermann_msgs__rosidl_generator_c"
 	@echo "... ackermann_msgs__rosidl_generator_py"

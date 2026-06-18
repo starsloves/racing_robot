@@ -1,0 +1,14 @@
+package.xml
+setup.cfg
+setup.py
+config/vision_ai_config.yaml
+racing_vision_ai/__init__.py
+racing_vision_ai/vision_ai_node.py
+racing_vision_ai.egg-info/PKG-INFO
+racing_vision_ai.egg-info/SOURCES.txt
+racing_vision_ai.egg-info/dependency_links.txt
+racing_vision_ai.egg-info/entry_points.txt
+racing_vision_ai.egg-info/requires.txt
+racing_vision_ai.egg-info/top_level.txt
+racing_vision_ai.egg-info/zip-safe
+resource/racing_vision_ai

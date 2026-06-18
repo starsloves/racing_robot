@@ -1,0 +1,3 @@
+[console_scripts]
+avoider = simple_avoidance.lidar_avoider:main
+

@@ -1,16 +1,1 @@
-// generated from rosidl_adapter/resource/msg.idl.em
-// with input from origincar_base/msg/Position.msg
-// generated code does not contain a copyright notice
-
-
-module origincar_base {
-  module msg {
-    struct Position {
-      float angle_x;
-
-      float angle_y;
-
-      float distance;
-    };
-  };
-};
+/home/sunrise/dev_ws/build/origincar_base/rosidl_adapter/origincar_base/msg/Position.idl

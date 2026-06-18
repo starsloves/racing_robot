@@ -1,3 +1,1 @@
-float32 angle_x
-float32 angle_y
-float32 distance
+/home/sunrise/dev_ws/src/origincar/origincar_base/msg/Position.msg

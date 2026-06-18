@@ -1,2 +1,1 @@
-from ackermann_msgs.msg._ackermann_drive import AckermannDrive  # noqa: F401
-from ackermann_msgs.msg._ackermann_drive_stamped import AckermannDriveStamped  # noqa: F401
+/home/sunrise/dev_ws/build/ackermann_msgs/rosidl_generator_py/ackermann_msgs/msg/__init__.py
