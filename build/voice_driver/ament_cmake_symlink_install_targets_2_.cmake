@@ -1,1 +1,0 @@
-ament_cmake_symlink_install_targets("TARGET_FILES" "/home/sunrise/dev_ws/build/voice_driver/rosidl_generator_py/voice_driver/voice_driver_s__rosidl_typesupport_c.cpython-310-aarch64-linux-gnu.so" "TARGETS" "voice_driver__rosidl_typesupport_c__pyext" "DESTINATION" "local/lib/python3.10/dist-packages/voice_driver")

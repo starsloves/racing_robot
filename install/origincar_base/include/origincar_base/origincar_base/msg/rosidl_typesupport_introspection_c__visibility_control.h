@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/origincar_base/rosidl_typesupport_introspection_c/origincar_base/msg/rosidl_typesupport_introspection_c__visibility_control.h

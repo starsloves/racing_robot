@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/origincar_msg/rosidl_generator_c/origincar_msg/msg/detail/data__struct.h

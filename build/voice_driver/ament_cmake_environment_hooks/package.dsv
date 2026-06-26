@@ -1,4 +1,0 @@
-source;share/voice_driver/local_setup.bash
-source;share/voice_driver/local_setup.dsv
-source;share/voice_driver/local_setup.sh
-source;share/voice_driver/local_setup.zsh

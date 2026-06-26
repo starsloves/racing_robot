@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/origincar_msg/rosidl_generator_py/origincar_msg/__init__.py

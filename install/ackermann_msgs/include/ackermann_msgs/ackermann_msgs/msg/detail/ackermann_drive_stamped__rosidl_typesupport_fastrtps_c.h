@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/ackermann_msgs/rosidl_typesupport_fastrtps_c/ackermann_msgs/msg/detail/ackermann_drive_stamped__rosidl_typesupport_fastrtps_c.h

@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/ackermann_msgs/rosidl_generator_rs/ackermann_msgs/rust/build.rs

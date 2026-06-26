@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/racing_stage2_param_test/launch/avoidance_straight_test.launch.py

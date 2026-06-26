@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/origincar_msg/rosidl_typesupport_fastrtps_cpp/origincar_msg/msg/rosidl_typesupport_fastrtps_cpp__visibility_control.h

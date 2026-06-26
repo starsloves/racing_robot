@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/voice_driver/rosidl_cmake/rosidl_cmake-extras.cmake

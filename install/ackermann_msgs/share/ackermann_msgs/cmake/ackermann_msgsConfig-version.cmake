@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/ackermann_msgs/ament_cmake_core/ackermann_msgsConfig-version.cmake

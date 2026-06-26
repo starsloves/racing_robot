@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/src/racing/racing_stage2_param_test/launch/direct_inertial_camera_record_test.launch.py

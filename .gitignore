@@ -1,0 +1,30 @@
+# ROS 2 colcon build artifacts
+build/
+install/
+log/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Coverage / testing
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Compiled model backup
+*.bak
+*.onnx
+
+# Temp / debug scripts (not part of source)
+seg_diagnostic.py

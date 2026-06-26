@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/voice_driver/rosidl_generator_py/voice_driver/srv/_play_voice_s.c

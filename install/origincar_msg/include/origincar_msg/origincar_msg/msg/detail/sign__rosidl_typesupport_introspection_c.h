@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/origincar_msg/rosidl_typesupport_introspection_c/origincar_msg/msg/detail/sign__rosidl_typesupport_introspection_c.h

@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/voice_driver/rosidl_typesupport_introspection_cpp/voice_driver/srv/detail/play_voice__rosidl_typesupport_introspection_cpp.hpp

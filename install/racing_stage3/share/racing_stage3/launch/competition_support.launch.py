@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/racing_stage3/launch/competition_support.launch.py

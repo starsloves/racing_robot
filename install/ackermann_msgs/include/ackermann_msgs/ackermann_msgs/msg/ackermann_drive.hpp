@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/ackermann_msgs/rosidl_generator_cpp/ackermann_msgs/msg/ackermann_drive.hpp

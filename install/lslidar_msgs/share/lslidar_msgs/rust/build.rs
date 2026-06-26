@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/lslidar_msgs/rosidl_generator_rs/lslidar_msgs/rust/build.rs

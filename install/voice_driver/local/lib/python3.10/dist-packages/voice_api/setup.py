@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/src/racing/voice_driver/voice_api/setup.py

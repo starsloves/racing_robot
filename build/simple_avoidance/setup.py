@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/src/racing/simple_avoidance/setup.py

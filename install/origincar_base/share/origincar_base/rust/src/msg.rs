@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/origincar_base/rosidl_generator_rs/origincar_base/rust/src/msg.rs

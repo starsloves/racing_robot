@@ -1,4 +1,0 @@
-srv/PlayVoice.idl
-srv/PlayVoice.srv
-srv/PlayVoice_Request.msg
-srv/PlayVoice_Response.msg

@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/origincar_msg/rosidl_generator_py/origincar_msg/_origincar_msg_s.ep.rosidl_typesupport_introspection_c.c

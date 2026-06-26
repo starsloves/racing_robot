@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/ackermann_msgs/rosidl_typesupport_fastrtps_c/ackermann_msgs/msg/rosidl_typesupport_fastrtps_c__visibility_control.h

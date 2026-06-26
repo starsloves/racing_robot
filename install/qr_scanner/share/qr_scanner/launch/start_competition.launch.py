@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/qr_scanner/launch/start_competition.launch.py

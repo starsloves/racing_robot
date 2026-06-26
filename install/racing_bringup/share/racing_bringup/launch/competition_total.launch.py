@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/racing_bringup/launch/competition_total.launch.py

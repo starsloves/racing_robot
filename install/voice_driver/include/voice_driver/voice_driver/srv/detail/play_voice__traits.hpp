@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/voice_driver/rosidl_generator_cpp/voice_driver/srv/detail/play_voice__traits.hpp

@@ -1,8 +1,0 @@
-/home/sunrise/dev_ws/install/origincar_bringup/share/origincar_bringup/launch/map_overlay.launch.py
-/home/sunrise/dev_ws/install/origincar_bringup/share/origincar_bringup/launch/origincar_bringup.launch.py
-/home/sunrise/dev_ws/install/origincar_bringup/share/origincar_bringup/launch/usb_websocket_display.launch.py
-/home/sunrise/dev_ws/install/origincar_bringup/share/origincar_bringup/launch/bringup_launch.py
-/home/sunrise/dev_ws/install/origincar_bringup/share/origincar_bringup/map/map_restricted.yaml
-/home/sunrise/dev_ws/install/origincar_bringup/share/origincar_bringup/map/map.png
-/home/sunrise/dev_ws/install/origincar_bringup/share/origincar_bringup/map/map_restricted.png
-/home/sunrise/dev_ws/install/origincar_bringup/share/origincar_bringup/map/map.yaml

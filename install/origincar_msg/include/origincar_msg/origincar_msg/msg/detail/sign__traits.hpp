@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/origincar_msg/rosidl_generator_cpp/origincar_msg/msg/detail/sign__traits.hpp

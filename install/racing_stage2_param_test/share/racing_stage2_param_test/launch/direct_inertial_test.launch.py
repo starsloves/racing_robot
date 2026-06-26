@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/racing_stage2_param_test/launch/direct_inertial_test.launch.py

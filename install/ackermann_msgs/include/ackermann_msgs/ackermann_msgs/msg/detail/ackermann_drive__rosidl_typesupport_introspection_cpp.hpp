@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/ackermann_msgs/rosidl_typesupport_introspection_cpp/ackermann_msgs/msg/detail/ackermann_drive__rosidl_typesupport_introspection_cpp.hpp

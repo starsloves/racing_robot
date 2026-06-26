@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/src/LSLIDAR_X_ROS2-20240228/src/lslidar_driver/launch/viewer_scan_launch.py

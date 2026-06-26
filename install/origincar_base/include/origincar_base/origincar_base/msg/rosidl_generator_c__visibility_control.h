@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/origincar_base/rosidl_generator_c/origincar_base/msg/rosidl_generator_c__visibility_control.h

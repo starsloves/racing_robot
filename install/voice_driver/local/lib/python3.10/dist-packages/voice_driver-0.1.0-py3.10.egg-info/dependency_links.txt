@@ -1,1 +1,0 @@
-/home/sunrise/dev_ws/build/voice_driver/ament_cmake_python/voice_driver/voice_driver.egg-info/dependency_links.txt
