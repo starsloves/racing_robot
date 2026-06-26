@@ -29,6 +29,8 @@ setup(
             'twist_cmd_relay = racing_stage2_param_test.twist_cmd_relay:main',
             'vision_inertial_tester = racing_stage2_param_test.vision_inertial_tester:main',
             'data_recorder = racing_stage2_param_test.data_recorder:main',
+            'bpu_direct_test = racing_stage2_param_test.bpu_direct_test:main',
+            'seg_debug_viewer = racing_stage2_param_test.seg_debug_viewer:main',
         ],
     },
 )

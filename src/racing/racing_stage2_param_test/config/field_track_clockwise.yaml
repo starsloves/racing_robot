@@ -1,0 +1,39 @@
+# field_track_clockwise.yaml — 顺时针矩形赛道段定义
+# 取代 launch 参数 rectangle_*_leg_m / rect_corner_*_deg
+#
+# 角度：正=左转(+ω)，负=右转(-ω)。方向已烘焙在值中（非对称的场测补偿值）。
+
+track_type: rectangle_closed
+direction: clockwise
+
+segments:
+  - type: turn
+    angle_deg: 90.0
+    description: rect_enter_align
+  - type: move
+    distance_m: 1.10
+    description: rect_first_leg
+  - type: turn
+    angle_deg: -80.0
+    description: rect_corner_1
+  - type: move
+    distance_m: 0.50
+    description: rect_side_1
+  - type: turn
+    angle_deg: -85.0
+    description: rect_corner_2
+  - type: move
+    distance_m: 3.00
+    description: rect_top
+  - type: turn
+    angle_deg: -87.0
+    description: rect_corner_3
+  - type: move
+    distance_m: 0.50
+    description: rect_side_2
+  - type: turn
+    angle_deg: -87.0
+    description: rect_corner_4
+  - type: move
+    distance_m: 1.10
+    description: rect_return_origin

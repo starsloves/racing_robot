@@ -26,73 +26,41 @@ def _sigmoid(x):
     return 1.0 / (1.0 + np.exp(-np.clip(x, -20, 20)))
 
 
-def _nms_single(boxes, scores, iou_thr=0.45):
-    if len(scores) == 0:
-        return -1
-    order = scores.argsort()[::-1]
-    keep = []
-    while len(order) > 0:
-        i = order[0]
-        keep.append(i)
-        if len(order) == 1:
-            break
-        x1 = np.maximum(boxes[i, 0], boxes[order[1:], 0])
-        y1 = np.maximum(boxes[i, 1], boxes[order[1:], 1])
-        x2 = np.minimum(boxes[i, 2], boxes[order[1:], 2])
-        y2 = np.minimum(boxes[i, 3], boxes[order[1:], 3])
-        inter = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
-        ai = (boxes[i, 2] - boxes[i, 0]) * (boxes[i, 3] - boxes[i, 1])
-        ao = (boxes[order[1:], 2] - boxes[order[1:], 0]) * (boxes[order[1:], 3] - boxes[order[1:], 1])
-        iou = inter / (ai + ao - inter + 1e-6)
-        order = order[1:][iou < iou_thr]
-    return keep[0] if keep else -1
+# ── 缓存网格（每帧重建太慢） ───────────────────────────────────
+_GRIDS = None
+_STRIDES = None
 
 
-def _make_grids(strides=(8, 16, 32)):
-    grids = []
-    arrs = []
+def _init_grids():
+    global _GRIDS, _STRIDES
+    strides = (8, 16, 32)
+    grids, arrs = [], []
     for s in strides:
         n = 640 // s
         xv, yv = np.meshgrid(np.arange(n, dtype=np.float32), np.arange(n, dtype=np.float32))
-        g = np.stack((xv, yv), axis=-1).reshape(-1, 2)
-        grids.append(g)
+        grids.append(np.stack((xv, yv), axis=-1).reshape(-1, 2))
         arrs.append(np.full(n * n, s, dtype=np.float32))
-    return np.concatenate(grids, axis=0), np.concatenate(arrs, axis=0)
-
-
-def _decode_bboxes(raw):
-    """raw: (37, 8400, 1) → bboxes (N,4) xyxy, scores (N,), coeffs (N,32)"""
-    raw = raw.reshape(-1, 8400).T  # (8400, 37)
-    grid_xy, strides = _make_grids()
-
-    cx = (_sigmoid(raw[:, 0]) * 2 - 0.5 + grid_xy[:, 0]) * strides
-    cy = (_sigmoid(raw[:, 1]) * 2 - 0.5 + grid_xy[:, 1]) * strides
-    w = ((_sigmoid(raw[:, 2]) * 2) ** 2) * strides
-    h = ((_sigmoid(raw[:, 3]) * 2) ** 2) * strides
-
-    bb = np.zeros((raw.shape[0], 4), dtype=np.float32)
-    bb[:, 0] = cx - w / 2
-    bb[:, 1] = cy - h / 2
-    bb[:, 2] = cx + w / 2
-    bb[:, 3] = cy + h / 2
-    return bb, _sigmoid(raw[:, 4]), raw[:, 5:37]
+    _GRIDS = np.concatenate(grids, axis=0)
+    _STRIDES = np.concatenate(arrs, axis=0)
 
 
 def _compute_seg_mask(output0, output1, conf_thr=0.25, mask_thr=0.5):
-    """→ (160,160) bool 或 None"""
-    bb, scores, coeffs = _decode_bboxes(output0)
+    """→ (160,160) bool or None. Cached grids, skip NMS, use argmax for speed."""
+    global _GRIDS, _STRIDES
+    if _GRIDS is None:
+        _init_grids()
+
+    raw = output0.reshape(-1, 8400).T       # (8400, 37)
+    scores = 1.0 / (1.0 + np.exp(-np.clip(raw[:, 4], -20, 20)))
+
+    best = np.argmax(scores)
+    if scores[best] < conf_thr:
+        return None
+
     proto = output1.reshape(32, 160, 160)
-
-    valid = scores > conf_thr
-    if not valid.any():
-        return None
-    best = _nms_single(bb[valid], scores[valid])
-    if best < 0:
-        return None
-
-    mc = coeffs[valid][best]
-    flat = _sigmoid(mc @ proto.reshape(32, -1)).reshape(160, 160)
-    return flat > mask_thr
+    mc = raw[best, 5:37]                    # (32,) mask coeffs
+    flat = 1.0 / (1.0 + np.exp(-np.clip(mc @ proto.reshape(32, -1), -20, 20)))
+    return flat.reshape(160, 160) > mask_thr
 
 
 def _center_offset(binary, roi_bottom=0.35):
@@ -168,7 +136,6 @@ class VisionLaneEngine:
 
         # BPU 推理（直接传 numpy 数组，无需 pyDNNTensor 包装）
         try:
-            from hobot_dnn import pyeasy_dnn as dnn
             outs = self.model.forward([inp])
         except Exception as e:
             self._err(f'[VisionEngine] infer: {e}')

@@ -18,6 +18,7 @@ import numpy as np
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
@@ -59,7 +60,7 @@ class VisionInertialTester(DirectInertialTester):
             ('vision_kd_center',       0.4),
             ('vision_ki_center',       0.02),
             ('vision_max_angular',     0.8),
-            ('vision_lost_timeout',    0.6),
+            ('vision_lost_timeout_sec', 0.6),
             ('vision_log_dir',         'log/vision_record'),
             ('vision_enable_log',      True),
         ]:
@@ -71,7 +72,7 @@ class VisionInertialTester(DirectInertialTester):
         self.vision_kd      = g('vision_kd_center').value
         self.vision_ki      = g('vision_ki_center').value
         self.vision_max_ang = g('vision_max_angular').value
-        self.vision_lost_to = g('vision_lost_timeout').value
+        self.vision_lost_to = g('vision_lost_timeout_sec').value
 
         mp = g('vision_model_path').value or self._default_model_path()
         self.engine = VisionLaneEngine(
@@ -82,8 +83,13 @@ class VisionInertialTester(DirectInertialTester):
         )
 
         cam_group = ReentrantCallbackGroup()
+        cam_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            depth=1,
+        )
         self.create_subscription(
-            Image, g('vision_camera_topic').value, self._cam_cb, 10,
+            Image, g('vision_camera_topic').value, self._cam_cb, cam_qos,
             callback_group=cam_group,
         )
         self.vision_viz_pub = self.create_publisher(Image, '/lane_seg_viz', 10)
@@ -109,8 +115,9 @@ class VisionInertialTester(DirectInertialTester):
         ))
 
     def _init_log(self):
-        d = os.path.expanduser(os.path.join('~', self.vision_log_dir)) if hasattr(self, 'vision_log_dir') else \
-            os.path.expanduser('~/log/vision_record')
+        log_dir = str(self.get_parameter('vision_log_dir').value).strip() or 'log/vision_record'
+        d = os.path.expanduser(log_dir) if os.path.isabs(log_dir) \
+            else os.path.join(os.path.expanduser('~'), log_dir)
         os.makedirs(d, exist_ok=True)
         p = os.path.join(d, f'vision_{time.strftime("%Y%m%d_%H%M%S")}.csv')
         try:
@@ -188,7 +195,8 @@ class VisionInertialTester(DirectInertialTester):
         super().start_segment(index)
         if self.current_segment and self.current_segment.get('type') == 'turn':
             a = float(self.current_segment.get('angle_deg', 0))
-            dur = abs(a) * (math.pi / 180.0) / self.turn_angular_speed
+            w = max(self.turn_angular_speed, 0.01)
+            dur = abs(a) * (math.pi / 180.0) / w
             total = dur * 1.15 + 0.5
             self.get_logger().info(
                 f'[Vision] 转向 {a:+.0f}° ω={self.turn_angular_speed:.2f} '
@@ -204,7 +212,8 @@ class VisionInertialTester(DirectInertialTester):
 
         now = self.get_clock().now().nanoseconds / 1e9
         elap = (now - self.segment_started_at) if self.segment_started_at else 0
-        dur = abs(a) * (math.pi / 180.0) / self.turn_angular_speed
+        w = max(self.turn_angular_speed, 0.01)
+        dur = abs(a) * (math.pi / 180.0) / w
         total = dur * 1.15 + 0.5
 
         self.get_logger().info(

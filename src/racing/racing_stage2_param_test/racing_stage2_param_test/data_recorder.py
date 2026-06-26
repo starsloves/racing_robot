@@ -22,7 +22,6 @@ data_recorder.py — 综合数据记录节点
   — 避障 —
   avoid_state, avoid_leg_m, avoid_turn_deg
   — 导航段 —
-  plan_index, seg_type, seg_desc
 """
 
 import os
@@ -78,7 +77,6 @@ CSV_HEADER = [
     'front_dist', 'front_angle_deg', 'left_dist', 'right_dist',
     'phase', 'mission_state', 'feedback',
     'avoid_state', 'avoid_leg_m', 'avoid_turn_deg',
-    'plan_index', 'seg_type', 'seg_desc',
 ]
 
 
@@ -237,7 +235,6 @@ class DataRecorder(Node):
             self._last_scan_left, self._last_scan_right,
             self.buf['phase'], self.buf['state'], self.buf['feedback'],
             '', 0.0, 0.0,
-            -1, '', '',
         ]
 
         self._csv_writer.writerow(row)

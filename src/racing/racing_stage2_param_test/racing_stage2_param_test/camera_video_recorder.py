@@ -18,7 +18,7 @@ class CameraVideoRecorder(Node):
 
         self.declare_parameter('camera_topic', '/aurora/rgb/image_raw')
         self.declare_parameter('use_compressed', False)
-        self.declare_parameter('output_dir', '/home/sunrise/dev_ws')
+        self.declare_parameter('output_dir', 'log/video')
         self.declare_parameter('output_prefix', 'stage2_path')
         self.declare_parameter('fps', 15.0)
         self.declare_parameter('fourcc', 'MJPG')

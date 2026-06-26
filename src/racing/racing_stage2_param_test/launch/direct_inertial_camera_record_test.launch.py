@@ -38,9 +38,7 @@ def generate_launch_description():
     imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/imu/data')
     test_direction_arg = DeclareLaunchArgument('test_direction', default_value='clockwise')
     test_start_mode_arg = DeclareLaunchArgument('test_start_mode', default_value='auto')
-    rectangle_first_leg_arg = DeclareLaunchArgument('rectangle_first_leg_m', default_value='1.10')
-    rectangle_side_leg_arg = DeclareLaunchArgument('rectangle_side_leg_m', default_value='0.50')
-    rectangle_top_leg_arg = DeclareLaunchArgument('rectangle_top_leg_m', default_value='2.80')
+    field_track_yaml_arg = DeclareLaunchArgument('field_track_yaml', default_value='')
     enable_cmd_relay_arg = DeclareLaunchArgument('enable_cmd_relay', default_value='true')
     relay_input_topic_arg = DeclareLaunchArgument('relay_input_topic', default_value='/stage2_cmd_vel')
     relay_output_topic_arg = DeclareLaunchArgument('relay_output_topic', default_value='/cmd_vel')
@@ -80,9 +78,7 @@ def generate_launch_description():
                 'imu_topic': LaunchConfiguration('imu_topic'),
                 'test_direction': LaunchConfiguration('test_direction'),
                 'test_start_mode': LaunchConfiguration('test_start_mode'),
-                'rectangle_first_leg_m': LaunchConfiguration('rectangle_first_leg_m'),
-                'rectangle_side_leg_m': LaunchConfiguration('rectangle_side_leg_m'),
-                'rectangle_top_leg_m': LaunchConfiguration('rectangle_top_leg_m'),
+                'field_track_yaml': LaunchConfiguration('field_track_yaml'),
             },
         ],
         output='screen',
@@ -123,9 +119,7 @@ def generate_launch_description():
         imu_topic_arg,
         test_direction_arg,
         test_start_mode_arg,
-        rectangle_first_leg_arg,
-        rectangle_side_leg_arg,
-        rectangle_top_leg_arg,
+        field_track_yaml_arg,
         enable_cmd_relay_arg,
         relay_input_topic_arg,
         relay_output_topic_arg,

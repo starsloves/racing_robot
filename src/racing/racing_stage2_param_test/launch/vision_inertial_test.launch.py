@@ -13,6 +13,12 @@ from ament_index_python import get_package_share_directory
 
 def generate_launch_description():
     racing_stage2_share = get_package_share_directory('racing_stage2')
+    rviz_config_path = os.path.join(
+        '/home/sunrise/dev_ws/src/racing/rviz_test', 'config', 'test.rviz')
+    stage2_dir = get_package_share_directory('racing_stage2')
+    param_test_dir = get_package_share_directory('racing_stage2_param_test')
+    inertial_config = os.path.join(stage2_dir, 'config', 'inertial_stage2.yaml')
+    test_config = os.path.join(param_test_dir, 'config', 'direct_inertial_test.yaml')
 
     args = [
         ('include_camera',        'true',  '启动相机'),
@@ -30,6 +36,7 @@ def generate_launch_description():
         ('vision_max_angular',    '0.9',   '视觉最大角速度'),
         ('vision_lost_timeout_sec', '0.6', '视觉丢失回退超时'),
         ('vision_conf_threshold', '0.3',   '检测置信度阈值'),
+        ('include_rviz',         'false',  '启动RViz可视化'),
     ]
     decl = [DeclareLaunchArgument(name, default_value=dfl, description=desc)
             for name, dfl, desc in args]
@@ -49,9 +56,12 @@ def generate_launch_description():
     tester = Node(
         package='racing_stage2_param_test',
         executable='vision_inertial_tester',
-        name='vision_inertial_tester',
+        name='stage2_inertial_navigator',
         output='screen',
-        parameters=[{
+        parameters=[
+            inertial_config,
+            test_config,
+            {
             'test_direction':            LaunchConfiguration('test_direction'),
             'ring_linear_speed':         LaunchConfiguration('ring_linear_speed'),
             'vision_enabled':            LaunchConfiguration('vision_enabled'),
@@ -60,7 +70,8 @@ def generate_launch_description():
             'vision_max_angular':        LaunchConfiguration('vision_max_angular'),
             'vision_lost_timeout_sec':   LaunchConfiguration('vision_lost_timeout_sec'),
             'vision_conf_threshold':     LaunchConfiguration('vision_conf_threshold'),
-        }],
+        },
+        ],
     )
 
     relay = Node(
@@ -87,4 +98,13 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('include_recorder')),
     )
 
-    return LaunchDescription(decl + [support, tester, relay, recorder])
+    rviz = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='vision_debug_rviz',
+        arguments=['-d', rviz_config_path],
+        condition=IfCondition(LaunchConfiguration('include_rviz')),
+        output='screen',
+    )
+
+    return LaunchDescription(decl + [support, tester, relay, recorder, rviz])

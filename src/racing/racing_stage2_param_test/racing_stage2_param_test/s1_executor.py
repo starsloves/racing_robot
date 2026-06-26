@@ -1,3 +1,4 @@
+# DEPRECATED: 此文件未被任何模块 import，实际避障逻辑已在 direct_inertial_tester._try_avoid_step() 中内联实现。保留仅作参考。
 """S1：原地慢转够角 → 停稳 → 直行 L → … → 回 ψ₀ 停稳。
 
 不用边走边转、不在直行时纠航、不用 IMU 闭环 bang-bang（场测 yaw 乱跳会来回拧）。

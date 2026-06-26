@@ -3,6 +3,8 @@ import math
 import rclpy
 from nav_msgs.msg import Odometry
 
+from ament_index_python import get_package_share_directory
+from racing_stage2_param_test import field_track
 from racing_stage2.stage2_inertial_navigator import Stage2InertialNavigator
 from racing_stage2_param_test.s1_geometry import (
     build_s1_plan,
@@ -19,19 +21,8 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.declare_parameter('test_direction', 'clockwise')
         self.declare_parameter('test_start_mode', 'auto')
         self.declare_parameter('test_feedback_prefix', '惯导参数测试')
-        self.declare_parameter('rectangle_first_leg_m', 1.20)
-        self.declare_parameter('rectangle_side_leg_m', 0.60)
-        self.declare_parameter('rectangle_top_leg_m', 2.80)
-        # 第一个转角（rect_enter_align）的目标角度，默认 95°（替代原 90°）
-        # sign 由方向决定：clockwise→+，counterclockwise→-
-        # 仅影响第 1 段；后 4 个 corner 仍是 ∓90°
-        self.declare_parameter('rect_enter_align_deg', 95.0)
-
-        # 第二个转角（rect_corner_1，第 1 个 corner）的目标角度，默认 80°
-        self.declare_parameter('rect_corner_1_deg', 80.0)
-        self.declare_parameter('rect_corner_2_deg', 85.0)
-        self.declare_parameter('rect_corner_3_deg', 85.0)
-        self.declare_parameter('rect_corner_4_deg', 85.0)
+        # field_track yaml 路径。空=根据 direction 自动选择 config/field_track_{direction}.yaml
+        self.declare_parameter('field_track_yaml', '')
 
 
         # Stage1 边转边避参数（子类可重新声明覆盖默认值）
@@ -47,25 +38,12 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.test_direction = self.resolve_test_direction(self.test_direction_raw)
         self.test_start_mode = str(self.get_parameter('test_start_mode').value).strip().lower() or 'auto'
         self.test_feedback_prefix = str(self.get_parameter('test_feedback_prefix').value).strip() or '惯导参数测试'
-        self.rectangle_first_leg_m = max(
-            0.0,
-            float(self.get_parameter('rectangle_first_leg_m').value),
-        )
-        self.rectangle_side_leg_m = max(
-            0.0,
-            float(self.get_parameter('rectangle_side_leg_m').value),
-        )
-        self.rectangle_top_leg_m = max(
-            0.0,
-            float(self.get_parameter('rectangle_top_leg_m').value),
-        )
-
-        self.rect_enter_align_deg = float(self.get_parameter('rect_enter_align_deg').value)
-
-        self.rect_corner_1_deg = float(self.get_parameter('rect_corner_1_deg').value)
-        self.rect_corner_2_deg = float(self.get_parameter('rect_corner_2_deg').value)
-        self.rect_corner_3_deg = float(self.get_parameter('rect_corner_3_deg').value)
-        self.rect_corner_4_deg = float(self.get_parameter('rect_corner_4_deg').value)
+        ft_custom = str(self.get_parameter('field_track_yaml').value)
+        if ft_custom:
+            self._field_track_yaml = ft_custom
+        else:
+            pkg_dir = get_package_share_directory('racing_stage2_param_test')
+            self._field_track_yaml = field_track.resolve_yaml_path(pkg_dir, self.test_direction, '')
 
         # Stage1 边转边避几何与执行参数
         self._avoid_offset_deg = float(self.get_parameter('avoid_leg_heading_offset_deg').value)
@@ -85,8 +63,8 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.reported_start_delay = False
         self.last_progress_bucket = -1
         self.detour_front_confirm_count = 0
-        self.detour_front_test_angle_deg = min(self.detour_front_angle_deg, 35.0)
-        self.detour_side_test_window_deg = min(self.detour_side_window_deg, 16.0)
+        self.detour_front_test_angle_deg = self.detour_front_angle_deg
+        self.detour_side_test_window_deg = self.detour_side_window_deg
         self.detour_heading_gate_rad = math.radians(12.0)
         self.detour_confirm_required = 3
         self.detour_turn_settle_sec = 0.30
@@ -117,8 +95,7 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.get_logger().info(
             f'{self.test_feedback_prefix}节点已就绪，方向={self.direction_text()}，'
             f'模式={self.start_mode_text()}，'
-            f'矩形参数=({self.rectangle_first_leg_m:.2f}, '
-            f'{self.rectangle_side_leg_m:.2f}, {self.rectangle_top_leg_m:.2f})m，'
+            f'field_track={self._field_track_yaml}，'
             f'避障=Stage1边转边避 ±{self._avoid_offset_deg:.0f}deg×'
             f'{self._avoid_leg1_distance_m:.2f}m/{self._avoid_leg2_distance_m:.2f}m，'
             f'前向检测角±{self.detour_front_test_angle_deg:.0f}度'
@@ -126,8 +103,7 @@ class DirectInertialTester(Stage2InertialNavigator):
         self._log_session(
             'CONFIG',
             f'方向={self.direction_text()} 模式={self.start_mode_text()} '
-            f'矩形=({self.rectangle_first_leg_m:.2f},{self.rectangle_side_leg_m:.2f},'
-            f'{self.rectangle_top_leg_m:.2f})m '
+            f'field_track={self._field_track_yaml} '
             f'避障±{self._avoid_offset_deg:.0f}deg '
             f'L1={self._avoid_leg1_distance_m:.2f}m L2={self._avoid_leg2_distance_m:.2f}m '
             f'pose_source={self._navigation_pose_source} '
@@ -1033,30 +1009,32 @@ class DirectInertialTester(Stage2InertialNavigator):
             return '避障后回到原路线'
 
         if self.direction == 'clockwise':
+            d = segment.get('distance_m', 0)
             labels = {
                 'rect_enter_align': '通道后起点入口对齐',
-                'rect_first_leg': f'底边向左 {self.rectangle_first_leg_m:.2f}m 段',
+                'rect_first_leg': f'底边向左 {d:.2f}m 段',
                 'rect_corner_1': '左下拐角',
-                'rect_side_1': f'左边向上 {self.rectangle_side_leg_m:.2f}m 段',
+                'rect_side_1': f'左边向上 {d:.2f}m 段',
                 'rect_corner_2': '左上拐角',
-                'rect_top': f'顶边向右 {self.rectangle_top_leg_m:.2f}m 段',
+                'rect_top': f'顶边向右 {d:.2f}m 段',
                 'rect_corner_3': '右上拐角',
-                'rect_side_2': f'右边向下 {self.rectangle_side_leg_m:.2f}m 段',
+                'rect_side_2': f'右边向下 {d:.2f}m 段',
                 'rect_corner_4': '右下拐角',
-                'rect_return_origin': f'底边回起点 {self.rectangle_first_leg_m:.2f}m 段',
+                'rect_return_origin': f'底边回起点 {d:.2f}m 段',
             }
         else:
+            d = segment.get('distance_m', 0)
             labels = {
                 'rect_enter_align': '通道后起点入口对齐',
-                'rect_first_leg': f'底边向右 {self.rectangle_first_leg_m:.2f}m 段',
+                'rect_first_leg': f'底边向右 {d:.2f}m 段',
                 'rect_corner_1': '右下拐角',
-                'rect_side_1': f'右边向上 {self.rectangle_side_leg_m:.2f}m 段',
+                'rect_side_1': f'右边向上 {d:.2f}m 段',
                 'rect_corner_2': '右上拐角',
-                'rect_top': f'顶边向左 {self.rectangle_top_leg_m:.2f}m 段',
+                'rect_top': f'顶边向左 {d:.2f}m 段',
                 'rect_corner_3': '左上拐角',
-                'rect_side_2': f'左边向下 {self.rectangle_side_leg_m:.2f}m 段',
+                'rect_side_2': f'左边向下 {d:.2f}m 段',
                 'rect_corner_4': '左下拐角',
-                'rect_return_origin': f'底边回起点 {self.rectangle_first_leg_m:.2f}m 段',
+                'rect_return_origin': f'底边回起点 {d:.2f}m 段',
             }
         return labels.get(description, description)
 
@@ -1177,6 +1155,7 @@ class DirectInertialTester(Stage2InertialNavigator):
         return None
 
     def maybe_inject_detour(self):
+        self.get_logger().warn('[DEPRECATED] maybe_inject_detour() 未被 run_move_segment() 调用，实际使用 _try_avoid_step()（Stage1 边转边避）')
         if self.detour_detection_locked:
             self.detour_front_confirm_count = 0
             return False
@@ -1451,6 +1430,22 @@ class DirectInertialTester(Stage2InertialNavigator):
                     f'直行到位，准备切换到下一段'
                 )
 
+        # 优先：段完成检查（放在避障之前，确保段不会被避障阻塞）
+        if self.current_position is not None and self.segment_heading is not None:
+            progress = self.projected_distance()
+            if (self.current_segment is not None
+                    and self.current_segment.get('type') == 'move'):
+                target_distance = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
+                if progress >= target_distance - self.distance_tolerance:
+                    self._log_session(
+                        'SEGMENT_DONE',
+                        f'{self.current_segment.get("description", "?")} '
+                        f'{progress:.3f}/{target_distance:.2f}m | {self._pose_diagnostic()}',
+                    )
+                    self.cmd_pub.publish(self.create_twist())
+                    self.start_segment(self.plan_index + 1)
+                    return
+
         # Stage1 风格边转边避（替代旧的 run_stage1_style_obstacle_avoidance）
         if self._try_avoid_step():
             if self._avoid_state != self._last_avoid_state_logged:
@@ -1465,18 +1460,6 @@ class DirectInertialTester(Stage2InertialNavigator):
         if self.current_position is None or self.segment_heading is None:
             self.cmd_pub.publish(self.create_twist())
             self._maybe_log_telemetry('move_no_pose')
-            return
-
-        progress = self.projected_distance()
-        target_distance = float(self.current_segment['distance_m'])
-        if progress >= target_distance - self.distance_tolerance:
-            self._log_session(
-                'SEGMENT_DONE',
-                f'{self.current_segment.get("description", "?")} '
-                f'{progress:.3f}/{target_distance:.2f}m | {self._pose_diagnostic()}',
-            )
-            self.cmd_pub.publish(self.create_twist())
-            self.start_segment(self.plan_index + 1)
             return
 
         angular = self._compute_move_lateral_angular()
@@ -1549,8 +1532,11 @@ class DirectInertialTester(Stage2InertialNavigator):
         )
 
     def finish_mission(self):
-        self._log_session('MISSION', f'完成 | {self._pose_diagnostic()}')
+        self._log_session('MISSION', '完成 | ' + self._pose_diagnostic())
         super().finish_mission()
+        self.get_logger().info('第二阶段测试完成，自动退出')
+        if hasattr(self, '_request_stop') and self._request_stop is not None:
+            self._request_stop()
 
     def control_loop(self):
         if self.corridor_path_active:
@@ -1593,76 +1579,14 @@ class DirectInertialTester(Stage2InertialNavigator):
             self.start_segment(self.plan_index + 1)
 
     def build_ring_plan(self):
-        # 5 段转角独立 yaml 可调：rect_enter_align_deg / rect_corner_{1,2,3,4}_deg
-        sign = 1.0 if self.direction == 'clockwise' else -1.0
-        entry_turn = sign * self.rect_enter_align_deg
-        corner1_turn = -sign * self.rect_corner_1_deg
-        corner2_turn = -sign * self.rect_corner_2_deg
-        corner3_turn = -sign * self.rect_corner_3_deg
-        corner4_turn = -sign * self.rect_corner_4_deg
-
-        return [
-            {
-                'type': 'turn',
-                'angle_deg': entry_turn,
-                'description': 'rect_enter_align',
-            },
-            {
-                'type': 'move',
-                'distance_m': self.rectangle_first_leg_m,
-                'speed': self.ring_linear_speed,
-                'description': 'rect_first_leg',
-                'allow_detour': True,
-            },
-            {
-                'type': 'turn',
-                'angle_deg': corner1_turn,
-                'description': 'rect_corner_1',
-            },
-            {
-                'type': 'move',
-                'distance_m': self.rectangle_side_leg_m,
-                'speed': self.ring_linear_speed,
-                'description': 'rect_side_1',
-                'allow_detour': True,
-            },
-            {
-                'type': 'turn',
-                'angle_deg': corner2_turn,
-                'description': 'rect_corner_2',
-            },
-            {
-                'type': 'move',
-                'distance_m': self.rectangle_top_leg_m,
-                'speed': self.ring_linear_speed,
-                'description': 'rect_top',
-                'allow_detour': True,
-            },
-            {
-                'type': 'turn',
-                'angle_deg': corner3_turn,
-                'description': 'rect_corner_3',
-            },
-            {
-                'type': 'move',
-                'distance_m': self.rectangle_side_leg_m,
-                'speed': self.ring_linear_speed,
-                'description': 'rect_side_2',
-                'allow_detour': True,
-            },
-            {
-                'type': 'turn',
-                'angle_deg': corner4_turn,
-                'description': 'rect_corner_4',
-            },
-            {
-                'type': 'move',
-                'distance_m': self.rectangle_first_leg_m,
-                'speed': self.ring_linear_speed,
-                'description': 'rect_return_origin',
-                'allow_detour': True,
-            },
-        ]
+        pkg_dir = get_package_share_directory('racing_stage2_param_test')
+        yaml_path = field_track.resolve_yaml_path(pkg_dir, self.direction, '')
+        return field_track.load_plan(
+            yaml_path,
+            self.direction,
+            ring_linear_speed=self.ring_linear_speed,
+            allow_detour=True,
+        )
 
     def phase_callback(self, msg):
         self.phase = 2
@@ -1723,9 +1647,7 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.publish_feedback(
             f'{self.test_feedback_prefix}开始执行，方向: {self.direction_text()}，'
             f'模式: {self.start_mode_text()}，'
-            f'矩形圈: 左/右横边{self.rectangle_first_leg_m:.2f}m，'
-            f'竖边{self.rectangle_side_leg_m:.2f}m，'
-            f'顶部横边{self.rectangle_top_leg_m:.2f}m'
+            f'field_track: {self._field_track_yaml}'
         )
         self.begin_inertial_plan_after_nav(nav_succeeded=self.nav_succeeded_for_test_start())
 
@@ -1750,6 +1672,7 @@ def main(args=None):
         cli_topics=['/cmd_vel', '/stage2_cmd_vel'],
     )
 
+    node._request_stop = request_stop
     try:
         spin_until_stop(node, stop_event)
     except KeyboardInterrupt:
