@@ -1,36 +1,59 @@
 # field_track_counterclockwise.yaml — 逆时针矩形赛道段定义
+# 角度：正=左转(+ω)，负=右转(-ω)
+# 入口先右转 91°（≈-90°-1°补偿），四个拐角依次左转
+# 边长与顺时针一致，转角取反
 
 track_type: rectangle_closed
 direction: counterclockwise
 
 segments:
+  # ── 入口对齐 ────────────────────────────────────────
+  # Stage1 结束车头朝 Y+（ψ=90°），右转 91° 进入赛道
   - type: turn
-    angle_deg: -90.0
+    angle_deg: -91.0
     description: rect_enter_align
+
+  # ── 第一段（底边向右） ──────────────────────────────
   - type: move
     distance_m: 1.10
     description: rect_first_leg
+
+  # ── 右下拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 80.0
+    angle_deg: 78.0
     description: rect_corner_1
+
+  # ── 第二段（右边向上） ──────────────────────────────
   - type: move
-    distance_m: 0.50
+    distance_m: 0.39
     description: rect_side_1
+
+  # ── 右上拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 85.0
+    angle_deg: 77.0
     description: rect_corner_2
+
+  # ── 第三段（顶边向左） ──────────────────────────────
   - type: move
     distance_m: 3.00
     description: rect_top
+
+  # ── 左上拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 87.0
+    angle_deg: 75.0
     description: rect_corner_3
+
+  # ── 第四段（左边向下） ──────────────────────────────
   - type: move
-    distance_m: 0.50
+    distance_m: 0.36
     description: rect_side_2
+
+  # ── 左下拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 87.0
+    angle_deg: 75.0
     description: rect_corner_4
+
+  # ── 第五段（底边回起点） ────────────────────────────
   - type: move
     distance_m: 1.10
     description: rect_return_origin
