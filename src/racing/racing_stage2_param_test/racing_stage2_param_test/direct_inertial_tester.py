@@ -719,7 +719,8 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.right_clearance_distance = data.right_clearance
         self._avoider.on_scan(
             data.front_distance, data.front_angle_deg,
-            data.left_clearance, data.right_clearance,
+            data.left_clearance, data.left_angle_deg,
+            data.right_clearance, data.right_angle_deg,
         )
 
     def _compute_move_lateral_angular(self) -> float:

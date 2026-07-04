@@ -10,23 +10,23 @@ stage2_inertial_navigator:
     #     默认=back_deg 即回到 psi0；调大可补偿打滑
     avoid_turn_away_deg: 30.0
     avoid_turn_back_deg: 40.0
-    avoid_recover_deg: 40.0
+    avoid_recover_deg: 10.0
 
     # ── 直腿距离 ──────────────────────────────────────
     # leg1: turn_away 后的直行长度
     # leg2: turn_back 后的直行长度
-    avoid_leg1_distance_m: 0.05
-    avoid_leg2_distance_m: 0.10
+    avoid_leg1_distance_m: 0.22
+    avoid_leg2_distance_m: 0.22
 
     # ── 侧边触发 ─────────────────────────────────────
     # left/right_clearance < 此值 → 触发侧边避障
-    side_detour_threshold_m: 0.40
+    side_detour_threshold_m: 0.18
 
     # ── 避障转弯到位精度 ────────────────────────────
     avoider_heading_tolerance_deg: 1.5
 
     # ── 直行障碍检测（从 inertial_stage2.yaml 移来）─
-    detour_obstacle_distance: 0.48      # 直行段前方障碍触发距离(m)
+    detour_obstacle_distance: 0.52      # 直行段前方障碍触发距离(m)
     detour_front_angle_deg: 18.0        # 前方检测扇形半角(°)
     detour_side_center_deg: 65.0        # 侧方检测中心角(°)
     detour_side_window_deg: 30.0        # 侧方检测窗口宽度(°)

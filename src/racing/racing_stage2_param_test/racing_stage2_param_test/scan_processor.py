@@ -1,4 +1,4 @@
-"""scan_processor.py — 激光雷达扫描处理，输出前/左/右障碍距离。"""
+"""scan_processor.py — 激光雷达扫描处理，输出前/左/右障碍距离和角度。"""
 
 import math
 from dataclasses import dataclass
@@ -10,7 +10,9 @@ class ScanData:
     front_distance: float
     front_angle_deg: float
     left_clearance: float
+    left_angle_deg: float
     right_clearance: float
+    right_angle_deg: float
 
 
 class ScanProcessor:
@@ -24,17 +26,19 @@ class ScanProcessor:
             msg, -self.front_angle_deg, self.front_angle_deg
         )
         half = self.side_window_deg / 2.0
-        left = self._sector_min_distance(
+        left_dist, left_angle = self._sector_min_distance(
             msg, self.side_center_deg - half, self.side_center_deg + half
         )
-        right = self._sector_min_distance(
+        right_dist, right_angle = self._sector_min_distance(
             msg, -self.side_center_deg - half, -self.side_center_deg + half
         )
         return ScanData(
             front_distance=front_dist,
             front_angle_deg=front_angle,
-            left_clearance=left,
-            right_clearance=right,
+            left_clearance=left_dist,
+            left_angle_deg=left_angle,
+            right_clearance=right_dist,
+            right_angle_deg=right_angle,
         )
 
     def _sector_closest_obstacle(self, scan_msg, min_angle_deg, max_angle_deg):
@@ -53,7 +57,9 @@ class ScanProcessor:
         return min_distance, min_angle
 
     def _sector_min_distance(self, scan_msg, min_angle_deg, max_angle_deg):
+        """返回扇形内最近距离及对应角度"""
         min_distance = float('inf')
+        min_angle = 0.0
         for index, distance in enumerate(scan_msg.ranges):
             if math.isinf(distance) or math.isnan(distance) or distance <= 0.0:
                 continue
@@ -63,4 +69,5 @@ class ScanProcessor:
                 continue
             if distance < min_distance:
                 min_distance = distance
-        return min_distance
+                min_angle = angle_deg
+        return min_distance, min_angle

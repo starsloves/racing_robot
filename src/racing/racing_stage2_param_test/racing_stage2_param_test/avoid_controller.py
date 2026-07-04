@@ -96,15 +96,19 @@ class AvoidController:
         self.front_distance = float('inf')
         self.front_angle_deg = 0.0
         self.left_clearance = float('inf')
+        self.left_angle_deg = 0.0
         self.right_clearance = float('inf')
+        self.right_angle_deg = 0.0
 
     # ── 外部接口 ───────────────────────────────────────────
 
-    def on_scan(self, front_distance, front_angle_deg, left_clearance, right_clearance):
+    def on_scan(self, front_distance, front_angle_deg, left_clearance, left_angle_deg, right_clearance, right_angle_deg):
         self.front_distance = front_distance
         self.front_angle_deg = front_angle_deg
         self.left_clearance = left_clearance
+        self.left_angle_deg = left_angle_deg
         self.right_clearance = right_clearance
+        self.right_angle_deg = right_angle_deg
 
     def reset(self):
         prev = self._state
@@ -127,7 +131,27 @@ class AvoidController:
 
     def has_obstacle(self) -> bool:
         return (math.isfinite(self.front_distance)
-                and self.front_distance < self.cfg.detour_obstacle_distance)
+                and self._effective_front_m() < self.cfg.detour_obstacle_distance)
+
+    # ── 角度换算 ───────────────────────────────────────────
+
+    def _effective_front_m(self) -> float:
+        """有效前向距离：雷达测距 × cos(水平偏角)，统一到车头方向"""
+        if not math.isfinite(self.front_distance):
+            return float('inf')
+        return self.front_distance * abs(math.cos(math.radians(self.front_angle_deg)))
+
+    def _effective_left_m(self) -> float:
+        """有效左侧横向距离：雷达测距 × sin(射线角度)，统一到垂直车身方向"""
+        if not math.isfinite(self.left_clearance):
+            return float('inf')
+        return self.left_clearance * abs(math.sin(math.radians(self.left_angle_deg)))
+
+    def _effective_right_m(self) -> float:
+        """有效右侧横向距离"""
+        if not math.isfinite(self.right_clearance):
+            return float('inf')
+        return self.right_clearance * abs(math.sin(math.radians(self.right_angle_deg)))
 
     # ── 工具 ───────────────────────────────────────────────
 
@@ -215,13 +239,13 @@ class AvoidController:
 
     def select_detour_side(self):
         """根据侧边空间选择绕行方向。返回 'left' 或 'right'，两侧都不够则 None。"""
-        left_ok = (math.isfinite(self.left_clearance)
-                   and self.left_clearance >= self.cfg.side_detour_threshold_m)
-        right_ok = (math.isfinite(self.right_clearance)
-                    and self.right_clearance >= self.cfg.side_detour_threshold_m)
+        left_eff = self._effective_left_m()
+        right_eff = self._effective_right_m()
+        left_ok = math.isfinite(left_eff) and left_eff >= self.cfg.side_detour_threshold_m
+        right_ok = math.isfinite(right_eff) and right_eff >= self.cfg.side_detour_threshold_m
 
         if left_ok and right_ok:
-            return 'left' if self.left_clearance >= self.right_clearance else 'right'
+            return 'left' if left_eff >= right_eff else 'right'
         if left_ok:
             return 'left'
         if right_ok:
@@ -251,16 +275,15 @@ class AvoidController:
             )
             return False
 
-        # 触发条件：前方障碍 OR 侧边空间不足
-        front_blocked = (math.isfinite(self.front_distance)
-                         and self.front_distance < self.cfg.detour_obstacle_distance)
+        # 触发条件：前方障碍 OR 侧边空间不足（用角度换算后的有效距离）
+        front_blocked = math.isfinite(self.front_distance) and self._effective_front_m() < self.cfg.detour_obstacle_distance
         side_cramped = False
         if self.cfg.side_detour_enabled:
             side_cramped = (
                 (math.isfinite(self.left_clearance)
-                 and self.left_clearance < self.cfg.side_detour_threshold_m)
+                 and self._effective_left_m() < self.cfg.side_detour_threshold_m)
                 or (math.isfinite(self.right_clearance)
-                    and self.right_clearance < self.cfg.side_detour_threshold_m)
+                    and self._effective_right_m() < self.cfg.side_detour_threshold_m)
             )
 
         if not front_blocked and not side_cramped:
@@ -276,13 +299,12 @@ class AvoidController:
             return
 
         # 确定障碍在哪一侧
-        front_blocked = (math.isfinite(self.front_distance)
-                         and self.front_distance < self.cfg.detour_obstacle_distance)
+        front_blocked = math.isfinite(self.front_distance) and self._effective_front_m() < self.cfg.detour_obstacle_distance
         side_cramped = self.cfg.side_detour_enabled and (
             (math.isfinite(self.left_clearance)
-             and self.left_clearance < self.cfg.side_detour_threshold_m)
+             and self._effective_left_m() < self.cfg.side_detour_threshold_m)
             or (math.isfinite(self.right_clearance)
-                and self.right_clearance < self.cfg.side_detour_threshold_m)
+                and self._effective_right_m() < self.cfg.side_detour_threshold_m)
         )
 
         if front_blocked and not side_cramped:
@@ -319,10 +341,10 @@ class AvoidController:
             f'→ ψ₁={math.degrees(plan.psi1):.1f}° '
             f'→ ψ₂={math.degrees(plan.psi2):.1f}° '
             f'→ ψ₃={math.degrees(plan.psi3):.1f}° '
-            f'L₁={plan.leg1_distance_m:.2f}m L₂={plan.leg2_distance_m:.2f}m'
-            f' front={self.front_distance:.2f}m '
-            f'left={self._fmt_clr(self.left_clearance)} '
-            f'right={self._fmt_clr(self.right_clearance)}'
+            f'L₁={plan.leg1_distance_m:.2f}m L₂={plan.leg2_distance_m:.2f}m '
+            f'eff_front={self._effective_front_m():.2f}m '
+            f'eff_left={self._effective_left_m():.2f}m '
+            f'eff_right={self._effective_right_m():.2f}m'
         )
 
     @staticmethod
