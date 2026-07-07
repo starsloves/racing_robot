@@ -1,7 +1,10 @@
 """Stage3 param test — map-frame return navigation to P (0.20, 0.20).
 
-Uses global waypoints (like stage2 corridor after QR scan) with optional A*
-on /map. Waypoint truth: ``config/return_track_*.yaml``.
+参考 Stage2 corridor 导航模式：
+- 起点通过 return_start_json 参数传入（JSON 格式，类似 corridor_waypoints_json）
+- 终点通过 return_goal_json 参数传入（默认 P 点）
+- 可选中间路点通过 return_waypoints_json 传入
+- 全程 Pure Pursuit + A* 动态规划
 """
 
 from __future__ import annotations
@@ -18,7 +21,6 @@ from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Int32, String
 
 from .global_path_planner import GlobalPathPlannerMixin
-from .return_track import load_return_track_doc, resolve_config_path, return_waypoints_from_doc
 
 
 class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
@@ -35,18 +37,22 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         self.declare_parameter('state_topic', 'stage3_state')
         self.declare_parameter('feedback_topic', 'competition_feedback')
         self.declare_parameter('start_delay_sec', 0.5)
-        self.declare_parameter('return_track_config', '')
-        self.declare_parameter('test_direction', 'clockwise')
+        
+        # 起点/终点/路点参数（JSON 格式，类似 Stage2 corridor）
+        self.declare_parameter('return_start_json', '')
+        self.declare_parameter('return_goal_json', '[{"x":0.20,"y":0.20,"speed":0.10,"yaw_deg":100.0,"description":"p_point"}]')
         self.declare_parameter('return_waypoints_json', '[]')
-        self.declare_parameter('return_waypoints_are_global', True)
+        
+        # 坐标系与容差
         self.declare_parameter('global_frame_id', 'map')
         self.declare_parameter('global_yaw_source', 'odom')
         self.declare_parameter('global_yaw_disagreement_deg', 45.0)
         self.declare_parameter('return_waypoint_tolerance', 0.18)
         self.declare_parameter('return_goal_tolerance', 0.10)
-        self.declare_parameter('return_goal_standoff_m', 0.0)
         self.declare_parameter('return_goal_yaw_tolerance_deg', 8.0)
         self.declare_parameter('return_path_timeout_sec', 90.0)
+        
+        # Pure Pursuit 参数
         self.declare_parameter('pure_pursuit_linear_speed', 0.18)
         self.declare_parameter('pure_pursuit_lookahead_m', 0.45)
         self.declare_parameter('pure_pursuit_heading_stop_deg', 70.0)
@@ -54,6 +60,8 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         self.declare_parameter('turn_linear_speed', 0.08)
         self.declare_parameter('turn_min_angular_speed', 0.45)
         self.declare_parameter('max_angular_speed', 0.8)
+        
+        # A* 规划参数
         self.declare_parameter('use_occupancy_grid_planner', True)
         self.declare_parameter('planner_downsample', 4)
         self.declare_parameter('planner_occupied_threshold', 50)
@@ -74,9 +82,13 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         self.state_topic = self.get_parameter('state_topic').value
         self.feedback_topic = self.get_parameter('feedback_topic').value
         self.start_delay_sec = float(self.get_parameter('start_delay_sec').value)
-        self.return_track_config = str(self.get_parameter('return_track_config').value or '')
-        self.test_direction = str(self.get_parameter('test_direction').value or 'clockwise')
-        self.return_waypoints_are_global = bool(self.get_parameter('return_waypoints_are_global').value)
+        
+        # JSON 参数
+        self.return_start_json = str(self.get_parameter('return_start_json').value or '').strip()
+        self.return_goal_json = str(self.get_parameter('return_goal_json').value or '').strip()
+        self.return_waypoints_json = str(self.get_parameter('return_waypoints_json').value or '').strip()
+        
+        # 坐标系
         self.global_frame_id = str(self.get_parameter('global_frame_id').value).strip() or 'map'
         self.global_yaw_source = str(self.get_parameter('global_yaw_source').value).strip().lower() or 'odom'
         if self.global_yaw_source not in ('auto', 'odom', 'imu'):
@@ -84,13 +96,16 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         self.global_yaw_disagreement = math.radians(
             float(self.get_parameter('global_yaw_disagreement_deg').value)
         )
+        
+        # 容差
         self.return_waypoint_tolerance = float(self.get_parameter('return_waypoint_tolerance').value)
         self.return_goal_tolerance = float(self.get_parameter('return_goal_tolerance').value)
-        self.return_goal_standoff_m = float(self.get_parameter('return_goal_standoff_m').value)
         self.return_goal_yaw_tolerance = math.radians(
             float(self.get_parameter('return_goal_yaw_tolerance_deg').value)
         )
         self.return_path_timeout_sec = float(self.get_parameter('return_path_timeout_sec').value)
+        
+        # Pure Pursuit
         self.pure_pursuit_linear_speed = float(self.get_parameter('pure_pursuit_linear_speed').value)
         self.pure_pursuit_lookahead_m = float(self.get_parameter('pure_pursuit_lookahead_m').value)
         self.pure_pursuit_heading_stop = math.radians(
@@ -100,6 +115,8 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         self.turn_linear_speed = float(self.get_parameter('turn_linear_speed').value)
         self.turn_min_angular_speed = float(self.get_parameter('turn_min_angular_speed').value)
         self.max_angular_speed = float(self.get_parameter('max_angular_speed').value)
+        
+        # A* 规划
         self.use_occupancy_grid_planner = bool(self.get_parameter('use_occupancy_grid_planner').value)
         self.planner_downsample = max(1, int(self.get_parameter('planner_downsample').value))
         self.planner_occupied_threshold = int(self.get_parameter('planner_occupied_threshold').value)
@@ -153,64 +170,85 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         self.create_subscription(Int32, self.phase_topic, self.phase_callback, event_qos)
         self.create_subscription(Imu, self.imu_topic, self.imu_callback, 10)
         self.create_subscription(Odometry, self.odom_topic, self.odom_callback, 10)
-        if self.return_waypoints_are_global and self.use_occupancy_grid_planner:
+        if self.use_occupancy_grid_planner:
             self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, map_qos)
             self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
 
         self.init_global_path_planner()
         self.publish_state('idle')
         self.create_timer(0.05, self.control_loop)
-        self.get_logger().info('stage3 param test return navigator ready (map waypoints)')
-
-    def load_return_waypoints(self):
-        raw_json = str(self.get_parameter('return_waypoints_json').value or '').strip()
-        if raw_json and raw_json not in ('[]', ''):
-            return self.parse_waypoints_json(
-                raw_json,
-                'return_waypoints_json',
-                self.pure_pursuit_linear_speed,
-            )
-
-        config_path = resolve_config_path(self.test_direction, self.return_track_config or None)
-        doc = load_return_track_doc(config_path)
-        return return_waypoints_from_doc(doc, self.pure_pursuit_linear_speed)
-
-    def _log_return_track_summary(self):
-        if not self.return_waypoints:
-            self.get_logger().error('no return waypoints loaded')
-            return
-        goal = self.return_waypoints[-1]
-        self.get_logger().info(
-            f'return track: {len(self.return_waypoints)} map waypoints, '
-            f'goal=({goal["x"]:.2f},{goal["y"]:.2f}) direction={self.test_direction}'
-        )
+        self.get_logger().info('stage3 param test return navigator ready (param waypoints)')
 
     def parse_waypoints_json(self, raw_json, param_name, default_speed):
         try:
             raw_waypoints = json.loads(raw_json)
         except json.JSONDecodeError:
-            self.get_logger().error(f'{param_name} is invalid, fallback to empty waypoints')
+            self.get_logger().error(f'{param_name} is invalid, fallback to empty')
             return []
 
         if not isinstance(raw_waypoints, list):
-            self.get_logger().error(f'{param_name} must decode to a list, fallback to empty waypoints')
+            self.get_logger().error(f'{param_name} must decode to a list, fallback to empty')
             return []
 
-        sanitized_waypoints = []
-        for index, raw_waypoint in enumerate(raw_waypoints):
-            if not isinstance(raw_waypoint, dict):
+        sanitized = []
+        for index, raw in enumerate(raw_waypoints):
+            if not isinstance(raw, dict):
                 continue
-
-            yaw_deg = raw_waypoint.get('yaw_deg')
-            sanitized_waypoints.append({
-                'x': float(raw_waypoint.get('x', 0.0)),
-                'y': float(raw_waypoint.get('y', 0.0)),
-                'speed': float(raw_waypoint.get('speed', default_speed)),
+            yaw_deg = raw.get('yaw_deg')
+            sanitized.append({
+                'x': float(raw.get('x', 0.0)),
+                'y': float(raw.get('y', 0.0)),
+                'speed': float(raw.get('speed', default_speed)),
                 'yaw_deg': None if yaw_deg is None else float(yaw_deg),
-                'description': raw_waypoint.get('description', f'return_wp_{index}'),
+                'description': raw.get('description', f'wp_{index}'),
             })
+        return sanitized
 
-        return sanitized_waypoints
+    def load_return_waypoints(self):
+        """加载返程路点：起点(JSON) + 中间路点(JSON) + 终点(JSON)"""
+        # 加载起点
+        start = None
+        if self.return_start_json and self.return_start_json not in ('[]', ''):
+            start_list = self.parse_waypoints_json(self.return_start_json, 'return_start_json', 0.12)
+            if start_list:
+                start = start_list[0]
+
+        # 加载中间路点
+        mid = []
+        if self.return_waypoints_json and self.return_waypoints_json not in ('[]', ''):
+            mid = self.parse_waypoints_json(self.return_waypoints_json, 'return_waypoints_json',
+                                            self.pure_pursuit_linear_speed)
+
+        # 加载终点
+        goal_list = self.parse_waypoints_json(self.return_goal_json, 'return_goal_json', 0.10)
+        goal = goal_list[0] if goal_list else {
+            'x': 0.20, 'y': 0.20, 'speed': 0.10, 'yaw_deg': 100.0,
+            'description': 'p_point',
+        }
+
+        # 合并
+        all_waypoints = []
+        if start is not None and start['description'] != goal['description']:
+            all_waypoints.append(start)
+        all_waypoints.extend(mid)
+        all_waypoints.append(goal)
+
+        if not all_waypoints:
+            all_waypoints = [start, goal] if start else [goal]
+
+        return all_waypoints
+
+    def _log_return_track_summary(self):
+        if not self.return_waypoints:
+            self.get_logger().error('no return waypoints loaded')
+            return
+        start = self.return_waypoints[0]
+        goal = self.return_waypoints[-1]
+        self.get_logger().info(
+            f'return: {len(self.return_waypoints)} waypoints, '
+            f'start=({start["x"]:.2f},{start["y"]:.2f}) '
+            f'goal=({goal["x"]:.2f},{goal["y"]:.2f})'
+        )
 
     def quaternion_to_yaw(self, orientation):
         siny_cosp = 2.0 * (orientation.w * orientation.z + orientation.x * orientation.y)
@@ -249,31 +287,11 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
     def publish_return_path(self):
         if not self.return_waypoints:
             return
-
-        if self.return_waypoints_are_global:
-            points = [
-                (waypoint['x'], waypoint['y'])
-                for waypoint in self.return_waypoints
-            ]
-            self.publish_path_points(points, self.global_frame_id)
-            return
-
-        if self.path_origin_pose is None or self.path_origin_yaw is None:
-            return
-
-        origin_x, origin_y = self.path_origin_pose
-        origin_yaw = self.path_origin_yaw
-        points = []
-        for waypoint in self.return_waypoints:
-            points.append((
-                origin_x
-                + math.cos(origin_yaw) * waypoint['x']
-                - math.sin(origin_yaw) * waypoint['y'],
-                origin_y
-                + math.sin(origin_yaw) * waypoint['x']
-                + math.cos(origin_yaw) * waypoint['y'],
-            ))
-        self.publish_path_points(points, self.odom_frame_id)
+        points = [
+            (wp['x'], wp['y'])
+            for wp in self.return_waypoints
+        ]
+        self.publish_path_points(points, self.global_frame_id)
 
     def imu_callback(self, msg):
         self.current_yaw = self.quaternion_to_yaw(msg.orientation)
@@ -305,10 +323,16 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
             self.start_after_time = self.get_clock().now().nanoseconds / 1e9 + self.start_delay_sec
             self.clear_return_path()
             self.publish_state('armed')
+            start = self.return_waypoints[0] if self.return_waypoints else None
             goal = self.return_waypoints[-1] if self.return_waypoints else {'x': 0.2, 'y': 0.2}
-            self.publish_feedback(
-                f'进入阶段三，沿 map 航点返航至 P ({goal["x"]:.2f}, {goal["y"]:.2f})'
-            )
+            if start:
+                self.publish_feedback(
+                    f'阶段三：从 ({start["x"]:.2f},{start["y"]:.2f}) 返航至 P ({goal["x"]:.2f},{goal["y"]:.2f})'
+                )
+            else:
+                self.publish_feedback(
+                    f'阶段三：返航至 P ({goal["x"]:.2f},{goal["y"]:.2f})'
+                )
 
     def reset_mission(self):
         self.cmd_pub.publish(Twist())
@@ -326,54 +350,28 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         self.publish_state('idle')
 
     def start_return_path(self):
-        if self.current_position is None:
-            return
-        if self.return_waypoints_are_global and self.current_global_position() is None:
-            return
-        if not self.return_waypoints_are_global and self.current_yaw is None:
+        if self.current_global_position() is None:
             return
         if not self.return_waypoints:
             self.fail_mission('阶段三未配置返航航点，无法返回 P 点')
             return
 
         self.mission_active = True
-        if self.return_waypoints_are_global:
-            self.path_origin_pose = None
-            self.path_origin_yaw = None
-        else:
-            self.path_origin_pose = self.current_position
-            self.path_origin_yaw = self.current_yaw
+        self.path_origin_pose = None
+        self.path_origin_yaw = None
         self.path_started_at = self.get_clock().now().nanoseconds / 1e9
         self.path_index = 0
         self.publish_return_path()
         self.publish_state('running')
         self.publish_feedback(
-            f'阶段三开始沿 map 固定航点返航，共 {len(self.return_waypoints)} 个航点'
+            f'阶段三开始返航，共 {len(self.return_waypoints)} 个航点'
         )
 
     def navigation_pose(self):
-        if self.return_waypoints_are_global:
-            return self.current_global_position()
-        return self.local_pose()
+        return self.current_global_position()
 
     def navigation_yaw(self):
-        if self.return_waypoints_are_global:
-            return self.current_global_yaw()
-        return self.local_yaw()
-
-    def local_pose(self):
-        if self.current_position is None or self.path_origin_pose is None or self.path_origin_yaw is None:
-            return None
-        dx = self.current_position[0] - self.path_origin_pose[0]
-        dy = self.current_position[1] - self.path_origin_pose[1]
-        x_local = math.cos(self.path_origin_yaw) * dx + math.sin(self.path_origin_yaw) * dy
-        y_local = -math.sin(self.path_origin_yaw) * dx + math.cos(self.path_origin_yaw) * dy
-        return (x_local, y_local)
-
-    def local_yaw(self):
-        if self.current_yaw is None or self.path_origin_yaw is None:
-            return None
-        return self.normalize_angle(self.current_yaw - self.path_origin_yaw)
+        return self.current_global_yaw()
 
     def waypoint_target_yaw(self, index):
         waypoint = self.return_waypoints[index]
@@ -399,16 +397,7 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
 
     def waypoint_target_position(self, index):
         waypoint = self.return_waypoints[index]
-        target_x = waypoint['x']
-        target_y = waypoint['y']
-
-        if index == len(self.return_waypoints) - 1 and self.return_goal_standoff_m > 1e-6:
-            target_yaw = self.waypoint_target_yaw(index)
-            if target_yaw is not None:
-                target_x -= self.return_goal_standoff_m * math.cos(target_yaw)
-                target_y -= self.return_goal_standoff_m * math.sin(target_yaw)
-
-        return (target_x, target_y)
+        return (waypoint['x'], waypoint['y'])
 
     def maybe_advance_waypoint(self, nav_pose):
         while self.path_index < len(self.return_waypoints) - 1:
@@ -481,7 +470,7 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
 
         target_waypoint = self.return_waypoints[self.path_index]
         target_x, target_y = self.waypoint_target_position(self.path_index)
-        if self.use_occupancy_grid_planner and self.return_waypoints_are_global:
+        if self.use_occupancy_grid_planner:
             planned_points = self.plan_global_path(nav_pose, (target_x, target_y), now_sec)
             if planned_points is None:
                 self.publish_state('planner_waiting_for_map')

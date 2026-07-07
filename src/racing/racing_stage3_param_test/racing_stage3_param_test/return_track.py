@@ -1,4 +1,4 @@
-"""Return path waypoints in map frame (aligned with stage2 field_track finish)."""
+"""Return path waypoints in map frame. 保留 YAML 加载功能供备用配置使用。"""
 
 from __future__ import annotations
 
@@ -15,18 +15,15 @@ def _package_config_path(filename: str) -> str:
     return os.path.join(share, 'config', filename)
 
 
-def default_config_path(direction: str) -> str:
-    d = str(direction or 'clockwise').strip().lower()
-    if d in ('counterclockwise', 'ccw', 'anticlockwise', '逆时针'):
-        return _package_config_path('return_track_counterclockwise.yaml')
-    return _package_config_path('return_track_clockwise.yaml')
+def default_config_path() -> str:
+    return _package_config_path('return_track_backup.yaml')
 
 
-def resolve_config_path(direction: str, config_path: Optional[str] = None) -> str:
+def resolve_config_path(config_path: Optional[str] = None) -> str:
     explicit = str(config_path or '').strip()
     if explicit:
         return os.path.abspath(explicit)
-    return default_config_path(direction)
+    return default_config_path()
 
 
 def load_return_track_doc(config_path: str) -> Dict[str, Any]:

@@ -1,3 +1,4 @@
+import json
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -17,11 +18,26 @@ def generate_launch_description():
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='true')
     include_lidar_arg = DeclareLaunchArgument('include_lidar', default_value='true')
     include_camera_arg = DeclareLaunchArgument('include_camera', default_value='false')
-    test_direction_arg = DeclareLaunchArgument('test_direction', default_value='clockwise')
-    return_track_config_arg = DeclareLaunchArgument('return_track_config', default_value='')
+    carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
     auto_start_phase3_arg = DeclareLaunchArgument('auto_start_phase3', default_value='true')
     phase3_start_delay_arg = DeclareLaunchArgument('phase3_start_delay_sec', default_value='3.0')
-    carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
+
+    # 起点参数（JSON 格式，类似 Stage2 corridor_waypoints_json）
+    # 默认 = Stage2 顺时针整圈终点 (2.38, 3.32) @ 180°
+    # 空 = 从 /odom_combined 读取 phase=3 时的实际位姿
+    start_json_arg = DeclareLaunchArgument(
+        'start_json',
+        default_value='[{"x":2.38,"y":3.32,"speed":0.12,"yaw_deg":180.0,"description":"mission_start"}]',
+    )
+
+    # 终点参数（默认 P 点 (0.20, 0.20) @ 100°）
+    goal_json_arg = DeclareLaunchArgument(
+        'goal_json',
+        default_value='[{"x":0.20,"y":0.20,"speed":0.10,"yaw_deg":100.0,"description":"p_point"}]',
+    )
+
+    # 可选中间路点（空 = 纯 A* 规划）
+    waypoints_json_arg = DeclareLaunchArgument('waypoints_json', default_value='[]')
 
     support_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(support_launch_path),
@@ -42,8 +58,9 @@ def generate_launch_description():
         parameters=[
             return_config,
             {
-                'test_direction': LaunchConfiguration('test_direction'),
-                'return_track_config': LaunchConfiguration('return_track_config'),
+                'return_start_json': LaunchConfiguration('start_json'),
+                'return_goal_json': LaunchConfiguration('goal_json'),
+                'return_waypoints_json': LaunchConfiguration('waypoints_json'),
             },
         ],
         output='screen',
@@ -61,11 +78,12 @@ def generate_launch_description():
         include_bringup_arg,
         include_lidar_arg,
         include_camera_arg,
-        test_direction_arg,
-        return_track_config_arg,
+        carto_slam_arg,
         auto_start_phase3_arg,
         phase3_start_delay_arg,
-        carto_slam_arg,
+        start_json_arg,
+        goal_json_arg,
+        waypoints_json_arg,
         support_stack,
         stage3_return_navigator,
         TimerAction(

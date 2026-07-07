@@ -1,6 +1,6 @@
-"""avoid_controller.py — 边转边避独立模块。
+"""avoid_controller.py — 边转边避独立模块 + 转角避障。
 
-闭环航向控制 + 侧边距离触发 + 绕行方向选择。
+闭环航向控制 + 侧边距离触发 + 绕行方向选择 + 转角单腿绕行。
 
 用法：
     config = AvoidConfig(...)
@@ -8,6 +8,13 @@
     avoider.on_scan(front, angle, left, right)
     if avoider.step(NavState(...)):
         return  # 避障已发布 cmd_vel，导航跳过本帧
+    
+    转角避障（外部直接触发）：
+    avoider.start_corner_avoid(psi0, obstacle_left, away_deg, back_deg, leg_m)
+    while avoider.step(nav):
+        if avoider.corner_mode_completed:
+            # 转角绕过完成，跳段
+            break
 """
 
 import math
@@ -32,27 +39,32 @@ class NavState:
 
 
 class AvoidConfig:
+    """避障控制器配置（所有默认值与 yaml 保持一致）"""
     def __init__(
         self,
-        detour_obstacle_distance=0.48,
-        detour_heading_gate_deg=12.0,
+        detour_obstacle_distance=0.55,         # yaml: 0.55
+        detour_heading_gate_deg=25.0,          # yaml: 25.0
         detour_confirm_required=3,
         detour_cooldown_sec=3.0,
-        avoid_leg1_distance_m=0.05,
-        avoid_leg2_distance_m=0.10,
+        avoid_leg1_distance_m=0.33,            # yaml: 0.33
+        avoid_leg2_distance_m=0.44,            # yaml: 0.44
         avoid_leg_linear_speed=0.10,
         avoid_turn_linear_speed=0.08,
         avoid_leg_distance_tol_m=0.04,
         avoid_turn_angular_speed=0.40,
-        avoid_turn_away_deg=30.0,
-        avoid_turn_back_deg=40.0,
-        avoid_recover_deg=40.0,
-        avoider_heading_tolerance_deg=1.5,
+        avoid_turn_away_deg=40.0,              # yaml: 40.0
+        avoid_turn_back_deg=50.0,              # yaml: 50.0
+        avoid_recover_deg=15.0,                # yaml: 15.0
+        avoider_heading_tolerance_deg=1.5,     # yaml: 1.5
         distance_tolerance=0.05,
         heading_kp=1.6,
-        side_detour_threshold_m=0.18,
+        side_detour_threshold_m=0.18,          # yaml: 0.18
         side_detour_enabled=True,
         turn_min_angular_speed=0.10,
+        # ── 转角避障参数 ───────────────────────────────────
+        corner_turn_away_deg=45.0,             # yaml: 45.0
+        corner_turn_back_deg=45.0,             # yaml: 45.0
+        corner_leg_distance_m=0.40,            # yaml: 0.40
     ):
         self.detour_obstacle_distance = detour_obstacle_distance
         self.detour_heading_gate_rad = math.radians(detour_heading_gate_deg)
@@ -77,6 +89,10 @@ class AvoidConfig:
         self.side_detour_threshold_m = side_detour_threshold_m
         self.side_detour_enabled = side_detour_enabled
         self.turn_min_angular_speed = turn_min_angular_speed
+        # ── 转角避障 ───────────────────────────────────────
+        self.corner_turn_away_deg = float(corner_turn_away_deg)
+        self.corner_turn_back_deg = float(corner_turn_back_deg)
+        self.corner_leg_distance_m = float(corner_leg_distance_m)
 
 
 class AvoidController:
@@ -92,6 +108,7 @@ class AvoidController:
         self._turn_target_yaw = None
         self._cooldown_until = 0.0
         self._last_state_logged = 'idle'
+        self._corner_mode_completed = False
 
         self.front_distance = float('inf')
         self.front_angle_deg = 0.0
@@ -99,6 +116,13 @@ class AvoidController:
         self.left_angle_deg = 0.0
         self.right_clearance = float('inf')
         self.right_angle_deg = 0.0
+        
+        # ── 横偏追踪（诊断用） ────────────────────────────────
+        self._cross_at_trigger = None      # 触发避障时的横偏
+        self._cross_at_turn_away = None    # turn_away 完成时横偏
+        self._cross_at_leg1 = None         # leg1 完成时横偏
+        self._cross_at_turn_back = None    # turn_back 完成时横偏
+        self._cross_at_leg2 = None         # leg2 完成时横偏
 
     # ── 外部接口 ───────────────────────────────────────────
 
@@ -117,6 +141,13 @@ class AvoidController:
         self._leg_start_xy = None
         self._turn_target_yaw = None
         self._cooldown_until = 0.0
+        self._corner_mode_completed = False
+        # 清空横偏追踪
+        self._cross_at_trigger = None
+        self._cross_at_turn_away = None
+        self._cross_at_leg1 = None
+        self._cross_at_turn_back = None
+        self._cross_at_leg2 = None
         if prev != 'idle' and prev != self._last_state_logged:
             self._log.info(f'[AVOID] 状态 {prev} → idle')
             self._last_state_logged = 'idle'
@@ -126,12 +157,49 @@ class AvoidController:
         return self._state != 'idle'
 
     @property
+    def corner_mode_completed(self) -> bool:
+        return self._corner_mode_completed
+
+    @property
+    def corner_mode_active(self) -> bool:
+        return (self._plan is not None
+                and self._plan.corner_mode
+                and self._state != 'idle'
+                and not self._corner_mode_completed)
+
+    @property
     def state_str(self) -> str:
         return self._state
 
     def has_obstacle(self) -> bool:
         return (math.isfinite(self.front_distance)
                 and self._effective_front_m() < self.cfg.detour_obstacle_distance)
+
+    def start_corner_avoid(self, psi0_rad, obstacle_left, corner_away_deg, corner_back_deg, corner_leg_m):
+        """直接启动转角避障（不经触发检测），替代 _start() 供段末调用。"""
+        self.reset()
+        plan = build_avoid_plan(
+            psi0_rad=psi0_rad,
+            leg1_distance_m=corner_leg_m,
+            leg2_distance_m=0.0,
+            offset_away_rad=math.radians(corner_away_deg),
+            offset_back_rad=math.radians(corner_back_deg),
+            offset_recover_rad=0.0,
+            obstacle_left=obstacle_left,
+            corner_mode=True,
+        )
+        self._plan = plan
+        self._cross_at_trigger = 0.0
+        self._state = 'turn_away'
+        self._turn_target_yaw = plan.psi1
+        dir_text = '左' if obstacle_left else '右'
+        self._log_detour(
+            f'转角避障 obstacle={dir_text} '
+            f'ψ₀={math.degrees(plan.psi0):.1f}° '
+            f'→ ψ₁={math.degrees(plan.psi1):.1f}° '
+            f'→ ψ₂={math.degrees(plan.psi2):.1f}° '
+            f'L={plan.leg1_distance_m:.3f}m (斜边)'
+        )
 
     # ── 角度换算 ───────────────────────────────────────────
 
@@ -215,6 +283,19 @@ class AvoidController:
     def _leg_done(self, x, y, target_m):
         return self._leg_traveled_m(x, y) >= target_m - self.cfg.avoid_leg_distance_tol_m
 
+    # ── 横偏计算（诊断用）─────────────────────────────────
+    
+    def _compute_cross_m(self, nav: NavState) -> float:
+        """计算当前位置相对段起点的横向偏移（米）"""
+        if nav.segment_start_pose is None or nav.segment_heading is None:
+            return 0.0
+        from racing_stage2_param_test.avoid_geometry import cross_segment_m
+        return cross_segment_m(
+            origin_xy=nav.segment_start_pose[:2],
+            heading_rad=nav.segment_heading,
+            position_xy=nav.position
+        )
+
     # ── 预估投影 ───────────────────────────────────────────
 
     def _estimate_projection_m(self):
@@ -266,14 +347,6 @@ class AvoidController:
         if nav.segment_heading is not None and nav.yaw is not None:
             if abs(self._angle_error(nav.segment_heading, nav.yaw)) > self.cfg.detour_heading_gate_rad:
                 return False
-
-        remaining = float(seg['distance_m']) - nav.projected_distance
-        needed = self._estimate_projection_m()
-        if remaining < needed - 0.05:
-            self._log_detour(
-                f'剩余里程 {remaining:.2f}m 不足（避障需约 {needed:.2f}m），跳过触发'
-            )
-            return False
 
         # 触发条件：前方障碍 OR 侧边空间不足（用角度换算后的有效距离）
         front_blocked = math.isfinite(self.front_distance) and self._effective_front_m() < self.cfg.detour_obstacle_distance
@@ -334,17 +407,22 @@ class AvoidController:
         self._plan = plan
         self._state = 'turn_away'
         self._turn_target_yaw = plan.psi1
+        
+        # 记录触发时横偏
+        self._cross_at_trigger = self._compute_cross_m(nav)
+        
         dir_text = '左' if obstacle_left else '右'
         self._log_detour(
-            f'避障启动 obstacle={dir_text} '
+            f'═══ 避障启动 ═══ 障碍在{dir_text} '
             f'ψ₀={math.degrees(plan.psi0):.1f}° '
-            f'→ ψ₁={math.degrees(plan.psi1):.1f}° '
-            f'→ ψ₂={math.degrees(plan.psi2):.1f}° '
-            f'→ ψ₃={math.degrees(plan.psi3):.1f}° '
+            f'→ ψ₁={math.degrees(plan.psi1):.1f}°(偏开) '
+            f'→ ψ₂={math.degrees(plan.psi2):.1f}°(回转) '
+            f'→ ψ₃={math.degrees(plan.psi3):.1f}°(回正) '
             f'L₁={plan.leg1_distance_m:.2f}m L₂={plan.leg2_distance_m:.2f}m '
-            f'eff_front={self._effective_front_m():.2f}m '
-            f'eff_left={self._effective_left_m():.2f}m '
-            f'eff_right={self._effective_right_m():.2f}m'
+            f'前方={self._effective_front_m():.2f}m '
+            f'左侧={self._effective_left_m():.2f}m '
+            f'右侧={self._effective_right_m():.2f}m '
+            f'【触发时横偏={self._cross_at_trigger*100:.1f}cm】'
         )
 
     @staticmethod
@@ -356,6 +434,7 @@ class AvoidController:
     # ── 主步进 ─────────────────────────────────────────────
 
     def step(self, nav: NavState) -> bool:
+        # 全局超时检查（防止打滑导致 FSM 卡死）
         if nav.position is None or nav.yaw is None:
             if self.is_active:
                 self.cmd_pub.publish(self._zero_twist())
@@ -379,23 +458,17 @@ class AvoidController:
             self.reset()
             return False
 
-        if self._state not in ('idle', 'fine_align'):
-            seg = nav.current_segment
-            if seg is not None and seg.get('type') == 'move':
-                target_m = float(seg['distance_m'])
-                if nav.projected_distance >= target_m - self.cfg.distance_tolerance:
-                    self._log_detour(
-                        f'里程超限 {nav.projected_distance:.2f}/{target_m:.2f}m → '
-                        f'终止避障，段自然过渡到下段'
-                    )
-                    self.reset()
-                    return False
-
         if self._state == 'turn_away':
             if self._turn_toward(plan.psi1, yaw):
+                self._cross_at_turn_away = self._compute_cross_m(nav)
+                delta_cross = (self._cross_at_turn_away - self._cross_at_trigger) * 100 if self._cross_at_trigger is not None else 0
                 self._log_detour(
-                    f'TURN_AWAY 完成 yaw={self._format_yaw_deg(yaw)}° '
-                    f'(目标 ψ₁={self._format_yaw_deg(plan.psi1)}°) → LEG1 {plan.leg1_distance_m:.2f}m'
+                    f'【第1阶段 TURN_AWAY 完成】'
+                    f'当前航向 {self._format_yaw_deg(yaw)}° '
+                    f'(目标 ψ₁={self._format_yaw_deg(plan.psi1)}° '
+                    f'差异 {abs(math.degrees(self._angle_error(plan.psi1, yaw))):.1f}°) '
+                    f'横偏={self._cross_at_turn_away*100:.1f}cm (Δ={delta_cross:+.1f}cm) '
+                    f'→ 第2阶段 LEG1 直行 {plan.leg1_distance_m:.2f}m'
                 )
                 self._state = 'leg1'
                 self._mark_leg_start(x, y)
@@ -404,8 +477,15 @@ class AvoidController:
         if self._state == 'leg1':
             self.cmd_pub.publish(self._make_twist(self.cfg.avoid_leg_linear_speed, 0.0))
             if self._leg_done(x, y, plan.leg1_distance_m):
+                self._cross_at_leg1 = self._compute_cross_m(nav)
+                delta_cross = (self._cross_at_leg1 - self._cross_at_turn_away) * 100 if self._cross_at_turn_away is not None else 0
                 self._log_detour(
-                    f'LEG1 完成 {self._leg_traveled_m(x, y):.2f}m → TURN_BACK ψ₂={self._format_yaw_deg(plan.psi2)}°'
+                    f'【第2阶段 LEG1 完成】'
+                    f'实际走了 {self._leg_traveled_m(x, y):.2f}m '
+                    f'(目标 {plan.leg1_distance_m:.2f}m) '
+                    f'当前航向 {self._format_yaw_deg(yaw)}° '
+                    f'横偏={self._cross_at_leg1*100:.1f}cm (Δ={delta_cross:+.1f}cm) '
+                    f'→ 第3阶段 TURN_BACK 目标 ψ₂={self._format_yaw_deg(plan.psi2)}°'
                 )
                 self._state = 'turn_back'
                 self._turn_target_yaw = plan.psi2
@@ -413,19 +493,57 @@ class AvoidController:
 
         if self._state == 'turn_back':
             if self._turn_toward(plan.psi2, yaw):
-                self._log_detour(
-                    f'TURN_BACK 完成 yaw={self._format_yaw_deg(yaw)}° '
-                    f'(目标 ψ₂={self._format_yaw_deg(plan.psi2)}°) → LEG2 {plan.leg2_distance_m:.2f}m'
-                )
-                self._state = 'leg2'
-                self._mark_leg_start(x, y)
+                self._cross_at_turn_back = self._compute_cross_m(nav)
+                delta_cross = (self._cross_at_turn_back - self._cross_at_leg1) * 100 if self._cross_at_leg1 is not None else 0
+                if plan.corner_mode:
+                    self._log_detour(
+                        f'【第3阶段 TURN_BACK 完成(转角模式)】'
+                        f'当前航向 {self._format_yaw_deg(yaw)}° '
+                        f'(目标 ψ₂={self._format_yaw_deg(plan.psi2)}° '
+                        f'差异 {abs(math.degrees(self._angle_error(plan.psi2, yaw))):.1f}°) '
+                        f'横偏={self._cross_at_turn_back*100:.1f}cm (Δ={delta_cross:+.1f}cm) '
+                        f'→ FINE_ALIGN'
+                    )
+                    self._state = 'fine_align'
+                else:
+                    seg_desc = nav.current_segment.get('description', '') if nav.current_segment else ''
+                    skip_leg2 = seg_desc in ('rect_first_leg', 'rect_return_origin')
+                    if skip_leg2:
+                        self._log_detour(
+                            f'【第3阶段 TURN_BACK 完成】'
+                            f'当前航向 {self._format_yaw_deg(yaw)}° '
+                            f'(目标 ψ₂={self._format_yaw_deg(plan.psi2)}° '
+                            f'差异 {abs(math.degrees(self._angle_error(plan.psi2, yaw))):.1f}°) '
+                            f'横偏={self._cross_at_turn_back*100:.1f}cm (Δ={delta_cross:+.1f}cm) '
+                            f'段={seg_desc} 跳过 LEG2 → 第5阶段 TURN_RECOVER'
+                        )
+                        self._state = 'turn_recover'
+                        self._turn_target_yaw = plan.psi3
+                    else:
+                        self._log_detour(
+                            f'【第3阶段 TURN_BACK 完成】'
+                            f'当前航向 {self._format_yaw_deg(yaw)}° '
+                            f'(目标 ψ₂={self._format_yaw_deg(plan.psi2)}° '
+                            f'差异 {abs(math.degrees(self._angle_error(plan.psi2, yaw))):.1f}°) '
+                            f'横偏={self._cross_at_turn_back*100:.1f}cm (Δ={delta_cross:+.1f}cm) '
+                            f'→ 第4阶段 LEG2 直行 {plan.leg2_distance_m:.2f}m'
+                        )
+                        self._state = 'leg2'
+                        self._mark_leg_start(x, y)
             return True
 
         if self._state == 'leg2':
             self.cmd_pub.publish(self._make_twist(self.cfg.avoid_leg_linear_speed, 0.0))
             if self._leg_done(x, y, plan.leg2_distance_m):
+                self._cross_at_leg2 = self._compute_cross_m(nav)
+                delta_cross = (self._cross_at_leg2 - self._cross_at_turn_back) * 100 if self._cross_at_turn_back is not None else 0
                 self._log_detour(
-                    f'LEG2 完成 {self._leg_traveled_m(x, y):.2f}m → TURN_RECOVER ψ₃={self._format_yaw_deg(plan.psi3)}°'
+                    f'【第4阶段 LEG2 完成】'
+                    f'实际走了 {self._leg_traveled_m(x, y):.2f}m '
+                    f'(目标 {plan.leg2_distance_m:.2f}m) '
+                    f'当前航向 {self._format_yaw_deg(yaw)}° '
+                    f'横偏={self._cross_at_leg2*100:.1f}cm (Δ={delta_cross:+.1f}cm) '
+                    f'→ 第5阶段 TURN_RECOVER 目标 ψ₃={self._format_yaw_deg(plan.psi3)}°'
                 )
                 self._state = 'turn_recover'
                 self._turn_target_yaw = plan.psi3
@@ -435,8 +553,11 @@ class AvoidController:
             if self._turn_toward(plan.psi3, yaw):
                 err_deg = math.degrees(abs(self._angle_error(plan.psi3, yaw)))
                 self._log_detour(
-                    f'TURN_RECOVER 完成 yaw={self._format_yaw_deg(yaw)}° '
-                    f'(ψ₃={self._format_yaw_deg(plan.psi3)}° err={err_deg:.1f}°) → FINE_ALIGN'
+                    f'【第5阶段 TURN_RECOVER 完成】'
+                    f'当前航向 {self._format_yaw_deg(yaw)}° '
+                    f'(目标 ψ₃={self._format_yaw_deg(plan.psi3)}° '
+                    f'差异 {err_deg:.1f}°) '
+                    f'→ 第6阶段 FINE_ALIGN 微调'
                 )
                 self._state = 'fine_align'
             return True
@@ -445,11 +566,30 @@ class AvoidController:
             err = self._angle_error(plan.psi3, yaw)
             if abs(err) <= self.cfg.heading_tolerance:
                 self._cooldown_until = self._now_sec() + self.cfg.detour_cooldown_sec
+                self._corner_mode_completed = bool(plan.corner_mode)
+                final_cross = self._compute_cross_m(nav)
+                
+                # 汇总所有阶段横偏变化
+                summary = f'横偏演变: 触发{self._cross_at_trigger*100:.1f}cm'
+                if self._cross_at_turn_away is not None:
+                    summary += f' → turn_away{self._cross_at_turn_away*100:.1f}cm'
+                if self._cross_at_leg1 is not None:
+                    summary += f' → leg1{self._cross_at_leg1*100:.1f}cm'
+                if self._cross_at_turn_back is not None:
+                    summary += f' → turn_back{self._cross_at_turn_back*100:.1f}cm'
+                if self._cross_at_leg2 is not None:
+                    summary += f' → leg2{self._cross_at_leg2*100:.1f}cm'
+                summary += f' → 结束{final_cross*100:.1f}cm'
+                
                 self._log_detour(
-                    f'FINE_ALIGN 完成 yaw={self._format_yaw_deg(yaw)}° '
-                    f'(ψ₃={self._format_yaw_deg(plan.psi3)}° err={math.degrees(err):.1f}°) → 避障结束 '
-                    f'(冷却 {self.cfg.detour_cooldown_sec:.0f}s)'
+                    f'【第6阶段 FINE_ALIGN 完成 → 避障结束】'
+                    f'最终航向 {self._format_yaw_deg(yaw)}° '
+                    f'(段航向 ψ₃={self._format_yaw_deg(plan.psi3)}° '
+                    f'差异 {math.degrees(err):.1f}°) '
+                    f'最终横偏={final_cross*100:.1f}cm '
+                    f'{"(转角模式)" if plan.corner_mode else "(冷却 3.0s)"}'
                 )
+                self._log_detour(summary)
                 self._state = 'idle'
                 self._plan = None
                 self.cmd_pub.publish(self._zero_twist())
