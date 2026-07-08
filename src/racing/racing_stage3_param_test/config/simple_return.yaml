@@ -4,7 +4,7 @@ simple_return_navigator:
     phase_topic: competition_phase
     imu_topic: /imu/data
     scan_topic: /scan
-    cmd_topic: /cmd_vel
+    cmd_topic: /stage2_cmd_vel
     state_topic: stage3_state
 
     # ===== 测试方向 =====

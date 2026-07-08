@@ -40,7 +40,7 @@ from geometry_msgs.msg import Twist
 class SpiralConfig:
     """螺旋避障配置"""
     # 模式选择
-    mode: str = 'spiral'                     # 'spiral' 或 'constant_curvature'
+    mode: str = 'spiral'                     # 'spiral' 或 'constant_curvature' 或 'pure_pursuit'
     
     # ── 螺旋方案参数 ────────────────────────────────
     linear_speed: float = 0.15               # 线速度（m/s）
@@ -66,6 +66,14 @@ class SpiralConfig:
     phase3_duration_s: float = 0.5           # Phase3 保持时长（s）
     enable_phase3: bool = False              # 是否启用 Phase3 航向微调
     heading_control_kp: float = 2.0          # 航向控制增益（rad/s per rad error）
+    
+    # ── Pure Pursuit 方案参数 ────────────────────────
+    pp_lookahead_distance_m: float = 0.8     # 预瞄距离（m）
+    pp_kp: float = 1.5                       # Pure Pursuit 比例增益
+    pp_phase2_duration_s: float = 1.0        # Phase2 持续时间（s）
+    pp_phase2_speed: float = 0.19            # Phase2 速度（m/s）
+    pp_ramp_duration_s: float = 0.3          # 渐变启动时间（s）
+    pp_max_angular: float = 0.5              # 最大角速度限制（rad/s）
     
     # ── 方向选择 ────────────────────────────────────
     side_obstacle_threshold_m: float = 0.25  # 侧边障碍判定阈值
@@ -108,9 +116,15 @@ class SpiralAvoider:
         self._target_yaw = None          # 当前目标航向（rad）
         self._phase1_end_yaw = None      # Phase1 结束时的航向（用于 Phase2 计算偏移）
         self._phase2_end_yaw = None      # Phase2 结束时的航向（用于 Phase3 计算偏移）
+        self._track_direction = None     # 轨道方向（Pure Pursuit 使用）
+        self._robot_pos = None           # 当前机器人位置（Pure Pursuit 使用）
         
         # 动态速度与段参数（由主控传入）
         self._active_linear_speed = self.cfg.linear_speed  # 当前段速度
+        
+        # 横偏记录（用于 Phase2 斜向回归计算）
+        self._cross_error_at_phase1_start = 0.0  # Phase1 启动时的横偏（m）
+        self._phase1_end_cross = 0.0             # Phase1 结束时的横偏（m）
         
         # 传感器数据（由外部更新）
         self.front_distance = float('inf')
@@ -127,6 +141,9 @@ class SpiralAvoider:
         self._pause_start_time = None    # 停车开始时间
         self._pending_detour_right = None  # 触发时保存的绕行方向
         self._pending_linear_speed = None  # 触发时保存的速度
+        
+        # 外部传入的横偏数据（由主控提供）
+        self._last_cross_error = 0.0     # 最新的横偏数据（m）
     
     # ══════════════════════════════════════════════════
     # 外部接口
@@ -144,11 +161,16 @@ class SpiralAvoider:
         self._target_yaw = None
         self._phase1_end_yaw = None
         self._phase2_end_yaw = None
+        self._track_direction = None
+        self._robot_pos = None
         self._active_linear_speed = self.cfg.linear_speed
         self._pause_state = None
         self._pause_start_time = None
         self._pending_detour_right = None
         self._pending_linear_speed = None
+        self._cross_error_at_phase1_start = 0.0
+        self._phase1_end_cross = 0.0
+        self._last_cross_error = 0.0
         
         if prev != 'idle' and self.cfg.verbose:
             self._log.info('AVOID', f'状态 {prev} → idle')
@@ -166,6 +188,14 @@ class SpiralAvoider:
         self.left_clearance = left_clearance
         self.right_clearance = right_clearance
     
+    def on_cross_error(self, cross_error_m):
+        """更新横偏数据（由主控调用）
+        
+        Args:
+            cross_error_m: 当前横偏（m），正值=右偏，负值=左偏
+        """
+        self._last_cross_error = cross_error_m
+    
     def should_trigger(self, trigger_distance=0.55) -> bool:
         """判断是否应该触发避障（由主控调用）"""
         if self._state != 'idle':
@@ -173,13 +203,15 @@ class SpiralAvoider:
         return (math.isfinite(self.front_distance) and 
                 self.front_distance < trigger_distance)
     
-    def start(self, current_yaw, detour_right=None, linear_speed=None):
+    def start(self, current_yaw, detour_right=None, linear_speed=None, track_direction=None, robot_pos=None):
         """启动避障（由主控调用）
         
         Args:
             current_yaw: 当前航向（rad）
             detour_right: 是否往右侧绕行（True=右绕，False=左绕，None=自动判断）
             linear_speed: 当前直行段速度（m/s），None=用配置默认值
+            track_direction: 轨道方向（rad），Pure Pursuit 使用
+            robot_pos: 当前机器人位置 (x, y)，Pure Pursuit 使用
         
         Returns:
             bool: 是否成功启动
@@ -233,8 +265,16 @@ class SpiralAvoider:
         # 记录段速度
         self._active_linear_speed = linear_speed if linear_speed is not None else self.cfg.linear_speed
         
+        # ★ 记录 Phase1 启动时的横偏（用于 Phase2 斜向回归计算）
+        self._cross_error_at_phase1_start = self._last_cross_error
+        
+        # 保存 Pure Pursuit 需要的参数
+        self._track_direction = track_direction
+        self._robot_pos = robot_pos
+        
         if self.cfg.verbose:
-            mode_text = '螺旋' if self.cfg.mode == 'spiral' else '恒定曲率'
+            mode_text = {'spiral': '螺旋', 'constant_curvature': '恒定曲率', 
+                        'fixed_timing': '固定转角', 'pure_pursuit': 'Pure Pursuit'}.get(self.cfg.mode, self.cfg.mode)
             self._log.info('AVOID',
                 f'启动 #{self._total_avoidances} '
                 f'模式={mode_text} '
@@ -244,17 +284,22 @@ class SpiralAvoider:
         
         return True
     
-    def step(self, current_yaw) -> bool:
+    def step(self, current_yaw, robot_pos=None) -> bool:
         """避障主循环（由主控在每个控制周期调用）
         
         Args:
             current_yaw: 当前航向（rad）
+            robot_pos: 当前机器人位置 (x, y)，Pure Pursuit 使用
         
         Returns:
             bool: True=避障中（继续调用），False=避障完成（恢复惯导）
         """
         if self._state == 'idle':
             return False
+        
+        # 更新机器人位置（Pure Pursuit 需要）
+        if robot_pos is not None:
+            self._robot_pos = robot_pos
         
         now = self._now_sec()
         
@@ -343,6 +388,8 @@ class SpiralAvoider:
             return self._step_spiral(current_yaw)
         elif self.cfg.mode == 'fixed_timing':
             return self._step_fixed_timing(current_yaw)
+        elif self.cfg.mode == 'pure_pursuit':
+            return self._step_pure_pursuit(current_yaw)
         else:
             return self._step_constant_curvature(current_yaw)
     
@@ -538,29 +585,34 @@ class SpiralAvoider:
                 self._target_yaw = self._normalize_angle(self._start_yaw + phase1_offset)
                 if self.cfg.verbose:
                     self._log.info('AVOID',
-                        f'Phase1启动 目标航向偏移={self.cfg.phase1_turn_angle_deg:.0f}° '
+                        f'Phase1启动 目标偏移={self.cfg.phase1_turn_angle_deg:.0f}° '
                         f'起始yaw={math.degrees(self._start_yaw):.1f}° '
                         f'目标yaw={math.degrees(self._target_yaw):.1f}°'
                     )
             
-            # 计算航向误差与控制输出
+            # 比例控制跟踪目标航向
             heading_error = self._normalize_angle(self._target_yaw - current_yaw)
             omega = self.cfg.heading_control_kp * heading_error
+            omega = self._clamp(omega, 0.8)  # 限幅 0.8 rad/s
             
+            # 使用配置的避障速度（而非段速度）
             self._publish_cmd(
-                self._active_linear_speed,
+                self.cfg.linear_speed,
                 omega,
             )
 
             if elapsed >= duration:
-                # 记录 Phase1 结束时的航向
+                # 记录 Phase1 结束时的航向和横偏
                 self._phase1_end_yaw = current_yaw
+                self._phase1_end_cross = self._last_cross_error
                 
                 if self.cfg.verbose:
+                    actual_turn = math.degrees(self._normalize_angle(current_yaw - self._start_yaw))
                     self._log.info('AVOID',
                         f'Phase1完成 耗时={elapsed:.2f}s '
-                        f'目标偏移={self.cfg.phase1_turn_angle_deg:.0f}° '
-                        f'实际yaw={math.degrees(current_yaw):.1f}°'
+                        f'目标转角={self._omega_sign * self.cfg.phase1_turn_angle_deg:.0f}° '
+                        f'实际转角={actual_turn:.1f}° '
+                        f'横偏={self._phase1_end_cross*100:.1f}cm'
                     )
                 
                 # ★ Phase1 结束停车检查
@@ -592,31 +644,53 @@ class SpiralAvoider:
 
             return True
 
-        # ── 阶段2：回正 ─────────────────────────────
+        # ── 阶段2：对称回正 + 过冲修正 ─────────────────────
         elif self._state == 'phase2_back':
             elapsed = now - self._phase2_start_time
             duration = self.cfg.phase2_duration_s
             
-            # 首次进入：设定目标航向
+            # 首次进入：计算回正目标航向
             if self._target_yaw is None:
-                # Phase2 向内切回航道：起始航向 + 反向偏移
-                # 例如：右避障 Phase1=-33°，Phase2=+33°（相对起始航向 0°）
-                phase2_offset = -self._omega_sign * math.radians(self.cfg.phase2_turn_angle_deg)
-                self._target_yaw = self._normalize_angle(self._start_yaw + phase2_offset)
+                # ★ Phase2 过冲回正策略：
+                # 
+                # 目标：回到起始航向 + 固定过冲角度（用于消除横偏）
+                # 
+                # 原理：车从 Phase1 末航向（如 -30°）转到目标航向需要时间
+                # 如果目标 = 起始航向 + 小角度，等转到目标时 Phase2 快结束了
+                # 没有足够时间横向移动
+                # 
+                # 方案：使用固定过冲角度（如 25°），确保有足够侧向移动
+                # 即使车最后航向偏右，惯导接手后会自然修正
+                
+                # 固定过冲角度（相对于起始航向，与绕行方向相反）
+                # 右绕(omega_sign=-1) → Phase2 目标 = 起始航向 + 45°
+                # 左绕(omega_sign=+1) → Phase2 目标 = 起始航向 - 45°
+                # 45° 确保车快速转到右向，有足够时间横向移动消除横偏
+                overshoot_angle_deg = 45.0
+                overshoot_angle_rad = -self._omega_sign * math.radians(overshoot_angle_deg)
+                self._target_yaw = self._normalize_angle(self._start_yaw + overshoot_angle_rad)
+                
                 if self.cfg.verbose:
+                    current_heading_offset = math.degrees(self._normalize_angle(self._phase1_end_yaw - self._start_yaw))
+                    target_offset = math.degrees(self._normalize_angle(self._target_yaw - self._start_yaw))
                     self._log.info('AVOID',
-                        f'Phase2启动 向内切回航道 目标偏移={-self._omega_sign * self.cfg.phase2_turn_angle_deg:.0f}° '
+                        f'Phase2启动 过冲回正 '
+                        f'Phase1末航向偏移={current_heading_offset:.1f}° '
+                        f'Phase1末横偏={self._phase1_end_cross*100:.1f}cm '
+                        f'过冲角度={overshoot_angle_deg:.0f}° '
                         f'起始yaw={math.degrees(self._start_yaw):.1f}° '
-                        f'Phase1末yaw={math.degrees(self._phase1_end_yaw):.1f}° '
-                        f'Phase2目标yaw={math.degrees(self._target_yaw):.1f}°'
+                        f'目标yaw={math.degrees(self._target_yaw):.1f}° '
+                        f'目标偏移={target_offset:.1f}°'
                     )
             
-            # 计算航向误差与控制输出
+            # 比例控制跟踪目标航向
             heading_error = self._normalize_angle(self._target_yaw - current_yaw)
             omega = self.cfg.heading_control_kp * heading_error
-
+            omega = self._clamp(omega, 0.8)
+            
+            # 使用配置的避障速度（而非段速度）
             self._publish_cmd(
-                self._active_linear_speed,
+                self.cfg.linear_speed,
                 omega,
             )
 
@@ -628,10 +702,11 @@ class SpiralAvoider:
                 self._phase2_end_yaw = current_yaw
                 
                 if self.cfg.verbose:
+                    heading_deviation = math.degrees(self._normalize_angle(current_yaw - self._start_yaw))
                     self._log.info('AVOID',
                         f'Phase2完成 #{self._total_avoidances} '
                         f'总耗时={total_elapsed:.2f}s '
-                        f'最终yaw={math.degrees(current_yaw):.1f}°'
+                        f'最终航向相对起始={heading_deviation:.1f}°'
                     )
                 
                 # ★ Phase2 结束停车检查
@@ -789,6 +864,83 @@ class SpiralAvoider:
     
     def _now_sec(self):
         return self._clock.now().nanoseconds / 1e9
+    
+    # ══════════════════════════════════════════════════
+    # Pure Pursuit 方案实现
+    # ══════════════════════════════════════════════════
+    
+    def _step_pure_pursuit(self, current_yaw) -> bool:
+        """Pure Pursuit 避障步进
+        
+        Phase1: 固定转角偏离（与 fixed_timing 相同）
+        Phase2: Pure Pursuit 引导回归（目标=前方轨道方向）
+        
+        Args:
+            current_yaw: 当前航向（rad）
+        
+        Returns:
+            bool: True=避障中，False=完成
+        """
+        now = self._now_sec()
+        
+        # ── 阶段1：偏离（固定角速度）─────────────────────
+        if self._state == 'phase1_away':
+            elapsed = now - self._phase1_start_time
+            duration = self.cfg.phase1_duration_s
+            
+            # 计算固定角速度（角度 / 时间）
+            omega = self._omega_sign * math.radians(self.cfg.phase1_turn_angle_deg) / duration
+            
+            self._publish_cmd(self._active_linear_speed, omega)
+            
+            # Phase1 完成条件：时间到
+            if elapsed >= duration:
+                self._phase1_end_yaw = current_yaw
+                self._state = 'phase2_back'
+                self._phase2_start_time = now
+                self._target_yaw = None  # 重置目标航向
+                
+                if self.cfg.verbose:
+                    self._log.info('AVOID',
+                        f'Phase1完成 耗时={elapsed:.2f}s '
+                        f'转角={self.cfg.phase1_turn_angle_deg:.0f}° '
+                        f'ω={math.degrees(omega):.1f}°/s'
+                    )
+            
+            return True
+        
+        # ── 阶段2：Pure Pursuit 回归（暂时简化为固定反向转角）─────────
+        elif self._state == 'phase2_back':
+            elapsed = now - self._phase2_start_time
+            duration = self.cfg.pp_phase2_duration_s
+            
+            # 简化方案：Phase2 用固定角速度回正（与 Phase1 对称）
+            # 原因：当前没有可靠的横偏测量，Pure Pursuit 需要准确的轨道中线位置
+            # 未来改进：集成轨道中线跟踪后再使用真正的 Pure Pursuit
+            omega = -self._omega_sign * math.radians(self.cfg.phase1_turn_angle_deg) / duration
+            
+            self._publish_cmd(self.cfg.pp_phase2_speed, omega)
+            
+            # Phase2 完成条件：时间到
+            if elapsed >= duration:
+                total_elapsed = now - self._start_time
+                heading_diff = math.degrees(self._normalize_angle(current_yaw - self._start_yaw))
+                
+                if self.cfg.verbose:
+                    self._log.info('AVOID',
+                        f'Phase2完成 #{self._total_avoidances} '
+                        f'总耗时={total_elapsed:.2f}s '
+                        f'航向偏差={heading_diff:.1f}° '
+                        f'(相对起始航向)'
+                    )
+                
+                self.reset()
+                self._publish_cmd()
+                return False
+            
+            return True
+        
+        return False
 
 
 # ────────────────────────────────────────────────

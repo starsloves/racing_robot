@@ -24,7 +24,6 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'stage3_return_navigator = racing_stage3_param_test.stage3_return_navigator:main',
             'phase3_test_trigger = racing_stage3_param_test.phase3_test_trigger:main',
             'simple_return_navigator = racing_stage3_param_test.simple_return_navigator:main',
         ],

@@ -4,34 +4,37 @@
 stage2_inertial_navigator:
   ros__parameters:
 
-    # ═══════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════
     # 避障方案选择
     # ═══════════════════════════════════════════════════
 
     avoidance_mode: 'fixed_timing'   # 方案选择
-                                     # 'fixed_timing'（推荐）:
-                                     #   目标航向保持避障 — Phase1 设定目标航向偏移，
-                                     #   Phase2 设定回正目标航向，使用比例控制器跟踪
-                                     #   优点：航向反馈稳定、参数直观
-                                     #   缺点：需要可靠的航向测量
+                                     # 'fixed_timing': 固定转角避障（零反馈，鲁棒）
+                                     # 'pure_pursuit': Pure Pursuit 避障（Phase1固定+Phase2引导回归）
+                                     #   优点：自动回正航道+航向，速度更快
+                                     #   适用：IMU有噪声但可接受，控制频率5Hz
 
-    # ── 固定转角方案参数（默认）─────────────────────────
-    avoidance_turn_angle_deg: 42.0        # Phase1 目标航向偏移（度）
-                                          # 车头朝向 = 起始航向 + 偏移角度
-    avoidance_phase1_duration_s: 0.5      # Phase1 保持时长（s）
-    avoidance_phase2_turn_angle_deg: 60.0 # Phase2 回正偏移（度，相对 Phase1 结束航向）
-                                          # 建议设为 Phase1 的 1~1.5 倍
-    avoidance_phase2_duration_s: 0.8      # Phase2 保持时长（s）
+    # ── 避障速度（代码实际读取 spiral_linear_speed，不是 avoidance_linear_speed）─
+    spiral_linear_speed: 0.25        # 避障时前进速度（m/s）
+                                     # 注意：代码读取的是 spiral_linear_speed 参数
+                                     # avoidance_linear_speed 仅作文档参考
+
+    # ── 固定转角方案参数（Phase1 共用）──────────────────
+    avoidance_turn_angle_deg: 50.0        # Phase1 目标航向偏移（度）
+    avoidance_phase1_duration_s: 1.5      # Phase1 持续时间（s）
+    avoidance_linear_speed: 0.25          # 文档参考（实际读取 spiral_linear_speed）
+    avoidance_heading_kp: 3.0             # 航向控制增益
+
+    # ── 固定转角方案参数（fixed_timing 模式专用）─────────
+    avoidance_phase2_turn_angle_deg: 40.0 # Phase2 参数（未使用，保留兼容）
+    avoidance_phase2_duration_s: 4.0      # Phase2 持续时间（s）
+                                          # 大幅增加到 4.0s 给足够时间横向移动
+                                          # Phase2 前进 = 0.25 × 4.0 = 100 cm
     
-    # ── Phase3: 航向微调 ────────────────────────────────
-    enable_phase3: true                   # 是否启用 Phase3 航向微调
+    # ── Phase3: 航向微调（fixed_timing 专用）───────────
+    enable_phase3: false                  # 是否启用 Phase3 航向微调
     avoidance_phase3_turn_angle_deg: 10.0 # Phase3 转角（度）
-                                          # 自动根据航向偏差决定转向方向
     avoidance_phase3_duration_s: 0.5      # Phase3 持续时长（s）
-    
-    avoidance_linear_speed: 0.5          # 避障时前进速度（m/s）
-    avoidance_heading_kp: 2.0             # 航向控制增益（rad/s per rad error）
-                                          # 越大响应越快，但可能震荡
 
     # ── 冷却参数 ───────────────────────────────────────
     avoidance_cooldown_sec: 2.0       # 避障完成后冷却时间（s）
@@ -42,7 +45,7 @@ stage2_inertial_navigator:
     avoidance_trigger_distance_m: 0.55  # 触发避障的前方障碍物距离（m）
 
     # ── 侧边参数 ───────────────────────────────────────
-    side_detour_threshold_m: 0.30     # 侧边触发阈值（m）
+    side_detour_threshold_m: 0.25     # 侧边触发阈值（m）
                                       # 侧边空间小于此值时，不往该方向绕
                                       # 车身半宽 13cm + 余量
     
@@ -50,11 +53,11 @@ stage2_inertial_navigator:
     # 调试停车 —— 分阶段观察位姿
     # ═══════════════════════════════════════════════════
     
-    stage_pause_enabled: false              # 阶段停车总开关（true=启用，false=禁用）
+    stage_pause_enabled: false             # 阶段停车总开关（true=启用，false=禁用）
     stage_pause_duration_sec: 5.0          # 每次停车观察时长（秒）
-    stage_pause_on_trigger: true           # Stage 0: 检测到障碍触发避障时停车
-    stage_pause_on_phase1_end: true        # Stage 1: Phase1 完成（右转绕障结束）时停车
-    stage_pause_on_phase2_end: true        # Stage 2: Phase2 完成（回正结束）时停车
-    stage_pause_on_phase3_end: true        # Stage 3: Phase3 完成（航向微调结束）时停车
+    stage_pause_on_trigger: false          # Stage 0: 检测到障碍触发避障时停车
+    stage_pause_on_phase1_end: false       # Stage 1: Phase1 完成（右转绕障结束）时停车
+    stage_pause_on_phase2_end: false       # Stage 2: Phase2 完成（回正结束）时停车
+    stage_pause_on_phase3_end: false       # Stage 3: Phase3 完成（航向微调结束）时停车
     
     # 注意：Stage 4（冷却期结束）需要在主控节点实现，不在避障器内部

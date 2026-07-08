@@ -782,6 +782,11 @@ class DirectInertialTester(Stage2InertialNavigator):
         return self.clamp(self.heading_kp * heading_error, self.max_angular_speed)
 
     def run_move_segment(self):
+        # ★ 更新避障模块的横偏数据（用于 Phase2 斜向回归计算）
+        if self.current_position is not None:
+            cross_m = self._cross_track_m()
+            self._spiral_avoider.on_cross_error(cross_m)
+        
         if self.current_segment is not None and self.current_segment.get('type') == 'move':
             target_distance = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
             progress = max(0.0, min(self.projected_distance(), target_distance))
@@ -820,7 +825,7 @@ class DirectInertialTester(Stage2InertialNavigator):
             if self.current_segment else self.corridor_linear_speed
 
         if self._spiral_avoider.is_active:
-            if self._spiral_avoider.step(self.navigation_yaw()):
+            if self._spiral_avoider.step(self.navigation_yaw(), self.current_position):
                 return  # 避障中，跳过后续惯导控制
             else:
                 # 避障完成，恢复惯导控制
@@ -839,6 +844,8 @@ class DirectInertialTester(Stage2InertialNavigator):
                     if self._spiral_avoider.start(
                         self.navigation_yaw(),
                         linear_speed=linear,
+                        track_direction=self.segment_heading,  # 传递轨道方向
+                        robot_pos=self.current_position,       # 传递机器人位置
                     ):
                         self.logger.info('AVOID', '检测到障碍，避障模块接管')
                         return

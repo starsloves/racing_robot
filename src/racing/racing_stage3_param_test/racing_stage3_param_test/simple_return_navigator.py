@@ -66,7 +66,7 @@ class SimpleReturnNavigator(Node):
         self.create_subscription(LaserScan, self.scan_topic, self._scan_cb, 10)
 
         self.latest_scan = None
-        self._delay_timer = None
+        self._start_time = None
         self.publish_state(S_IDLE)
         self.create_timer(0.05, self._control_loop)
         self.get_logger().info('simple return navigator ready (stage3 simplified)')
@@ -247,12 +247,11 @@ class SimpleReturnNavigator(Node):
     def _phase_cb(self, msg):
         self.phase = int(msg.data)
         if self.phase == 3 and self.state == S_IDLE:
-            self.get_logger().info('phase=3 detected, starting after 0.5s delay')
-            self._delay_timer = self.create_timer(0.5, self._start_mission)
+            if self._start_time is None:
+                self._start_time = self._now_sec() + 0.5
+                self.get_logger().info('phase=3 detected, will start after 0.5s delay')
 
     def _start_mission(self):
-        if hasattr(self, '_delay_timer'):
-            self._delay_timer.cancel()
         self.state = S_INITIAL_TURN
         self.publish_state('initial_turn')
         self.get_logger().info(
@@ -269,8 +268,18 @@ class SimpleReturnNavigator(Node):
     # ── 主控制循环 (20Hz) ──
 
     def _control_loop(self):
-        if self.phase != 3 or self.state == S_FINISH or self.state == S_IDLE:
+        if self.phase != 3:
             return
+        
+        # 延时启动
+        if self.state == S_IDLE:
+            if self._start_time is not None and self._now_sec() >= self._start_time:
+                self._start_mission()
+            return
+        
+        if self.state == S_FINISH:
+            return
+        
         if self.current_yaw is None:
             return
 
@@ -304,6 +313,12 @@ class SimpleReturnNavigator(Node):
         if abs(angular) < 0.2:
             angular = math.copysign(0.2, error)
 
+        self.get_logger().info(
+            f'turning: current={math.degrees(self.current_yaw):.1f}°, '
+            f'target={math.degrees(target):.1f}°, error={math.degrees(error):.1f}°, '
+            f'angular={angular:.2f}',
+            throttle_duration_sec=1.0
+        )
         self.cmd_pub.publish(self._twist(0.0, angular))
 
     # ── Phase 2-4：盲驱 + 墙角检测 + 航向修正 + 锥桶避障 ──
