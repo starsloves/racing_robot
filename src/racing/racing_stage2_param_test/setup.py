@@ -24,9 +24,11 @@ setup(
     entry_points={
         'console_scripts': [
             'direct_inertial_tester = racing_stage2_param_test.direct_inertial_tester:main',
+            'simple_avoid_tester = racing_stage2_param_test.simple_avoid_tester:main',
             'vision_preview = racing_stage2_param_test.vision_preview:main',
             'twist_cmd_relay = racing_stage2_param_test.twist_cmd_relay:main',
             'data_recorder = racing_stage2_param_test.data_recorder:main',
+            'lidar_test = racing_stage2_param_test.lidar_test:main',
         ],
     },
 )

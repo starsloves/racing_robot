@@ -21,6 +21,7 @@ from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Int32, String
 
 from .global_path_planner import GlobalPathPlannerMixin
+from racing_common.racing_logger import RacingLogger
 
 
 class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
@@ -135,6 +136,10 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         self.planner_replan_period_sec = float(self.get_parameter('planner_replan_period_sec').value)
 
         self.return_waypoints = self.load_return_waypoints()
+
+        self.init_global_path_planner()
+        self.logger = RacingLogger(self, 'direct_return_test',
+                                   session_title='stage3 return test session')
         self._log_return_track_summary()
 
         self.phase = 1
@@ -158,9 +163,7 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         map_qos.reliability = ReliabilityPolicy.RELIABLE
 
-        event_qos = QoSProfile(depth=1)
-        event_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
-        event_qos.reliability = ReliabilityPolicy.RELIABLE
+        event_qos = QoSProfile(depth=10)
 
         self.cmd_pub = self.create_publisher(Twist, self.cmd_topic, 10)
         self.return_path_pub = self.create_publisher(Path, self.return_path_topic, path_qos)
@@ -174,20 +177,19 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
             self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, map_qos)
             self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
 
-        self.init_global_path_planner()
         self.publish_state('idle')
         self.create_timer(0.05, self.control_loop)
-        self.get_logger().info('stage3 param test return navigator ready (param waypoints)')
+        self.logger.stage3_ready('param test return navigator ready (param waypoints)')
 
     def parse_waypoints_json(self, raw_json, param_name, default_speed):
         try:
             raw_waypoints = json.loads(raw_json)
         except json.JSONDecodeError:
-            self.get_logger().error(f'{param_name} is invalid, fallback to empty')
+            self.logger.stage3_param(f'{param_name} is invalid, fallback to empty')
             return []
 
         if not isinstance(raw_waypoints, list):
-            self.get_logger().error(f'{param_name} must decode to a list, fallback to empty')
+            self.logger.stage3_param(f'{param_name} must decode to a list, fallback to empty')
             return []
 
         sanitized = []
@@ -240,12 +242,12 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
 
     def _log_return_track_summary(self):
         if not self.return_waypoints:
-            self.get_logger().error('no return waypoints loaded')
+            self.logger.stage3_param('no return waypoints loaded')
             return
         start = self.return_waypoints[0]
         goal = self.return_waypoints[-1]
-        self.get_logger().info(
-            f'return: {len(self.return_waypoints)} waypoints, '
+        self.logger.stage3_waypoint(
+            f'{len(self.return_waypoints)} waypoints, '
             f'start=({start["x"]:.2f},{start["y"]:.2f}) '
             f'goal=({goal["x"]:.2f},{goal["y"]:.2f})'
         )
@@ -351,8 +353,10 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
 
     def start_return_path(self):
         if self.current_global_position() is None:
+            self.get_logger().warn('start_return_path: waiting for odom_combined (no position)')
             return
         if not self.return_waypoints:
+            self.get_logger().error('start_return_path: no waypoints configured')
             self.fail_mission('阶段三未配置返航航点，无法返回 P 点')
             return
 
@@ -413,6 +417,9 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         self.mission_finished = True
         self.publish_state('complete')
         goal = self.return_waypoints[-1]
+        self.logger.mission(
+            f'阶段三完成: P ({goal["x"]:.2f}, {goal["y"]:.2f})'
+        )
         self.publish_feedback(
             f'阶段三完成，车辆已返回 P 点 ({goal["x"]:.2f}, {goal["y"]:.2f})'
         )
@@ -422,7 +429,13 @@ class Stage3ReturnNavigator(GlobalPathPlannerMixin, Node):
         self.mission_active = False
         self.mission_finished = True
         self.publish_state('failed')
+        self.logger.mission(f'阶段三失败: {reason}')
         self.publish_feedback(reason)
+
+    def destroy_node(self):
+        if getattr(self, 'logger', None) is not None:
+            self.logger.close()
+        super().destroy_node()
 
     def control_loop(self):
         if self.phase != 3:

@@ -12,19 +12,15 @@ stage3_return_navigator:
     feedback_topic: competition_feedback
     start_delay_sec: 0.5
     
-    # ===== 起点配置（参数化，类似 Stage2 corridor_waypoints_json）=====
-    # 格式：'[{"x":2.38,"y":3.32,"speed":0.12,"yaw_deg":180.0,"description":"stage2_finish"}]'
-    # 空 = 从 /odom_combined 读取 phase=3 时的实际位姿
-    return_start_json: '[{"x":2.50,"y":3.20,"speed":0.12,"yaw_deg":90.0}]'
+    # ===== 起点（Stage2 整圈终点，Stage3 起点）=====
+    return_start_json: '[{"x":2.38,"y":3.32,"speed":0.12,"yaw_deg":180.0,"description":"mission_start"}]'
     
-    # ===== 终点配置（P 点）=====
-    # 格式：'[{"x":0.20,"y":0.20,"speed":0.10,"yaw_deg":100.0,"description":"p_point"}]'
+    # ===== 终点 P 点 =====
     return_goal_json: '[{"x":0.20,"y":0.20,"speed":0.10,"yaw_deg":100.0,"description":"p_point"}]'
     
-    # ===== 可选中间路点 =====
-    # 格式：'[{"x":1.5,"y":2.5,"speed":0.15},...]'
-    # 空 = 纯 A* 从起点直接规划到终点
-    return_waypoints_json: '[]'
+    # ===== 中间路点（速度递减到 P 点）=====
+    # 空 = 纯 A* 直接从起点到终点
+    return_waypoints_json: '[{"x":1.83,"y":3.22,"speed":0.16},{"x":1.33,"y":2.77,"speed":0.17},{"x":0.93,"y":2.12,"speed":0.16},{"x":0.55,"y":1.35,"speed":0.14},{"x":0.30,"y":0.70,"speed":0.12}]'
     
     # ===== 坐标系配置 =====
     global_frame_id: map
@@ -46,8 +42,8 @@ stage3_return_navigator:
     turn_min_angular_speed: 0.45
     max_angular_speed: 0.8
     
-    # ===== A* 全局规划 =====
-    use_occupancy_grid_planner: true
+    # ===== A* 全局规划（需 carto_slam 提供 /map）=====
+    use_occupancy_grid_planner: false
     planner_downsample: 4
     planner_occupied_threshold: 50
     planner_unknown_is_occupied: true

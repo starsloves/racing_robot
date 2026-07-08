@@ -55,7 +55,11 @@ class VoiceBroadcastService:
         return self._config
 
     def speak_text(self, text: str) -> bool:
-        """Speak API/LLM text according to AUDIO_OUTPUT in .env."""
+        """Speak API/LLM text according to AUDIO_OUTPUT in .env.
+
+        自定义/长文本优先走云端 TTS（DashScope 等）真正朗读原文；
+        MAE01 固件不支持任意长文本，仅作为无音箱时的兜底提示。
+        """
         cleaned = text.strip()
         if not cleaned:
             self._log_error('Empty text')
@@ -64,26 +68,28 @@ class VoiceBroadcastService:
         mode = self._config.resolved_audio_output()
         self._log_info(f'AUDIO_OUTPUT={mode}  text_len={len(cleaned)}')
 
-        ok_module = False
-        ok_alsa = False
-
-        if self._config.uses_mae01():
-            ok_module = self._module.speak_text(cleaned)
-
+        # 1) 优先云端 TTS：能朗读任意 API 返回文本（需板载/USB 音箱）
         if self._config.uses_alsa():
             ok_alsa = self._speak_via_cloud_tts(cleaned)
+            if ok_alsa:
+                return True
 
-        if ok_module or ok_alsa:
-            return True
+        # 2) 兜底：MAE01 模块（仅预设短句或 SYN6288 短文本，固件限制）
+        if self._config.uses_mae01():
+            ok_module = self._module.speak_text(cleaned)
+            if ok_module:
+                return True
 
         if mode == 'mae01':
             self._log_error(
                 'MAE01 无法朗读任意 API 长文本（固件限制）。'
                 '可先喊「小亚小亚」再试预设：ros2 run voice_driver voice_speak forward；'
-                '或外接 USB 音箱并改 .env AUDIO_OUTPUT=alsa'
+                '或外接 USB 音箱并改 .env AUDIO_OUTPUT=alsa（或 both）'
             )
         else:
-            self._log_error('播报失败：检查 DASHSCOPE_API_KEY、网络、AUDIO_DEVICE')
+            self._log_error(
+                '云端 TTS 播报失败：检查 DASHSCOPE_API_KEY、网络、AUDIO_DEVICE、音箱'
+            )
         return False
 
     def _speak_via_cloud_tts(self, cleaned: str) -> bool:

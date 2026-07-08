@@ -1,25 +1,15 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>racing_stage3_param_test</name>
+  <name>racing_common</name>
   <version>0.0.1</version>
-  <description>Stage 3 param test — map-frame return navigation to P (0.20, 0.20)</description>
+  <description>Shared utilities for racing robot — unified logging, file log, etc.</description>
   <maintainer email="your_email@example.com">Your Name</maintainer>
   <license>Apache License 2.0</license>
 
-  <depend>ament_index_python</depend>
-  <depend>launch</depend>
-  <depend>launch_ros</depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+
   <depend>rclpy</depend>
-  <depend>geometry_msgs</depend>
-  <depend>nav_msgs</depend>
-  <depend>sensor_msgs</depend>
-  <depend>std_msgs</depend>
-  <depend>tf2_ros</depend>
-  <depend>python3-numpy</depend>
-  <depend>python3-opencv</depend>
-  <depend>python3-yaml</depend>
-  <depend>racing_common</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

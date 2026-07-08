@@ -16,14 +16,14 @@ def _package_config_path(filename: str) -> str:
 
 
 def default_config_path() -> str:
-    return _package_config_path('return_track_backup.yaml')
+    return ''
 
 
 def resolve_config_path(config_path: Optional[str] = None) -> str:
     explicit = str(config_path or '').strip()
     if explicit:
         return os.path.abspath(explicit)
-    return default_config_path()
+    return ''
 
 
 def load_return_track_doc(config_path: str) -> Dict[str, Any]:

@@ -1,0 +1,85 @@
+simple_return_navigator:
+  ros__parameters:
+    # ===== Topic =====
+    phase_topic: competition_phase
+    imu_topic: /imu/data
+    scan_topic: /scan
+    cmd_topic: /cmd_vel
+    state_topic: stage3_state
+
+    # ===== 测试方向 =====
+    # clockwise:       从 180° 左转 +50° → 230°
+    # counterclockwise: 从 0°  左转 -130° → 230°
+    test_direction: clockwise
+
+    # ===== 初始转向 =====
+    turn_angular_speed: 0.75
+    turn_heading_tolerance_deg: 3.0
+    turn_kp: 2.0
+
+    # ===== 盲驱航向保持 =====
+    blind_drive_linear_speed: 0.15
+    heading_maintain_kp: 2.4
+    heading_tolerance_deg: 6.0
+    in_place_angle_deg: 8.0
+
+    # ===== 墙角检测 =====
+    douglas_peucker_epsilon: 0.05
+    corner_min_line_length: 0.30
+    corner_angle_tolerance_deg: 15.0
+    corner_min_distance: 0.30
+    corner_max_distance: 2.5
+    corner_min_points: 8
+
+    # ===== 墙角航向修正 =====
+    confirmation_frames: 3
+    corner_position_tolerance: 0.15
+    correction_cooldown_far_sec: 2.0
+    correction_cooldown_mid_sec: 1.0
+    correction_cooldown_near_sec: 0.5
+    max_correction_angle_deg: 15.0
+    far_distance_threshold: 1.0
+    mid_distance_threshold: 0.5
+
+    # ===== 靠近墙角 =====
+    approach_stop_distance: 0.20
+    approach_max_linear_speed: 0.15
+    approach_min_linear_speed: 0.06
+    approach_turn_kp: 1.8
+
+    # ===== 锥桶分类 =====
+    cone_max_width: 0.15
+    cone_max_distance: 0.80
+    cone_avoidance_trigger: 0.40
+    wall_min_width: 0.30
+    wall_detect_distance: 2.5
+
+    # ===== 聚类窗口 =====
+    phase1_window_min_x: 0.18
+    phase1_window_max_x: 0.85
+    phase1_window_half_width: 0.22
+    phase1_min_cluster_points: 3
+    min_valid_range: 0.15
+
+    # ===== 避障 4态 =====
+    avoid_linear_speed: 0.10
+    avoid_angular_speed: 0.80
+    avoid_min_duration_sec: 0.70
+    avoid_clear_hold_sec: 0.25
+    avoid_min_turn_angle_deg: 18.0
+
+    recovery_linear_speed: 0.12
+    recovery_turn_linear_speed: 0.08
+    recovery_angular_speed: 0.75
+    recovery_heading_kp: 2.4
+    recovery_max_angular_speed: 1.1
+    recovery_min_angular_speed: 0.5
+    recovery_in_place_angle_deg: 8.0
+    recovery_timeout: 2.5
+    recovery_duration_scale: 0.9
+
+    counter_steer_linear_speed: 0.10
+    counter_steer_angular_speed: 0.95
+    counter_steer_duration_scale: 1.35
+    counter_steer_min_duration_sec: 0.45
+    counter_steer_max_duration_sec: 1.20

@@ -23,12 +23,6 @@ def generate_launch_description():
     bno055_i2c_bus_arg = DeclareLaunchArgument('bno055_i2c_bus', default_value='5')
     bno055_i2c_addr_arg = DeclareLaunchArgument('bno055_i2c_addr', default_value='41')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
-    test_direction_arg = DeclareLaunchArgument('test_direction', default_value='clockwise')
-    return_track_config_arg = DeclareLaunchArgument(
-        'return_track_config',
-        default_value='',
-        description='空=按 test_direction 加载包内 config/return_track_*.yaml',
-    )
 
     support_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(support_launch_path),
@@ -50,13 +44,7 @@ def generate_launch_description():
         package='racing_stage3_param_test',
         executable='stage3_return_navigator',
         name='stage3_return_navigator',
-        parameters=[
-            return_config,
-            {
-                'test_direction': LaunchConfiguration('test_direction'),
-                'return_track_config': LaunchConfiguration('return_track_config'),
-            },
-        ],
+        parameters=[return_config],
         output='screen',
     )
 
@@ -71,8 +59,6 @@ def generate_launch_description():
         bno055_i2c_bus_arg,
         bno055_i2c_addr_arg,
         carto_slam_arg,
-        test_direction_arg,
-        return_track_config_arg,
         support_stack,
         stage3_return_navigator,
     ])

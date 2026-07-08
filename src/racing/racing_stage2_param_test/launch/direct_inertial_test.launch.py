@@ -16,12 +16,20 @@ def _emergency_stop_action():
             'bash', '-c',
             (
                 'set +e; '
+                # 先停车
+                'ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '
+                '"{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" '
+                '2>/dev/null & '
+                # 杀掉所有相关进程（雷达驱动放在最前面）
+                'pkill -15 -f lslidar_driver_node 2>/dev/null; '
+                'sleep 0.3; '
+                'pkill -9 -f lslidar_driver_node 2>/dev/null; '
+                'pkill -9 -f lslidar 2>/dev/null; '
                 'pkill -9 -f direct_inertial_tester 2>/dev/null; '
                 'pkill -9 -f twist_cmd_relay 2>/dev/null; '
                 'pkill -9 -f data_recorder 2>/dev/null; '
                 'pkill -9 -f stage2_inertial_navigator 2>/dev/null; '
                 'pkill -9 -f competition_support 2>/dev/null; '
-                'pkill -9 -f lslidar 2>/dev/null; '
                 'pkill -9 -f origincar 2>/dev/null; '
                 'pkill -9 -f ros2 2>/dev/null; '
                 'pkill -9 -f fastrtps 2>/dev/null; '
@@ -50,9 +58,8 @@ def _emergency_stop_action():
                 'pkill -9 -f rviz 2>/dev/null; '
                 'pkill -9 -f odom 2>/dev/null; '
                 'pkill -9 -f twist_mux 2>/dev/null; '
-                'ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '
-                '"{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" '
-                '2>/dev/null; '
+                # 确保串口释放（杀掉所有占用 /dev/ttyACM1 的进程）
+                'for pid in $(lsof -t /dev/ttyACM1 2>/dev/null); do kill -9 $pid 2>/dev/null; done; '
                 'true'
             ),
         ],
@@ -67,7 +74,7 @@ def generate_launch_description():
     support_launch_path = os.path.join(stage2_dir, 'launch', 'competition_support.launch.py')
     inertial_config = os.path.join(param_test_dir, 'config', 'inertial_stage2.yaml')
     test_config = os.path.join(param_test_dir, 'config', 'direct_inertial_test.yaml')
-    avoid_config = os.path.join(param_test_dir, 'config', 'avoid_controller.yaml')
+    avoid_config = os.path.join(param_test_dir, 'config', 'avoidance_config.yaml')
 
     include_support_arg = DeclareLaunchArgument('include_support', default_value='true')
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='true')
@@ -127,7 +134,7 @@ def generate_launch_description():
             'input_topic': LaunchConfiguration('relay_input_topic'),
             'output_topic': LaunchConfiguration('relay_output_topic'),
         }],
-        output='screen',
+        output='log',
         condition=IfCondition(LaunchConfiguration('enable_cmd_relay')),
     )
 
@@ -148,9 +155,15 @@ def generate_launch_description():
     disable_shm = SetEnvironmentVariable('RMW_FASTRTPS_USE_SHM', '0')
     force_udp = SetEnvironmentVariable('RMW_FASTRTPS_TRANSPORT', 'UDPv4')
 
+    # Redirect ROS 2 built-in logs into our log/ directory so they don't
+    # clutter ~/.ros/log/.
+    ros_log_dir = SetEnvironmentVariable('ROS_LOG_DIR',
+        os.path.join(os.path.expanduser('~'), 'dev_ws', 'log', 'ros'))
+
     return LaunchDescription([
         disable_shm,
         force_udp,
+        ros_log_dir,
 
         include_support_arg,
         include_bringup_arg,

@@ -16,6 +16,7 @@
   <depend>cv_bridge</depend>
   <depend>geometry_msgs</depend>
   <depend>racing_stage2</depend>
+  <depend>racing_common</depend>
   <depend>sensor_msgs</depend>
 
   <!-- direct_inertial_test.launch.py support stack; deps for packages-up-to build -->

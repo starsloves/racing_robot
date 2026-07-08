@@ -79,11 +79,14 @@ class GlobalPathPlannerMixin:
     def current_global_position(self):
         if self.current_position is None:
             return None
-        return self.transform_point_2d(
+        mapped = self.transform_point_2d(
             self.current_position,
             self.global_frame_id,
             self.odom_frame_id,
         )
+        if mapped is None:
+            return self.current_position
+        return mapped
 
     def selected_global_yaw(self):
         odom_yaw = self.current_odom_yaw
@@ -103,11 +106,14 @@ class GlobalPathPlannerMixin:
 
     def current_global_yaw(self):
         source_yaw = self.selected_global_yaw()
-        return self.transform_yaw_2d(
+        mapped = self.transform_yaw_2d(
             source_yaw,
             self.global_frame_id,
             self.odom_frame_id,
         )
+        if mapped is None:
+            return source_yaw
+        return mapped
 
     def map_callback(self, msg: OccupancyGrid):
         self.latest_map = msg
