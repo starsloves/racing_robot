@@ -4,24 +4,41 @@ simple_return_navigator:
     phase_topic: competition_phase
     imu_topic: /imu/data
     scan_topic: /scan
-    cmd_topic: /stage2_cmd_vel
+    cmd_topic: /stage3_cmd_vel
     state_topic: stage3_state
 
     # ===== 测试方向 =====
-    # clockwise:       从 180° 左转 +50° → 230°
-    # counterclockwise: 从 0°  左转 -130° → 230°
+    # clockwise:       左转 +75°
+    # counterclockwise: 右转 -105°
     test_direction: clockwise
 
-    # ===== 初始转向 =====
-    turn_angular_speed: 0.75
+    # ===== Phase 1：初始转向 =====
+    turn_angular_speed: 1.0
     turn_heading_tolerance_deg: 3.0
     turn_kp: 2.0
 
-    # ===== 盲驱航向保持 =====
-    blind_drive_linear_speed: 0.15
-    heading_maintain_kp: 2.4
-    heading_tolerance_deg: 6.0
-    in_place_angle_deg: 8.0
+    # ===== Phase 2：搜索墙角 =====
+    search_linear_speed: 0.15        # 慢速前进扫描
+    search_max_duration: 15.0        # 最长搜索时间（超时保底）
+
+    # ===== Phase 3：对齐墙面（边走边转 θ→0）=====
+    align_linear_speed: 0.15         # 对齐时前进速度
+    align_kp: 2.0                    # 转向增益 angular = -kp * θ
+    align_max_angular_speed: 0.6     # 最大转向角速度
+    align_tolerance_deg: 10.0        # 对齐容差（|θ| < 此值视为对齐）
+    align_hold_duration: 0.5         # 持续对齐此时长后切换
+
+    # ===== Phase 4：垂直逼近（保持 θ≈0，距离控制）=====
+    approach_target_cx: 0.3          # 目标 x（雷达坐标系）
+    approach_target_cy: 0.7          # 目标 y
+    approach_heading_kp: 2.0         # 航向修正增益
+    approach_dist_kp: 0.5            # 距离控制增益
+    approach_stop_tolerance_xy: 0.05 # 位置停止容差（m）
+    approach_stop_tolerance_theta_deg: 5.0  # 角度停止容差
+    approach_max_linear_speed: 0.25  # 最大逼近速度
+    approach_min_linear_speed: 0.10  # 最小逼近速度
+    corner_lost_timeout: 1.5         # 墙角丢失超时（回搜索）
+    corner_lost_blind_speed: 0.12    # 丢失时盲走速度
 
     # ===== 墙角检测 =====
     douglas_peucker_epsilon: 0.05
@@ -31,22 +48,6 @@ simple_return_navigator:
     corner_max_distance: 2.5
     corner_min_points: 8
 
-    # ===== 墙角航向修正 =====
-    confirmation_frames: 3
-    corner_position_tolerance: 0.15
-    correction_cooldown_far_sec: 2.0
-    correction_cooldown_mid_sec: 1.0
-    correction_cooldown_near_sec: 0.5
-    max_correction_angle_deg: 15.0
-    far_distance_threshold: 1.0
-    mid_distance_threshold: 0.5
-
-    # ===== 靠近墙角 =====
-    approach_stop_distance: 0.20
-    approach_max_linear_speed: 0.15
-    approach_min_linear_speed: 0.06
-    approach_turn_kp: 1.8
-
     # ===== 锥桶分类 =====
     cone_max_width: 0.15
     cone_max_distance: 0.80
@@ -55,11 +56,11 @@ simple_return_navigator:
     wall_detect_distance: 2.5
 
     # ===== 聚类窗口 =====
-    phase1_window_min_x: 0.18
-    phase1_window_max_x: 0.85
-    phase1_window_half_width: 0.22
+    phase1_window_min_x: 0.30
+    phase1_window_max_x: 0.80
+    phase1_window_half_width: 0.15
     phase1_min_cluster_points: 3
-    min_valid_range: 0.15
+    min_valid_range: 0.25
 
     # ===== 避障 4态 =====
     avoid_linear_speed: 0.10

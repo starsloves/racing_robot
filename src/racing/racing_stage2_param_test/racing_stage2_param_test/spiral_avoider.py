@@ -86,6 +86,33 @@ class SpiralConfig:
     # ── 日志 ────────────────────────────────────────
     verbose: bool = True                     # 详细日志
     
+    # ── Lane Change Feedback 方案参数（新）────────────
+    avoid_target_offset_m: float = 0.22          # 目标横偏（m），安全侧移量
+    avoid_shift_heading_deg: float = 20.0        # SHIFT_OUT 阶段目标航向偏移（度）
+    avoid_pass_margin_m: float = 0.20            # 通过障碍物后的纵向余量（m）
+    avoid_merge_heading_tolerance_deg: float = 5.0   # MERGE_BACK 结束航向容差（度）
+    avoid_merge_cross_tolerance_m: float = 0.05      # MERGE_BACK 结束横偏容差（m）
+    avoid_heading_kp: float = 1.8                # 航向误差增益（rad/s per rad）
+    avoid_cross_kp: float = 2.5                  # 横偏误差增益（rad/s per m）
+    avoid_omega_limit: float = 0.45              # 角速度限幅（rad/s）
+    avoid_omega_rate_limit: float = 0.8          # 角速度变化率限幅（rad/s²）
+    avoid_min_phase_hold_s: float = 0.35         # 最短阶段保持时间（s），避免频繁切换
+    avoid_shift_cross_threshold: float = 0.90    # SHIFT_OUT→BYPASS_HOLD 横偏达成比例（0.90=90%）
+    avoid_deadzone_heading_deg: float = 1.0      # 航向误差死区（度）
+    avoid_deadzone_cross_m: float = 0.01         # 横偏误差死区（m）
+    
+    # ── Local Path Pure Pursuit 方案参数（推荐新方案）───────
+    lpp_s1: float = 0.35                     # P1 点纵向距离（m）
+    lpp_y_clear: float = 0.20                # 旁路横向偏移（m）
+    lpp_s_pass: float = 0.20                 # P2 点超过障碍物的纵向余量（m）
+    lpp_s3_margin: float = 0.55              # P3 点在障碍物之后的纵向距离（m）
+    lpp_lookahead: float = 0.30              # Pure Pursuit 预瞄距离（m）
+    lpp_heading_kp: float = 1.5              # 航向控制增益
+    lpp_max_omega: float = 0.40              # 最大角速度（rad/s）
+    lpp_finish_heading_tol_deg: float = 5.0  # 结束航向容差（度）
+    lpp_finish_cross_tol_m: float = 0.05     # 结束横偏容差（m）
+    lpp_obstacle_pass_check_s: float = 0.15  # 障碍物通过判定：robot_s > obs_s + margin
+    
     # ── 调试停车 ────────────────────────────────────
     stage_pause_enabled: bool = False        # 阶段停车总开关
     stage_pause_duration_sec: float = 5.0    # 停车观察时长（秒）
@@ -107,6 +134,7 @@ class SpiralAvoider:
         
         # 状态变量（两阶段：phase1_away / phase2_back）
         self._state = 'idle'             # 'idle', 'phase1_away', 'phase2_back', 'phase3_fine_tune'
+                                         # lane_change_feedback: 'shift_out', 'bypass_hold', 'merge_back'
         self._start_yaw = None           # 避障开始时的航向
         self._start_time = None          # 避障开始时间
         self._phase1_start_time = None   # 阶段1开始时间
@@ -144,6 +172,19 @@ class SpiralAvoider:
         
         # 外部传入的横偏数据（由主控提供）
         self._last_cross_error = 0.0     # 最新的横偏数据（m）
+        
+        # ── lane_change_feedback 专用状态 ─────────────────
+        self._obstacle_s = None          # 障碍物纵向里程（m）
+        self._obstacle_pos = None        # 障碍物世界坐标位置 (x, y)
+        self._current_progress = 0.0     # 当前段内里程（m）
+        self._reference_heading = None   # 原轨道参考航向（rad）
+        self._last_omega_cmd = 0.0       # 上一帧角速度指令（用于斜率限制）
+        self._phase_enter_time = 0.0     # 当前阶段进入时间（用于最短保持时间）
+        
+        # ── local_path_pure_pursuit 专用状态 ─────────────────
+        self._local_path_waypoints = []  # 局部路径点列表 [(x, y), ...]
+        self._path_index = 0             # 当前追踪的路径点索引
+        self._start_position = None      # 触发避障时的机器人位置 (x, y)（用于计算实时 robot_s）
     
     # ══════════════════════════════════════════════════
     # 外部接口
@@ -171,6 +212,15 @@ class SpiralAvoider:
         self._cross_error_at_phase1_start = 0.0
         self._phase1_end_cross = 0.0
         self._last_cross_error = 0.0
+        self._obstacle_s = None
+        self._obstacle_pos = None
+        self._current_progress = 0.0
+        self._reference_heading = None
+        self._last_omega_cmd = 0.0
+        self._phase_enter_time = 0.0
+        self._local_path_waypoints = []
+        self._path_index = 0
+        self._start_position = None
         
         if prev != 'idle' and self.cfg.verbose:
             self._log.info('AVOID', f'状态 {prev} → idle')
@@ -195,6 +245,16 @@ class SpiralAvoider:
             cross_error_m: 当前横偏（m），正值=右偏，负值=左偏
         """
         self._last_cross_error = cross_error_m
+    
+    def on_progress(self, current_progress_m, reference_heading_rad):
+        """更新段内里程和参考航向（lane_change_feedback 需要）
+        
+        Args:
+            current_progress_m: 当前段内里程（m）
+            reference_heading_rad: 原轨道参考航向（rad）
+        """
+        self._current_progress = current_progress_m
+        self._reference_heading = reference_heading_rad
     
     def should_trigger(self, trigger_distance=0.55) -> bool:
         """判断是否应该触发避障（由主控调用）"""
@@ -254,10 +314,18 @@ class SpiralAvoider:
             return True
         
         # 正常启动避障（不停车）
-        self._state = 'phase1_away'
+        # 根据模式选择初始状态
+        if self.cfg.mode == 'lane_change_feedback':
+            self._state = 'shift_out'
+        elif self.cfg.mode == 'local_path_pure_pursuit':
+            self._state = 'following_path'
+        else:
+            self._state = 'phase1_away'
+        
         self._start_yaw = current_yaw
         self._start_time = self._now_sec()
         self._phase1_start_time = self._start_time
+        self._phase_enter_time = self._start_time
         self._omega_sign = -1.0 if detour_right else +1.0  # 右绕=右转(ω负), 左绕=左转(ω正)
         self._total_avoidances += 1
         self._last_direction = 'right' if detour_right else 'left'
@@ -272,15 +340,70 @@ class SpiralAvoider:
         self._track_direction = track_direction
         self._robot_pos = robot_pos
         
+        # ★ local_path_pure_pursuit 专用：记录起点位置（用于计算实时 robot_s）
+        if self.cfg.mode == 'local_path_pure_pursuit':
+            self._start_position = robot_pos if robot_pos is not None else (0.0, 0.0)
+        
+        # ★ lane_change_feedback 专用：记录障碍物位置
+        if self.cfg.mode == 'lane_change_feedback':
+            # 计算障碍物世界坐标位置
+            if self._robot_pos is not None and math.isfinite(self.front_distance):
+                front_angle_rad = math.radians(self.front_angle_deg)
+                obstacle_distance_along_track = self.front_distance * math.cos(front_angle_rad)
+                self._obstacle_s = self._current_progress + obstacle_distance_along_track
+                
+                # 障碍物在车体坐标系中的位置
+                obs_local_x = self.front_distance * math.cos(front_angle_rad)
+                obs_local_y = self.front_distance * math.sin(front_angle_rad)
+                
+                # 转换到世界坐标系
+                cos_yaw = math.cos(current_yaw)
+                sin_yaw = math.sin(current_yaw)
+                obs_world_x = self._robot_pos[0] + obs_local_x * cos_yaw - obs_local_y * sin_yaw
+                obs_world_y = self._robot_pos[1] + obs_local_x * sin_yaw + obs_local_y * cos_yaw
+                self._obstacle_pos = (obs_world_x, obs_world_y)
+            else:
+                self._obstacle_s = None
+                self._obstacle_pos = None
+            
+            self._last_omega_cmd = 0.0
+        
+        # ★ local_path_pure_pursuit 专用：构造局部路径
+        if self.cfg.mode == 'local_path_pure_pursuit':
+            self._build_local_path()
+        
         if self.cfg.verbose:
-            mode_text = {'spiral': '螺旋', 'constant_curvature': '恒定曲率', 
-                        'fixed_timing': '固定转角', 'pure_pursuit': 'Pure Pursuit'}.get(self.cfg.mode, self.cfg.mode)
-            self._log.info('AVOID',
+            mode_text = {
+                'spiral': '螺旋', 
+                'constant_curvature': '恒定曲率', 
+                'fixed_timing': '固定转角', 
+                'pure_pursuit': 'Pure Pursuit',
+                'lane_change_feedback': '换道反馈',
+                'local_path_pure_pursuit': '局部路径纯追踪'
+            }.get(self.cfg.mode, self.cfg.mode)
+            
+            log_msg = (
                 f'启动 #{self._total_avoidances} '
                 f'模式={mode_text} '
                 f'往{"右" if detour_right else "左"}侧绕行 '
                 f'v={self._active_linear_speed:.2f}m/s'
             )
+            
+            if self.cfg.mode == 'lane_change_feedback':
+                obs_info = ''
+                if self._obstacle_pos:
+                    obs_info = (
+                        f' obs_world=({self._obstacle_pos[0]:.2f},{self._obstacle_pos[1]:.2f}) '
+                        f'robot=({self._robot_pos[0]:.2f},{self._robot_pos[1]:.2f})'
+                    )
+                log_msg += (
+                    f' front_dist={self.front_distance:.2f}m '
+                    f'front_ang={self.front_angle_deg:.1f}° '
+                    f'cross={self._last_cross_error*100:.1f}cm'
+                    + obs_info
+                )
+            
+            self._log.info('AVOID', log_msg)
         
         return True
     
@@ -388,10 +511,18 @@ class SpiralAvoider:
             return self._step_spiral(current_yaw)
         elif self.cfg.mode == 'fixed_timing':
             return self._step_fixed_timing(current_yaw)
+        elif self.cfg.mode == 'lane_change_feedback':
+            return self._step_lane_change_feedback(current_yaw)
+        elif self.cfg.mode == 'constant_curvature':
+            return self._step_constant_curvature(current_yaw)
         elif self.cfg.mode == 'pure_pursuit':
             return self._step_pure_pursuit(current_yaw)
+        elif self.cfg.mode == 'local_path_pure_pursuit':
+            return self._step_local_path_pure_pursuit(current_yaw)
         else:
-            return self._step_constant_curvature(current_yaw)
+            self._log.warn('AVOID', f'未知模式: {self.cfg.mode}')
+            self.reset()
+            return False
     
     # ══════════════════════════════════════════════════
     # 内部辅助
@@ -406,6 +537,7 @@ class SpiralAvoider:
             self._cmd_observer(float(linear_x), float(angular_z))
         self.cmd_pub.publish(cmd)
     
+    @staticmethod
     @staticmethod
     def _clamp(value, limit):
         return max(-limit, min(limit, value))
@@ -663,10 +795,10 @@ class SpiralAvoider:
                 # 即使车最后航向偏右，惯导接手后会自然修正
                 
                 # 固定过冲角度（相对于起始航向，与绕行方向相反）
-                # 右绕(omega_sign=-1) → Phase2 目标 = 起始航向 + 45°
-                # 左绕(omega_sign=+1) → Phase2 目标 = 起始航向 - 45°
-                # 45° 确保车快速转到右向，有足够时间横向移动消除横偏
-                overshoot_angle_deg = 45.0
+                # 右绕(omega_sign=-1) → Phase2 目标 = 起始航向 + 35°
+                # 左绕(omega_sign=+1) → Phase2 目标 = 起始航向 - 35°
+                # 对称于 Phase1 转角
+                overshoot_angle_deg = 35.0
                 overshoot_angle_rad = -self._omega_sign * math.radians(overshoot_angle_deg)
                 self._target_yaw = self._normalize_angle(self._start_yaw + overshoot_angle_rad)
                 
@@ -941,6 +1073,457 @@ class SpiralAvoider:
             return True
         
         return False
+
+    # ══════════════════════════════════════════════════
+    # Lane Change Feedback 方案实现（三阶段几何闭环）
+    # ══════════════════════════════════════════════════
+
+    def _step_lane_change_feedback(self, current_yaw) -> bool:
+        """Lane Change Feedback 避障步进（三阶段几何闭环）
+        
+        SHIFT_OUT: 建立安全横偏 → 达到目标横偏
+        BYPASS_HOLD: 保持横偏通过障碍 → 纵向超过障碍物
+        MERGE_BACK: 平滑回归原轨道 → 横偏和航向回到容差内
+        
+        控制律：
+          omega = sat(k_psi * e_psi + k_y * e_y, omega_max)
+        
+        Args:
+            current_yaw: 当前航向（rad）
+        
+        Returns:
+            bool: True=避障中，False=完成
+        """
+        now = self._now_sec()
+        
+        # 确保参考航向已设置
+        if self._reference_heading is None:
+            self._reference_heading = self._start_yaw
+        
+        # ── 阶段1：SHIFT_OUT（建立安全横偏）─────────────
+        if self._state == 'shift_out':
+            # 目标横偏（带符号）
+            target_cross = self._omega_sign * self.cfg.avoid_target_offset_m
+            # 目标航向偏移（帮助快速建立横偏）
+            target_heading_offset = self._omega_sign * math.radians(self.cfg.avoid_shift_heading_deg)
+            target_heading = self._normalize_angle(self._reference_heading + target_heading_offset)
+            
+            # 计算误差
+            cross_error = target_cross - self._last_cross_error
+            heading_error = self._normalize_angle(target_heading - current_yaw)
+            
+            # 统一控制律
+            omega_cmd = self._compute_omega_cmd(heading_error, cross_error)
+            
+            # ★ 调试日志（前3次）
+            if self.cfg.verbose and (now - self._phase_enter_time) < 0.5:
+                self._log.info('SHIFT_DEBUG',
+                    f't={now-self._phase_enter_time:.2f}s '
+                    f'tgt_cross={target_cross*100:.1f}cm '
+                    f'cur_cross={self._last_cross_error*100:.1f}cm '
+                    f'cross_err={cross_error*100:.1f}cm '
+                    f'tgt_head={math.degrees(target_heading):.1f}° '
+                    f'cur_head={math.degrees(current_yaw):.1f}° '
+                    f'head_err={math.degrees(heading_error):.1f}° '
+                    f'omega_cmd={omega_cmd:.3f}'
+                )
+            
+            # 发布指令
+            self._publish_cmd(self._active_linear_speed, omega_cmd)
+            
+            # 阶段完成判断：横偏达到目标的 90%
+            cross_achieved = abs(self._last_cross_error) >= abs(target_cross) * self.cfg.avoid_shift_cross_threshold
+            min_time_ok = (now - self._phase_enter_time) >= self.cfg.avoid_min_phase_hold_s
+            
+            if cross_achieved and min_time_ok:
+                if self.cfg.verbose:
+                    elapsed = now - self._phase_enter_time
+                    self._log.info('AVOID',
+                        f'SHIFT_OUT完成 耗时={elapsed:.2f}s '
+                        f'横偏={self._last_cross_error*100:.1f}cm '
+                        f'(目标{target_cross*100:.0f}cm) '
+                        f'航向={math.degrees(current_yaw):.1f}° '
+                        f'(目标{math.degrees(target_heading):.1f}°)'
+                    )
+                
+                self._state = 'bypass_hold'
+                self._phase_enter_time = now
+            
+            return True
+        
+        # ── 阶段2：BYPASS_HOLD（保持横偏通过障碍）─────────
+        elif self._state == 'bypass_hold':
+            # 目标：保持横偏，航向逐渐回到参考方向
+            target_cross = self._omega_sign * self.cfg.avoid_target_offset_m
+            target_heading = self._reference_heading  # 航向目标=原轨道方向
+            
+            # 计算误差
+            cross_error = target_cross - self._last_cross_error
+            heading_error = self._normalize_angle(target_heading - current_yaw)
+            
+            # 统一控制律
+            omega_cmd = self._compute_omega_cmd(heading_error, cross_error)
+            
+            # 发布指令
+            self._publish_cmd(self._active_linear_speed, omega_cmd)
+            
+            # 阶段完成判断：真实距离已超过障碍物
+            if self._obstacle_pos is not None and self._robot_pos is not None:
+                # 计算车与障碍物的欧几里得距离
+                dx = self._robot_pos[0] - self._obstacle_pos[0]
+                dy = self._robot_pos[1] - self._obstacle_pos[1]
+                distance_to_obstacle = math.hypot(dx, dy)
+                passed_obstacle = distance_to_obstacle >= self.cfg.avoid_pass_margin_m
+            else:
+                # 没有障碍物位置记录，按最短保持时间退出
+                passed_obstacle = False
+            
+            min_time_ok = (now - self._phase_enter_time) >= self.cfg.avoid_min_phase_hold_s
+            
+            if passed_obstacle and min_time_ok:
+                if self.cfg.verbose:
+                    elapsed = now - self._phase_enter_time
+                    dist_to_obs = math.hypot(dx, dy) if (self._obstacle_pos and self._robot_pos) else float('nan')
+                    self._log.info('AVOID',
+                        f'BYPASS_HOLD完成 耗时={elapsed:.2f}s '
+                        f'dist_to_obs={dist_to_obs:.2f}m '
+                        f'pass_margin={self.cfg.avoid_pass_margin_m:.2f}m '
+                        f'横偏={self._last_cross_error*100:.1f}cm '
+                        f'航向={math.degrees(current_yaw):.1f}°'
+                    )
+                
+                self._state = 'merge_back'
+                self._phase_enter_time = now
+            
+            return True
+        
+        # ── 阶段3：MERGE_BACK（平滑回归原轨道）─────────────
+        elif self._state == 'merge_back':
+            # 目标：横偏→0，航向→参考方向
+            target_cross = 0.0
+            target_heading = self._reference_heading
+            
+            # 计算误差
+            cross_error = target_cross - self._last_cross_error
+            heading_error = self._normalize_angle(target_heading - current_yaw)
+            
+            # 统一控制律
+            omega_cmd = self._compute_omega_cmd(heading_error, cross_error)
+            
+            # 发布指令
+            self._publish_cmd(self._active_linear_speed, omega_cmd)
+            
+            # 阶段完成判断：航向和横偏都回到容差内
+            heading_ok = abs(heading_error) <= math.radians(self.cfg.avoid_merge_heading_tolerance_deg)
+            cross_ok = abs(self._last_cross_error) <= self.cfg.avoid_merge_cross_tolerance_m
+            min_time_ok = (now - self._phase_enter_time) >= self.cfg.avoid_min_phase_hold_s
+            
+            if heading_ok and cross_ok and min_time_ok:
+                total_elapsed = now - self._start_time
+                if self.cfg.verbose:
+                    self._log.info('AVOID',
+                        f'MERGE_BACK完成 #{self._total_avoidances} '
+                        f'总耗时={total_elapsed:.2f}s '
+                        f'最终横偏={self._last_cross_error*100:.1f}cm '
+                        f'最终航向偏差={math.degrees(heading_error):.1f}°'
+                    )
+                
+                self.reset()
+                self._publish_cmd()
+                return False
+            
+            return True
+        
+        return False
+    
+    def _compute_omega_cmd(self, heading_error, cross_error):
+        """统一的角速度计算（带死区和限幅）
+        
+        Args:
+            heading_error: 航向误差（rad）
+            cross_error: 横偏误差（m）
+        
+        Returns:
+            float: 角速度指令（rad/s）
+        """
+        # 死区处理
+        heading_deadzone = math.radians(self.cfg.avoid_deadzone_heading_deg)
+        if abs(heading_error) < heading_deadzone:
+            heading_error = 0.0
+        
+        cross_deadzone = self.cfg.avoid_deadzone_cross_m
+        if abs(cross_error) < cross_deadzone:
+            cross_error = 0.0
+        
+        # 双误差综合控制律
+        # 注意：横偏误差不直接用于产生角速度，应该转化为航向修正
+        # cross_error > 0 表示需要往左，但不直接乘增益，而是通过航向偏移实现
+        # 这里简化为：直接用横偏误差产生侧向控制（类似 P 控制）
+        omega_raw = (
+            self.cfg.avoid_heading_kp * heading_error +
+            self.cfg.avoid_cross_kp * cross_error
+        )
+        
+        # 限幅
+        omega_limited = SpiralAvoider._clamp(omega_raw, self.cfg.avoid_omega_limit)
+        
+        # 斜率限制（避免频繁反向）
+        if self.cfg.avoid_omega_rate_limit > 0:
+            dt = 1.0 / self.cfg.control_rate_hz
+            max_delta = self.cfg.avoid_omega_rate_limit * dt
+            omega_delta = omega_limited - self._last_omega_cmd
+            if abs(omega_delta) > max_delta:
+                omega_limited = self._last_omega_cmd + math.copysign(max_delta, omega_delta)
+        
+        self._last_omega_cmd = omega_limited
+        return omega_limited
+    
+    # ══════════════════════════════════════════════════
+    # Local Path Pure Pursuit 方案实现（推荐新方案）
+    # ══════════════════════════════════════════════════
+    
+    def _build_local_path(self):
+        """构造三点局部避障路径（在轨道坐标系中）
+        
+        轨道坐标系定义：
+        - x轴：原轨道方向（起始航向）
+        - y轴：垂直于轨道（左正右负）
+        - 原点：触发避障时的车辆位置
+        
+        路径点：
+        P0 = (0, 0)                          起点
+        P1 = (s1, y_clear * sign)            侧移点
+        P2 = (s_obs + s_pass, y_clear * sign) 旁路点
+        P3 = (s_obs + s3_margin, 0)           回归点
+        
+        sign: 右绕 = -1, 左绕 = +1
+        """
+        # 计算障碍物在轨道坐标系中的纵向位置
+        # front_distance * cos(angle) 是沿轨道方向的投影
+        front_angle_rad = math.radians(self.front_angle_deg)
+        s_obs = self.front_distance * math.cos(front_angle_rad)
+        
+        # 参数
+        s1 = self.cfg.lpp_s1
+        y_clear = self.cfg.lpp_y_clear * self._omega_sign  # 带符号
+        s_pass = self.cfg.lpp_s_pass
+        s3_margin = self.cfg.lpp_s3_margin
+        
+        # 构造路径点（轨道坐标系）
+        path_track = [
+            (0.0, 0.0),                       # P0 起点
+            (s1, y_clear),                    # P1 侧移点
+            (s_obs + s_pass, y_clear),        # P2 旁路点
+            (s_obs + s3_margin, 0.0),         # P3 回归点
+        ]
+        
+        # 转换到世界坐标系（假设车起始位置为世界系原点，起始航向为轨道方向）
+        # 实际上我们用相对坐标即可，不需要真正的世界坐标
+        # 保存轨道系路径，后续跟踪时实时转换
+        self._local_path_waypoints = path_track
+        self._path_index = 0
+        
+        # 记录障碍物纵向位置（用于判断通过）
+        self._obstacle_s = s_obs
+        
+        if self.cfg.verbose:
+            total_projection = s_obs + s3_margin
+            self._log.info('LOCAL_PATH',
+                f'构造局部路径 s_obs={s_obs:.2f}m '
+                f'y_clear={y_clear*100:.0f}cm '
+                f'投影距离={total_projection:.2f}m'
+            )
+            for i, (s, y) in enumerate(path_track):
+                self._log.info('LOCAL_PATH', f'  P{i} = ({s:.2f}, {y*100:.0f}cm)')
+    
+    def _step_local_path_pure_pursuit(self, current_yaw) -> bool:
+        """Local Path Pure Pursuit 避障步进
+        
+        状态：following_path
+        
+        控制：Pure Pursuit 跟踪局部路径
+        完成判据：
+        1. 车已超过 P3 点（轨道投影）
+        2. 横偏 <= 容差
+        3. 航向偏差 <= 容差
+        
+        Args:
+            current_yaw: 当前航向（rad）
+        
+        Returns:
+            bool: True=避障中，False=完成
+        """
+        if self._state != 'following_path':
+            return False
+        
+        # ── 坐标转换（用轮速里程计实时位置） ──────────────────
+        # ★ robot_s：沿轨道方向从触发点开始的累计里程
+        # 计算当前位置相对起点的位移向量
+        if self._robot_pos is None or self._start_position is None:
+            self._log.warn('PATH_TRACK', '机器人位置未知，无法跟踪路径')
+            return False
+        
+        dx = self._robot_pos[0] - self._start_position[0]
+        dy = self._robot_pos[1] - self._start_position[1]
+        
+        # 投影到轨道方向（_start_yaw 是触发时航向）
+        robot_s = dx * math.cos(self._start_yaw) + dy * math.sin(self._start_yaw)
+        robot_s = max(0.0, robot_s)  # 不能为负
+        
+        # 横偏：垂直于轨道方向（左正右负）
+        robot_y = -dx * math.sin(self._start_yaw) + dy * math.cos(self._start_yaw)
+        
+        # ★ 调试：首次调用时打印位置信息
+        if self.cfg.verbose and (self._now_sec() - self._start_time) < 0.1:
+            self._log.info('DEBUG_POS',
+                f'start_pos=({self._start_position[0]:.3f},{self._start_position[1]:.3f}) '
+                f'robot_pos=({self._robot_pos[0]:.3f},{self._robot_pos[1]:.3f}) '
+                f'dx={dx:.3f} dy={dy:.3f} '
+                f'start_yaw={math.degrees(self._start_yaw):.1f}° '
+                f'→ robot_s={robot_s:.3f}m robot_y={robot_y*100:.1f}cm'
+            )
+        
+        # 当前航向相对轨道的偏差
+        heading_error = self._normalize_angle(current_yaw - self._start_yaw)
+        
+        # ── 完成判据检查（修正：不能只看纵向位置） ──────────
+        # ★ 问题：原判据只看 robot_s >= p3_s，车可能在 y≠0 时就满足条件
+        # ★ 修正：必须先通过障碍物，且横偏和航向都接近目标才算完成
+        
+        # 条件1：车已超过障碍物（用较小的余量，避免过早触发）
+        obstacle_passed = robot_s >= (self._obstacle_s + self.cfg.lpp_obstacle_pass_check_s)
+        
+        # 条件2：横偏小于容差
+        cross_ok = abs(robot_y) <= self.cfg.lpp_finish_cross_tol_m
+        
+        # 条件3：航向偏差小于容差
+        heading_tol = math.radians(self.cfg.lpp_finish_heading_tol_deg)
+        heading_ok = abs(heading_error) <= heading_tol
+        
+        # ★ 每秒打印一次完成判据检查（用于调试）
+        now = self._now_sec()
+        if self.cfg.verbose and (int(now * 2) != int((now - 0.03) * 2)):  # 每0.5秒
+            self._log.info('FINISH_CHECK',
+                f't={now-self._start_time:.1f}s '
+                f'robot_s={robot_s:.2f}m robot_y={robot_y*100:.1f}cm heading_err={math.degrees(heading_error):.1f}° | '
+                f'条件1_通过障碍={obstacle_passed}({robot_s:.2f}>={self._obstacle_s+self.cfg.lpp_obstacle_pass_check_s:.2f}) '
+                f'条件2_横偏={cross_ok}({abs(robot_y)*100:.1f}<={self.cfg.lpp_finish_cross_tol_m*100:.0f}cm) '
+                f'条件3_航向={heading_ok}({abs(math.degrees(heading_error)):.1f}<={self.cfg.lpp_finish_heading_tol_deg:.0f}°)'
+            )
+        
+        # ★ 必须三个条件同时满足：通过障碍 + 横偏小 + 航向正
+        if obstacle_passed and cross_ok and heading_ok:
+            total_elapsed = self._now_sec() - self._start_time
+            if self.cfg.verbose:
+                self._log.info('AVOID',
+                    f'局部路径完成 #{self._total_avoidances} '
+                    f'总耗时={total_elapsed:.2f}s '
+                    f'最终robot_s={robot_s:.2f}m '
+                    f'横偏={robot_y*100:.1f}cm '
+                    f'航向偏差={math.degrees(heading_error):.1f}°'
+                )
+            
+            self.reset()
+            self._publish_cmd()
+            return False
+        
+        # ── 控制策略选择 ──────────────────────
+        # ★ 超过P3后，切换到直接航向+横偏反馈控制，避免Pure Pursuit过冲
+        p3_s = self._local_path_waypoints[-1][0]
+        
+        if robot_s > p3_s:
+            # ═══ 回归阶段：航向+横偏双反馈 ═══
+            # 目标：航向回正 + 横偏归零
+            omega = -2.0 * heading_error - 3.0 * robot_y
+            omega = self._clamp(omega, self.cfg.lpp_max_omega)
+            
+            self._publish_cmd(self._active_linear_speed, omega)
+            
+            if self.cfg.verbose and (self._now_sec() - self._phase_enter_time) < 0.5:
+                self._log.info('ALIGN_TRACK',
+                    f't={self._now_sec()-self._start_time:.2f}s '
+                    f'robot_s={robot_s:.2f}m y={robot_y*100:.0f}cm heading={math.degrees(heading_error):.1f}° '
+                    f'omega={omega:.3f} [双反馈回归]'
+                )
+        else:
+            # ═══ 绕障阶段：Pure Pursuit 路径跟踪 ═══
+            # 在路径上找预瞄点
+            lookahead = self.cfg.lpp_lookahead
+            target_s = robot_s + lookahead
+            
+            # 在 waypoints 中找到预瞄点（简化：线性插值）
+            target_track_x, target_track_y = self._interpolate_path(target_s)
+            
+            # 计算车到预瞄点的向量（轨道坐标系）
+            dx = target_track_x - robot_s
+            dy = target_track_y - robot_y
+            
+            # 预瞄点相对车头的角度
+            # 车头方向 = current_yaw
+            # 轨道方向 = _start_yaw
+            # 预瞄向量在轨道系中的角度 = atan2(dy, dx)
+            # 转到车头系：需要减去 (current_yaw - _start_yaw)
+            target_angle_track = math.atan2(dy, dx)
+            alpha = self._normalize_angle(target_angle_track - heading_error)
+            
+            # Pure Pursuit 控制律
+            # omega = (2 * v * sin(alpha)) / lookahead
+            # 简化为比例控制
+            omega = self.cfg.lpp_heading_kp * alpha
+            omega = self._clamp(omega, self.cfg.lpp_max_omega)
+            
+            # 发布控制指令
+            self._publish_cmd(self._active_linear_speed, omega)
+            
+            # ── 调试日志（每秒1次） ──────────────────────
+            now = self._now_sec()
+            if self.cfg.verbose and (now - self._phase_enter_time) < 0.5:
+                self._log.info('PATH_TRACK',
+                    f't={now-self._start_time:.2f}s '
+                    f'robot_s={robot_s:.2f}m y={robot_y*100:.0f}cm '
+                    f'target=({target_track_x:.2f},{target_track_y*100:.0f}cm) '
+                    f'alpha={math.degrees(alpha):.1f}° '
+                    f'omega={omega:.3f}'
+                )
+        
+        return True
+    
+    def _interpolate_path(self, target_s):
+        """在局部路径上插值找到纵向位置为 target_s 的点
+        
+        Args:
+            target_s: 目标纵向位置（轨道坐标系）
+        
+        Returns:
+            (x, y): 插值后的点坐标（轨道坐标系）
+        """
+        waypoints = self._local_path_waypoints
+        
+        # ★ 如果超过最后一个点（P3），沿原轨道方向延伸（y=0）
+        # 避免车掉头追踪后方的P3点
+        if target_s >= waypoints[-1][0]:
+            return (target_s, 0.0)  # 延伸到目标纵向位置，横偏保持0
+        
+        # 如果小于第一个点，返回第一个点
+        if target_s <= waypoints[0][0]:
+            return waypoints[0]
+        
+        # 在路径点中找到包含 target_s 的段
+        for i in range(len(waypoints) - 1):
+            s0, y0 = waypoints[i]
+            s1, y1 = waypoints[i + 1]
+            
+            if s0 <= target_s <= s1:
+                # 线性插值
+                if abs(s1 - s0) < 1e-6:
+                    return (s0, y0)
+                
+                ratio = (target_s - s0) / (s1 - s0)
+                y_interp = y0 + ratio * (y1 - y0)
+                return (target_s, y_interp)
+        
+        # 理论上不会到这里
+        return waypoints[-1]
 
 
 # ────────────────────────────────────────────────

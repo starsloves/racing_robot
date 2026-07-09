@@ -46,6 +46,17 @@ def generate_launch_description():
             emulate_tty=True,
         ),
 
+        Node(
+            package='racing_stage3_param_test',
+            executable='twist_cmd_relay',
+            name='stage3_test_cmd_relay',
+            parameters=[{
+                'input_topic': '/stage3_cmd_vel',
+                'output_topic': '/cmd_vel',
+            }],
+            output='log',
+        ),
+
         TimerAction(
             period=LaunchConfiguration('phase3_start_delay_sec'),
             actions=[

@@ -25,3 +25,10 @@ ros2 launch racing_stage2_param_test direct_inertial_test.launch.py
 # 紧急停车
 # ──────────────────────────────────────────────────────────
 ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
+
+
+# 避障直行测试
+ros2 launch racing_stage2_param_test simple_avoid_test.launch.py
+
+#第三阶段测试
+ros2 launch racing_stage3_param_test simple_return_test.launch.py test_direction:=clockwise

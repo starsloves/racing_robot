@@ -1,4 +1,4 @@
-"""Stage3 简化返程：左转 230° → 盲驱+锥桶避障 → 墙角检测+航向修正 → 靠近停车"""
+"""Stage3 简化返程：左转 → 搜索墙角 → 对齐墙面 → 垂直逼近到 (0.3, 0.7)"""
 
 from __future__ import annotations
 
@@ -14,14 +14,14 @@ from std_msgs.msg import Int32, String
 
 from .corner_detector import CornerDetector
 from .obstacle_classifier import ObstacleClassifier
+from racing_common.racing_logger import RacingLogger
 
-# 5 态状态枚举
+# 新状态机：搜索 → 对齐 → 垂直逼近
 S_IDLE = 'idle'
 S_INITIAL_TURN = 'initial_turn'
-S_BLIND_DRIVE = 'blind_drive'
-S_CORNER_LOCKED = 'corner_locked'
-S_CORNER_CONFIRMED = 'corner_confirmed'
-S_APPROACH = 'approach_corner'
+S_CORNER_SEARCH = 'corner_search'
+S_ALIGN_TO_WALL = 'align_to_wall'
+S_PERPENDICULAR_APPROACH = 'perpendicular_approach'
 S_FINISH = 'finish'
 
 # 避障子状态
@@ -41,13 +41,22 @@ class SimpleReturnNavigator(Node):
         self.corner_detector = CornerDetector(self._cfg)
         self.obstacle_classifier = ObstacleClassifier(self._cfg)
 
+        self.logger = RacingLogger(self, 'stage3_param_test', session_title='stage3_simple_return')
+
         self.state = S_IDLE
         self.phase = 1
         self.target_yaw = None
         self.current_yaw = None
 
-        self.corner_position = None
-        self.last_correction_time = 0.0
+        # 墙角跟踪
+        self.corner_x = None
+        self.corner_y = None
+        self.corner_theta = None  # 墙角相对车头角度（弧度）
+        self.corner_lost_since = None
+        self._detect_counter = 0
+        
+        # 对齐状态
+        self.aligned_since = None  # 首次满足对齐条件的时间
 
         self.avoid_state = AV_FORWARD
         self.avoid_turn_direction = 0.0
@@ -58,6 +67,7 @@ class SimpleReturnNavigator(Node):
         self.counter_steer_deadline = None
         self.recovery_deadline = None
 
+        self.get_logger().info(f'creating cmd publisher on topic: {self.cmd_topic}')
         self.cmd_pub = self.create_publisher(Twist, self.cmd_topic, 10)
         self.state_pub = self.create_publisher(String, self.state_topic, 10)
 
@@ -69,7 +79,10 @@ class SimpleReturnNavigator(Node):
         self._start_time = None
         self.publish_state(S_IDLE)
         self.create_timer(0.05, self._control_loop)
-        self.get_logger().info('simple return navigator ready (stage3 simplified)')
+        self.logger.startup(
+            f'stage3 simple return navigator ready | '
+            f'cmd_topic={self.cmd_topic} imu={self.imu_topic} scan={self.scan_topic}'
+        )
 
     def _declare_params(self):
         self.declare_parameter('phase_topic', 'competition_phase')
@@ -79,14 +92,32 @@ class SimpleReturnNavigator(Node):
         self.declare_parameter('state_topic', 'stage3_state')
         self.declare_parameter('test_direction', 'clockwise')
 
-        self.declare_parameter('turn_angular_speed', 0.75)
+        self.declare_parameter('turn_angular_speed', 1.0)
         self.declare_parameter('turn_heading_tolerance_deg', 3.0)
         self.declare_parameter('turn_kp', 2.0)
 
-        self.declare_parameter('blind_drive_linear_speed', 0.15)
-        self.declare_parameter('heading_maintain_kp', 2.4)
-        self.declare_parameter('heading_tolerance_deg', 6.0)
-        self.declare_parameter('in_place_angle_deg', 8.0)
+        # 搜索阶段
+        self.declare_parameter('search_linear_speed', 0.15)
+        self.declare_parameter('search_max_duration', 15.0)
+        
+        # 对齐阶段
+        self.declare_parameter('align_linear_speed', 0.15)
+        self.declare_parameter('align_kp', 2.0)
+        self.declare_parameter('align_max_angular_speed', 0.6)
+        self.declare_parameter('align_tolerance_deg', 10.0)
+        self.declare_parameter('align_hold_duration', 0.5)
+        
+        # 垂直逼近阶段
+        self.declare_parameter('approach_target_cx', 0.3)
+        self.declare_parameter('approach_target_cy', 0.7)
+        self.declare_parameter('approach_heading_kp', 2.0)
+        self.declare_parameter('approach_dist_kp', 0.5)
+        self.declare_parameter('approach_stop_tolerance_xy', 0.05)
+        self.declare_parameter('approach_stop_tolerance_theta_deg', 5.0)
+        self.declare_parameter('approach_max_linear_speed', 0.25)
+        self.declare_parameter('approach_min_linear_speed', 0.10)
+        self.declare_parameter('corner_lost_timeout', 1.5)
+        self.declare_parameter('corner_lost_blind_speed', 0.12)
 
         self.declare_parameter('douglas_peucker_epsilon', 0.05)
         self.declare_parameter('corner_min_line_length', 0.30)
@@ -94,20 +125,6 @@ class SimpleReturnNavigator(Node):
         self.declare_parameter('corner_min_distance', 0.30)
         self.declare_parameter('corner_max_distance', 2.5)
         self.declare_parameter('corner_min_points', 8)
-
-        self.declare_parameter('confirmation_frames', 3)
-        self.declare_parameter('corner_position_tolerance', 0.15)
-        self.declare_parameter('correction_cooldown_far_sec', 2.0)
-        self.declare_parameter('correction_cooldown_mid_sec', 1.0)
-        self.declare_parameter('correction_cooldown_near_sec', 0.5)
-        self.declare_parameter('max_correction_angle_deg', 15.0)
-        self.declare_parameter('far_distance_threshold', 1.0)
-        self.declare_parameter('mid_distance_threshold', 0.5)
-
-        self.declare_parameter('approach_stop_distance', 0.20)
-        self.declare_parameter('approach_max_linear_speed', 0.15)
-        self.declare_parameter('approach_min_linear_speed', 0.06)
-        self.declare_parameter('approach_turn_kp', 1.8)
 
         self.declare_parameter('cone_max_width', 0.15)
         self.declare_parameter('cone_max_distance', 0.80)
@@ -152,24 +169,25 @@ class SimpleReturnNavigator(Node):
         self.turn_heading_tolerance = math.radians(float(self.get_parameter('turn_heading_tolerance_deg').value))
         self.turn_kp = float(self.get_parameter('turn_kp').value)
 
-        self.blind_drive_linear_speed = float(self.get_parameter('blind_drive_linear_speed').value)
-        self.heading_maintain_kp = float(self.get_parameter('heading_maintain_kp').value)
-        self.heading_tolerance = math.radians(float(self.get_parameter('heading_tolerance_deg').value))
-        self.in_place_angle = math.radians(float(self.get_parameter('in_place_angle_deg').value))
-
-        self.confirmation_frames = int(self.get_parameter('confirmation_frames').value)
-        self.corner_position_tolerance = float(self.get_parameter('corner_position_tolerance').value)
-        self.correction_cooldown_far = float(self.get_parameter('correction_cooldown_far_sec').value)
-        self.correction_cooldown_mid = float(self.get_parameter('correction_cooldown_mid_sec').value)
-        self.correction_cooldown_near = float(self.get_parameter('correction_cooldown_near_sec').value)
-        self.max_correction_angle = math.radians(float(self.get_parameter('max_correction_angle_deg').value))
-        self.far_distance_threshold = float(self.get_parameter('far_distance_threshold').value)
-        self.mid_distance_threshold = float(self.get_parameter('mid_distance_threshold').value)
-
-        self.approach_stop_distance = float(self.get_parameter('approach_stop_distance').value)
+        self.search_linear_speed = float(self.get_parameter('search_linear_speed').value)
+        self.search_max_duration = float(self.get_parameter('search_max_duration').value)
+        
+        self.align_linear_speed = float(self.get_parameter('align_linear_speed').value)
+        self.align_kp = float(self.get_parameter('align_kp').value)
+        self.align_max_angular_speed = float(self.get_parameter('align_max_angular_speed').value)
+        self.align_tolerance = math.radians(float(self.get_parameter('align_tolerance_deg').value))
+        self.align_hold_duration = float(self.get_parameter('align_hold_duration').value)
+        
+        self.approach_target_cx = float(self.get_parameter('approach_target_cx').value)
+        self.approach_target_cy = float(self.get_parameter('approach_target_cy').value)
+        self.approach_heading_kp = float(self.get_parameter('approach_heading_kp').value)
+        self.approach_dist_kp = float(self.get_parameter('approach_dist_kp').value)
+        self.approach_stop_tolerance_xy = float(self.get_parameter('approach_stop_tolerance_xy').value)
+        self.approach_stop_tolerance_theta = math.radians(float(self.get_parameter('approach_stop_tolerance_theta_deg').value))
         self.approach_max_linear_speed = float(self.get_parameter('approach_max_linear_speed').value)
         self.approach_min_linear_speed = float(self.get_parameter('approach_min_linear_speed').value)
-        self.approach_turn_kp = float(self.get_parameter('approach_turn_kp').value)
+        self.corner_lost_timeout = float(self.get_parameter('corner_lost_timeout').value)
+        self.corner_lost_blind_speed = float(self.get_parameter('corner_lost_blind_speed').value)
 
         self.cone_avoidance_trigger = float(self.get_parameter('cone_avoidance_trigger').value)
         self.phase1_window_min_x = float(self.get_parameter('phase1_window_min_x').value)
@@ -249,14 +267,19 @@ class SimpleReturnNavigator(Node):
         if self.phase == 3 and self.state == S_IDLE:
             if self._start_time is None:
                 self._start_time = self._now_sec() + 0.5
-                self.get_logger().info('phase=3 detected, will start after 0.5s delay')
+                self.logger.feedback(f'phase=3 detected, will start after 0.5s delay')
 
     def _start_mission(self):
         self.state = S_INITIAL_TURN
         self.publish_state('initial_turn')
-        self.get_logger().info(
-            f'mission started, direction={self.test_direction}, '
-            f'target_yaw=230°'
+        turn_deg = 75.0 if self.test_direction == 'clockwise' else -105.0
+        if self.current_yaw is not None:
+            self.target_yaw = self._normalize_angle(self.current_yaw + math.radians(turn_deg))
+        else:
+            self.target_yaw = math.radians(turn_deg)
+        self.logger.mission(
+            f'direction={self.test_direction} turn={turn_deg}° '
+            f'target_yaw={math.degrees(self.target_yaw):.1f}°'
         )
 
     def _imu_cb(self, msg):
@@ -285,26 +308,24 @@ class SimpleReturnNavigator(Node):
 
         if self.state == S_INITIAL_TURN:
             self._do_initial_turn()
-        elif self.state in (S_BLIND_DRIVE, S_CORNER_LOCKED, S_CORNER_CONFIRMED):
-            self._do_drive_with_corner()
-        elif self.state == S_APPROACH:
-            self._do_approach_corner()
+        elif self.state == S_CORNER_SEARCH:
+            self._do_corner_search()
+        elif self.state == S_ALIGN_TO_WALL:
+            self._do_align_to_wall()
+        elif self.state == S_PERPENDICULAR_APPROACH:
+            self._do_perpendicular_approach()
 
     # ── Phase 1：初始转向 ──
 
-    def _get_target_yaw(self):
-        return math.radians(230.0)
-
     def _do_initial_turn(self):
-        target = self._get_target_yaw()
+        target = self.target_yaw
         error = self._angle_error(target, self.current_yaw)
 
         if abs(error) < self.turn_heading_tolerance:
-            self.target_yaw = target
-            self.state = S_BLIND_DRIVE
-            self.publish_state('blind_drive')
-            self.get_logger().info(
-                f'initial turn done, yaw={math.degrees(target):.1f}°, switching to blind drive'
+            self.state = S_CORNER_SEARCH
+            self.publish_state('corner_search')
+            self.logger.segment(
+                f'turn done yaw={math.degrees(target):.1f}° → corner_search'
             )
             self.cmd_pub.publish(self._twist())
             return
@@ -313,32 +334,202 @@ class SimpleReturnNavigator(Node):
         if abs(angular) < 0.2:
             angular = math.copysign(0.2, error)
 
-        self.get_logger().info(
-            f'turning: current={math.degrees(self.current_yaw):.1f}°, '
-            f'target={math.degrees(target):.1f}°, error={math.degrees(error):.1f}°, '
-            f'angular={angular:.2f}',
-            throttle_duration_sec=1.0
+        self.logger.telemetry('turn',
+            f'cur={math.degrees(self.current_yaw):.1f}° '
+            f'tgt={math.degrees(target):.1f}° '
+            f'err={math.degrees(error):.1f}° '
+            f'ang={angular:.2f}'
         )
-        self.cmd_pub.publish(self._twist(0.0, angular))
+        cmd = self._twist(0.2, angular)
+        self.cmd_pub.publish(cmd)
 
-    # ── Phase 2-4：盲驱 + 墙角检测 + 航向修正 + 锥桶避障 ──
+    # ── Phase 2：搜索墙角 ──
 
-    def _do_drive_with_corner(self):
-        if self.avoid_state != AV_FORWARD:
-            self._do_avoidance()
-            return
-
-        if self.latest_scan is not None:
+    def _do_corner_search(self):
+        """慢速前进，检测墙角，记录角度 θ"""
+        self._detect_counter += 1
+        
+        # 每 5 帧检测一次
+        if self._detect_counter % 5 == 0 and self.latest_scan is not None:
             self._check_cone_obstacle(self.latest_scan)
             if self.avoid_state != AV_FORWARD:
                 self._do_avoidance()
                 return
 
-        if self.latest_scan is not None:
-            self._update_corner_detection(self.latest_scan)
+            detected, cx, cy, theta, conf = self.corner_detector.detect(self.latest_scan)
+            if detected:
+                theta_deg = math.degrees(theta)
+                
+                # ═══ 过滤：只接受车头前方 ±30° 的墙角 ═══
+                if abs(theta) > math.radians(30.0):
+                    self.logger.feedback(f'corner outside front cone (θ={theta_deg:.1f}°), skip')
+                    self.cmd_pub.publish(self._twist(self.search_linear_speed, 0.0))
+                    return
+                
+                # ═══ 通过验证 → 记录 ═══
+                self.corner_x = cx
+                self.corner_y = cy
+                self.corner_theta = theta
+                self.corner_lost_since = None
+                
+                self.logger.segment(
+                    f'corner found! ({cx:.2f}, {cy:.2f}) θ={theta_deg:.1f}°'
+                )
+                
+                # 如果墙角已经在正前方（|θ| < 15°），直接进垂直逼近
+                if abs(theta) < math.radians(15.0):
+                    self.state = S_PERPENDICULAR_APPROACH
+                    self.publish_state('perpendicular_approach')
+                    self.logger.segment(
+                        f'corner already aligned θ={theta_deg:.1f}° → perp_approach'
+                    )
+                else:
+                    self.state = S_ALIGN_TO_WALL
+                    self.publish_state('align_to_wall')
+                    self.aligned_since = None
+                    self.logger.segment(
+                        f'corner at θ={theta_deg:.1f}° → align_to_wall'
+                    )
+                return
+        
+        # 直走搜索
+        self.cmd_pub.publish(self._twist(self.search_linear_speed, 0.0))
 
-        cmd = self._maintain_heading()
-        self.cmd_pub.publish(cmd)
+    # ── Phase 3：对齐墙面（边走边转，使 θ→0）──
+
+    def _do_align_to_wall(self):
+        """边走边转，让墙角角度 θ → 0（正前方）"""
+        self._detect_counter += 1
+        
+        if self._detect_counter % 5 == 0 and self.latest_scan is not None:
+            self._check_cone_obstacle(self.latest_scan)
+            if self.avoid_state != AV_FORWARD:
+                self._do_avoidance()
+                return
+
+            detected, cx, cy, theta, conf = self.corner_detector.detect(self.latest_scan)
+            if detected:
+                self.corner_x = cx
+                self.corner_y = cy
+                self.corner_theta = theta
+                self.corner_lost_since = None
+                
+                theta_deg = math.degrees(theta)
+                
+                # 判断是否对齐（|θ| < align_tolerance 且持续 align_hold_duration）
+                if abs(theta) < self.align_tolerance:
+                    now = self._now_sec()
+                    if self.aligned_since is None:
+                        self.aligned_since = now
+                    hold_time = now - self.aligned_since
+                    
+                    if hold_time >= self.align_hold_duration:
+                        self.state = S_PERPENDICULAR_APPROACH
+                        self.publish_state('perpendicular_approach')
+                        self.logger.segment(
+                            f'aligned! θ={theta_deg:.1f}° hold={hold_time:.2f}s → perp_approach'
+                        )
+                        return
+                else:
+                    self.aligned_since = None
+            else:
+                # 墙角丢失 → 回到搜索
+                if self.corner_lost_since is None:
+                    self.corner_lost_since = self._now_sec()
+                lost_time = self._now_sec() - self.corner_lost_since
+                if lost_time > self.corner_lost_timeout:
+                    self.state = S_CORNER_SEARCH
+                    self.publish_state('corner_search')
+                    self.logger.segment(f'corner lost {lost_time:.1f}s → back to search')
+                    self.corner_x = None
+                    self.corner_y = None
+                    self.corner_theta = None
+                    return
+        
+        # 控制：边走边转
+        if self.corner_theta is not None:
+            angular = self._clamp(-self.align_kp * self.corner_theta, self.align_max_angular_speed)
+            self.logger.telemetry('align',
+                f'θ={math.degrees(self.corner_theta):.1f}° ang={angular:.2f}'
+            )
+        else:
+            # 盲走保底
+            angular = 0.0
+        
+        self.cmd_pub.publish(self._twist(self.align_linear_speed, angular))
+
+    # ── Phase 4：垂直逼近（保持 θ≈0，距离控制）──
+
+    def _do_perpendicular_approach(self):
+        """保持墙角在正前方 θ≈0，垂直逼近到 (0.3, 0.7)"""
+        self._detect_counter += 1
+        
+        if self._detect_counter % 5 == 0 and self.latest_scan is not None:
+            self._check_cone_obstacle(self.latest_scan)
+            if self.avoid_state != AV_FORWARD:
+                self._do_avoidance()
+                return
+
+            detected, cx, cy, theta, conf = self.corner_detector.detect(self.latest_scan)
+            if detected:
+                self.corner_x = cx
+                self.corner_y = cy
+                self.corner_theta = theta
+                self.corner_lost_since = None
+                
+                # 每帧打印
+                self.get_logger().info(f'[CORNER] ({cx:.3f}, {cy:.3f}) θ={math.degrees(theta):.1f}°')
+            else:
+                # 墙角丢失 → 盲走保底或回搜索
+                if self.corner_lost_since is None:
+                    self.corner_lost_since = self._now_sec()
+                lost_time = self._now_sec() - self.corner_lost_since
+                if lost_time > self.corner_lost_timeout:
+                    # 超时 → 回搜索
+                    self.state = S_CORNER_SEARCH
+                    self.publish_state('corner_search')
+                    self.logger.segment(f'corner lost {lost_time:.1f}s → back to search')
+                    self.corner_x = None
+                    self.corner_y = None
+                    self.corner_theta = None
+                    return
+        
+        cx = self.corner_x
+        cy = self.corner_y
+        theta = self.corner_theta
+        
+        if cx is None or cy is None or theta is None:
+            # 盲走保底
+            self.cmd_pub.publish(self._twist(self.corner_lost_blind_speed, 0.0))
+            return
+        
+        # 停止条件：位置 + 角度
+        if (abs(cx - self.approach_target_cx) < self.approach_stop_tolerance_xy and
+            abs(cy - self.approach_target_cy) < self.approach_stop_tolerance_xy and
+            abs(theta) < self.approach_stop_tolerance_theta):
+            self.state = S_FINISH
+            self.publish_state('complete')
+            self.cmd_pub.publish(self._twist())
+            self.logger.mission(
+                f'complete! corner at ({cx:.3f}, {cy:.3f}) θ={math.degrees(theta):.1f}°'
+            )
+            return
+        
+        # 控制：保持 θ≈0（航向修正）+ 距离控制
+        angular = self._clamp(-self.approach_heading_kp * theta, 0.6)
+        
+        # 距离误差（cy - target_cy）
+        dist_error = cy - self.approach_target_cy
+        linear = self._clamp(self.approach_dist_kp * dist_error, self.approach_max_linear_speed)
+        linear = max(self.approach_min_linear_speed, linear)
+        
+        self.cmd_pub.publish(self._twist(linear, angular))
+        self.logger.telemetry('perp_approach',
+            f'cx={cx:.3f} cy={cy:.3f} θ={math.degrees(theta):.1f}° '
+            f'lin={linear:.2f} ang={angular:.2f}'
+        )
+
+    # ── Stage1 4态避障 ──
 
     def _check_cone_obstacle(self, scan_msg):
         cone = self.obstacle_classifier.find_nearest_cone(
@@ -348,131 +539,10 @@ class SimpleReturnNavigator(Node):
         if cone is not None and cone[2] < self.cone_avoidance_trigger:
             cx, cy, dist = cone
             danger_angle = math.degrees(math.atan2(cy, max(cx, 1e-6)))
-            self.get_logger().info(
-                f'cone detected at ({cx:.2f}, {cy:.2f}), dist={dist:.2f}m, '
-                f'angle={danger_angle:.1f}° — triggering avoidance'
+            self.logger.corner_avoid(
+                f'cone ({cx:.2f},{cy:.2f}) dist={dist:.2f} angle={danger_angle:.1f}°'
             )
             self._begin_avoidance(danger_angle)
-
-    def _update_corner_detection(self, scan_msg):
-        detected, cx, cy, conf = self.corner_detector.detect(scan_msg)
-
-        if detected:
-            confirmed = self.corner_detector.get_confirmed_corner(
-                self.confirmation_frames, self.corner_position_tolerance,
-            )
-            if confirmed is not None:
-                self.corner_position = confirmed
-                corner_dist = math.hypot(confirmed[0], confirmed[1])
-
-                if self.state != S_CORNER_CONFIRMED:
-                    self.state = S_CORNER_CONFIRMED
-                    self.publish_state('corner_confirmed')
-                    self.get_logger().info(
-                        f'corner confirmed at ({confirmed[0]:.2f}, {confirmed[1]:.2f}), '
-                        f'dist={corner_dist:.2f}m, conf={conf:.2f}'
-                    )
-
-                now = self._now_sec()
-                self._try_correct_heading(confirmed[0], confirmed[1], corner_dist, now)
-
-                if corner_dist < self.mid_distance_threshold:
-                    self.state = S_APPROACH
-                    self.publish_state('approach_corner')
-                    self.get_logger().info('switching to approach_corner mode')
-                return
-            else:
-                if self.state == S_BLIND_DRIVE:
-                    self.state = S_CORNER_LOCKED
-                    self.publish_state('corner_locked')
-        else:
-            if self.state == S_CORNER_CONFIRMED:
-                self.state = S_BLIND_DRIVE
-                self.publish_state('blind_drive')
-            elif self.state == S_CORNER_LOCKED:
-                if len(self.corner_detector._history) == 0:
-                    self.state = S_BLIND_DRIVE
-                    self.publish_state('blind_drive')
-
-    def _try_correct_heading(self, cx, cy, corner_dist, now):
-        if corner_dist > self.far_distance_threshold:
-            cooldown = self.correction_cooldown_far
-        elif corner_dist > self.mid_distance_threshold:
-            cooldown = self.correction_cooldown_mid
-        else:
-            cooldown = self.correction_cooldown_near
-
-        if now - self.last_correction_time < cooldown:
-            return
-
-        ideal_yaw = math.atan2(cy, cx)
-        correction = self._angle_error(ideal_yaw, self.target_yaw)
-        correction = self._clamp(correction, self.max_correction_angle)
-
-        if abs(correction) < math.radians(3.0):
-            return
-
-        self.target_yaw = self._normalize_angle(self.target_yaw + correction)
-        self.last_correction_time = now
-
-        self.get_logger().info(
-            f'heading corrected: {math.degrees(correction):.1f}° → '
-            f'{math.degrees(self.target_yaw):.1f}°, corner_dist={corner_dist:.2f}m'
-        )
-
-    def _maintain_heading(self):
-        if self.current_yaw is None or self.target_yaw is None:
-            return self._twist()
-
-        error = self._angle_error(self.target_yaw, self.current_yaw)
-
-        if abs(error) <= self.heading_tolerance:
-            return self._twist(self.blind_drive_linear_speed, 0.0)
-
-        angular = self._clamp(self.heading_maintain_kp * error, self.recovery_max_angular_speed)
-        if abs(angular) < self.recovery_min_angular_speed:
-            angular = math.copysign(self.recovery_min_angular_speed, error)
-
-        if abs(error) > self.recovery_in_place_angle:
-            linear = self.recovery_turn_linear_speed
-        else:
-            linear = self.recovery_linear_speed
-
-        return self._twist(linear, angular)
-
-    # ── Phase 5：精确靠近墙角 ──
-
-    def _do_approach_corner(self):
-        if self.corner_position is None:
-            self.state = S_BLIND_DRIVE
-            self.publish_state('blind_drive')
-            return
-
-        cx, cy = self.corner_position
-        dist = math.hypot(cx, cy)
-
-        if dist < self.approach_stop_distance:
-            self.state = S_FINISH
-            self.publish_state('complete')
-            self.cmd_pub.publish(self._twist())
-            self.get_logger().info(f'mission complete! distance to corner={dist:.2f}m')
-            return
-
-        target_yaw = math.atan2(cy, cx)
-        error = self._angle_error(target_yaw, self.current_yaw)
-
-        if abs(error) > math.radians(30.0):
-            angular = self._clamp(2.0 * error, 0.8)
-            self.cmd_pub.publish(self._twist(0.05, angular))
-            return
-
-        speed = max(self.approach_min_linear_speed,
-                    min(self.approach_max_linear_speed, dist * 0.5))
-        angular = self._clamp(self.approach_turn_kp * error, 0.8)
-
-        self.cmd_pub.publish(self._twist(speed, angular))
-
-    # ── Stage1 4态避障 ──
 
     def _begin_avoidance(self, danger_angle):
         self.avoid_state = AV_AVOIDING
@@ -483,9 +553,8 @@ class SimpleReturnNavigator(Node):
         self.counter_steer_deadline = None
         self.recovery_deadline = None
         self.publish_state('avoiding')
-        self.get_logger().info(
-            f'avoidance started: turn_dir={self.avoid_turn_direction:.1f}, '
-            f'danger_angle={danger_angle:.1f}°'
+        self.logger.corner_avoid(
+            f'avoid start turn_dir={self.avoid_turn_direction:.1f} danger_angle={danger_angle:.1f}°'
         )
 
     def _do_avoidance(self):
@@ -573,7 +642,7 @@ class SimpleReturnNavigator(Node):
         self.avoid_clear_since = None
         self.counter_steer_deadline = now + Duration(seconds=dur)
         self.recovery_deadline = None
-        self.get_logger().info(f'counter-steer started, duration={dur:.2f}s')
+        self.logger.corner_avoid(f'counter-steer dur={dur:.2f}s')
 
     def _begin_recovery(self):
         if self.avoid_state not in (AV_AVOIDING, AV_COUNTERSTEER):
@@ -583,12 +652,12 @@ class SimpleReturnNavigator(Node):
         self.counter_steer_deadline = None
         dur = max(0.15, min(self.recovery_timeout, self.last_avoid_duration * self.recovery_duration_scale))
         self.recovery_deadline = self._now_ros() + Duration(seconds=dur)
-        self.get_logger().info(f'recovery started, duration={dur:.2f}s')
+        self.logger.corner_avoid(f'recovery dur={dur:.2f}s')
 
     def _recovery_complete(self):
         now = self._now_ros()
         if self.current_yaw is not None and self.target_yaw is not None:
-            if abs(self._angle_error(self.target_yaw, self.current_yaw)) <= self.heading_tolerance:
+            if abs(self._angle_error(self.target_yaw, self.current_yaw)) <= self.turn_heading_tolerance:
                 return True
         if self.recovery_deadline is not None and now >= self.recovery_deadline:
             return True
@@ -602,8 +671,8 @@ class SimpleReturnNavigator(Node):
         self.last_avoid_duration = 0.0
         self.counter_steer_deadline = None
         self.recovery_deadline = None
-        self.get_logger().info('recovery complete, back to forward')
-        self.publish_state(self.state)
+        self.logger.corner_avoid('recovery complete, back to current state')
+        # 不改变状态，继续当前阶段（search/align/approach）
 
     def destroy_node(self):
         self.cmd_pub.publish(Twist())

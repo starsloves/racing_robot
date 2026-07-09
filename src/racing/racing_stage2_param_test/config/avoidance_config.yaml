@@ -4,34 +4,100 @@
 stage2_inertial_navigator:
   ros__parameters:
 
+    # ═══ 控制频率 ═════════════════════════════════════
+    control_rate_hz: 30.0  # 提高到 30Hz（原20Hz），改善路径跟踪精度
+
 # ═══════════════════════════════════════════════════
     # 避障方案选择
     # ═══════════════════════════════════════════════════
 
-    avoidance_mode: 'fixed_timing'   # 方案选择
-                                     # 'fixed_timing': 固定转角避障（零反馈，鲁棒）
-                                     # 'pure_pursuit': Pure Pursuit 避障（Phase1固定+Phase2引导回归）
-                                     #   优点：自动回正航道+航向，速度更快
-                                     #   适用：IMU有噪声但可接受，控制频率5Hz
+    avoidance_mode: 'local_path_pure_pursuit'  # 方案选择（推荐新方案）
+                                              # 'local_path_pure_pursuit': 三点局部路径 + 真实 Pure Pursuit（推荐）
+                                              #   构造 P0→P1→P2→P3 避障路径，Pure Pursuit 跟踪
+                                              #   左右完全对称，投影距离可控，符合工程实践
+                                              # 'lane_change_feedback': 三阶段几何闭环避障（已验证失败，不推荐）
+                                              #   SHIFT_OUT→BYPASS_HOLD→MERGE_BACK
+                                              #   横偏和航向双误差反馈，左右完全对称
+                                              # 'fixed_timing': 固定转角避障（零反馈，鲁棒但回归不佳）
+                                              # 'pure_pursuit': Pure Pursuit 避障（Phase1固定+Phase2引导回归）
 
     # ── 避障速度（代码实际读取 spiral_linear_speed，不是 avoidance_linear_speed）─
-    spiral_linear_speed: 0.25        # 避障时前进速度（m/s）
-                                     # 注意：代码读取的是 spiral_linear_speed 参数
-                                     # avoidance_linear_speed 仅作文档参考
+    spiral_linear_speed: 0.15        # 避障时前进速度（m/s）
+                                     # ★ 从 0.18 降到 0.15，Pure Pursuit 跟踪更稳
+                                     # local_path_pure_pursuit 推荐 0.12-0.16
+                                     # 速度越低，转向响应越稳定
 
-    # ── 固定转角方案参数（Phase1 共用）──────────────────
-    avoidance_turn_angle_deg: 50.0        # Phase1 目标航向偏移（度）
-    avoidance_phase1_duration_s: 1.5      # Phase1 持续时间（s）
-    avoidance_linear_speed: 0.25          # 文档参考（实际读取 spiral_linear_speed）
-    avoidance_heading_kp: 3.0             # 航向控制增益
+    # ── Local Path Pure Pursuit 方案参数（推荐新方案）───────
+    lpp_s1: 0.45                     # P1 点纵向距离（m）
+                                     # ★ 从 0.50 略微缩短到 0.45，加快侧移
+    lpp_y_clear: 0.18                # 旁路横向偏移（m）
+                                     # ★ 从 0.15 恢复到 0.18，确保安全余量
+                                     # 车身半宽 0.13 + 障碍物偏移估计 + 余量
+                                     # 推荐 0.16-0.19
+    lpp_s_pass: 0.12                 # P2 点超过障碍物的纵向余量（m）
+                                     # ★ 从 0.15 改为 0.12，缩短P2位置
+    lpp_s3_margin: 0.35              # P3 点在障碍物之后的纵向距离（m）
+                                     # ★ 从 0.40 改为 0.35，确保 s_obs<0.65 时投影<1m
+                                     # 总投影距离 ≈ s_obs + s3_margin
+                                     # 建议控制在 0.85-1.0m
+    lpp_lookahead: 0.30              # Pure Pursuit 预瞄距离（m）
+                                     # ★ 从 0.35 减到 0.30，alpha更大，转向更快
+                                     # 推荐 0.25-0.35
+    lpp_heading_kp: 2.0              # 航向控制增益
+                                     # ★ 从 1.5 提高到 2.0，加快转向响应
+                                     # 推荐 1.8-2.5
+    lpp_max_omega: 0.50              # 最大角速度（rad/s）
+                                     # ★ 从 0.40 提高到 0.50，允许更快转向
+                                     # 硬件友好设置，避免频繁打轮
+                                     # 推荐 0.45-0.60
+    lpp_finish_heading_tol_deg: 5.0  # 结束航向容差（度）
+                                     # 满足用户要求：±5°
+    lpp_finish_cross_tol_m: 0.05     # 结束横偏容差（m）
+                                     # 满足用户要求：≤5cm
+    lpp_obstacle_pass_check_s: 0.15  # 障碍物通过判定：robot_s > obs_s + margin
+                                     # 用轨道投影判定，不再用欧氏距离
+
+    # ── Lane Change Feedback 方案参数（已验证失败，保留参考）─
+    avoid_target_offset_m: 0.22               # 目标横偏（m），安全侧移量
+                                              # 车宽半径 0.13 + 障碍偏移估计 + 余量
+                                              # 推荐 0.20-0.24
+    avoid_shift_heading_deg: 20.0             # SHIFT_OUT 阶段目标航向偏移（度）
+                                              # 帮助快速建立横偏
+                                              # 推荐 18-25
+    avoid_pass_margin_m: 0.20                 # 通过障碍物后的纵向余量（m）
+                                              # 确保车体完全通过再回归
+                                              # 推荐 0.18-0.25
+    avoid_merge_heading_tolerance_deg: 5.0    # MERGE_BACK 结束航向容差（度）
+                                              # 满足用户要求：±5°
+    avoid_merge_cross_tolerance_m: 0.05       # MERGE_BACK 结束横偏容差（m）
+                                              # 满足用户要求：≤5cm
+    avoid_heading_kp: 1.8                     # 航向误差增益（rad/s per rad）
+                                              # 推荐 1.5-2.2
+    avoid_cross_kp: 2.5                       # 横偏误差增益（rad/s per m）
+                                              # 推荐 2.0-3.0
+    avoid_omega_limit: 0.45                   # 角速度限幅（rad/s）
+                                              # 硬件友好设置，避免频繁打轮
+                                              # 推荐 0.40-0.50
+    avoid_omega_rate_limit: 10.0              # 角速度变化率限幅（rad/s²）
+                                              # ★紧急提高！原值0.8太慢，从0加速到0.45需0.55秒会撞！
+                                              # 10.0 → 每步0.5 rad/s，2步即达最大值
+                                              # 推荐 8.0-15.0
+    avoid_min_phase_hold_s: 0.35              # 最短阶段保持时间（s）
+                                              # 避免频繁切换状态
+    avoid_shift_cross_threshold: 0.90         # SHIFT_OUT→BYPASS_HOLD 横偏达成比例
+                                              # 0.90=达到目标的90%即可切换
+    avoid_deadzone_heading_deg: 1.0           # 航向误差死区（度）
+                                              # 小于此值不控制
+    avoid_deadzone_cross_m: 0.01              # 横偏误差死区（m）
+                                              # 小于此值不控制
 
     # ── 固定转角方案参数（fixed_timing 模式专用）─────────
+    avoidance_turn_angle_deg: 35.0        # Phase1 目标航向偏移（度）
+    avoidance_phase1_duration_s: 2.5      # Phase1 持续时间（s）
+    avoidance_linear_speed: 0.25          # 文档参考（实际读取 spiral_linear_speed）
+    avoidance_heading_kp: 3.0             # 航向控制增益
     avoidance_phase2_turn_angle_deg: 40.0 # Phase2 参数（未使用，保留兼容）
-    avoidance_phase2_duration_s: 4.0      # Phase2 持续时间（s）
-                                          # 大幅增加到 4.0s 给足够时间横向移动
-                                          # Phase2 前进 = 0.25 × 4.0 = 100 cm
-    
-    # ── Phase3: 航向微调（fixed_timing 专用）───────────
+    avoidance_phase2_duration_s: 2.5      # Phase2 持续时间（s）
     enable_phase3: false                  # 是否启用 Phase3 航向微调
     avoidance_phase3_turn_angle_deg: 10.0 # Phase3 转角（度）
     avoidance_phase3_duration_s: 0.5      # Phase3 持续时长（s）
@@ -42,7 +108,9 @@ stage2_inertial_navigator:
                                       # 给惯导时间修正横偏
 
     # ── 触发参数 ───────────────────────────────────────
-    avoidance_trigger_distance_m: 0.55  # 触发避障的前方障碍物距离（m）
+    avoidance_trigger_distance_m: 0.65    # 触发避障的前方障碍物距离（m）
+                                          # lane_change_feedback 推荐 0.62-0.70
+                                          # 需要比 fixed_timing 更保守（建立横偏需要距离）
 
     # ── 侧边参数 ───────────────────────────────────────
     side_detour_threshold_m: 0.25     # 侧边触发阈值（m）

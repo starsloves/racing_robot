@@ -19,7 +19,7 @@ class Phase3TestTrigger(Node):
         self.publish_period_sec = float(self.get_parameter('publish_period_sec').value)
 
         self.publisher = self.create_publisher(Int32, topic, 10)
-        self.timer = self.create_timer(0.5, self.publish_once)
+        self.timer = self.create_timer(1.0, self.publish_once)
         self.published = 0
 
     def publish_once(self):

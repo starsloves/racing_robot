@@ -44,6 +44,31 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.declare_parameter('avoidance_heading_kp', 2.0)
         self.declare_parameter('avoidance_cooldown_sec', 2.0)
         self.declare_parameter('avoidance_trigger_distance_m', 0.55)
+        # Lane Change Feedback 方案参数（新）
+        self.declare_parameter('avoid_target_offset_m', 0.22)
+        self.declare_parameter('avoid_shift_heading_deg', 20.0)
+        self.declare_parameter('avoid_pass_margin_m', 0.20)
+        self.declare_parameter('avoid_merge_heading_tolerance_deg', 5.0)
+        self.declare_parameter('avoid_merge_cross_tolerance_m', 0.05)
+        self.declare_parameter('avoid_heading_kp', 1.8)
+        self.declare_parameter('avoid_cross_kp', 2.5)
+        self.declare_parameter('avoid_omega_limit', 0.45)
+        self.declare_parameter('avoid_omega_rate_limit', 0.8)
+        self.declare_parameter('avoid_min_phase_hold_s', 0.35)
+        self.declare_parameter('avoid_shift_cross_threshold', 0.90)
+        self.declare_parameter('avoid_deadzone_heading_deg', 1.0)
+        self.declare_parameter('avoid_deadzone_cross_m', 0.01)
+        # Local Path Pure Pursuit 方案参数（新）
+        self.declare_parameter('lpp_s1', 0.35)
+        self.declare_parameter('lpp_y_clear', 0.20)
+        self.declare_parameter('lpp_s_pass', 0.20)
+        self.declare_parameter('lpp_s3_margin', 0.55)
+        self.declare_parameter('lpp_lookahead', 0.30)
+        self.declare_parameter('lpp_heading_kp', 1.5)
+        self.declare_parameter('lpp_max_omega', 0.40)
+        self.declare_parameter('lpp_finish_heading_tol_deg', 5.0)
+        self.declare_parameter('lpp_finish_cross_tol_m', 0.05)
+        self.declare_parameter('lpp_obstacle_pass_check_s', 0.15)
         # 调试停车参数
         self.declare_parameter('stage_pause_enabled', False)
         self.declare_parameter('stage_pause_duration_sec', 5.0)
@@ -102,6 +127,31 @@ class DirectInertialTester(Stage2InertialNavigator):
             phase3_duration_s=float(self.get_parameter('avoidance_phase3_duration_s').value),
             heading_control_kp=float(self.get_parameter('avoidance_heading_kp').value),
             side_obstacle_threshold_m=float(self.get_parameter('side_detour_threshold_m').value),
+            # Lane Change Feedback 方案参数（新）
+            avoid_target_offset_m=float(self.get_parameter('avoid_target_offset_m').value),
+            avoid_shift_heading_deg=float(self.get_parameter('avoid_shift_heading_deg').value),
+            avoid_pass_margin_m=float(self.get_parameter('avoid_pass_margin_m').value),
+            avoid_merge_heading_tolerance_deg=float(self.get_parameter('avoid_merge_heading_tolerance_deg').value),
+            avoid_merge_cross_tolerance_m=float(self.get_parameter('avoid_merge_cross_tolerance_m').value),
+            avoid_heading_kp=float(self.get_parameter('avoid_heading_kp').value),
+            avoid_cross_kp=float(self.get_parameter('avoid_cross_kp').value),
+            avoid_omega_limit=float(self.get_parameter('avoid_omega_limit').value),
+            avoid_omega_rate_limit=float(self.get_parameter('avoid_omega_rate_limit').value),
+            avoid_min_phase_hold_s=float(self.get_parameter('avoid_min_phase_hold_s').value),
+            avoid_shift_cross_threshold=float(self.get_parameter('avoid_shift_cross_threshold').value),
+            avoid_deadzone_heading_deg=float(self.get_parameter('avoid_deadzone_heading_deg').value),
+            avoid_deadzone_cross_m=float(self.get_parameter('avoid_deadzone_cross_m').value),
+            # Local Path Pure Pursuit 方案参数（新）
+            lpp_s1=float(self.get_parameter('lpp_s1').value),
+            lpp_y_clear=float(self.get_parameter('lpp_y_clear').value),
+            lpp_s_pass=float(self.get_parameter('lpp_s_pass').value),
+            lpp_s3_margin=float(self.get_parameter('lpp_s3_margin').value),
+            lpp_lookahead=float(self.get_parameter('lpp_lookahead').value),
+            lpp_heading_kp=float(self.get_parameter('lpp_heading_kp').value),
+            lpp_max_omega=float(self.get_parameter('lpp_max_omega').value),
+            lpp_finish_heading_tol_deg=float(self.get_parameter('lpp_finish_heading_tol_deg').value),
+            lpp_finish_cross_tol_m=float(self.get_parameter('lpp_finish_cross_tol_m').value),
+            lpp_obstacle_pass_check_s=float(self.get_parameter('lpp_obstacle_pass_check_s').value),
             # 调试停车参数
             stage_pause_enabled=bool(self.get_parameter('stage_pause_enabled').value),
             stage_pause_duration_sec=float(self.get_parameter('stage_pause_duration_sec').value),
@@ -178,6 +228,18 @@ class DirectInertialTester(Stage2InertialNavigator):
                 f'Phase2转角={_cfg.phase2_turn_angle_deg:.0f}° '
                 f'Phase2时长={_cfg.phase2_duration_s:.1f}s '
                 f'v={_cfg.linear_speed:.2f}m/s '
+                f'冷却={self._avoidance_cooldown_sec:.1f}s'
+            )
+        elif mode_text == 'lane_change_feedback':
+            self.logger.info('AVOID',
+                f'新避障模块 '
+                f'模式=换道反馈 '
+                f'v={_cfg.linear_speed:.2f}m/s '
+                f'tgt_offset={_cfg.avoid_target_offset_m*100:.0f}cm '
+                f'shift_ψ={_cfg.avoid_shift_heading_deg:.0f}° '
+                f'pass_margin={_cfg.avoid_pass_margin_m*100:.0f}cm '
+                f'k_ψ={_cfg.avoid_heading_kp:.1f} k_y={_cfg.avoid_cross_kp:.1f} '
+                f'ω_lim={_cfg.avoid_omega_limit:.2f} '
                 f'冷却={self._avoidance_cooldown_sec:.1f}s'
             )
         else:
@@ -782,10 +844,16 @@ class DirectInertialTester(Stage2InertialNavigator):
         return self.clamp(self.heading_kp * heading_error, self.max_angular_speed)
 
     def run_move_segment(self):
+        # ★★ 必须在避障检查前就更新位置信息，避障期间需要实时 robot_s ★★
         # ★ 更新避障模块的横偏数据（用于 Phase2 斜向回归计算）
         if self.current_position is not None:
             cross_m = self._cross_track_m()
             self._spiral_avoider.on_cross_error(cross_m)
+        
+        # ★ 更新避障模块的段内进度和参考航向（local_path_pure_pursuit 必需）
+        if self.current_position is not None and self.segment_heading is not None:
+            progress = self.projected_distance() if self.current_segment else 0.0
+            self._spiral_avoider.on_progress(progress, self.segment_heading)
         
         if self.current_segment is not None and self.current_segment.get('type') == 'move':
             target_distance = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))

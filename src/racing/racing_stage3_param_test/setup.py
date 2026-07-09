@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'phase3_test_trigger = racing_stage3_param_test.phase3_test_trigger:main',
             'simple_return_navigator = racing_stage3_param_test.simple_return_navigator:main',
+            'twist_cmd_relay = racing_stage3_param_test.twist_cmd_relay:main',
         ],
     },
 )

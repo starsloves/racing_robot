@@ -49,6 +49,9 @@ class SimpleAvoidTester(DirectInertialTester):
         # 只覆盖遥测间隔（从默认 0.25s 改为 0.10s）
         self._telemetry_interval_sec = 0.10
         
+        # 避障期间锁定投影距离
+        self._avoid_locked_progress = None
+        
         self.logger.info(
             'STARTUP',
             '极简直行避障测试：直行 3m（从当前位置/航向启动，速度 0.2m/s）'
@@ -94,6 +97,27 @@ class SimpleAvoidTester(DirectInertialTester):
         if desc == 'simple_straight_test':
             return '直行测试 3.00m'
         return super().rectangle_segment_label(segment)
+    
+    def projected_distance(self):
+        """覆盖投影距离计算：避障期间锁定进度"""
+        # 避障期间返回锁定值，防止投影距离虚高
+        if self._spiral_avoider.is_active and self._avoid_locked_progress is not None:
+            return self._avoid_locked_progress
+        
+        # 正常情况调用父类方法
+        real_progress = super().projected_distance()
+        
+        # 避障触发瞬间锁定当前进度
+        if self._spiral_avoider.is_active and self._avoid_locked_progress is None:
+            self._avoid_locked_progress = real_progress
+            self.logger.info('AVOID', f'锁定投影距离 locked_progress={real_progress:.3f}m')
+        
+        # 避障结束后解锁
+        if not self._spiral_avoider.is_active and self._avoid_locked_progress is not None:
+            self.logger.info('AVOID', f'解锁投影距离 was={self._avoid_locked_progress:.3f}m now={real_progress:.3f}m')
+            self._avoid_locked_progress = None
+        
+        return real_progress
 
 
 def main(args=None):

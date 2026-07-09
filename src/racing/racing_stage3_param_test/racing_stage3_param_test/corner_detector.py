@@ -20,29 +20,30 @@ class CornerDetector:
         self._history = []
 
     def detect(self, scan_msg):
-        """扫描 → 返回 (detected, corner_x, corner_y, confidence)
+        """扫描 → 返回 (detected, corner_x, corner_y, theta, confidence)
 
         所有坐标在雷达坐标系（车体前方 +X，左侧 +Y）
+        theta: 墙角相对车头的角度（弧度），0 = 正前方
         """
         points = self._extract_points(scan_msg)
         segments = self._segment_by_gap(points, gap=0.15)
         lines = self._fit_lines(segments)
-        detected, cx, cy, conf = self._find_corner(lines)
+        detected, cx, cy, theta, conf = self._find_corner(lines)
 
         now = time.time()
         if detected:
-            self._history.append((cx, cy, conf, now))
-        self._history = [h for h in self._history if now - h[3] < 0.6]
+            self._history.append((cx, cy, theta, conf, now))
+        self._history = [h for h in self._history if now - h[4] < 0.6]
 
-        return detected, cx, cy, conf
+        return detected, cx, cy, theta, conf
 
     def get_confirmed_corner(self, confirmation_frames=3, position_tolerance=0.15):
-        """双重确认：连续 N 帧 + 位置一致 → 返回 (cx, cy) 或 None"""
+        """双重确认：连续 N 帧 + 位置一致 → 返回 (cx, cy, theta) 或 None"""
         if len(self._history) < confirmation_frames:
             return None
 
         recent = self._history[-confirmation_frames:]
-        positions = [(p[0], p[1]) for p in recent]
+        positions = [(p[0], p[1], p[2]) for p in recent]
 
         for i in range(len(positions) - 1):
             d = math.hypot(positions[i + 1][0] - positions[i][0],
@@ -52,7 +53,8 @@ class CornerDetector:
 
         avg_x = sum(p[0] for p in positions) / len(positions)
         avg_y = sum(p[1] for p in positions) / len(positions)
-        return avg_x, avg_y
+        avg_theta = sum(p[2] for p in positions) / len(positions)
+        return avg_x, avg_y, avg_theta
 
     def _extract_points(self, scan_msg):
         """提取有效点云 (x, y, angle, range)，车体坐标系"""
@@ -169,7 +171,10 @@ class CornerDetector:
         return (l1['start'][0] + t * dx1, l1['start'][1] + t * dy1)
 
     def _find_corner(self, lines):
-        """找 90° 夹角墙角，返回 (detected, x, y, confidence)"""
+        """找 90° 夹角墙角，返回 (detected, x, y, theta, confidence)
+        
+        theta: 墙角相对车头的角度（弧度），0 = 正前方，负 = 右侧，正 = 左侧
+        """
         best = None
         best_conf = 0.0
 
@@ -201,8 +206,9 @@ class CornerDetector:
                     best = (corner[0], corner[1])
 
         if best and best_conf > 0.6:
-            return True, best[0], best[1], best_conf
-        return False, None, None, 0.0
+            theta = math.atan2(best[1], best[0])  # 墙角相对车头的角度
+            return True, best[0], best[1], theta, best_conf
+        return False, None, None, None, 0.0
 
     def get_debug_lines(self):
         """返回当前检测到的直线（用于 RViz 调试）"""
