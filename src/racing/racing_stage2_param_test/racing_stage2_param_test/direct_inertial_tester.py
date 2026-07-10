@@ -6,12 +6,10 @@ from nav_msgs.msg import Odometry
 from ament_index_python import get_package_share_directory
 from racing_stage2_param_test import field_track
 from racing_stage2.stage2_inertial_navigator import Stage2InertialNavigator
+from racing_stage2_param_test.avoid_controller import AvoidConfig, AvoidController, NavState
+from racing_stage2_param_test.avoid_geometry import cross_segment_m
 from racing_stage2_param_test.scan_processor import ScanProcessor
-from racing_common.racing_logger import RacingLogger
-from racing_stage2_param_test.reactive_avoidance import (
-    ReactiveAvoidanceConfig,
-    ReactiveAvoidanceManager,
-)
+from racing_stage2_param_test.session_file_log import SessionFileLog
 
 
 class DirectInertialTester(Stage2InertialNavigator):
@@ -20,78 +18,30 @@ class DirectInertialTester(Stage2InertialNavigator):
 
         self.declare_parameter('test_direction', 'clockwise')
         self.declare_parameter('test_start_mode', 'auto')
+        self.declare_parameter('test_feedback_prefix', '惯导参数测试')
         # field_track yaml 路径。空=根据 direction 自动选择 config/field_track_{direction}.yaml
         self.declare_parameter('field_track_yaml', '')
-        
-        # ═══ 反应式避障参数声明 ═══════════════════════════
-        # 触发与方向选择
-        self.declare_parameter('reactive_trigger_distance_m', 0.55)
-        self.declare_parameter('reactive_trigger_confirm_frames', 2)
-        self.declare_parameter('reactive_direction_angle_threshold_deg', 5.0)
-        self.declare_parameter('reactive_direction_clearance_margin_m', 0.10)
-        
-        # 雷达扇区
-        self.declare_parameter('reactive_front_sector_angle_deg', 18.0)
-        self.declare_parameter('reactive_side_sector_center_deg', 65.0)
-        self.declare_parameter('reactive_side_sector_window_deg', 15.0)
-        
-        # SHIFT_OUT 阶段
-        self.declare_parameter('reactive_shift_linear_speed', 0.12)
-        self.declare_parameter('reactive_shift_omega_emergency', 0.65)
-        self.declare_parameter('reactive_shift_omega_strong', 0.50)
-        self.declare_parameter('reactive_shift_omega_side_near', 0.40)
-        self.declare_parameter('reactive_shift_omega_normal', 0.35)
-        self.declare_parameter('reactive_shift_cross_threshold_m', 0.20)
-        self.declare_parameter('reactive_shift_side_threshold_m', 0.28)
-        self.declare_parameter('reactive_shift_front_safe_m', 0.50)
-        self.declare_parameter('reactive_shift_projection_threshold_m', 0.40)
-        
-        # MAINTAIN 阶段
-        self.declare_parameter('reactive_maintain_linear_speed', 0.15)
-        self.declare_parameter('reactive_maintain_target_side_distance_m', 0.32)
-        self.declare_parameter('reactive_maintain_deadband_m', 0.05)
-        self.declare_parameter('reactive_maintain_omega_very_near', -0.55)
-        self.declare_parameter('reactive_maintain_omega_near', -0.30)
-        self.declare_parameter('reactive_maintain_omega_far', 0.35)
-        self.declare_parameter('reactive_maintain_omega_mid_far', 0.20)
-        self.declare_parameter('reactive_maintain_front_protect_dist_m', 0.35)
-        self.declare_parameter('reactive_maintain_front_protect_omega', 0.50)
-        self.declare_parameter('reactive_maintain_front_protect_speed', 0.10)
-        self.declare_parameter('reactive_maintain_to_merge_side_threshold_m', 0.70)
-        self.declare_parameter('reactive_maintain_to_merge_front_threshold_m', 1.00)
-        self.declare_parameter('reactive_maintain_to_merge_angle_threshold_deg', 90.0)
-        self.declare_parameter('reactive_maintain_to_merge_confirm_frames', 3)
-        
-        # MERGE_BACK 阶段
-        self.declare_parameter('reactive_merge_linear_speed_high_error', 0.08)
-        self.declare_parameter('reactive_merge_linear_speed_low_error', 0.12)
-        self.declare_parameter('reactive_merge_heading_threshold_deg', 15.0)
-        self.declare_parameter('reactive_merge_obstacle_visible_dist_m', 1.50)
-        self.declare_parameter('reactive_merge_obstacle_visible_angle_min_deg', 90.0)
-        self.declare_parameter('reactive_merge_obstacle_visible_angle_max_deg', 150.0)
-        self.declare_parameter('reactive_merge_omega_far', 0.30)
-        self.declare_parameter('reactive_merge_omega_mid_far', 0.18)
-        self.declare_parameter('reactive_merge_omega_near', -0.15)
-        self.declare_parameter('reactive_merge_side_target_min_m', 0.28)
-        self.declare_parameter('reactive_merge_side_target_max_m', 0.38)
-        self.declare_parameter('reactive_merge_side_far_threshold_m', 0.50)
-        self.declare_parameter('reactive_merge_heading_kp_with_obs', 2.0)
-        self.declare_parameter('reactive_merge_heading_kp_no_obs', 2.5)
-        self.declare_parameter('reactive_merge_finish_heading_tol_deg', 5.0)
-        self.declare_parameter('reactive_merge_finish_confirm_frames', 5)
-        
-        # 全局限制
-        self.declare_parameter('reactive_max_omega_rate', 2.0)
-        self.declare_parameter('reactive_max_projection_distance_m', 1.00)
-        self.declare_parameter('reactive_emergency_merge_threshold_m', 0.85)
-        self.declare_parameter('reactive_distance_filter_window', 3)
-        self.declare_parameter('reactive_avoidance_timeout_sec', 8.0)
-        self.declare_parameter('reactive_cooldown_sec', 2.0)
-        self.declare_parameter('reactive_dynamic_angle_window_deg', 30.0)
+        # 避障参数（yaml 配置，直行避障使用）
+        self.declare_parameter('avoid_turn_away_deg', 30.0)
+        self.declare_parameter('avoid_turn_back_deg', 40.0)
+        self.declare_parameter('avoid_recover_deg', 40.0)
+        self.declare_parameter('avoid_leg1_distance_m', 0.30)
+        self.declare_parameter('avoid_leg2_distance_m', 0.60)
+        self.declare_parameter('avoid_leg_linear_speed', 0.10)
+        self.declare_parameter('avoid_turn_linear_speed', 0.08)
+        self.declare_parameter('avoid_leg_distance_tol_m', 0.04)
+        self.declare_parameter('avoid_turn_angular_speed', 0.40)
+        self.declare_parameter('side_detour_threshold_m', 0.18)
+        self.declare_parameter('avoider_heading_tolerance_deg', 1.5)
+        # 转弯障碍检测参数
+        self.declare_parameter('turn_obstacle_stop_m', 0.25)
+        self.declare_parameter('corner_approach_m', 0.15)
+        self.declare_parameter('turn_obstacle_creep_speed', 0.02)
 
         self.test_direction_raw = str(self.get_parameter('test_direction').value).strip()
         self.test_direction = self.resolve_test_direction(self.test_direction_raw)
         self.test_start_mode = str(self.get_parameter('test_start_mode').value).strip().lower() or 'auto'
+        self.test_feedback_prefix = str(self.get_parameter('test_feedback_prefix').value).strip() or '惯导参数测试'
         ft_custom = str(self.get_parameter('field_track_yaml').value)
         if ft_custom:
             self._field_track_yaml = ft_custom
@@ -108,97 +58,64 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.last_progress_bucket = -1
         self.active_turn_heading_tolerance = self.heading_tolerance
 
-        # 雷达处理模块
+        # 独立模块：雷达处理 + 避障
         self._scan_processor = ScanProcessor(
-            front_angle_deg=float(self.get_parameter('reactive_front_sector_angle_deg').value),
-            side_window_deg=float(self.get_parameter('reactive_side_sector_window_deg').value),
-            side_center_deg=float(self.get_parameter('reactive_side_sector_center_deg').value),
+            front_angle_deg=self.detour_front_angle_deg,
+            side_window_deg=self.detour_side_window_deg,
+            side_center_deg=self.detour_side_center_deg,
         )
         self.front_obstacle_distance = float('inf')
         self.front_obstacle_angle_deg = 0.0
         self.left_clearance_distance = float('inf')
         self.right_clearance_distance = float('inf')
 
-        # 构造反应式避障配置
-        self._reactive_cfg = ReactiveAvoidanceConfig(
-            trigger_distance_m=float(self.get_parameter('reactive_trigger_distance_m').value),
-            trigger_confirm_frames=int(self.get_parameter('reactive_trigger_confirm_frames').value),
-            direction_angle_threshold_deg=float(self.get_parameter('reactive_direction_angle_threshold_deg').value),
-            direction_clearance_margin_m=float(self.get_parameter('reactive_direction_clearance_margin_m').value),
-            front_sector_angle_deg=float(self.get_parameter('reactive_front_sector_angle_deg').value),
-            side_sector_center_deg=float(self.get_parameter('reactive_side_sector_center_deg').value),
-            side_sector_window_deg=float(self.get_parameter('reactive_side_sector_window_deg').value),
-            shift_linear_speed=float(self.get_parameter('reactive_shift_linear_speed').value),
-            shift_omega_emergency=float(self.get_parameter('reactive_shift_omega_emergency').value),
-            shift_omega_strong=float(self.get_parameter('reactive_shift_omega_strong').value),
-            shift_omega_side_near=float(self.get_parameter('reactive_shift_omega_side_near').value),
-            shift_omega_normal=float(self.get_parameter('reactive_shift_omega_normal').value),
-            shift_cross_threshold_m=float(self.get_parameter('reactive_shift_cross_threshold_m').value),
-            shift_side_threshold_m=float(self.get_parameter('reactive_shift_side_threshold_m').value),
-            shift_front_safe_m=float(self.get_parameter('reactive_shift_front_safe_m').value),
-            shift_projection_threshold_m=float(self.get_parameter('reactive_shift_projection_threshold_m').value),
-            maintain_linear_speed=float(self.get_parameter('reactive_maintain_linear_speed').value),
-            maintain_target_side_distance_m=float(self.get_parameter('reactive_maintain_target_side_distance_m').value),
-            maintain_deadband_m=float(self.get_parameter('reactive_maintain_deadband_m').value),
-            maintain_omega_very_near=float(self.get_parameter('reactive_maintain_omega_very_near').value),
-            maintain_omega_near=float(self.get_parameter('reactive_maintain_omega_near').value),
-            maintain_omega_far=float(self.get_parameter('reactive_maintain_omega_far').value),
-            maintain_omega_mid_far=float(self.get_parameter('reactive_maintain_omega_mid_far').value),
-            maintain_front_protect_dist_m=float(self.get_parameter('reactive_maintain_front_protect_dist_m').value),
-            maintain_front_protect_omega=float(self.get_parameter('reactive_maintain_front_protect_omega').value),
-            maintain_front_protect_speed=float(self.get_parameter('reactive_maintain_front_protect_speed').value),
-            maintain_to_merge_side_threshold_m=float(self.get_parameter('reactive_maintain_to_merge_side_threshold_m').value),
-            maintain_to_merge_front_threshold_m=float(self.get_parameter('reactive_maintain_to_merge_front_threshold_m').value),
-            maintain_to_merge_angle_threshold_deg=float(self.get_parameter('reactive_maintain_to_merge_angle_threshold_deg').value),
-            maintain_to_merge_confirm_frames=int(self.get_parameter('reactive_maintain_to_merge_confirm_frames').value),
-            merge_linear_speed_high_error=float(self.get_parameter('reactive_merge_linear_speed_high_error').value),
-            merge_linear_speed_low_error=float(self.get_parameter('reactive_merge_linear_speed_low_error').value),
-            merge_heading_threshold_deg=float(self.get_parameter('reactive_merge_heading_threshold_deg').value),
-            merge_obstacle_visible_dist_m=float(self.get_parameter('reactive_merge_obstacle_visible_dist_m').value),
-            merge_obstacle_visible_angle_min_deg=float(self.get_parameter('reactive_merge_obstacle_visible_angle_min_deg').value),
-            merge_obstacle_visible_angle_max_deg=float(self.get_parameter('reactive_merge_obstacle_visible_angle_max_deg').value),
-            merge_omega_far=float(self.get_parameter('reactive_merge_omega_far').value),
-            merge_omega_mid_far=float(self.get_parameter('reactive_merge_omega_mid_far').value),
-            merge_omega_near=float(self.get_parameter('reactive_merge_omega_near').value),
-            merge_side_target_min_m=float(self.get_parameter('reactive_merge_side_target_min_m').value),
-            merge_side_target_max_m=float(self.get_parameter('reactive_merge_side_target_max_m').value),
-            merge_side_far_threshold_m=float(self.get_parameter('reactive_merge_side_far_threshold_m').value),
-            merge_heading_kp_with_obs=float(self.get_parameter('reactive_merge_heading_kp_with_obs').value),
-            merge_heading_kp_no_obs=float(self.get_parameter('reactive_merge_heading_kp_no_obs').value),
-            merge_finish_heading_tol_deg=float(self.get_parameter('reactive_merge_finish_heading_tol_deg').value),
-            merge_finish_confirm_frames=int(self.get_parameter('reactive_merge_finish_confirm_frames').value),
-            max_omega_rate=float(self.get_parameter('reactive_max_omega_rate').value),
-            max_projection_distance_m=float(self.get_parameter('reactive_max_projection_distance_m').value),
-            emergency_merge_threshold_m=float(self.get_parameter('reactive_emergency_merge_threshold_m').value),
-            distance_filter_window=int(self.get_parameter('reactive_distance_filter_window').value),
-            avoidance_timeout_sec=float(self.get_parameter('reactive_avoidance_timeout_sec').value),
-            cooldown_sec=float(self.get_parameter('reactive_cooldown_sec').value),
-            dynamic_angle_window_deg=float(self.get_parameter('reactive_dynamic_angle_window_deg').value),
+        _avoid_cfg = AvoidConfig(
+            detour_obstacle_distance=self.detour_obstacle_distance,
+            avoid_turn_away_deg=float(self.get_parameter('avoid_turn_away_deg').value),
+            avoid_turn_back_deg=float(self.get_parameter('avoid_turn_back_deg').value),
+            avoid_recover_deg=float(self.get_parameter('avoid_recover_deg').value),
+            avoid_leg1_distance_m=max(0.05, float(self.get_parameter('avoid_leg1_distance_m').value)),
+            avoid_leg2_distance_m=max(0.05, float(self.get_parameter('avoid_leg2_distance_m').value)),
+            avoid_leg_linear_speed=max(0.02, float(self.get_parameter('avoid_leg_linear_speed').value)),
+            avoid_turn_linear_speed=max(0.02, float(self.get_parameter('avoid_turn_linear_speed').value)),
+            avoid_leg_distance_tol_m=max(0.0, float(self.get_parameter('avoid_leg_distance_tol_m').value)),
+            avoid_turn_angular_speed=max(0.1, float(self.get_parameter('avoid_turn_angular_speed').value)),
+            distance_tolerance=self.distance_tolerance,
+            heading_kp=self.heading_kp,
+            side_detour_threshold_m=float(self.get_parameter('side_detour_threshold_m').value),
+            avoider_heading_tolerance_deg=float(self.get_parameter('avoider_heading_tolerance_deg').value),
         )
-        self._setup_logger()
+        self._avoider = AvoidController(self.cmd_pub, self.get_logger(), self.get_clock(), _avoid_cfg)
+
         self._setup_wheel_odom_position()
+        self._setup_session_log()
 
-        # 初始化反应式避障管理器
-        self._reactive_avoidance = ReactiveAvoidanceManager(
-            cmd_pub=self.cmd_pub,
-            logger=self.logger,
-            clock=self.get_clock(),
-            cfg=self._reactive_cfg,
+        self.get_logger().info(
+            f'{self.test_feedback_prefix}节点已就绪，方向={self.direction_text()}，'
+            f'模式={self.start_mode_text()}，'
+            f'field_track={self._field_track_yaml}，'
+            f'避障=边转边避 away={_avoid_cfg.avoid_turn_away_deg:.0f}deg back={_avoid_cfg.avoid_turn_back_deg:.0f}deg recover={_avoid_cfg.avoid_recover_deg:.0f}deg×'
+            f'{_avoid_cfg.avoid_leg1_distance_m:.2f}m/{_avoid_cfg.avoid_leg2_distance_m:.2f}m '
+            f'侧边阈值={_avoid_cfg.side_detour_threshold_m:.2f}m '
+            f'闭环转弯 tol={_avoid_cfg.avoider_heading_tolerance_deg:.1f}deg'
         )
-
-        self.logger.config(
+        self._log_session(
+            'CONFIG',
             f'方向={self.direction_text()} 模式={self.start_mode_text()} '
             f'field_track={self._field_track_yaml} '
+            f'避障 away={_avoid_cfg.avoid_turn_away_deg:.0f}deg back={_avoid_cfg.avoid_turn_back_deg:.0f}deg recover={_avoid_cfg.avoid_recover_deg:.0f}deg '
+            f'L1={_avoid_cfg.avoid_leg1_distance_m:.2f}m L2={_avoid_cfg.avoid_leg2_distance_m:.2f}m '
             f'pose_source={self._navigation_pose_source} '
             f'wheel={self._wheel_odom_topic} ekf={self.odom_topic} '
             f'ring_v={self.ring_linear_speed:.2f} turn_v={self.turn_linear_speed:.2f} '
             f'turn_w={self.turn_angular_speed:.2f} head_kp={self.heading_kp:.2f} '
             f'dist_tol={self.distance_tolerance:.3f} '
             f'head_tol={math.degrees(self.heading_tolerance):.1f}deg '
+            f'detour_d={self.detour_obstacle_distance:.2f}m '
             f'segment_timeout={self.segment_timeout:.1f}s',
         )
 
-    def _setup_logger(self) -> None:
+    def _setup_session_log(self) -> None:
         self.declare_parameter('session_log_subdir', 'direct_inertial_test')
         self.declare_parameter('session_log_filename', 'latest.log')
         self.declare_parameter('session_telemetry_interval_sec', 0.25)
@@ -212,8 +129,11 @@ class DirectInertialTester(Stage2InertialNavigator):
         self._telemetry_interval_sec = max(
             0.05, float(self.get_parameter('session_telemetry_interval_sec').value)
         )
-        self.logger = RacingLogger(self, subdir, filename,
-                                   session_title='direct inertial test session')
+        self._session_log = SessionFileLog(
+            subdir,
+            filename,
+            session_title='direct inertial test session',
+        )
         self._last_telemetry_sec = 0.0
         self._last_wait_log_sec = 0.0
         self._wheel_warmup_logged = False
@@ -222,36 +142,30 @@ class DirectInertialTester(Stage2InertialNavigator):
         self._ekf_twist = None
         self._last_cmd_linear = 0.0
         self._last_cmd_angular = 0.0
-        self.logger.info('LOGGER', f'日志路径: {self.logger.path}')
-        
-        cfg = self._reactive_cfg
-        self.logger.info(
-            'AVOID',
-            '主方案=reactive_avoidance '
-            f'trigger={cfg.trigger_distance_m:.2f}m/{cfg.trigger_confirm_frames}帧 '
-            f'shift_v={cfg.shift_linear_speed:.2f} maintain_v={cfg.maintain_linear_speed:.2f} '
-            f'target_side={cfg.maintain_target_side_distance_m:.2f}m deadband={cfg.maintain_deadband_m:.2f}m '
-            f'ωmax_rate={cfg.max_omega_rate:.1f} budget={cfg.max_projection_distance_m:.2f}m'
+        self.get_logger().info(
+            f'{self.test_feedback_prefix}会话日志: {self._session_log.path}'
         )
+        self._log_session('CONFIG', f'日志路径={self._session_log.path}')
 
     def destroy_node(self):
-        if getattr(self, 'logger', None) is not None:
-            self.logger.close()
-            self.logger = None
+        if getattr(self, '_session_log', None) is not None:
+            self._session_log.close()
+            self._session_log = None
         super().destroy_node()
+
+    def _log_session(self, tag: str, message: str) -> None:
+        if getattr(self, '_session_log', None) is None:
+            return
+        self._session_log.write(f'[{tag}] {message}')
 
     def publish_feedback(self, text: str) -> None:
         super().publish_feedback(text)
+        self._log_session('FEEDBACK', text)
 
     def create_twist(self, linear_x=0.0, angular_z=0.0):
         self._last_cmd_linear = float(linear_x)
         self._last_cmd_angular = float(angular_z)
         return super().create_twist(linear_x, angular_z)
-
-    def _observe_avoid_cmd(self, linear_x, angular_z):
-        """避障模块真实命令同步到日志"""
-        self._last_cmd_linear = float(linear_x)
-        self._last_cmd_angular = float(angular_z)
 
     def navigation_yaw(self):
         """统一位姿航向（current_yaw）；轮速模式下由 /odom 写入，IMU 仅诊断。"""
@@ -302,17 +216,17 @@ class DirectInertialTester(Stage2InertialNavigator):
         )
 
     def _cross_track_m(self) -> float:
-        """计算横向偏离（垂直于段方向的距离）"""
         if (
             self.segment_start_pose is None
             or self.current_position is None
             or self.segment_heading is None
         ):
             return 0.0
-        # 内联 cross_segment_m 计算
-        dx = self.current_position[0] - self.segment_start_pose[0]
-        dy = self.current_position[1] - self.segment_start_pose[1]
-        return -dx * math.sin(self.segment_heading) + dy * math.cos(self.segment_heading)
+        return cross_segment_m(
+            self.segment_start_pose,
+            self.segment_heading,
+            self.current_position,
+        )
 
     def _full_telemetry(self) -> str:
         now_sec = self.get_clock().now().nanoseconds / 1e9
@@ -412,6 +326,9 @@ class DirectInertialTester(Stage2InertialNavigator):
                 f'dist_tol={self._fmt_num(self.distance_tolerance)}'
             ),
             (
+                f'avoid={self._avoider.state_str} '
+            ),
+            (
                 f'front={self.format_distance(self.front_obstacle_distance)}m '
                 f'@ {self._fmt_num(self.front_obstacle_angle_deg, prec=1)}deg '
                 f'left={self.format_distance(self.left_clearance_distance)}m '
@@ -438,7 +355,7 @@ class DirectInertialTester(Stage2InertialNavigator):
         if now_sec - self._last_telemetry_sec < interval:
             return
         self._last_telemetry_sec = now_sec
-        self.logger.telemetry(reason, self._full_telemetry())
+        self._log_session('TELEM', f'{reason} | {self._full_telemetry()}')
 
     def _log_segment_enter(self, segment) -> None:
         if segment is None:
@@ -459,12 +376,7 @@ class DirectInertialTester(Stage2InertialNavigator):
         elif seg_type == 'pause':
             parts.append(f"duration={float(segment.get('duration', 0.0)):.2f}s")
         parts.append(self._pose_diagnostic())
-        is_turn = seg_type == 'turn'
-        self.logger.info('SEGMENT', ' '.join(parts), file_only=True)
-        if is_turn:
-            desc = segment.get('description', '?')
-            angle = float(segment.get('angle_deg', 0.0))
-            self.logger.segment(f'#{idx} turn {desc} {angle:.0f}deg')
+        self._log_session('SEGMENT', ' '.join(parts))
 
     def _log_plan_summary(self, nav_succeeded: bool) -> None:
         lines = [f'nav_succeeded={nav_succeeded} 共{len(self.plan)}段:']
@@ -490,7 +402,7 @@ class DirectInertialTester(Stage2InertialNavigator):
                 )
             else:
                 lines.append(f'  [{index}] {seg_type} {desc}')
-        self.logger.plan('\n'.join(lines))
+        self._log_session('PLAN', '\n'.join(lines))
 
     def _setup_wheel_odom_position(self) -> None:
         """位姿/航向/计程/控制统一用轮速 /odom；EKF/IMU 仅诊断。"""
@@ -520,8 +432,8 @@ class DirectInertialTester(Stage2InertialNavigator):
             self.create_subscription(
                 Odometry, self._wheel_odom_topic, self._wheel_odom_callback, 10
             )
-            self.logger.info('POSE',
-                f'统一位姿源={self._navigation_pose_source} '
+            self.get_logger().info(
+                f'{self.test_feedback_prefix}统一位姿源={self._navigation_pose_source} '
                 f'topic={self._wheel_odom_topic} '
                 f'(xy+yaw+计程+控制同源; IMU/EKF {self.odom_topic} 仅日志; '
                 f'warmup {self._wheel_odom_warmup_sec:.2f}s×'
@@ -553,7 +465,8 @@ class DirectInertialTester(Stage2InertialNavigator):
         now_sec = self.get_clock().now().nanoseconds / 1e9
         if self._wheel_odom_first_rx_sec is None:
             self._wheel_odom_first_rx_sec = now_sec
-            self.logger.odom_wheel(
+            self._log_session(
+                'ODOM_WHEEL',
                 f'首条 {self._wheel_odom_topic} '
                 f'pos=({position.x:.3f},{position.y:.3f}) '
                 f'yaw={self.format_yaw_deg(self.current_wheel_yaw)}deg '
@@ -565,7 +478,8 @@ class DirectInertialTester(Stage2InertialNavigator):
         if self._wheel_odom_ready and not was_ready and not self._wheel_warmup_logged:
             self._wheel_warmup_logged = True
             elapsed = now_sec - self._wheel_odom_first_rx_sec
-            self.logger.odom_wheel(
+            self._log_session(
+                'ODOM_WHEEL',
                 f'warmup 完成 msgs={self._wheel_odom_msg_count} '
                 f'elapsed={elapsed:.2f}s | {self._full_telemetry()}',
             )
@@ -651,8 +565,8 @@ class DirectInertialTester(Stage2InertialNavigator):
             f'yaw_imu={self.format_yaw_deg(self.imu_yaw)}deg '
             f'L={float(segment.get("distance_m", 0.0)):.2f}m'
         )
-        self.logger.info('ANCHOR', anchor_line)
-        self.logger.odom_anchor(anchor_line)
+        self.get_logger().info(f'{self.test_feedback_prefix}里程锚点: {anchor_line}')
+        self._log_session('ODOM_ANCHOR', anchor_line)
 
     def _missing_pose_inputs(self):
         missing = []
@@ -682,7 +596,7 @@ class DirectInertialTester(Stage2InertialNavigator):
         if parsed is not None:
             return parsed
 
-        self.logger.warn('DIRECTION',
+        self.get_logger().warning(
             f'无法识别测试方向 "{raw_value}"，回退到顺时针'
         )
         return 'clockwise'
@@ -759,8 +673,7 @@ class DirectInertialTester(Stage2InertialNavigator):
         super().start_segment(index)
         self.last_progress_bucket = -1
         self.active_turn_heading_tolerance = self.heading_tolerance
-        
-        # 反应式避障无需手动重置（内部自动管理状态）
+        self._avoider.reset()
 
         if self.current_segment is None or self.plan_index != index:
             return
@@ -782,19 +695,19 @@ class DirectInertialTester(Stage2InertialNavigator):
             angle_deg = float(segment.get('angle_deg', 0.0))
             turn_text = '左转' if angle_deg > 0.0 else '右转'
             self.publish_feedback(
-                f'当前位置: {label}，开始{turn_text} {abs(angle_deg):.0f} 度'
+                f'{self.test_feedback_prefix}当前位置: {label}，开始{turn_text} {abs(angle_deg):.0f} 度'
             )
             return
 
         if segment_type == 'move':
             distance_m = float(segment.get('distance_m', 0.0))
             self.publish_feedback(
-                f'当前位置: {label}，目标直行 {distance_m:.2f}m'
+                f'{self.test_feedback_prefix}当前位置: {label}，目标直行 {distance_m:.2f}m'
             )
             return
 
         if segment_type == 'pause':
-            self.publish_feedback(f'当前位置: {label}，短暂停稳')
+            self.publish_feedback(f'{self.test_feedback_prefix}当前位置: {label}，短暂停稳')
 
     def scan_callback(self, msg):
         self.latest_scan = msg
@@ -804,15 +717,10 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.front_obstacle_angle_deg = data.front_angle_deg
         self.left_clearance_distance = data.left_clearance
         self.right_clearance_distance = data.right_clearance
-        
-        # 更新反应式避障模块的传感器数据
-        self._reactive_avoidance.on_scan(
-            front_dist=data.front_distance,
-            front_angle=data.front_angle_deg,
-            left_clear=data.left_clearance,
-            right_clear=data.right_clearance,
-            side_angle=0.0,
-            scan_msg=msg,  # 传入原始扫描数据，用于动态角度查询
+        self._avoider.on_scan(
+            data.front_distance, data.front_angle_deg,
+            data.left_clearance, data.left_angle_deg,
+            data.right_clearance, data.right_angle_deg,
         )
 
     def _compute_move_lateral_angular(self) -> float:
@@ -846,49 +754,64 @@ class DirectInertialTester(Stage2InertialNavigator):
                         f'{label} 进度 {bucket * 25}% '
                         f'({progress:.2f}/{target_distance:.2f}m)'
                     )
-                    self.logger.progress(f'{progress_line} | {self._pose_diagnostic()}')
+                    self.get_logger().info(
+                        f'{self.test_feedback_prefix}当前位置: {progress_line}'
+                    )
+                    self._log_session(
+                        'PROGRESS',
+                        f'{progress_line} | {self._pose_diagnostic()}',
+                    )
 
             if progress >= target_distance - self.distance_tolerance and self.last_progress_bucket < 4:
                 self.last_progress_bucket = 4
                 self.publish_feedback(
-                    f'当前位置: '
+                    f'{self.test_feedback_prefix}当前位置: '
                     f'{self.rectangle_segment_label(self.current_segment)}，'
                     f'直行到位，准备切换到下一段'
                 )
 
-        # ═══════════════════════════════════════════════
-        # 反应式避障模块接管控制权
-        # ═══════════════════════════════════════════════
-        # 提前取段速度（惯导和避障共用）
-        linear = float(self.current_segment.get('speed', self.corridor_linear_speed)) \
-            if self.current_segment else self.corridor_linear_speed
-        
-        if self._reactive_avoidance.is_active:
-            if self._reactive_avoidance.step(self.navigation_yaw(), self.current_position):
-                return  # 避障中，跳过后续惯导控制
-            else:
-                self.logger.info('AVOID', '避障完成，恢复惯导控制')
-        else:
-            # 检测是否需要触发避障（带冷却检查）
-            if self._reactive_avoidance.should_trigger():
-                self._reactive_avoidance.start(self.navigation_yaw(), self.current_position)
-                self.logger.info('AVOID', '检测到障碍，避障模块接管')
-                return
+        # 优先：段完成检查（放在避障之前，确保段不会被避障阻塞）
+        if self.current_position is not None and self.segment_heading is not None:
+            progress = self.projected_distance()
+            if (self.current_segment is not None
+                    and self.current_segment.get('type') == 'move'):
+                target_distance = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
+                if progress >= target_distance - self.distance_tolerance:
+                    self._log_session(
+                        'SEGMENT_DONE',
+                        f'{self.current_segment.get("description", "?")} '
+                        f'{progress:.3f}/{target_distance:.2f}m | {self._pose_diagnostic()}',
+                    )
+                    self.cmd_pub.publish(self.create_twist())
+                    self.start_segment(self.plan_index + 1)
+                    return
 
-        # ── 段完成检查 ────────────────────────────────────
+        # ── 接近拐角检测：段末尾切换转弯障碍检测 ──
         if self.current_position is not None and self.segment_heading is not None and self.current_segment is not None:
             target_distance = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
             progress = self.projected_distance()
-            
-            if progress >= target_distance - self.distance_tolerance:
-                self.logger.segment(
-                    f'{self.current_segment.get("description", "?")} '
-                    f'{progress:.3f}/{target_distance:.2f}m 完成')
-                self.cmd_pub.publish(self.create_twist())
-                self.start_segment(self.plan_index + 1)
-                return
-
-        # ── 正常惯导控制 ──────────────────────────────────
+            remaining = target_distance - progress
+            corner_approach = float(self.get_parameter('corner_approach_m').value)
+            if remaining <= corner_approach:
+                # 接近拐角：用 turn_obstacle_stop_m，避免雷达扫边误触发
+                if math.isfinite(self.front_obstacle_distance) and self.front_obstacle_distance < float(self.get_parameter('turn_obstacle_stop_m').value):
+                    angular = self._compute_move_lateral_angular()
+                    self.cmd_pub.publish(self.create_twist(float(self.get_parameter('turn_obstacle_creep_speed').value), angular))
+                    self._maybe_log_telemetry('corner_approach')
+                    return
+                # 前方空间够，不进避障，正常完成段
+            else:
+                # 正常避障
+                nav = NavState(
+                    position=self.current_position,
+                    yaw=self.navigation_yaw(),
+                    segment_heading=self.segment_heading,
+                    segment_start_pose=self.segment_start_pose,
+                    current_segment=self.current_segment,
+                    projected_distance=self.projected_distance(),
+                )
+                if self._avoider.step(nav):
+                    return
 
         if self.current_position is None or self.segment_heading is None:
             self.cmd_pub.publish(self.create_twist())
@@ -896,6 +819,7 @@ class DirectInertialTester(Stage2InertialNavigator):
             return
 
         angular = self._compute_move_lateral_angular()
+        linear = float(self.current_segment.get('speed', self.corridor_linear_speed))
         self.cmd_pub.publish(self.create_twist(linear, angular))
         self._maybe_log_telemetry('move')
 
@@ -905,6 +829,12 @@ class DirectInertialTester(Stage2InertialNavigator):
             (self.current_segment or {}).get('turn_linear_speed', self.turn_linear_speed)
         )
 
+        # 转角障碍检测：前方过近 → 蠕行转弯
+        # 用 turn_obstacle_stop_m(0.25m) 替代 detour_obstacle_distance(0.48m)
+        # 避免雷达扫到赛道边角误触发，同时防止电机停转
+        if math.isfinite(self.front_obstacle_distance) and self.front_obstacle_distance < float(self.get_parameter('turn_obstacle_stop_m').value):
+            linear_speed = float(self.get_parameter('turn_obstacle_creep_speed').value)
+
         nav_yaw = self.navigation_yaw()
         if nav_yaw is None or self.segment_target_yaw is None:
             self.cmd_pub.publish(self.create_twist())
@@ -913,7 +843,7 @@ class DirectInertialTester(Stage2InertialNavigator):
         error = self.angle_error(self.segment_target_yaw, nav_yaw)
         if abs(error) <= turn_tolerance:
             self.publish_feedback(
-                f'当前位置: '
+                f'{self.test_feedback_prefix}当前位置: '
                 f'{self.rectangle_segment_label(self.current_segment or {})}，'
                 '转弯完成，进入下一段'
             )
@@ -931,9 +861,9 @@ class DirectInertialTester(Stage2InertialNavigator):
         )
 
     def finish_mission(self):
-        self.logger.info('MISSION', '完成 | ' + self._pose_diagnostic(), file_only=True)
+        self._log_session('MISSION', '完成 | ' + self._pose_diagnostic())
         super().finish_mission()
-        self.logger.info('MISSION', '第二阶段测试完成，自动退出', file_only=True)
+        self.get_logger().info('第二阶段测试完成，自动退出')
         if hasattr(self, '_request_stop') and self._request_stop is not None:
             self._request_stop()
 
@@ -950,14 +880,19 @@ class DirectInertialTester(Stage2InertialNavigator):
 
         now_sec = self.get_clock().now().nanoseconds / 1e9
         if (
-            not self._reactive_avoidance.is_active
+            not self._avoider.is_active
             and self.segment_started_at is not None
             and now_sec - self.segment_started_at > self.segment_timeout
         ):
             desc = self.current_segment.get('description', 'unknown')
-            self.logger.timeout(f'段超时 {desc}')
-            self.publish_feedback(f'段超时: {desc}')
-            # 反应式避障无需 force_reset，自动超时保护
+            self._log_session(
+                'TIMEOUT',
+                f'段超时 {desc} | {self._pose_diagnostic()}',
+            )
+            self.publish_feedback(
+                f'{self.test_feedback_prefix}段超时: {desc}'
+            )
+            self._avoider.reset()
             self.start_segment(self.plan_index + 1)
             return
 
@@ -1005,11 +940,11 @@ class DirectInertialTester(Stage2InertialNavigator):
                 wait_line = f'等待: {", ".join(missing_inputs)}'
                 if not self.reported_waiting_pose:
                     self.publish_feedback(
-                        f'等待输入就绪: '
+                        f'{self.test_feedback_prefix}等待输入就绪: '
                         f'{", ".join(missing_inputs)}'
                     )
                     self.reported_waiting_pose = True
-                self.logger.startup(f'{wait_line} | {self._full_telemetry()}')
+                self._log_session('STARTUP', f'{wait_line} | {self._full_telemetry()}')
             self._maybe_log_telemetry('startup_wait')
             return
 
@@ -1022,10 +957,10 @@ class DirectInertialTester(Stage2InertialNavigator):
                     f'{self._pose_diagnostic()}'
                 )
                 self.publish_feedback(
-                    f'位姿已就绪，'
+                    f'{self.test_feedback_prefix}位姿已就绪，'
                     f'{self.start_delay_sec:.2f}s 后开始'
                 )
-                self.logger.startup(ready_line)
+                self._log_session('STARTUP', ready_line)
                 self.reported_start_delay = True
             return
 
@@ -1034,12 +969,12 @@ class DirectInertialTester(Stage2InertialNavigator):
 
         self.mission_active = True
         self.reported_start = True
-        self.logger.info('MISSION',
+        self._log_session(
+            'MISSION',
             f'任务开始 方向={self.direction_text()} | {self._pose_diagnostic()}',
-            file_only=True,
         )
         self.publish_feedback(
-            f'开始执行，方向: {self.direction_text()}，'
+            f'{self.test_feedback_prefix}开始执行，方向: {self.direction_text()}，'
             f'模式: {self.start_mode_text()}，'
             f'field_track: {self._field_track_yaml}'
         )
