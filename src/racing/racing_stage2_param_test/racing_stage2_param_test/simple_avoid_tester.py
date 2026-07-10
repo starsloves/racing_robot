@@ -2,14 +2,14 @@
 
 功能：
 - 启动后从当前位置/航向直行 3 米
-- 检测到障碍 → 调用 SpiralAvoider 避障
+- 检测到障碍 → 调用反应式避障管理器
 - 避障完成 → 恢复直行
 - 到达目标 → 停止
 
 特点：
 - 继承 DirectInertialTester（racing_stage2_param_test 版本）
-- 100% 复用避障逻辑（SpiralAvoider）
-- 100% 复用避障参数（avoidance_config.yaml）
+- 100% 复用反应式避障主方案
+- 100% 复用避障参数（reactive_avoidance_config.yaml）
 - 只覆盖赛道规划方法（单段直行）
 - 详细日志（0.1 秒遥测间隔）
 """
@@ -30,10 +30,10 @@ class SimpleAvoidTester(DirectInertialTester):
     """极简直行避障测试节点
     
     继承 DirectInertialTester，获得：
-    - SpiralAvoider 避障模块
+    - ReactiveAvoidanceManager 反应式避障模块
     - ScanProcessor 激光雷达处理
     - RacingLogger 日志系统
-    - 所有避障参数（从 avoidance_config.yaml 加载）
+    - 所有避障参数（从 reactive_avoidance_config.yaml 加载）
     - 控制循环（20 Hz）
     
     只覆盖：
@@ -101,19 +101,19 @@ class SimpleAvoidTester(DirectInertialTester):
     def projected_distance(self):
         """覆盖投影距离计算：避障期间锁定进度"""
         # 避障期间返回锁定值，防止投影距离虚高
-        if self._spiral_avoider.is_active and self._avoid_locked_progress is not None:
+        if self._reactive_avoidance.is_active and self._avoid_locked_progress is not None:
             return self._avoid_locked_progress
         
         # 正常情况调用父类方法
         real_progress = super().projected_distance()
         
         # 避障触发瞬间锁定当前进度
-        if self._spiral_avoider.is_active and self._avoid_locked_progress is None:
+        if self._reactive_avoidance.is_active and self._avoid_locked_progress is None:
             self._avoid_locked_progress = real_progress
             self.logger.info('AVOID', f'锁定投影距离 locked_progress={real_progress:.3f}m')
         
         # 避障结束后解锁
-        if not self._spiral_avoider.is_active and self._avoid_locked_progress is not None:
+        if not self._reactive_avoidance.is_active and self._avoid_locked_progress is not None:
             self.logger.info('AVOID', f'解锁投影距离 was={self._avoid_locked_progress:.3f}m now={real_progress:.3f}m')
             self._avoid_locked_progress = None
         

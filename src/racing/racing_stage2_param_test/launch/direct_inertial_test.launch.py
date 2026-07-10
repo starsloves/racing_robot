@@ -74,7 +74,7 @@ def generate_launch_description():
     support_launch_path = os.path.join(stage2_dir, 'launch', 'competition_support.launch.py')
     inertial_config = os.path.join(param_test_dir, 'config', 'inertial_stage2.yaml')
     test_config = os.path.join(param_test_dir, 'config', 'direct_inertial_test.yaml')
-    avoid_config = os.path.join(param_test_dir, 'config', 'avoidance_config.yaml')
+    reactive_avoid_config = os.path.join(param_test_dir, 'config', 'reactive_avoidance_config.yaml')
 
     include_support_arg = DeclareLaunchArgument('include_support', default_value='true')
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='true')
@@ -115,7 +115,7 @@ def generate_launch_description():
         parameters=[
             inertial_config,
             test_config,
-            avoid_config,
+            reactive_avoid_config,
             {
                 'imu_topic': LaunchConfiguration('imu_topic'),
                 'test_direction': LaunchConfiguration('test_direction'),

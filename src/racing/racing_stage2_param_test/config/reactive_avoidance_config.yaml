@@ -1,0 +1,74 @@
+# 反应式避障配置
+# 基于雷达实时距离反馈的动态避障方案
+
+/direct_inertial_tester:
+  ros__parameters:
+    # ============ 控制频率 ============
+    control_rate_hz: 50.0                       # 控制循环频率（提高到50Hz，更快响应）
+    
+    # ============ 触发与方向选择 ============
+    reactive_trigger_distance_m: 0.75           # 触发距离（增大到0.75m，考虑延迟后实际0.65m）
+    reactive_trigger_confirm_frames: 1          # 触发确认帧数（降到1帧，更快响应）
+    reactive_direction_angle_threshold_deg: 5.0 # 方向判断角度阈值
+    reactive_direction_clearance_margin_m: 0.10 # 左右净空差异阈值
+    
+    # ============ 雷达扇区定义 ============
+    reactive_front_sector_angle_deg: 18.0       # 前方扇区半角
+    reactive_side_sector_center_deg: 65.0       # 侧向扇区中心角
+    reactive_side_sector_window_deg: 15.0       # 侧向扇区半宽
+    
+    # ============ SHIFT_OUT 阶段（快速切出建立侧移）============
+    reactive_shift_linear_speed: 0.08           # 线速度（再降低，留更多时间转向）
+    reactive_shift_omega_emergency: 1.00        # 紧急转向角速度（大幅增加）
+    reactive_shift_omega_strong: 0.90           # 强转向（大幅增加）
+    reactive_shift_omega_side_near: 0.80        # 侧向太近（大幅增加）
+    reactive_shift_omega_normal: 0.70           # 正常切出（大幅增加）
+    reactive_shift_cross_threshold_m: 0.20      # 切换横偏阈值
+    reactive_shift_side_threshold_m: 0.28       # 切换侧向距离阈值
+    reactive_shift_front_safe_m: 0.50           # 切换前方安全距离
+    reactive_shift_projection_threshold_m: 0.40 # 切换投影距离阈值
+    
+    # ============ MAINTAIN 阶段（保持距离通过障碍）============
+    reactive_maintain_linear_speed: 0.15        # 线速度
+    reactive_maintain_target_side_distance_m: 0.32  # 目标侧向距离
+    reactive_maintain_deadband_m: 0.05          # 死区半宽（防抖动关键参数）
+    reactive_maintain_omega_very_near: -0.55    # 很近时角速度（<0.20m）
+    reactive_maintain_omega_near: -0.30         # 稍近时角速度（0.20-0.27m）
+    reactive_maintain_omega_far: 0.35           # 很远时角速度（>0.44m）
+    reactive_maintain_omega_mid_far: 0.20       # 稍远时角速度（0.37-0.44m）
+    reactive_maintain_front_protect_dist_m: 0.35    # 前方保护距离
+    reactive_maintain_front_protect_omega: 0.50     # 前方保护角速度
+    reactive_maintain_front_protect_speed: 0.10     # 前方保护线速度
+    reactive_maintain_to_merge_side_threshold_m: 0.70   # 切换侧向阈值
+    reactive_maintain_to_merge_front_threshold_m: 1.00  # 切换前方阈值
+    reactive_maintain_to_merge_angle_threshold_deg: 90.0  # 切换障碍物角度阈值
+    reactive_maintain_to_merge_confirm_frames: 3  # 切换确认帧数
+    
+    # ============ MERGE_BACK 阶段（反向贴墙回归轨道）============
+    reactive_merge_linear_speed_high_error: 0.08    # 大航偏时线速度
+    reactive_merge_linear_speed_low_error: 0.12     # 小航偏时线速度
+    reactive_merge_heading_threshold_deg: 15.0      # 速度切换航向阈值
+    reactive_merge_obstacle_visible_dist_m: 1.50    # 障碍物可见距离阈值
+    reactive_merge_obstacle_visible_angle_min_deg: 90.0   # 障碍物可见角度下限
+    reactive_merge_obstacle_visible_angle_max_deg: 150.0  # 障碍物可见角度上限
+    reactive_merge_omega_far: 0.30              # 侧向远时角速度（>0.50m）
+    reactive_merge_omega_mid_far: 0.18          # 侧向稍远（>0.38m）
+    reactive_merge_omega_near: -0.15            # 侧向太近（<0.28m）
+    reactive_merge_side_target_min_m: 0.28      # 目标侧向距离下限
+    reactive_merge_side_target_max_m: 0.38      # 目标侧向距离上限
+    reactive_merge_side_far_threshold_m: 0.50   # 反向贴墙远阈值
+    reactive_merge_heading_kp_with_obs: 2.0     # 有障碍物时航向增益
+    reactive_merge_heading_kp_no_obs: 2.5       # 无障碍物时航向增益
+    reactive_merge_finish_heading_tol_deg: 5.0  # 完成航向容差
+    reactive_merge_finish_confirm_frames: 5     # 完成确认帧数（约1秒）
+    
+    # ============ 全局限制 ============
+    reactive_max_omega_rate: 5.0                # 最大角加速度（进一步增大，几乎瞬间加速）
+    reactive_max_projection_distance_m: 1.00    # 最大投影距离
+    reactive_emergency_merge_threshold_m: 0.85  # 强制回归投影距离阈值
+    reactive_distance_filter_window: 3          # 雷达距离滤波窗口
+    reactive_avoidance_timeout_sec: 8.0         # 避障超时时间
+    reactive_cooldown_sec: 2.0                  # 完成后冷却时间
+    
+    # ============ 动态角度跟踪 ============
+    reactive_dynamic_angle_window_deg: 15.0     # 动态角度搜索窗口（缩小窗口避免查到远处墙壁）
