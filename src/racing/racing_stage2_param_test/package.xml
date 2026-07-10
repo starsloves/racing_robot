@@ -15,6 +15,7 @@
   <depend>rclpy</depend>
   <depend>cv_bridge</depend>
   <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
   <depend>racing_stage2</depend>
   <depend>racing_common</depend>
   <depend>sensor_msgs</depend>

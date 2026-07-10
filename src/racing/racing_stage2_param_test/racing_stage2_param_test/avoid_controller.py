@@ -267,14 +267,6 @@ class AvoidController:
             if abs(self._angle_error(nav.segment_heading, nav.yaw)) > self.cfg.detour_heading_gate_rad:
                 return False
 
-        remaining = float(seg['distance_m']) - nav.projected_distance
-        needed = self._estimate_projection_m()
-        if remaining < needed - 0.05:
-            self._log_detour(
-                f'剩余里程 {remaining:.2f}m 不足（避障需约 {needed:.2f}m），跳过触发'
-            )
-            return False
-
         # 触发条件：前方障碍 OR 侧边空间不足（用角度换算后的有效距离）
         front_blocked = math.isfinite(self.front_distance) and self._effective_front_m() < self.cfg.detour_obstacle_distance
         side_cramped = False
@@ -380,16 +372,7 @@ class AvoidController:
             return False
 
         if self._state not in ('idle', 'fine_align'):
-            seg = nav.current_segment
-            if seg is not None and seg.get('type') == 'move':
-                target_m = float(seg['distance_m'])
-                if nav.projected_distance >= target_m - self.cfg.distance_tolerance:
-                    self._log_detour(
-                        f'里程超限 {nav.projected_distance:.2f}/{target_m:.2f}m → '
-                        f'终止避障，段自然过渡到下段'
-                    )
-                    self.reset()
-                    return False
+            pass
 
         if self._state == 'turn_away':
             if self._turn_toward(plan.psi1, yaw):

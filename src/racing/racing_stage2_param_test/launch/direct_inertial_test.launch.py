@@ -70,11 +70,13 @@ def _emergency_stop_action():
 def generate_launch_description():
     stage2_dir = get_package_share_directory('racing_stage2')
     param_test_dir = get_package_share_directory('racing_stage2_param_test')
+    bringup_dir = get_package_share_directory('origincar_bringup')
 
     support_launch_path = os.path.join(stage2_dir, 'launch', 'competition_support.launch.py')
+    map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
     inertial_config = os.path.join(param_test_dir, 'config', 'inertial_stage2.yaml')
     test_config = os.path.join(param_test_dir, 'config', 'direct_inertial_test.yaml')
-    reactive_avoid_config = os.path.join(param_test_dir, 'config', 'reactive_avoidance_config.yaml')
+    avoid_controller_config = os.path.join(param_test_dir, 'config', 'avoid_controller.yaml')
 
     include_support_arg = DeclareLaunchArgument('include_support', default_value='true')
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='true')
@@ -92,6 +94,13 @@ def generate_launch_description():
     rgb_fps_arg = DeclareLaunchArgument('rgb_fps', default_value='15')
     resolution_mode_index_arg = DeclareLaunchArgument('resolution_mode_index', default_value='2')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
+    
+    # rviz2 启动参数
+    enable_rviz_arg = DeclareLaunchArgument('enable_rviz', default_value='false')
+    rviz_config_arg = DeclareLaunchArgument(
+        'rviz_config',
+        default_value=os.path.join(param_test_dir, 'rviz', 'stage2_test.rviz')
+    )
 
     support_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(support_launch_path),
@@ -108,6 +117,18 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('include_support')),
     )
 
+    # map_overlay：提供 /map topic 和 map → odom_combined TF
+    # Stage2 起点 = Stage1 终点 corridor_goal: map (2.50, 3.20) yaw=90°
+    map_overlay_stack = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(map_overlay_launch_path),
+        launch_arguments={
+            'map_to_odom_x': '2.50',
+            'map_to_odom_y': '3.20',
+            'map_to_odom_yaw': '1.5708',  # 90° = π/2 rad
+            'odom_frame': 'odom_combined',
+        }.items(),
+    )
+
     tester_node = Node(
         package='racing_stage2_param_test',
         executable='direct_inertial_tester',
@@ -115,7 +136,7 @@ def generate_launch_description():
         parameters=[
             inertial_config,
             test_config,
-            reactive_avoid_config,
+            avoid_controller_config,
             {
                 'imu_topic': LaunchConfiguration('imu_topic'),
                 'test_direction': LaunchConfiguration('test_direction'),
@@ -159,6 +180,16 @@ def generate_launch_description():
     # clutter ~/.ros/log/.
     ros_log_dir = SetEnvironmentVariable('ROS_LOG_DIR',
         os.path.join(os.path.expanduser('~'), 'dev_ws', 'log', 'ros'))
+    
+    # rviz2 节点
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        arguments=['-d', LaunchConfiguration('rviz_config')],
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('enable_rviz')),
+    )
 
     return LaunchDescription([
         disable_shm,
@@ -181,10 +212,14 @@ def generate_launch_description():
         rgb_fps_arg,
         resolution_mode_index_arg,
         carto_slam_arg,
+        enable_rviz_arg,
+        rviz_config_arg,
         support_stack,
+        map_overlay_stack,
         cmd_relay_node,
         tester_node,
         recorder_node,
+        rviz_node,
         RegisterEventHandler(
             OnShutdown(on_shutdown=[_emergency_stop_action()]),
         ),

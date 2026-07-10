@@ -28,6 +28,7 @@ setup(
             'simple_return_navigator = racing_stage3_param_test.simple_return_navigator:main',
             'twist_cmd_relay = racing_stage3_param_test.twist_cmd_relay:main',
             'enhanced_return_navigator = racing_stage3_param_test.enhanced_return_navigator:main',
+            'map_return_navigator = racing_stage3_param_test.map_return_navigator:main',
             'stage3_test_simulator = racing_stage3_param_test.stage3_test_simulator:main',
         ],
     },

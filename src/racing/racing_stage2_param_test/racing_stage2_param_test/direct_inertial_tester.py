@@ -1,15 +1,17 @@
 import math
 
+import os
+
 import rclpy
 from nav_msgs.msg import Odometry
 
-from ament_index_python import get_package_share_directory
 from racing_stage2_param_test import field_track
 from racing_stage2.stage2_inertial_navigator import Stage2InertialNavigator
 from racing_stage2_param_test.avoid_controller import AvoidConfig, AvoidController, NavState
 from racing_stage2_param_test.avoid_geometry import cross_segment_m
 from racing_stage2_param_test.scan_processor import ScanProcessor
 from racing_stage2_param_test.session_file_log import SessionFileLog
+from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 
 
 class DirectInertialTester(Stage2InertialNavigator):
@@ -46,8 +48,9 @@ class DirectInertialTester(Stage2InertialNavigator):
         if ft_custom:
             self._field_track_yaml = ft_custom
         else:
-            pkg_dir = get_package_share_directory('racing_stage2_param_test')
-            self._field_track_yaml = field_track.resolve_yaml_path(pkg_dir, self.test_direction, '')
+            here = os.path.dirname(os.path.realpath(__file__))
+            src_dir = os.path.dirname(here)
+            self._field_track_yaml = field_track.resolve_yaml_path(src_dir, self.test_direction, '')
 
         self.phase = 2
         self.task_raw = self.test_direction_raw
@@ -87,8 +90,21 @@ class DirectInertialTester(Stage2InertialNavigator):
         )
         self._avoider = AvoidController(self.cmd_pub, self.get_logger(), self.get_clock(), _avoid_cfg)
 
+        # 障碍物可视化（rviz2 调试用）
+        self.obstacle_markers = ObstacleMarkerPublisher(
+            self, topic='/stage2_obstacle_markers', frame_id='base_link', radius=0.13
+        )
+        self.all_clusters = []  # 缓存当前帧的所有聚类
+        self._cluster_window_config = {
+            'min_x': 0.30,
+            'max_x': 1.00,
+            'half_y': 0.30,
+            'gap_tolerance': 0.12
+        }
+
         self._setup_wheel_odom_position()
         self._setup_session_log()
+        self._pure_linear_after_avoid = False  # 避障完成后纯线速度直行
 
         self.get_logger().info(
             f'{self.test_feedback_prefix}节点已就绪，方向={self.direction_text()}，'
@@ -97,7 +113,9 @@ class DirectInertialTester(Stage2InertialNavigator):
             f'避障=边转边避 away={_avoid_cfg.avoid_turn_away_deg:.0f}deg back={_avoid_cfg.avoid_turn_back_deg:.0f}deg recover={_avoid_cfg.avoid_recover_deg:.0f}deg×'
             f'{_avoid_cfg.avoid_leg1_distance_m:.2f}m/{_avoid_cfg.avoid_leg2_distance_m:.2f}m '
             f'侧边阈值={_avoid_cfg.side_detour_threshold_m:.2f}m '
-            f'闭环转弯 tol={_avoid_cfg.avoider_heading_tolerance_deg:.1f}deg'
+            f'闭环转弯 tol={_avoid_cfg.avoider_heading_tolerance_deg:.1f}deg，'
+            f'可视化窗口=[{self._cluster_window_config["min_x"]:.2f}-{self._cluster_window_config["max_x"]:.2f}m, '
+            f'±{self._cluster_window_config["half_y"]:.2f}m]'
         )
         self._log_session(
             'CONFIG',
@@ -182,12 +200,29 @@ class DirectInertialTester(Stage2InertialNavigator):
             return
         if self.current_wheel_yaw is None:
             return
-        self.current_yaw = self.current_wheel_yaw
+        # 位置用轮速里程计，但航向角始终用 IMU（轮速 yaw 不准）
+        # self.current_yaw = self.current_wheel_yaw  # 注释掉，改用 IMU yaw
 
     def imu_callback(self, msg):
         self.imu_yaw = self.quaternion_to_yaw(msg.orientation)
-        if not self._wheel_pose_source_active():
-            self.current_yaw = self.imu_yaw
+        # 航向角始终使用 IMU，不管位置源是什么
+        self.current_yaw = self.imu_yaw
+        
+        # 调试日志：输出 IMU 的原始四元数
+        quat = msg.orientation
+        if hasattr(self, '_imu_callback_count'):
+            self._imu_callback_count += 1
+        else:
+            self._imu_callback_count = 1
+        
+        # 每 50 次输出一次详细日志
+        if self._imu_callback_count % 50 == 0:
+            self.get_logger().info(
+                f'[DEBUG_IMU] /imu/data quat=({quat.x:.4f}, {quat.y:.4f}, {quat.z:.4f}, {quat.w:.4f}) '
+                f'yaw={math.degrees(self.imu_yaw):.1f}deg '
+                f'current_yaw={math.degrees(self.current_yaw):.1f}deg'
+            )
+        
         self.try_start_mission()
 
     def _fmt_num(self, value, prec=3):
@@ -497,6 +532,23 @@ class DirectInertialTester(Stage2InertialNavigator):
         )
         self.current_odom_yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
+        
+        # 调试日志：输出 /odom_combined 的原始四元数
+        quat = msg.pose.pose.orientation
+        if hasattr(self, '_odom_callback_count'):
+            self._odom_callback_count += 1
+        else:
+            self._odom_callback_count = 1
+        
+        # 每 20 次输出一次详细日志
+        if self._odom_callback_count % 20 == 0:
+            self.get_logger().info(
+                f'[DEBUG_ODOM] /odom_combined quat=({quat.x:.4f}, {quat.y:.4f}, {quat.z:.4f}, {quat.w:.4f}) '
+                f'yaw={math.degrees(self.current_odom_yaw):.1f}deg '
+                f'pos=({ekf_pos.x:.3f}, {ekf_pos.y:.3f}) '
+                f'vyaw={ekf_twist.angular.z:.3f}'
+            )
+        
         if not self._wheel_pose_source_active() or not self._wheel_odom_ready:
             self.current_position = self._last_ekf_position
             if not self._wheel_pose_source_active():
@@ -673,6 +725,7 @@ class DirectInertialTester(Stage2InertialNavigator):
         super().start_segment(index)
         self.last_progress_bucket = -1
         self.active_turn_heading_tolerance = self.heading_tolerance
+        self._pure_linear_after_avoid = False  # 新段恢复惯导全控制
         self._avoider.reset()
 
         if self.current_segment is None or self.plan_index != index:
@@ -723,8 +776,26 @@ class DirectInertialTester(Stage2InertialNavigator):
             data.right_clearance, data.right_angle_deg,
         )
 
+        # 新增：聚类可视化（前方 0.3-1.0m，左右 ±0.3m 窗口）
+        try:
+            self.all_clusters = self._scan_processor.cluster_obstacles_in_window(
+                msg,
+                min_x=self._cluster_window_config['min_x'],
+                max_x=self._cluster_window_config['max_x'],
+                half_y=self._cluster_window_config['half_y'],
+                gap_tolerance=self._cluster_window_config['gap_tolerance']
+            )
+            if self.all_clusters:
+                self.obstacle_markers.publish_from_clusters(self.all_clusters, color='red')
+            else:
+                self.obstacle_markers.clear()
+        except Exception as e:
+            self.get_logger().warn(f'Obstacle visualization error: {e}', throttle_duration_sec=5.0)
+
     def _compute_move_lateral_angular(self) -> float:
         """计算直行段横向角速度。子类可覆盖以替换视觉居中。"""
+        if self._pure_linear_after_avoid:
+            return 0.0
         if self.current_position is None or self.segment_heading is None:
             return 0.0
         nav_yaw = self.navigation_yaw()
@@ -777,6 +848,18 @@ class DirectInertialTester(Stage2InertialNavigator):
                     and self.current_segment.get('type') == 'move'):
                 target_distance = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
                 if progress >= target_distance - self.distance_tolerance:
+                    # 避障进行中 → 延迟切段，等避障完成
+                    if self._avoider.is_active:
+                        nav = NavState(
+                            position=self.current_position,
+                            yaw=self.navigation_yaw(),
+                            segment_heading=self.segment_heading,
+                            segment_start_pose=self.segment_start_pose,
+                            current_segment=self.current_segment,
+                            projected_distance=self.projected_distance(),
+                        )
+                        self._avoider.step(nav)
+                        return
                     self._log_session(
                         'SEGMENT_DONE',
                         f'{self.current_segment.get("description", "?")} '
@@ -812,6 +895,12 @@ class DirectInertialTester(Stage2InertialNavigator):
                 )
                 if self._avoider.step(nav):
                     return
+                # 避障完成，航向已正确，纯线速度直行
+                self._pure_linear_after_avoid = True
+                self._log_session(
+                    'AVOID',
+                    f'避障完成，纯线速度直行 | {self._pose_diagnostic()}'
+                )
 
         if self.current_position is None or self.segment_heading is None:
             self.cmd_pub.publish(self.create_twist())
@@ -908,8 +997,9 @@ class DirectInertialTester(Stage2InertialNavigator):
             self.start_segment(self.plan_index + 1)
 
     def build_ring_plan(self):
-        pkg_dir = get_package_share_directory('racing_stage2_param_test')
-        yaml_path = field_track.resolve_yaml_path(pkg_dir, self.direction, '')
+        here = os.path.dirname(os.path.realpath(__file__))
+        src_dir = os.path.dirname(here)
+        yaml_path = field_track.resolve_yaml_path(src_dir, self.direction, '')
         return field_track.load_plan(
             yaml_path,
             self.direction,
