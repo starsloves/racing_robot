@@ -56,7 +56,7 @@ stage2_inertial_navigator:
     use_corridor_path: true                  # 是否使用通道路径规划
     corridor_waypoints_are_global: true      # 路点在 map 坐标系下
     global_frame_id: map                     # 全局坐标系
-    corridor_waypoints_json: '[{"x":2.50,"y":3.20,"speed":0.12,"yaw_deg":90.0,"description":"corridor_goal"}]'  # 通道终点（入口坐标）
+    corridor_waypoints_json: '[{"x":2.50,"y":2.60,"speed":0.12,"yaw_deg":90.0,"description":"corridor_goal"}]'  # 通道终点（入口坐标）
     corridor_waypoint_tolerance: 0.18        # 路过点容差（m）
     corridor_goal_tolerance: 0.10            # 终点容差（m）
     corridor_goal_standoff_m: 0.18           # 终点前停车距离（m）

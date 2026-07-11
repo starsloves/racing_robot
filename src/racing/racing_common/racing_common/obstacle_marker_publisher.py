@@ -44,7 +44,15 @@ class ObstacleMarkerPublisher:
         self.frame_id = frame_id
         self.radius = radius
         self.diameter = radius * 2.0
-        self.marker_pub = node.create_publisher(MarkerArray, topic, 10)
+        # 使用 rviz2 兼容的 QoS
+        from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,  # 让 late joiner 也能收到
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+        self.marker_pub = node.create_publisher(MarkerArray, topic, qos)
         self._logger = node.get_logger()
         self._is_cleared = True  # 防抖标志：True=已清空，False=有 markers
         self._last_marker_count = 0  # 上次发布的 marker 数量
@@ -88,7 +96,7 @@ class ObstacleMarkerPublisher:
             self.marker_pub.publish(markers)
             self._is_cleared = False
             self._last_marker_count = valid_count
-            self._logger.debug(f'Published {valid_count} obstacle markers from clusters')
+            self._logger.info(f'Published {valid_count} obstacle markers from clusters')
         else:
             self.clear()
     
@@ -181,17 +189,17 @@ class ObstacleMarkerPublisher:
         
         # 颜色
         if color == 'red':
-            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.0, 0.0, 0.7
+            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.2, 0.0, 0.9
         elif color == 'yellow':
-            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 1.0, 0.0, 0.5
+            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 1.0, 0.0, 0.8
         elif color == 'green':
-            m.color.r, m.color.g, m.color.b, m.color.a = 0.0, 1.0, 0.0, 0.5
+            m.color.r, m.color.g, m.color.b, m.color.a = 0.0, 1.0, 0.0, 0.8
         elif color == 'orange':
             m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.5, 0.0, 0.6
         else:  # 默认白色
             m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 1.0, 1.0, 0.5
         
-        # 生命周期：0.5秒后自动消失（避免残留）
-        m.lifetime = Duration(sec=0, nanosec=500_000_000)  # 0.5s
+        # 生命周期：2.0秒（足够长，每帧刷新会重置计时）
+        m.lifetime = Duration(sec=2, nanosec=0)  # 2.0s
         
         return m

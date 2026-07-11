@@ -102,10 +102,10 @@ Visualization Manager:
       Enabled: true
       Name: Obstacles
       Namespaces:
-        {}
+        obstacles: true
       Topic:
         Depth: 5
-        Durability Policy: Volatile
+        Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /stage2_obstacle_markers

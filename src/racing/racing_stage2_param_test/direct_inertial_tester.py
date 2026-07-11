@@ -17,8 +17,6 @@ from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 class DirectInertialTester(Stage2InertialNavigator):
     def __init__(self):
         super().__init__()
-        
-        self._last_wheel_odom_msg = None  # 保存最新的 wheel odom 消息用于 marker 坐标转换
 
         self.declare_parameter('test_direction', 'clockwise')
         self.declare_parameter('test_start_mode', 'auto')
@@ -93,9 +91,8 @@ class DirectInertialTester(Stage2InertialNavigator):
         self._avoider = AvoidController(self.cmd_pub, self.get_logger(), self.get_clock(), _avoid_cfg)
 
         # 障碍物可视化（rviz2 调试用）
-        # 使用 map 帧避免 TF 依赖
         self.obstacle_markers = ObstacleMarkerPublisher(
-            self, topic='/stage2_obstacle_markers', frame_id='map', radius=0.13
+            self, topic='/stage2_obstacle_markers', frame_id='base_link', radius=0.13
         )
         self.all_clusters = []  # 缓存当前帧的所有聚类
         self._cluster_window_config = {
@@ -110,10 +107,6 @@ class DirectInertialTester(Stage2InertialNavigator):
         self._pure_linear_after_avoid = False  # 避障完成后纯线速度直行
         self.segment_end_pose = None  # 世界坐标系下的段终点（仅 world 模式使用）
         self._world_start_pose = None  # 世界坐标系下的起点信息
-        self._segment_is_world = False  # 当前段是否使用世界坐标系
-        self._map_origin_x = 2.50  # map→odom 变换参数（从 launch 传入）
-        self._map_origin_y = 2.60
-        self._map_origin_yaw = math.radians(90.0)
 
         self.get_logger().info(
             f'{self.test_feedback_prefix}节点已就绪，方向={self.direction_text()}，'
@@ -250,36 +243,11 @@ class DirectInertialTester(Stage2InertialNavigator):
             or self.segment_heading is None
         ):
             return 0.0
-        nav_pos = self._nav_position()
-        if nav_pos is None:
-            return 0.0
         return cross_segment_m(
             self.segment_start_pose,
             self.segment_heading,
-            nav_pos,
+            self.current_position,
         )
-
-    def _odom_to_map(self, odom_xy):
-        """将 odom 帧坐标转换为 map 帧坐标。
-        
-        map→odom 静态变换: 平移 (2.50, 2.60)，旋转 90° (yaw)
-        odom_x = -(map_y - 2.60)  
-        odom_y = map_x - 2.50
-        
-        逆变换 → map_x = 2.50 + odom_y, map_y = 2.60 - odom_x
-        """
-        if odom_xy is None:
-            return None
-        ox, oy = odom_xy
-        return (self._map_origin_x + oy, self._map_origin_y - ox)
-    
-    def _nav_position(self):
-        """获取导航用位置：world 模式用 map 帧，否则用 odom 帧"""
-        if self.current_position is None:
-            return None
-        if self._segment_is_world:
-            return self._odom_to_map(self.current_position)
-        return self.current_position
 
     def _full_telemetry(self) -> str:
         now_sec = self.get_clock().now().nanoseconds / 1e9
@@ -504,7 +472,6 @@ class DirectInertialTester(Stage2InertialNavigator):
         return (now_sec - self._wheel_odom_first_rx_sec) >= self._wheel_odom_warmup_sec
 
     def _wheel_odom_callback(self, msg: Odometry) -> None:
-        self._last_wheel_odom_msg = msg  # 保存用于 marker 坐标转换
         position = msg.pose.pose.position
         twist = msg.twist.twist
         self.current_position = (float(position.x), float(position.y))
@@ -554,6 +521,8 @@ class DirectInertialTester(Stage2InertialNavigator):
         
         if not self._wheel_pose_source_active() or not self._wheel_odom_ready:
             self.current_position = self._last_ekf_position
+            if not self._wheel_pose_source_active():
+                self.current_yaw = self.current_odom_yaw
         self.try_start_mission()
 
     def projected_distance(self):
@@ -563,11 +532,8 @@ class DirectInertialTester(Stage2InertialNavigator):
             or self.segment_heading is None
         ):
             return 0.0
-        nav_pos = self._nav_position()
-        if nav_pos is None:
-            return 0.0
-        dx = nav_pos[0] - self.segment_start_pose[0]
-        dy = nav_pos[1] - self.segment_start_pose[1]
+        dx = self.current_position[0] - self.segment_start_pose[0]
+        dy = self.current_position[1] - self.segment_start_pose[1]
         along = (
             dx * math.cos(self.segment_heading)
             + dy * math.sin(self.segment_heading)
@@ -609,43 +575,39 @@ class DirectInertialTester(Stage2InertialNavigator):
         if seg_type != 'move':
             return
 
-        # 世界坐标系：使用 YAML 中的 target 绝对坐标（map 帧）
+        # 世界坐标系：使用 YAML 中的 target 绝对坐标
         if is_world and 'target' in segment:
-            self._segment_is_world = True
-            
-            # anchor 用当前位置转换到 map 帧
+            # anchor 用当前位置（段开始时记录）
             if self.current_position is not None:
-                map_pos = self._odom_to_map(self.current_position)
-                self.segment_start_pose = map_pos
-            else:
-                map_pos = None
+                self.segment_start_pose = self.current_position
             
-            # 目标点用 YAML 的 target（已在 map 帧）
+            # 目标点用 YAML 的 target
             target = segment['target']
             self.segment_end_pose = (float(target['x']), float(target['y']))
             
-            # 在 map 帧中计算航向（与 IMU yaw 同帧）
+            # 从当前位置 → target 计算航向
             if self.segment_start_pose is not None:
                 dx = self.segment_end_pose[0] - self.segment_start_pose[0]
                 dy = self.segment_end_pose[1] - self.segment_start_pose[1]
-                distance = math.sqrt(dx*dx + dy*dy)
                 heading = math.atan2(dy, dx)
                 self.segment_heading = self.normalize_angle(heading)
                 self.segment_start_yaw = self.segment_heading
+                
+                # 计算实际距离
+                distance = math.sqrt(dx*dx + dy*dy)
                 
                 x0, y0 = self.segment_start_pose
                 x1, y1 = self.segment_end_pose
                 anchor_line = (
                     f'desc={segment.get("description", "?")} '
-                    f'anchor_map=({x0:.3f},{y0:.3f}) target_map=({x1:.3f},{y1:.3f}) '
-                    f'dist={distance:.3f}m heading={self.format_yaw_deg(heading)}deg [MAP]'
+                    f'anchor=({x0:.3f},{y0:.3f}) target=({x1:.3f},{y1:.3f}) '
+                    f'dist={distance:.3f}m heading={self.format_yaw_deg(heading)}deg [WORLD]'
                 )
                 self.get_logger().info(f'{self.test_feedback_prefix}里程锚点: {anchor_line}')
                 self._log_session('ODOM_ANCHOR', anchor_line)
             return
 
         # 相对坐标系：从当前位置开始
-        self._segment_is_world = False
         if self.current_position is not None:
             self.segment_start_pose = self.current_position
         if 'force_segment_heading' in segment:
@@ -846,62 +808,18 @@ class DirectInertialTester(Stage2InertialNavigator):
             n_clusters = len(self.all_clusters)
             total_points = sum(len(c) for c in self.all_clusters) if self.all_clusters else 0
             
-            # 打印到日志文件（用 _log_session 才能写入 RacingLogger 的文件）
-            self._log_session('CLUSTER_VIZ',
-                f'clusters={n_clusters} points={total_points} '
-                f'window=[{self._cluster_window_config["min_x"]:.2f},{self._cluster_window_config["max_x"]:.2f}]×±{self._cluster_window_config["half_y"]:.2f}m')
+            # 强制每次都打印（调试用）
+            self.get_logger().info(
+                f'[CLUSTER_VIZ] clusters={n_clusters}, points={total_points}, '
+                f'window=[{self._cluster_window_config["min_x"]:.2f}, {self._cluster_window_config["max_x"]:.2f}]×±{self._cluster_window_config["half_y"]:.2f}m',
+                throttle_duration_sec=1.0
+            )
             
             if self.all_clusters:
-                # 转换到 map 坐标：base_link → odom → map
-                if self.current_position is None or self.current_yaw is None:
-                    self._log_session('MARKER_VIZ', 'SKIP: no position/yaw')
-                    return
-                
-                # 车的 map 位置
-                car_map = self._odom_to_map(self.current_position)
-                if car_map is None:
-                    self._log_session('MARKER_VIZ', 'SKIP: failed odom→map conversion')
-                    return
-                
-                car_x, car_y = car_map
-                car_yaw = self.current_yaw  # IMU yaw，与 map 帧对齐
-                cos_yaw = math.cos(car_yaw)
-                sin_yaw = math.sin(car_yaw)
-                
-                # 详细日志：车的位置和航向
-                self._log_session('MARKER_VIZ',
-                    f'car_odom=({self.current_position[0]:.3f},{self.current_position[1]:.3f}) '
-                    f'car_map=({car_x:.3f},{car_y:.3f}) '
-                    f'yaw={math.degrees(car_yaw):.1f}deg')
-                
-                # 转换每个聚类的中心到 map 坐标
-                clusters_map = []
-                for i, cluster in enumerate(self.all_clusters):
-                    if not cluster:
-                        continue
-                    # 聚类中心（base_link 坐标）
-                    cx_base = sum(p[0] for p in cluster) / len(cluster)
-                    cy_base = sum(p[1] for p in cluster) / len(cluster)
-                    
-                    # 转换到 map 坐标
-                    cx_map = car_x + cx_base * cos_yaw - cy_base * sin_yaw
-                    cy_map = car_y + cx_base * sin_yaw + cy_base * cos_yaw
-                    
-                    # 详细日志：每个聚类的坐标转换
-                    self._log_session('MARKER_VIZ',
-                        f'cluster[{i}] n_pts={len(cluster)} '
-                        f'base_link=({cx_base:.3f},{cy_base:.3f}) → '
-                        f'map=({cx_map:.3f},{cy_map:.3f})')
-                    
-                    # 重建聚类（只保留中心，因为 publish_from_clusters 会计算中心）
-                    clusters_map.append([(cx_map, cy_map, 0.0)])
-                
-                self.obstacle_markers.publish_from_clusters(clusters_map, color='red')
-                self._log_session('MARKER_VIZ', f'published {n_clusters} markers to rviz2')
+                self.obstacle_markers.publish_from_clusters(self.all_clusters, color='red')
             else:
                 self.obstacle_markers.clear()
         except Exception as e:
-            self._log_session('CLUSTER_VIZ', f'ERROR: {e}')
             self.get_logger().warn(f'Obstacle visualization error: {e}', throttle_duration_sec=5.0)
 
     def _compute_move_lateral_angular(self) -> float:
