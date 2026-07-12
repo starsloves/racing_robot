@@ -61,44 +61,52 @@ class ObstacleMarkerPublisher:
             f'frame={frame_id}, radius={radius:.3f}m'
         )
     
-    def publish_from_clusters(self, clusters: list, color='red'):
-        """从聚类列表发布 Markers（Stage1 用）
+    def publish_from_clusters(self, clusters: list, color='red', max_markers=20):
+        """从聚类列表发布 Markers，无闪烁更新
+        
+        用固定 ID 池更新 marker 位置，数量变化时自动 DELETE 多余 marker。
+        不依赖 DELETEALL，避免闪烁。
         
         Args:
             clusters: 聚类列表 [[(x,y,dist), ...], ...]
             color: 颜色名称 'red' / 'yellow' / 'green'
+            max_markers: 最大 marker 数量（防无限增长）
         """
-        if not clusters:
-            self.clear()
-            return
-        
         markers = MarkerArray()
-        valid_count = 0
+        stamp = self.node.get_clock().now().to_msg()
         
+        valid_count = 0
         for i, cluster in enumerate(clusters):
-            if not cluster:
+            if not cluster or i >= max_markers:
                 continue
-            
             try:
-                # 计算聚类中心
                 cx = sum(p[0] for p in cluster) / len(cluster)
                 cy = sum(p[1] for p in cluster) / len(cluster)
-                
                 markers.markers.append(
-                    self._make_cylinder(valid_count, cx, cy, color)
+                    self._make_cylinder(i, cx, cy, color)
                 )
                 valid_count += 1
             except (IndexError, ZeroDivisionError, TypeError) as e:
-                self._logger.warn(f'Skipping invalid cluster: {e}')
+                self._logger.warn(f'Skipping cluster {i}: {e}')
                 continue
         
+        # 清理比当前多的旧 marker（当聚类数减少时）
+        prev_count = self._last_marker_count
+        if valid_count < prev_count:
+            for i in range(valid_count, prev_count):
+                m = Marker()
+                m.header.frame_id = self.frame_id
+                m.header.stamp = stamp
+                m.ns = 'obstacles'
+                m.id = i
+                m.action = Marker.DELETE
+                markers.markers.append(m)
+        
+        self.marker_pub.publish(markers)
+        self._is_cleared = False
+        self._last_marker_count = valid_count
         if valid_count > 0:
-            self.marker_pub.publish(markers)
-            self._is_cleared = False
-            self._last_marker_count = valid_count
-            self._logger.info(f'Published {valid_count} obstacle markers from clusters')
-        else:
-            self.clear()
+            self._logger.debug(f'Published {valid_count} obstacle markers from clusters')
     
     def publish_from_points(self, points: list, color='red'):
         """从点列表发布 Markers（Stage2 用）
@@ -173,19 +181,19 @@ class ObstacleMarkerPublisher:
         m.type = Marker.CYLINDER
         m.action = Marker.ADD
         
-        # 位置：圆柱体中心在 (x, y, height/2)
+        # 位置：扁平圆盘，贴地显示
         m.pose.position.x = x
         m.pose.position.y = y
-        m.pose.position.z = 0.25  # 高度的一半
+        m.pose.position.z = 0.01  # 紧贴地面
         m.pose.orientation.x = 0.0
         m.pose.orientation.y = 0.0
         m.pose.orientation.z = 0.0
         m.pose.orientation.w = 1.0
         
-        # 尺寸：直径 = 2 * radius，高度 = 0.5m
+        # 尺寸：扁平圆盘
         m.scale.x = self.diameter
         m.scale.y = self.diameter
-        m.scale.z = 0.50
+        m.scale.z = 0.02  # 扁平
         
         # 颜色
         if color == 'red':
@@ -199,7 +207,7 @@ class ObstacleMarkerPublisher:
         else:  # 默认白色
             m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 1.0, 1.0, 0.5
         
-        # 生命周期：2.0秒（足够长，每帧刷新会重置计时）
-        m.lifetime = Duration(sec=2, nanosec=0)  # 2.0s
+        # 生命周期：0 = 不超时，由 clear() 手动删除
+        m.lifetime = Duration(sec=5, nanosec=0)  # 5s 长寿命，抗闪烁
         
         return m

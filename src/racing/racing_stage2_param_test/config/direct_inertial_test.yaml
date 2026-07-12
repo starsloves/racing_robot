@@ -17,9 +17,12 @@ stage2_inertial_navigator:
     session_log_filename: latest.log
     session_telemetry_interval_sec: 0.25
 
-    # 转弯控制：head_tol 1.5° 强迫转到位；turn_min 0.18 让接近目标时不再过度补偿
-    # 修复 2026-06-06 实跑：每 90° 转弯少转 3-5°，4 个弯累积 16° 导致 2.80m 顶边偏 0.77m 出界
-    heading_tolerance_deg: 1.5        # 原 4.0；缩到 1.5° 强制转到位（轮速 yaw 分度 < 1°）
-    turn_angular_speed: 0.80          # 原 0.75；提到 0.80 让 90° 用 1.96s 完成
-    turn_min_angular_speed: 0.30      # 原 0.45；小角度时不再 0.45 过度补偿/摆动
-    turn_kp: 2.0                      # 原 1.8；提高响应
+    # 转弯控制：容差 0.8° + 减小减速区间 + 末端角速度 50%
+    # 问题：corner_2 多转 2.7°、corner_3 多转 1.6°（0.5° 容差过紧导致过冲）
+    # 调整：容差 0.5° → 0.8°，末端角速度 60% → 50%（减少过冲）
+    heading_tolerance_deg: 0.8        # 0.5° → 0.8°，稍微放宽防止过冲
+    turn_angular_speed: 0.80          # 保持 0.80 rad/s
+    turn_min_angular_speed: 0.30      # 保持 0.30 rad/s（最小角速度下限）
+    turn_kp: 2.0                      # 保持 2.0
+    turn_slowdown_threshold_deg: 10.0 # 保持 10°，更晚减速
+    turn_min_speed_ratio: 0.5         # 0.6 → 0.5，末端保持 50% 角速度（减少过冲）

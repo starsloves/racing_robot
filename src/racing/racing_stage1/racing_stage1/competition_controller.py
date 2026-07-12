@@ -2,11 +2,15 @@ import math
 
 import rclpy
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Int32, String
+
+from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
+from racing_common.racing_logger import RacingLogger
 
 
 class CompetitionController(Node):
@@ -17,6 +21,7 @@ class CompetitionController(Node):
         self.declare_parameter('stage2_cmd_topic', '/stage2_cmd_vel')
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('imu_topic', '/imu/data')
+        self.declare_parameter('odom_topic', '/odom')
         self.declare_parameter('qr_result_topic', 'qr_scan_result')
         self.declare_parameter('phase_topic', 'competition_phase')
         self.declare_parameter('task_topic', 'competition_qr_task')
@@ -66,11 +71,22 @@ class CompetitionController(Node):
         self.declare_parameter('phase2_emergency_stop_distance', 0.22)
         self.declare_parameter('phase3_external_control', True)
         self.declare_parameter('phase3_emergency_stop_distance', 0.22)
+        self.declare_parameter('enable_backing', True)
+        self.declare_parameter('back_target_x', 2.0)
+        self.declare_parameter('back_linear_speed', -0.15)
+        self.declare_parameter('back_angular_kp', 1.8)
+        self.declare_parameter('back_position_tolerance', 0.15)
+        self.declare_parameter('back_path_sample_distance', 0.20)
+        self.declare_parameter('back_timeout_sec', 10.0)
+        self.declare_parameter('back_align_yaw_deg', 90.0)
+        self.declare_parameter('back_align_tolerance_deg', 5.0)
+        self.declare_parameter('back_align_timeout_sec', 5.0)
 
         self.output_cmd_topic = self.get_parameter('output_cmd_topic').value
         self.stage2_cmd_topic = self.get_parameter('stage2_cmd_topic').value
         self.scan_topic = self.get_parameter('scan_topic').value
         self.imu_topic = self.get_parameter('imu_topic').value
+        self.odom_topic = self.get_parameter('odom_topic').value
         self.qr_result_topic = self.get_parameter('qr_result_topic').value
         self.phase_topic = self.get_parameter('phase_topic').value
         self.task_topic = self.get_parameter('task_topic').value
@@ -124,6 +140,16 @@ class CompetitionController(Node):
         self.phase2_emergency_stop_distance = float(self.get_parameter('phase2_emergency_stop_distance').value)
         self.phase3_external_control = bool(self.get_parameter('phase3_external_control').value)
         self.phase3_emergency_stop_distance = float(self.get_parameter('phase3_emergency_stop_distance').value)
+        self.enable_backing = bool(self.get_parameter('enable_backing').value)
+        self.back_target_x = float(self.get_parameter('back_target_x').value)
+        self.back_linear_speed = float(self.get_parameter('back_linear_speed').value)
+        self.back_angular_kp = float(self.get_parameter('back_angular_kp').value)
+        self.back_position_tolerance = float(self.get_parameter('back_position_tolerance').value)
+        self.back_path_sample_distance = float(self.get_parameter('back_path_sample_distance').value)
+        self.back_timeout_sec = float(self.get_parameter('back_timeout_sec').value)
+        self.back_align_yaw_rad = math.radians(float(self.get_parameter('back_align_yaw_deg').value))
+        self.back_align_tolerance_rad = math.radians(float(self.get_parameter('back_align_tolerance_deg').value))
+        self.back_align_timeout_sec = float(self.get_parameter('back_align_timeout_sec').value)
 
         latched_qos = QoSProfile(
             depth=1,
@@ -137,6 +163,7 @@ class CompetitionController(Node):
 
         self.create_subscription(LaserScan, self.scan_topic, self.lidar_callback, 10)
         self.create_subscription(Imu, self.imu_topic, self.imu_callback, 10)
+        self.create_subscription(Odometry, self.odom_topic, self.odom_callback, 10)
         self.create_subscription(String, self.qr_result_topic, self.qr_callback, 10)
         self.create_subscription(Twist, self.stage2_cmd_topic, self.stage2_cmd_callback, 10)
         self.create_subscription(String, self.stage2_state_topic, self.stage2_state_callback, 10)
@@ -166,12 +193,30 @@ class CompetitionController(Node):
         self.stage2_state = 'idle'
         self.stage3_state = 'idle'
 
+        # 路径记录与后退状态
+        self.current_odom = None
+        self.path_record = []  # [(x, y, yaw), ...]
+        self.last_recorded_position = None
+        self.backing_started_time = None
+        self.backing_path_index = -1
+        self.aligning_started_time = None
+
+        # RacingLogger：日志文件 ~/dev_ws/log/competition_stage1/latest.log
+        self.log = RacingLogger(
+            self, log_subdir='competition_stage1',
+            log_filename='latest.log', session_title='Stage1 competition',
+        )
+
+        # 障碍物可视化（rviz2 调试用）
+        self.obstacle_markers = ObstacleMarkerPublisher(
+            self, topic='/stage1_obstacle_markers', frame_id='base_link', radius=0.13
+        )
+        self._phase1_last_clusters = []  # 缓存上一帧的聚类结果
+
         self.publish_phase()
         self.create_timer(1.0 / max(control_rate_hz, 1.0), self.control_loop)
 
-        self.get_logger().info(
-            'competition controller ready: phase1 blind drive, phase2 corridor, phase3 return-to-p'
-        )
+        self.log.startup('competition controller ready: phase1 blind drive, phase2 corridor, phase3 return-to-p')
 
     def quaternion_to_yaw(self, orientation):
         siny_cosp = 2.0 * (orientation.w * orientation.z + orientation.x * orientation.y)
@@ -206,7 +251,7 @@ class CompetitionController(Node):
             self.transition_end_time = self.get_clock().now() + Duration(seconds=self.transition_stop_duration)
         else:
             self.transition_end_time = None
-        self.get_logger().warn(reason)
+        self.log.mission(f'phase {target_phase}: {reason}')
 
     def clamp(self, value, limit):
         return max(-limit, min(limit, value))
@@ -218,9 +263,30 @@ class CompetitionController(Node):
         self.current_yaw = self.quaternion_to_yaw(msg.orientation)
         if self.phase == 1 and self.desired_heading is None:
             self.desired_heading = self.current_yaw
-            self.get_logger().info(
-                f'phase1 heading locked at {math.degrees(self.desired_heading):.1f} deg'
-            )
+            self.log.config(f'phase1 heading locked at {math.degrees(self.desired_heading):.1f} deg')
+
+    def odom_callback(self, msg):
+        """订阅 /odom 用于路径记录"""
+        self.current_odom = msg
+        
+        # Phase 1 前进时记录路径（只在 forward/avoiding/countersteering/recovering 时记录）
+        if self.phase == 1 and self.enable_backing and self.phase1_motion_state in ('forward', 'avoiding', 'countersteering', 'recovering'):
+            x = msg.pose.pose.position.x
+            y = msg.pose.pose.position.y
+            yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
+            
+            # 采样：距离上次记录点 >= sample_distance 才记录
+            if self.last_recorded_position is None:
+                self.path_record.append((x, y, yaw))
+                self.last_recorded_position = (x, y)
+            else:
+                dist = math.hypot(x - self.last_recorded_position[0], y - self.last_recorded_position[1])
+                if dist >= self.back_path_sample_distance:
+                    self.path_record.append((x, y, yaw))
+                    self.last_recorded_position = (x, y)
+                    # 限制最大路径点数防止内存占用
+                    if len(self.path_record) > 1000:
+                        self.path_record.pop(0)
 
     def begin_avoidance(self, danger_angle):
         self.phase1_motion_state = 'avoiding'
@@ -234,6 +300,11 @@ class CompetitionController(Node):
 
         if self.desired_heading is None and self.current_yaw is not None:
             self.desired_heading = self.current_yaw
+
+        self.log.feedback(
+            f'avoid start dir={self.avoid_turn_direction:.0f} '
+            f'danger_angle={danger_angle:.0f}°'
+        )
 
     def begin_counter_steer(self):
         if self.phase1_motion_state != 'avoiding':
@@ -257,6 +328,8 @@ class CompetitionController(Node):
         self.recovery_deadline = None
         self.recovery_uses_heading = False
 
+        self.log.feedback(f'countersteer duration={counter_duration:.2f}s')
+
     def begin_recovery(self):
         if self.phase1_motion_state not in ('avoiding', 'countersteering'):
             return
@@ -277,14 +350,19 @@ class CompetitionController(Node):
                 heading_error / max(self.recovery_max_angular_speed, 0.1) * 1.6,
             )
             self.recovery_deadline = now + Duration(seconds=min(self.recovery_timeout, estimated_duration))
-            return
+        else:
+            recovery_duration = max(0.15, avoid_duration * self.recovery_duration_scale)
+            recovery_duration = min(recovery_duration, self.recovery_timeout)
+            self.recovery_deadline = now + Duration(seconds=recovery_duration)
+            if not self.warned_missing_heading:
+                self.warned_missing_heading = True
+                self.log.warn('HEADING', 'imu heading unavailable, recovery falls back to timed reverse steering')
 
-        recovery_duration = max(0.15, avoid_duration * self.recovery_duration_scale)
-        recovery_duration = min(recovery_duration, self.recovery_timeout)
-        self.recovery_deadline = now + Duration(seconds=recovery_duration)
-        if not self.warned_missing_heading:
-            self.warned_missing_heading = True
-            self.get_logger().warn('imu heading unavailable, recovery falls back to timed reverse steering')
+        deadline_sec = (self.recovery_deadline - now).nanoseconds / 1e9
+        self.log.feedback(
+            f'recovery start, uses_heading={self.recovery_uses_heading}, '
+            f'deadline={deadline_sec:.2f}s'
+        )
 
     def recovery_complete(self):
         now = self.get_clock().now()
@@ -306,6 +384,8 @@ class CompetitionController(Node):
         self.counter_steer_deadline = None
         self.recovery_deadline = None
         self.recovery_uses_heading = False
+
+        self.log.feedback('recovery complete, return to forward')
 
     def avoid_turn_reached(self):
         if self.current_yaw is None or self.avoid_entry_yaw is None:
@@ -372,6 +452,14 @@ class CompetitionController(Node):
             self.phase1_window_half_width,
         )
 
+        # 发布所有聚类的可视化（rviz2 调试用）
+        if clusters:
+            self.obstacle_markers.publish_from_clusters(clusters, color='red')
+            self._phase1_last_clusters = clusters
+        else:
+            self.obstacle_markers.clear()
+            self._phase1_last_clusters = []
+
         nearest_obstacle = None
         for cluster in clusters:
             if len(cluster) < self.phase1_min_cluster_points:
@@ -435,6 +523,10 @@ class CompetitionController(Node):
 
         self.obstacle_found = False
         self.closest_obstacle_distance = float('inf')
+        
+        # 注：无障碍时清空 markers 已在 find_phase1_forward_obstacle() 中处理（line 388）
+        # 这里不需要额外清空逻辑
+        
         if self.phase1_motion_state == 'avoiding':
             now = self.get_clock().now()
             if self.avoid_clear_since is None:
@@ -530,18 +622,35 @@ class CompetitionController(Node):
         if self.phase != 1:
             return
 
+        if self.phase1_motion_state in ('backing', 'aligning'):
+            return
+
         task = msg.data.strip()
         if not task:
             return
 
         self.qr_task = task
         self.task_pub.publish(String(data=task))
-        self.phase1_motion_state = 'forward'
-        self.begin_phase_transition(2, f'qr detected: {task}, switched to phase2')
+        
+        # 如果启用后退功能，先进入 backing 状态；否则直接切换 phase2
+        if self.enable_backing and len(self.path_record) > 0:
+            self.phase1_motion_state = 'backing'
+            self.backing_started_time = self.get_clock().now()
+            self.backing_path_index = len(self.path_record) - 1
+            self.log.mission(
+                f'qr detected: {task}, backing mode, '
+                f'{len(self.path_record)} waypoints recorded'
+            )
+        else:
+            self.phase1_motion_state = 'forward'
+            self.log.mission(f'qr detected: {task}, switched to phase2 (no backing)')
+            self.begin_phase_transition(2, f'qr detected: {task}')
+
 
     def stage2_state_callback(self, msg):
         self.stage2_state = msg.data.strip()
         if self.phase == 2 and self.stage2_state == 'complete':
+            self.log.mission('stage2 complete, entering phase3')
             self.begin_phase_transition(3, 'stage2 complete, switched to phase3 return-to-p')
 
     def stage3_state_callback(self, msg):
@@ -550,7 +659,7 @@ class CompetitionController(Node):
             self.mission_finished = True
             self.transition_end_time = None
             self.stop_robot()
-            self.get_logger().warn('stage3 complete, mission finished at p point')
+            self.log.mission('stage3 complete, mission finished at p point')
 
     def stage2_cmd_callback(self, msg):
         self.latest_stage2_cmd = msg
@@ -569,6 +678,16 @@ class CompetitionController(Node):
             return
 
         if self.phase == 1:
+            # backing 状态优先处理
+            if self.phase1_motion_state == 'backing':
+                self.handle_backing()
+                return
+            
+            # aligning 状态：后退完成后对齐航向
+            if self.phase1_motion_state == 'aligning':
+                self.handle_backing_align()
+                return
+            
             if self.phase1_motion_state == 'avoiding':
                 self.cmd_pub.publish(self.avoid_cmd)
                 return
@@ -647,6 +766,115 @@ class CompetitionController(Node):
             return
 
         self.stop_robot()
+
+
+    def handle_backing(self):
+        """处理后退逻辑：沿记录路径反向跟踪"""
+        if self.current_odom is None or self.current_yaw is None:
+            self.stop_robot()
+            return
+        
+        # 超时检查
+        if self.backing_started_time is not None:
+            elapsed = (self.get_clock().now() - self.backing_started_time).nanoseconds / 1e9
+            if elapsed > self.back_timeout_sec:
+                self.log.warn('BACKING', f'timeout after {elapsed:.1f}s, switching to aligning')
+                self.phase1_motion_state = 'aligning'
+                self.aligning_started_time = self.get_clock().now()
+                return
+        
+        current_x = self.current_odom.pose.pose.position.x
+        current_y = self.current_odom.pose.pose.position.y
+        
+        # 检查是否到达目标 x 位置
+        if current_x <= self.back_target_x:
+            self.log.segment(f'backing done at x={current_x:.2f}m, entering aligning')
+            self.phase1_motion_state = 'aligning'
+            self.aligning_started_time = self.get_clock().now()
+            self.stop_robot()
+            return
+        
+        # 检查路径是否倒序遍历完毕
+        if self.backing_path_index < 0 or self.backing_path_index >= len(self.path_record):
+            self.log.warn('BACKING', 'path exhausted, entering aligning')
+            self.phase1_motion_state = 'aligning'
+            self.aligning_started_time = self.get_clock().now()
+            return
+        
+        # 获取当前目标路点
+        target_x, target_y, _ = self.path_record[self.backing_path_index]
+        
+        # 检查是否接近当前路点，若是则移动到上一个路点（倒序）
+        dist_to_target = math.hypot(current_x - target_x, current_y - target_y)
+        if dist_to_target < self.back_position_tolerance:
+            self.backing_path_index -= 1
+            self.log.progress(
+                f'backing wp_index={self.backing_path_index}, '
+                f'pos=({current_x:.2f}, {current_y:.2f})'
+            )
+            if self.backing_path_index < 0:
+                self.log.progress('backing reached start, entering aligning')
+                self.phase1_motion_state = 'aligning'
+                return
+            target_x, target_y, _ = self.path_record[self.backing_path_index]
+        
+        # 后退控制：航向校正（来自 IMU）+ 固定后退速度
+        dx = target_x - current_x
+        dy = target_y - current_y
+        target_heading = math.atan2(dy, dx)
+        heading_error = self.angle_error(target_heading, self.current_yaw)
+        
+        angular_z = self.back_angular_kp * heading_error
+        angular_z = self.clamp(angular_z, 1.0)
+        
+        self.cmd_pub.publish(self.create_twist(self.back_linear_speed, angular_z))
+    
+    def handle_backing_align(self):
+        """后退完成后对齐航向到指定角度，带超时"""
+        if self.current_yaw is None:
+            self.stop_robot()
+            return
+
+        # 超时检查
+        if self.aligning_started_time is not None:
+            elapsed = (self.get_clock().now() - self.aligning_started_time).nanoseconds / 1e9
+            if elapsed > self.back_align_timeout_sec:
+                self.log.warn('ALIGN', f'timeout after {elapsed:.1f}s, forcing phase2')
+                self.phase1_motion_state = 'forward'
+                self.begin_phase_transition(2, f'align timeout, forcing phase2')
+                return
+
+        heading_error = self.angle_error(self.back_align_yaw_rad, self.current_yaw)
+
+        # 检查是否对齐完成
+        if abs(heading_error) <= self.back_align_tolerance_rad:
+            self.log.mission(
+                f'backing align done at yaw={math.degrees(self.current_yaw):.1f}°, '
+                f'switching to phase2'
+            )
+            self.phase1_motion_state = 'forward'
+            self.begin_phase_transition(2, f'qr task={self.qr_task}, backing+align complete')
+            return
+
+        # 用微速前进配合转向（同 recovery 风格），方便 IMU 更新 yaw
+        angular_z = self.clamp(self.recovery_heading_kp * heading_error, self.recovery_max_angular_speed)
+        if abs(angular_z) < self.recovery_min_angular_speed:
+            angular_z = math.copysign(self.recovery_min_angular_speed, heading_error)
+
+        linear_x = self.recovery_turn_linear_speed
+        if abs(heading_error) <= self.recovery_in_place_angle_rad:
+            linear_x = self.recovery_linear_speed
+
+        self.log.feedback(
+            f'aligning yaw={math.degrees(self.current_yaw):.1f}° '
+            f'target=90° err={math.degrees(heading_error):.1f}°'
+        )
+        self.cmd_pub.publish(self.create_twist(linear_x, angular_z))
+
+
+    def destroy_node(self):
+        self.log.close()
+        super().destroy_node()
 
 
 def main(args=None):

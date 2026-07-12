@@ -66,7 +66,7 @@ class EnhancedReturnNavigator(Node):
         self.state_pub = self.create_publisher(String, self.state_topic, qos_latched)
         self.feedback_pub = self.create_publisher(String, self.feedback_topic, 10)
 
-        self.create_subscription(Int32, self.phase_topic, self._phase_cb, 10)
+        self.create_subscription(Int32, self.phase_topic, self._phase_cb, qos_latched)
         self.create_subscription(Odometry, self.odom_topic, self._odom_cb, 10)
         self.create_subscription(LaserScan, self.scan_topic, self._scan_cb, 10)
 
@@ -141,6 +141,12 @@ class EnhancedReturnNavigator(Node):
         self.declare_parameter('max_cluster_width', 0.40)
         self.declare_parameter('min_valid_range', 0.15)
 
+        # ── map→odom 偏移参数（同 Stage2 map_overlay，直接传参避免 TF 依赖）──
+        self.declare_parameter('test_direction', 'clockwise')
+        self.declare_parameter('map_to_odom_x', 0.0)
+        self.declare_parameter('map_to_odom_y', 0.0)
+        self.declare_parameter('map_to_odom_yaw', 0.0)
+
     def _read_params(self):
         self.phase_topic = str(self.get_parameter('phase_topic').value)
         self.odom_topic = str(self.get_parameter('odom_topic').value)
@@ -198,6 +204,10 @@ class EnhancedReturnNavigator(Node):
         self.min_cluster_w = float(self.get_parameter('min_cluster_width').value)
         self.max_cluster_w = float(self.get_parameter('max_cluster_width').value)
         self.min_range = float(self.get_parameter('min_valid_range').value)
+        self.test_direction = str(self.get_parameter('test_direction').value)
+        self.map_odom_x = float(self.get_parameter('map_to_odom_x').value)
+        self.map_odom_y = float(self.get_parameter('map_to_odom_y').value)
+        self.map_odom_yaw = float(self.get_parameter('map_to_odom_yaw').value)
 
     # ══════════════ 工具 ══════════════
 
@@ -268,10 +278,18 @@ class EnhancedReturnNavigator(Node):
             self._arm_mission()
 
     def _odom_cb(self, msg):
-        self.current_position = (float(msg.pose.pose.position.x),
-                                 float(msg.pose.pose.position.y))
-        self.current_yaw = self._quat_to_yaw(msg.pose.pose.orientation)
+        raw_x = float(msg.pose.pose.position.x)
+        raw_y = float(msg.pose.pose.position.y)
+        raw_yaw = self._quat_to_yaw(msg.pose.pose.orientation)
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
+        # 同 map_overlay 静态 TF：map_pos = R(odom_pos) + translation
+        cos_y = math.cos(self.map_odom_yaw)
+        sin_y = math.sin(self.map_odom_yaw)
+        self.current_position = (
+            cos_y * raw_x - sin_y * raw_y + self.map_odom_x,
+            sin_y * raw_x + cos_y * raw_y + self.map_odom_y,
+        )
+        self.current_yaw = self._normalize_angle(raw_yaw + self.map_odom_yaw)
 
     def _scan_cb(self, msg):
         self.latest_scan = msg
@@ -285,8 +303,13 @@ class EnhancedReturnNavigator(Node):
         self.path_index = 0
         self.avoid_state = 'forward'
         self.start_after_time = self._now_sec() + self.start_delay_sec
+        init_yaw_deg = 180.0 if self.test_direction == 'clockwise' else 0.0
+        self.current_yaw = math.radians(init_yaw_deg)
         self._publish_state('armed')
-        self._publish_feedback('phase=3 detected, enhanced return navigator armed')
+        self._publish_feedback(
+            f'phase=3 detected, direction={self.test_direction}, '
+            f'initial_yaw={init_yaw_deg:.0f}°'
+        )
 
     def _reset_mission(self):
         self.cmd_pub.publish(Twist())
@@ -450,6 +473,8 @@ class EnhancedReturnNavigator(Node):
         if target_dist < self.pursuit_lookahead:
             speed *= max(0.4, target_dist / max(self.pursuit_lookahead, 1e-6))
         angular = self._clamp(speed * curvature, self.max_angular)
+        if abs(angular) < self.min_angular:
+            angular = math.copysign(self.min_angular, heading_err)
         self.cmd_pub.publish(self._twist(speed, angular))
 
     # ══════════════ 避障（4态，同 Stage1）══════════════
@@ -620,6 +645,7 @@ class EnhancedReturnNavigator(Node):
 
     def destroy_node(self):
         try:
+            self.log.close()
             if rclpy.ok():
                 self.cmd_pub.publish(Twist())
         except Exception:

@@ -118,12 +118,12 @@ def generate_launch_description():
     )
 
     # map_overlay：提供 /map topic 和 map → odom_combined TF
-    # Stage2 起点 = Stage1 终点 corridor_goal: map (2.50, 2.60) yaw=90°
+    # Stage2 起点 = Stage1 终点 corridor_goal: map (2.50, 2.80) yaw=90°
     map_overlay_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(map_overlay_launch_path),
         launch_arguments={
             'map_to_odom_x': '2.50',
-            'map_to_odom_y': '2.60',
+            'map_to_odom_y': '2.80',
             'map_to_odom_yaw': '1.5708',  # 90° = π/2 rad
             'odom_frame': 'odom_combined',
         }.items(),

@@ -9,7 +9,9 @@
 """
 
 import rclpy
+from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Int32, String
 
 
@@ -37,9 +39,11 @@ class Stage3TestSimulator(Node):
         sim_qr = bool(self.get_parameter('simulate_qr_task').value)
         qr_val = str(self.get_parameter('qr_task_value').value)
 
-        self._phase_pub = self.create_publisher(Int32, phase_topic, 10)
+        qos_latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                                 reliability=ReliabilityPolicy.RELIABLE)
+        self._phase_pub = self.create_publisher(Int32, phase_topic, qos_latched)
         if sim_qr:
-            self._task_pub = self.create_publisher(String, task_topic, 10)
+            self._task_pub = self.create_publisher(String, task_topic, qos_latched)
 
         self._phase_value = phase_value
         self._qr_val = qr_val

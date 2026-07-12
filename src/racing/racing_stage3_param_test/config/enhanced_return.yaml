@@ -13,19 +13,11 @@ enhanced_return_navigator:
     start_delay_sec: 0.5
 
     # ===== 路点（map 全局坐标系）====
-    # Stage2 结束位置: corridor_goal (map 2.50, 3.20) ψ=90°
-    # P 点目标坐标: (2.50, 3.20) yaw=90° (北向/+Y)
+    # Stage2 结束位置: (2.50, 2.95) map 坐标
+    # P 点目标坐标: (0.20, 0.20) map 坐标
     #
-    # ⚠️ 路点现在使用 map 绝对坐标（x, y）
-    # ⚠️ yaw_deg 为目标航向（map 坐标系下的绝对角度）
-    #
-    # 示例：从 corridor_goal 直接向北走 2 米到达 P 点附近
-    return_waypoints_json: >
-      [
-        {"x":2.50,"y":4.20,"speed":0.15,"description":"forward_1m"},
-        {"x":2.50,"y":5.20,"speed":0.15,"description":"approach_P"},
-        {"x":2.50,"y":3.20,"yaw_deg":90.0,"description":"P_point_final"}
-      ]
+    # 路径：起点 → P点 直线，避障保持
+    return_waypoints_json: '[{"x":0.20,"y":0.20,"speed":0.15,"yaw_deg":100.0,"description":"P_point"}]'
     waypoint_tolerance: 0.18
     goal_tolerance: 0.10
     goal_yaw_tolerance_deg: 6.0
@@ -48,7 +40,7 @@ enhanced_return_navigator:
     avoid_min_turn_angle_deg: 18.0
     avoid_safe_distance: 0.50
     avoid_clear_distance: 0.65
-    emergency_stop_distance: 0.22
+    emergency_stop_distance: 0.08
 
     recovery_linear_speed: 0.12
     recovery_turn_linear_speed: 0.08

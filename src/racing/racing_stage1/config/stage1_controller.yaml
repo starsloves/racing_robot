@@ -4,6 +4,7 @@ competition_controller:
     stage2_cmd_topic: /stage2_cmd_vel
     scan_topic: /scan
     imu_topic: /imu/data
+    odom_topic: /odom
     qr_result_topic: qr_scan_result
     phase_topic: competition_phase
     task_topic: competition_qr_task
@@ -53,3 +54,14 @@ competition_controller:
     phase2_emergency_stop_distance: 0.22
     phase3_external_control: true
     phase3_emergency_stop_distance: 0.22
+    # 后退功能配置
+    enable_backing: true
+    back_target_x: 2.0
+    back_linear_speed: -0.15
+    back_angular_kp: 1.8
+    back_position_tolerance: 0.15
+    back_path_sample_distance: 0.20
+    back_timeout_sec: 10.0
+    back_align_yaw_deg: 90.0
+    back_align_tolerance_deg: 5.0
+    back_align_timeout_sec: 5.0

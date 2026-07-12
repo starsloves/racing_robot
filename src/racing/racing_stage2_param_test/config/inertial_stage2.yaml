@@ -39,7 +39,7 @@ stage2_inertial_navigator:
     turn_angular_speed: 0.65                 # 被 direct_inertial_test.yaml 覆盖为 0.80
     turn_min_angular_speed: 0.45             # 被 direct_inertial_test.yaml 覆盖为 0.18
     turn_kp: 1.8                             # 被 direct_inertial_test.yaml 覆盖为 2.0
-    heading_kp: 1.6                          # 直行航向保持比例增益
+    heading_kp: 2.0                          # 直行航向保持比例增益（从 0.5 改为 2.0，增强修正）
     max_angular_speed: 0.8                   # 角速度上限（rad/s）
 
     # ── 到位精度 ──────────────────────────────────────
@@ -56,7 +56,7 @@ stage2_inertial_navigator:
     use_corridor_path: true                  # 是否使用通道路径规划
     corridor_waypoints_are_global: true      # 路点在 map 坐标系下
     global_frame_id: map                     # 全局坐标系
-    corridor_waypoints_json: '[{"x":2.50,"y":2.60,"speed":0.12,"yaw_deg":90.0,"description":"corridor_goal"}]'  # 通道终点（入口坐标）
+    corridor_waypoints_json: '[{"x":2.50,"y":3.20,"speed":0.12,"yaw_deg":90.0,"description":"corridor_goal"}]'  # 通道终点（入口坐标）
     corridor_waypoint_tolerance: 0.18        # 路过点容差（m）
     corridor_goal_tolerance: 0.10            # 终点容差（m）
     corridor_goal_standoff_m: 0.18           # 终点前停车距离（m）
@@ -96,5 +96,5 @@ stage2_inertial_navigator:
     detour_min_side_clearance: 0.55          # 侧边最小余量（m）
     detour_lateral_distance_m: 0.32          # 侧移距离（m）
     detour_forward_distance_m: 0.75          # 绕行前向距离（m）
-    detour_cooldown_sec: 2.0                 # 避障冷却时间（s）
+    detour_cooldown_sec: 0.0                 # 避障冷却时间（s）
     obstacle_circle_min_radius_m: 0.10       # 障碍物最小圆半径（m）
