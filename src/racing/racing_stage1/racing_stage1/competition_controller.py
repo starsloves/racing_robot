@@ -21,7 +21,7 @@ class CompetitionController(Node):
         self.declare_parameter('stage2_cmd_topic', '/stage2_cmd_vel')
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('imu_topic', '/imu/data')
-        self.declare_parameter('odom_topic', '/odom')
+        self.declare_parameter('odom_topic', '/odom_combined')  # map 坐标系
         self.declare_parameter('qr_result_topic', 'qr_scan_result')
         self.declare_parameter('phase_topic', 'competition_phase')
         self.declare_parameter('task_topic', 'competition_qr_task')
@@ -266,14 +266,16 @@ class CompetitionController(Node):
             self.log.config(f'phase1 heading locked at {math.degrees(self.desired_heading):.1f} deg')
 
     def odom_callback(self, msg):
-        """订阅 /odom 用于路径记录"""
+        """订阅 /odom_combined 用于路径记录（位置）"""
         self.current_odom = msg
         
         # Phase 1 前进时记录路径（只在 forward/avoiding/countersteering/recovering 时记录）
+        # 位置用 odom (x, y)，角度用 IMU (self.current_yaw)
         if self.phase == 1 and self.enable_backing and self.phase1_motion_state in ('forward', 'avoiding', 'countersteering', 'recovering'):
             x = msg.pose.pose.position.x
             y = msg.pose.pose.position.y
-            yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
+            # 使用纯 IMU 角度，而不是 odom 的 orientation（避免融合后角度不一致）
+            yaw = self.current_yaw if self.current_yaw is not None else 0.0
             
             # 采样：距离上次记录点 >= sample_distance 才记录
             if self.last_recorded_position is None:
@@ -683,10 +685,10 @@ class CompetitionController(Node):
                 self.handle_backing()
                 return
             
-            # aligning 状态：后退完成后对齐航向
-            if self.phase1_motion_state == 'aligning':
-                self.handle_backing_align()
-                return
+            # 注释掉对齐转向状态处理，直接跳过
+            # if self.phase1_motion_state == 'aligning':
+            #     self.handle_backing_align()
+            #     return
             
             if self.phase1_motion_state == 'avoiding':
                 self.cmd_pub.publish(self.avoid_cmd)
@@ -778,31 +780,40 @@ class CompetitionController(Node):
         if self.backing_started_time is not None:
             elapsed = (self.get_clock().now() - self.backing_started_time).nanoseconds / 1e9
             if elapsed > self.back_timeout_sec:
-                self.log.warn('BACKING', f'timeout after {elapsed:.1f}s, switching to aligning')
-                self.phase1_motion_state = 'aligning'
-                self.aligning_started_time = self.get_clock().now()
+                self.log.warn('BACKING', f'timeout after {elapsed:.1f}s, entering phase2 directly')
+                self.phase1_motion_state = 'forward'
+                # 注释掉对齐转向，直接进 Stage2
+                # self.phase1_motion_state = 'aligning'
+                # self.aligning_started_time = self.get_clock().now()
+                self.begin_phase_transition(2, f'qr task={self.qr_task}, backing timeout, skip align')
                 return
         
         current_x = self.current_odom.pose.pose.position.x
         current_y = self.current_odom.pose.pose.position.y
         
-        # 检查是否到达目标 x 位置
+        # 检查是否到达目标 x 位置（map 坐标系）
         if current_x <= self.back_target_x:
-            self.log.segment(f'backing done at x={current_x:.2f}m, entering aligning')
-            self.phase1_motion_state = 'aligning'
-            self.aligning_started_time = self.get_clock().now()
+            self.log.segment(f'backing done at map_x={current_x:.2f}m, entering phase2 directly')
+            self.phase1_motion_state = 'forward'
+            # 注释掉对齐转向，直接进 Stage2
+            # self.phase1_motion_state = 'aligning'
+            # self.aligning_started_time = self.get_clock().now()
+            self.begin_phase_transition(2, f'qr task={self.qr_task}, backing complete, skip align')
             self.stop_robot()
             return
         
         # 检查路径是否倒序遍历完毕
         if self.backing_path_index < 0 or self.backing_path_index >= len(self.path_record):
-            self.log.warn('BACKING', 'path exhausted, entering aligning')
-            self.phase1_motion_state = 'aligning'
-            self.aligning_started_time = self.get_clock().now()
+            self.log.warn('BACKING', 'path exhausted, entering phase2 directly')
+            self.phase1_motion_state = 'forward'
+            # 注释掉对齐转向，直接进 Stage2
+            # self.phase1_motion_state = 'aligning'
+            # self.aligning_started_time = self.get_clock().now()
+            self.begin_phase_transition(2, f'qr task={self.qr_task}, path exhausted, skip align')
             return
         
-        # 获取当前目标路点
-        target_x, target_y, _ = self.path_record[self.backing_path_index]
+        # 获取当前目标路点（包括来时的 yaw）
+        target_x, target_y, target_yaw = self.path_record[self.backing_path_index]
         
         # 检查是否接近当前路点，若是则移动到上一个路点（倒序）
         dist_to_target = math.hypot(current_x - target_x, current_y - target_y)
@@ -810,24 +821,36 @@ class CompetitionController(Node):
             self.backing_path_index -= 1
             self.log.progress(
                 f'backing wp_index={self.backing_path_index}, '
-                f'pos=({current_x:.2f}, {current_y:.2f})'
+                f'pos=({current_x:.2f}, {current_y:.2f}), '
+                f'target_yaw={math.degrees(target_yaw):.1f}°'
             )
             if self.backing_path_index < 0:
-                self.log.progress('backing reached start, entering aligning')
-                self.phase1_motion_state = 'aligning'
+                self.log.progress('backing reached start, entering phase2 directly')
+                self.phase1_motion_state = 'forward'
+                # 注释掉对齐转向，直接进 Stage2
+                # self.phase1_motion_state = 'aligning'
+                # self.aligning_started_time = self.get_clock().now()
+                self.begin_phase_transition(2, f'qr task={self.qr_task}, reached start, skip align')
                 return
-            target_x, target_y, _ = self.path_record[self.backing_path_index]
+            target_x, target_y, target_yaw = self.path_record[self.backing_path_index]
         
-        # 后退控制：航向校正（来自 IMU）+ 固定后退速度
-        dx = target_x - current_x
-        dy = target_y - current_y
-        target_heading = math.atan2(dy, dx)
-        heading_error = self.angle_error(target_heading, self.current_yaw)
+        # 后退控制：车头朝向 = 路点记录的来时方向（精确复现轨迹）
+        # 不使用实时几何方向 atan2(dy, dx)，而是直接用记录的 target_yaw
+        heading_error = self.angle_error(target_yaw, self.current_yaw)
         
         angular_z = self.back_angular_kp * heading_error
         angular_z = self.clamp(angular_z, 1.0)
         
+        # 倒车（负速度），车头保持来时方向
         self.cmd_pub.publish(self.create_twist(self.back_linear_speed, angular_z))
+        
+        self.log.progress(
+            f'backing: wp={self.backing_path_index}, '
+            f'current_x={current_x:.2f}m, '
+            f'dist={dist_to_target:.2f}m, '
+            f'target_yaw={math.degrees(target_yaw):.1f}°, '
+            f'yaw_error={math.degrees(heading_error):.1f}°'
+        )
     
     def handle_backing_align(self):
         """后退完成后对齐航向到指定角度，带超时"""
@@ -856,18 +879,23 @@ class CompetitionController(Node):
             self.begin_phase_transition(2, f'qr task={self.qr_task}, backing+align complete')
             return
 
-        # 用微速前进配合转向（同 recovery 风格），方便 IMU 更新 yaw
+        # 对齐转向：大角度时原地转（linear_x=0），小角度时微速前进配合转向
         angular_z = self.clamp(self.recovery_heading_kp * heading_error, self.recovery_max_angular_speed)
         if abs(angular_z) < self.recovery_min_angular_speed:
             angular_z = math.copysign(self.recovery_min_angular_speed, heading_error)
 
-        linear_x = self.recovery_turn_linear_speed
-        if abs(heading_error) <= self.recovery_in_place_angle_rad:
-            linear_x = self.recovery_linear_speed
+        # 大角度（>30°）原地转，小角度（<8°）微速前进，中间角度慢速前进
+        if abs(heading_error) > math.radians(30.0):
+            linear_x = 0.0  # 原地转
+        elif abs(heading_error) <= self.recovery_in_place_angle_rad:
+            linear_x = self.recovery_linear_speed  # 0.12 m/s
+        else:
+            linear_x = self.recovery_turn_linear_speed  # 0.08 m/s
 
         self.log.feedback(
             f'aligning yaw={math.degrees(self.current_yaw):.1f}° '
-            f'target=90° err={math.degrees(heading_error):.1f}°'
+            f'target=90° err={math.degrees(heading_error):.1f}° '
+            f'cmd: linear={linear_x:.2f} angular={angular_z:.2f}'
         )
         self.cmd_pub.publish(self.create_twist(linear_x, angular_z))
 

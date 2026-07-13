@@ -96,5 +96,16 @@ stage2_inertial_navigator:
     detour_min_side_clearance: 0.55          # 侧边最小余量（m）
     detour_lateral_distance_m: 0.32          # 侧移距离（m）
     detour_forward_distance_m: 0.75          # 绕行前向距离（m）
-    detour_cooldown_sec: 0.0                 # 避障冷却时间（s）
+    detour_cooldown_sec: 2.0                 # 避障冷却时间（s）
     obstacle_circle_min_radius_m: 0.10       # 障碍物最小圆半径（m）
+
+    # ── 视觉车道居中 ──────────────────────────────────
+    vision_enabled: true                     # 是否启用视觉修正（move 段 + leg2 段）
+    vision_model_path: /home/sunrise/dev_ws/src/racing/racing_stage2_param_test/models/bset.bin  # BPU 模型路径
+    vision_conf_thres: 0.25                  # 检测置信度阈值
+    vision_iou_thres: 0.45                   # NMS IOU 阈值
+    vision_crop_ratio: 0.4                   # 图像裁剪比例（保留下方 40%）
+    vision_offset_kp: 0.4                    # offset → angular 增益（大幅降低，防止过冲）
+    vision_max_angular: 0.6                  # 视觉修正最大角速度（降回 0.6，避免过度修正）
+    vision_web_enabled: true                 # 是否启动 Web 服务（实时查看）
+    vision_web_port: 8080                    # Web 服务端口

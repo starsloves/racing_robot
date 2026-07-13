@@ -80,11 +80,12 @@ class AvoidConfig:
 
 
 class AvoidController:
-    def __init__(self, cmd_pub, logger, clock, config=None):
+    def __init__(self, cmd_pub, logger, clock, config=None, vision_callback=None):
         self.cmd_pub = cmd_pub
         self._log = logger
         self._clock = clock
         self.cfg = config or AvoidConfig()
+        self._vision_callback = vision_callback  # 新增：视觉修正回调（用于 leg2）
 
         self._state = 'idle'
         self._plan = None
@@ -405,7 +406,18 @@ class AvoidController:
             return True
 
         if self._state == 'leg2':
-            self.cmd_pub.publish(self._make_twist(self.cfg.avoid_leg_linear_speed, 0.0))
+            # 基础线速度
+            linear = self.cfg.avoid_leg_linear_speed
+            angular = 0.0
+            
+            # 尝试视觉修正（全程启用，只要有检测就修正）
+            if self._vision_callback is not None:
+                vision_angular = self._vision_callback()  # 返回 float 或 None
+                if vision_angular is not None:
+                    angular = vision_angular
+            
+            self.cmd_pub.publish(self._make_twist(linear, angular))
+            
             if self._leg_done(x, y, plan.leg2_distance_m):
                 self._log_detour(
                     f'LEG2 完成 {self._leg_traveled_m(x, y):.2f}m → TURN_RECOVER ψ₃={self._format_yaw_deg(plan.psi3)}°'

@@ -10,7 +10,7 @@ stage2_inertial_navigator:
     #     默认=back_deg 即回到 psi0；调大可补偿打滑
     avoid_turn_away_deg: 30.0
     avoid_turn_back_deg: 40.0
-    avoid_recover_deg: 10.0
+    avoid_recover_deg: 40.0
 
     # ── 直腿距离 ──────────────────────────────────────
     # leg1: turn_away 后的直行长度
@@ -36,3 +36,10 @@ stage2_inertial_navigator:
     corner_turn_back_deg: 30.0          # 从斜边回正的角度（斜边第二拐）
     corner_leg_distance_m: 0.354        # 斜边直行长度 = corner_trigger × √2
     corner_trigger_m: 0.25              # 距段末小于此值 + 前方有障 → 触发转角避障
+
+    # ── leg2 视觉修正 ─────────────────────────────────────
+    # leg2 段视觉参数由 inertial_stage2.yaml 的 vision_* 系列参数统一配置：
+    #   - vision_enabled: 是否启用视觉修正
+    #   - vision_offset_kp: offset → angular 增益
+    #   - vision_max_angular: 视觉修正最大角速度
+    # leg2 全程启用视觉修正（只要有检测就修正），无检测时 ω=0（原逻辑）

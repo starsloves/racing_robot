@@ -1,5 +1,5 @@
 """Stage3 增强返程 — 独立测试启动
-- 模拟 Stage2 结束状态（车在 (2.50, 2.95) map 坐标）
+        - 模拟 Stage2 结束状态（车在 (2.80, 3.25) map 坐标）
 - 启动 EnhancedReturnNavigator 执行 Pure Pursuit + 避障
 - 同 Stage2 的 map_overlay 提供 map→odom TF
 - 先启动各驱动，延时后自动触发 phase=3
@@ -47,13 +47,13 @@ def generate_launch_description():
         ),
 
         # map_overlay：提供 map → odom_combined TF（同 Stage2 direct_inertial_test）
-        # Stage2 结束位置: map (2.50, 2.95)
+        # Stage2 结束位置: map (2.80, 3.25)
         # map_to_odom_yaw=180°: 顺时针结束朝 -X/180° → 传入导航器同参
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(map_overlay_launch_path),
             launch_arguments={
-                'map_to_odom_x': '2.50',
-                'map_to_odom_y': '2.95',
+                'map_to_odom_x': '2.80',
+                'map_to_odom_y': '3.25',
                 'map_to_odom_yaw': '3.14159',  # 180°
                 'odom_frame': 'odom_combined',
             }.items(),
@@ -67,8 +67,8 @@ def generate_launch_description():
             parameters=[config, {
                 'cmd_topic': LaunchConfiguration('cmd_topic'),
                 'test_direction': LaunchConfiguration('test_direction'),
-                'map_to_odom_x': 2.50,
-                'map_to_odom_y': 2.95,
+                'map_to_odom_x': 2.80,
+                'map_to_odom_y': 3.25,
                 'map_to_odom_yaw': 3.14159,
             }],
             output='screen',

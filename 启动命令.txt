@@ -53,3 +53,6 @@ ros2 launch racing_stage2_param_test vision_preview.launch.py
 ```bash
 ros2 launch racing_stage3_param_test enhanced_return_test.launch.py
 ```
+
+### 相机启动+推理+web展示
+python3 ~/dev_ws/src/racing/tools/camera_all_in_one.py

@@ -101,6 +101,9 @@ def generate_launch_description():
         'rviz_config',
         default_value=os.path.join(param_test_dir, 'rviz', 'stage2_test.rviz')
     )
+    
+    # 视觉相机启动参数（集成 Aurora 930 驱动）
+    vision_camera_arg = DeclareLaunchArgument('vision_camera', default_value='true')
 
     support_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(support_launch_path),
@@ -190,6 +193,29 @@ def generate_launch_description():
         output='screen',
         condition=IfCondition(LaunchConfiguration('enable_rviz')),
     )
+    
+    # Aurora 930 相机节点（供视觉车道居中使用）
+    aurora_node = Node(
+        package='deptrum-ros-driver-aurora930',
+        executable='aurora930_node',
+        namespace='aurora',
+        parameters=[{
+            'rgb_enable': True,
+            'ir_enable': False,
+            'depth_enable': False,
+            'rgbd_enable': False,
+            'point_cloud_enable': False,
+            'boot_order': 1,
+            'rgb_fps': LaunchConfiguration('rgb_fps'),
+            'resolution_mode_index': LaunchConfiguration('resolution_mode_index'),
+            'align_mode': False,
+            'log_dir': '/tmp/',
+            'stream_sdk_log_enable': False,
+            'heart_enable': False,
+        }],
+        output='log',
+        condition=IfCondition(LaunchConfiguration('vision_camera')),
+    )
 
     return LaunchDescription([
         disable_shm,
@@ -214,6 +240,11 @@ def generate_launch_description():
         carto_slam_arg,
         enable_rviz_arg,
         rviz_config_arg,
+        vision_camera_arg,
+        
+        # 相机节点优先启动（在所有其他节点之前）
+        aurora_node,
+        
         support_stack,
         map_overlay_stack,
         cmd_relay_node,

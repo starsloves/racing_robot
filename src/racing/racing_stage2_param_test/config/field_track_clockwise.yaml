@@ -20,7 +20,7 @@ segments:
 
   # ── 第一段：从入口向左直行 ──────────────────────────
   - type: move
-    distance_m: 1.00
+    distance_m: 0.90
     description: rect_first_leg
 
   # ── 左下拐角 ────────────────────────────────────────
@@ -35,7 +35,7 @@ segments:
 
   # ── 第二段：矩形左边向上 ────────────────────────────
   - type: move
-    distance_m: 0.35
+    distance_m: 0.30
     description: rect_side_1
 
   # ── 左上拐角 ────────────────────────────────────────
@@ -50,7 +50,7 @@ segments:
 
   # ── 第三段：矩形顶边向右 ────────────────────────────
   - type: move
-    distance_m: 2.80
+    distance_m: 2.60
     description: rect_top
 
   # ── 右上拐角 ────────────────────────────────────────
@@ -65,7 +65,7 @@ segments:
 
   # ── 第四段：矩形右边向下 ────────────────────────────
   - type: move
-    distance_m: 0.35
+    distance_m: 0.30
     description: rect_side_2
 
   # ── 右下拐角 ────────────────────────────────────────
@@ -80,5 +80,5 @@ segments:
 
   # ── 返回起点 ────────────────────────────────────────
   - type: move
-    distance_m: 1.00
+    distance_m: 0.90
     description: rect_return_origin

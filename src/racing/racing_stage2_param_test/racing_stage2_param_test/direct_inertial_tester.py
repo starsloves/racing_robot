@@ -12,9 +12,10 @@ from racing_stage2_param_test.avoid_geometry import cross_segment_m
 from racing_stage2_param_test.scan_processor import ScanProcessor
 from racing_stage2_param_test.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
+from racing_stage2_param_test.direct_inertial_tester_vision import DirectInertialTesterVisionMixin
 
 
-class DirectInertialTester(Stage2InertialNavigator):
+class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMixin):
     def __init__(self):
         super().__init__()
         
@@ -80,6 +81,9 @@ class DirectInertialTester(Stage2InertialNavigator):
         self.left_clearance_distance = float('inf')
         self.right_clearance_distance = float('inf')
 
+        # 视觉模块初始化（必须在 avoider 之前，因为 avoider 需要视觉回调）
+        self._setup_vision_centering()
+        
         _avoid_cfg = AvoidConfig(
             detour_obstacle_distance=self.detour_obstacle_distance,
             avoid_turn_away_deg=float(self.get_parameter('avoid_turn_away_deg').value),
@@ -96,7 +100,13 @@ class DirectInertialTester(Stage2InertialNavigator):
             side_detour_threshold_m=float(self.get_parameter('side_detour_threshold_m').value),
             avoider_heading_tolerance_deg=float(self.get_parameter('avoider_heading_tolerance_deg').value),
         )
-        self._avoider = AvoidController(self.cmd_pub, self.get_logger(), self.get_clock(), _avoid_cfg)
+        self._avoider = AvoidController(
+            self.cmd_pub, 
+            self.get_logger(), 
+            self.get_clock(), 
+            _avoid_cfg,
+            vision_callback=self._get_vision_angular_for_avoider  # 传递视觉回调
+        )
 
         # 障碍物可视化（rviz2 调试用）
         # 使用 laser 帧，和 LaserScan 点云保持一致，依赖 TF 自动转换
@@ -853,17 +863,8 @@ class DirectInertialTester(Stage2InertialNavigator):
             self.get_logger().warn(f'Obstacle visualization error: {e}', throttle_duration_sec=5.0)
 
     def _compute_move_lateral_angular(self) -> float:
-        """计算直行段横向角速度。子类可覆盖以替换视觉居中。"""
-        if self.current_position is None or self.segment_heading is None:
-            return 0.0
-        nav_yaw = self.navigation_yaw()
-        if nav_yaw is None:
-            return 0.0
-        heading_error = self.angle_error(self.segment_heading, nav_yaw)
-        # 死区：航向误差 < 1° 时不修正，防止短直行被推歪
-        if abs(heading_error) < math.radians(1.0):
-            return 0.0
-        return self.clamp(self.heading_kp * heading_error, self.max_angular_speed)
+        """计算直行段横向角速度（覆盖父类，使用视觉优先逻辑）"""
+        return self._compute_move_lateral_angular_with_vision()
 
     def run_move_segment(self):
         if self.current_segment is not None and self.current_segment.get('type') == 'move':
