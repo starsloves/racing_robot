@@ -4,7 +4,8 @@ vision_lane_centering.py — 视觉车道居中模块
 
 从 camera_all_in_one.py 抽离的推理节点，提供：
 1. 订阅相机 topic，BPU 推理，缓存最新 offset
-2. 发布处理后的可视化图像到 /vision_debug（供 RViz2 显示）
+2. 实时保存处理后的可视化图像到 /tmp/vision_latest.jpg
+3. 提供 HTTP 静态服务（端口 8080）供浏览器查看
 
 共享接口：
     get_latest_offset() -> (offset: float, timestamp: float, valid: bool)
@@ -12,12 +13,15 @@ vision_lane_centering.py — 视觉车道居中模块
 
 import threading
 import time
+import os
 from collections import deque
+from http.server import SimpleHTTPRequestHandler
+from socketserver import TCPServer
 
 import cv2
 import numpy as np
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image, CompressedImage
+from sensor_msgs.msg import Image
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from hobot_dnn import pyeasy_dnn as dnn
@@ -34,11 +38,13 @@ class VisionLaneCentering:
             - valid: 是否有效（超时或无检测→False）
     """
     
-    def __init__(self, parent_node, model_path, conf_thres=0.25, iou_thres=0.45, crop_ratio=0.4):
+    def __init__(self, parent_node, model_path, conf_thres=0.25, iou_thres=0.45, 
+                 crop_ratio=0.4, http_port=8080):
         self._node = parent_node
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.crop_ratio = crop_ratio
+        self.http_port = http_port
         
         # 共享变量（线程安全）
         self._lock = threading.Lock()
@@ -47,8 +53,14 @@ class VisionLaneCentering:
         self._valid = False
         self._detection_timeout_sec = 0.5  # 超过 0.5s 无检测 → invalid
         
-        # 可视化缓存（供 ROS Image 发布）
+        # 可视化缓存（供 HTTP 服务）
         self._combined_frame = None
+        self._jpeg_output_path = '/tmp/vision_latest.jpg'
+        
+        # FPS 控制（确保 10 FPS）
+        self._target_fps = 10
+        self._min_frame_interval = 1.0 / self._target_fps
+        self._last_save_time = 0.0
         
         # 加载模型
         self._node.get_logger().info(f'[视觉] 加载模型: {model_path}')
@@ -58,21 +70,13 @@ class VisionLaneCentering:
         self.REG_MAX = 16
         self.strides = [8, 16, 32]
         
-        # ROS 订阅与发布
+        # ROS 订阅
         self.bridge = CvBridge()
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         
         # 订阅原始相机图像
         self._node.create_subscription(
             Image, '/aurora/rgb/image_raw', self._image_callback, qos
-        )
-        
-        # 发布处理后的可视化图像（同时发布原始和压缩版本）
-        self.debug_publisher_raw = self._node.create_publisher(
-            Image, '/vision_debug', 10
-        )
-        self.debug_publisher_compressed = self._node.create_publisher(
-            CompressedImage, '/vision_debug/compressed', 10
         )
         
         # 统计
@@ -83,7 +87,13 @@ class VisionLaneCentering:
         self._last_time = time.perf_counter()
         self._infer_time_ms = 0.0
         
+        # 启动 HTTP 静态服务器（后台线程）
+        self._start_http_server()
+        
         self._node.get_logger().info('[视觉] 模块初始化完成，等待相机数据...')
+        self._node.get_logger().info(
+            f'[视觉] HTTP 服务已启动: http://0.0.0.0:{self.http_port}/vision_latest.jpg'
+        )
     
     # ═══════════════════════════════════════════════════════
     # 外部接口（供导航节点调用）
@@ -104,6 +114,40 @@ class VisionLaneCentering:
             age = now - self._latest_timestamp
             valid = self._valid and (age < self._detection_timeout_sec)
             return (self._latest_offset, self._latest_timestamp, valid)
+    
+    def _start_http_server(self):
+        """启动 HTTP 静态文件服务器（后台线程）"""
+        def serve():
+            try:
+                # 切换到 /tmp 目录（提供 vision_latest.jpg）
+                os.chdir('/tmp')
+                
+                # 自定义 Handler，禁用缓存 + 静默 BrokenPipeError
+                class NoCacheHandler(SimpleHTTPRequestHandler):
+                    def end_headers(self):
+                        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                        self.send_header('Pragma', 'no-cache')
+                        self.send_header('Expires', '0')
+                        super().end_headers()
+                    
+                    def log_message(self, format, *args):
+                        pass  # 禁止打印访问日志（避免刷屏）
+                    
+                    def handle(self):
+                        """重写 handle，捕获 BrokenPipeError"""
+                        try:
+                            super().handle()
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass  # 浏览器取消请求，正常现象
+                
+                with TCPServer(("0.0.0.0", self.http_port), NoCacheHandler) as httpd:
+                    self._node.get_logger().info(f'[视觉] HTTP 服务已绑定端口 {self.http_port}')
+                    httpd.serve_forever()
+            except Exception as e:
+                self._node.get_logger().error(f'[视觉] HTTP 服务失败: {e}')
+        
+        http_thread = threading.Thread(target=serve, daemon=True)
+        http_thread.start()
     
     # ═══════════════════════════════════════════════════════
     # 内部推理逻辑
@@ -273,33 +317,26 @@ class VisionLaneCentering:
                 self._combined_frame = combined.copy()
                 self._frame_count += 1
             
-            # 9. 发布到 ROS 话题（同时发布原始和压缩版本）
-            try:
-                # 9.1 发布原始 Image（供 image_transport 自动处理）
-                raw_msg = self.bridge.cv2_to_imgmsg(combined, encoding='bgr8')
-                raw_msg.header = msg.header
-                self.debug_publisher_raw.publish(raw_msg)
-                
-                # 9.2 发布 JPEG 压缩版本（减少带宽）
-                ret, jpeg_data = cv2.imencode('.jpg', combined, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                if ret:
-                    compressed_msg = CompressedImage()
-                    compressed_msg.header = msg.header
-                    compressed_msg.format = "jpeg"
-                    compressed_msg.data = jpeg_data.tobytes()
-                    self.debug_publisher_compressed.publish(compressed_msg)
+            # 9. 保存到文件（限制 10 FPS，原子写入避免跳变）
+            now = time.perf_counter()
+            if now - self._last_save_time >= self._min_frame_interval:
+                try:
+                    # 原子写入：先写临时文件（.jpg 后缀），再重命名（避免读写冲突）
+                    temp_path = '/tmp/vision_latest_tmp.jpg'
+                    cv2.imwrite(temp_path, combined, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    os.replace(temp_path, self._jpeg_output_path)  # 原子操作
+                    self._last_save_time = now
                     
                     # 每 30 帧打印一次确认
                     if self._frame_count % 30 == 0:
-                        jpeg_size_kb = len(jpeg_data) / 1024
-                        raw_size_mb = combined.size * 3 / 1024 / 1024
+                        file_size = os.path.getsize(self._jpeg_output_path) / 1024
                         self._node.get_logger().info(
-                            f'[视觉-诊断] 已发布第 {self._frame_count} 帧 '
-                            f'({combined.shape[1]}x{combined.shape[0]}) '
-                            f'原始={raw_size_mb:.2f}MB 压缩={jpeg_size_kb:.1f}KB'
+                            f'[视觉-诊断] 已保存第 {self._frame_count} 帧到 {self._jpeg_output_path} '
+                            f'({combined.shape[1]}x{combined.shape[0]}, {file_size:.1f} KB, '
+                            f'{avg_fps:.1f} FPS 推理, {self._target_fps} FPS 保存)'
                         )
-            except Exception as pub_err:
-                self._node.get_logger().error(f'[视觉] 发布调试图像失败: {pub_err}')
+                except Exception as save_err:
+                    self._node.get_logger().error(f'[视觉] 保存图像失败: {save_err}')
             
         except Exception as e:
             self._node.get_logger().error(f'[视觉-诊断] 推理失败: {e}')

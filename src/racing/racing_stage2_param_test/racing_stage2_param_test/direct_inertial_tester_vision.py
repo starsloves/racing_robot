@@ -39,6 +39,7 @@ class DirectInertialTesterVisionMixin:
         self.declare_parameter('vision_crop_ratio', 0.4)
         self.declare_parameter('vision_offset_kp', 1.2)
         self.declare_parameter('vision_max_angular', 0.6)
+        self.declare_parameter('vision_http_port', 8080)
         
         # 读取参数
         self._vision_enabled = bool(self.get_parameter('vision_enabled').value)
@@ -52,6 +53,7 @@ class DirectInertialTesterVisionMixin:
         conf = float(self.get_parameter('vision_conf_thres').value)
         iou = float(self.get_parameter('vision_iou_thres').value)
         crop = float(self.get_parameter('vision_crop_ratio').value)
+        http_port = int(self.get_parameter('vision_http_port').value)
         
         self._vision_offset_kp = float(self.get_parameter('vision_offset_kp').value)
         self._vision_max_angular = float(self.get_parameter('vision_max_angular').value)
@@ -60,14 +62,16 @@ class DirectInertialTesterVisionMixin:
         self._offset_history = []
         self._offset_filter_size = 5  # 取最近 5 帧平均
         
-        # 创建视觉节点（自动发布 /vision_debug Image 话题）
-        self._vision_node = VisionLaneCentering(self, model_path, conf, iou, crop)
+        # 创建视觉节点（自动启动 HTTP 服务，保存图像到 /tmp/vision_latest.jpg）
+        self._vision_node = VisionLaneCentering(self, model_path, conf, iou, crop, http_port)
         
         self.get_logger().info(
             f'[视觉] 模块已启用 kp={self._vision_offset_kp:.2f} '
             f'max_ω={self._vision_max_angular:.2f} rad/s'
         )
-        self.get_logger().info('[视觉] 可视化已发布到 /vision_debug（RViz2/rqt 订阅此话题）')
+        self.get_logger().info(
+            f'[视觉] HTTP 可视化: http://100.114.34.86:{http_port}/vision_latest.jpg (10 FPS)'
+        )
     
     def _vision_offset_to_angular(self, offset: float) -> float:
         """
