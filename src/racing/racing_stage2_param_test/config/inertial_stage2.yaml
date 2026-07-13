@@ -26,11 +26,11 @@ stage2_inertial_navigator:
 
     # ── 控制频率 ──────────────────────────────────────
     control_rate_hz: 20.0                    # 控制循环频率（Hz）
-    start_delay_sec: 0.5                     # 位姿就绪后的启动延迟（s）
+    start_delay_sec: 50.0                     # 位姿就绪后的启动延迟（s）
 
     # ── 直行速度 ──────────────────────────────────────
     corridor_linear_speed: 0.14              # 通道段直行速度（m/s）
-    ring_linear_speed: 0.5                   # 环形赛道直行速度（m/s）
+    ring_linear_speed: 0.3                   # 环形赛道直行速度（m/s）
 
     # ── 转弯控制 ──────────────────────────────────────
     # 以下3项被 direct_inertial_test.yaml 覆盖：
@@ -105,7 +105,7 @@ stage2_inertial_navigator:
     vision_conf_thres: 0.25                  # 检测置信度阈值
     vision_iou_thres: 0.45                   # NMS IOU 阈值
     vision_crop_ratio: 0.4                   # 图像裁剪比例（保留下方 40%）
-    vision_offset_kp: 0.4                    # offset → angular 增益（大幅降低，防止过冲）
-    vision_max_angular: 0.6                  # 视觉修正最大角速度（降回 0.6，避免过度修正）
+    vision_offset_kp: 0.2                    # offset → angular 增益（大幅降低，防止过冲）
+    vision_max_angular: 0.5                  # 视觉修正最大角速度（降回 0.6，避免过度修正）
     vision_web_enabled: true                 # 是否启动 Web 服务（实时查看）
     vision_web_port: 8080                    # Web 服务端口

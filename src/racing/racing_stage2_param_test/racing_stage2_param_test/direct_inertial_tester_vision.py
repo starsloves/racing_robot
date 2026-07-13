@@ -5,7 +5,7 @@ direct_inertial_tester_vision.py — 视觉修正 mixin
 为 DirectInertialTester 提供视觉车道居中功能：
 1. 初始化视觉模块（VisionLaneCentering）
 2. 提供视觉修正逻辑（move 段横向修正）
-3. 提供 Web 服务接口（可选）
+3. 视觉数据通过 ROS Image 话题 /vision_debug 发布（供 RViz2 显示）
 
 要求父类提供：
     - self.get_parameter(name)
@@ -19,7 +19,6 @@ direct_inertial_tester_vision.py — 视觉修正 mixin
 
 import math
 import os
-import threading
 
 
 class DirectInertialTesterVisionMixin:
@@ -29,7 +28,7 @@ class DirectInertialTesterVisionMixin:
     
     def _setup_vision_centering(self):
         """初始化视觉居中模块"""
-        from racing_stage2_param_test.vision_lane_centering import VisionLaneCentering, create_web_app
+        from racing_stage2_param_test.vision_lane_centering import VisionLaneCentering
         
         # 参数声明
         self.declare_parameter('vision_enabled', True)
@@ -40,8 +39,6 @@ class DirectInertialTesterVisionMixin:
         self.declare_parameter('vision_crop_ratio', 0.4)
         self.declare_parameter('vision_offset_kp', 1.2)
         self.declare_parameter('vision_max_angular', 0.6)
-        self.declare_parameter('vision_web_enabled', True)
-        self.declare_parameter('vision_web_port', 8080)
         
         # 读取参数
         self._vision_enabled = bool(self.get_parameter('vision_enabled').value)
@@ -58,45 +55,19 @@ class DirectInertialTesterVisionMixin:
         
         self._vision_offset_kp = float(self.get_parameter('vision_offset_kp').value)
         self._vision_max_angular = float(self.get_parameter('vision_max_angular').value)
-        self._vision_web_enabled = bool(self.get_parameter('vision_web_enabled').value)
-        self._vision_web_port = int(self.get_parameter('vision_web_port').value)
         
         # 滑动平均滤波器（防止过度修正）
         self._offset_history = []
         self._offset_filter_size = 5  # 取最近 5 帧平均
         
-        # 创建视觉节点
+        # 创建视觉节点（自动发布 /vision_debug Image 话题）
         self._vision_node = VisionLaneCentering(self, model_path, conf, iou, crop)
-        
-        # 立即启动 Web 服务（独立线程，无延迟）
-        if self._vision_web_enabled:
-            from racing_stage2_param_test.vision_lane_centering import create_web_app
-            
-            web_app = create_web_app(self._vision_node)
-            
-            def start_web():
-                try:
-                    self.get_logger().info(
-                        f'[视觉] Web 服务启动 http://0.0.0.0:{self._vision_web_port}'
-                    )
-                    self._log_session('WEB_START', f'Flask启动 端口={self._vision_web_port}')
-                    
-                    # 使用 Flask 内置服务器（Werkzeug），简单可靠
-                    web_app.run(host='0.0.0.0', port=self._vision_web_port, 
-                               debug=False, threaded=True, use_reloader=False)
-                               
-                except Exception as e:
-                    self.get_logger().error(f'[视觉] Web 服务失败: {e}')
-                    self._log_session('WEB_ERR', f'Web服务启动失败: {e}')
-            
-            web_thread = threading.Thread(target=start_web, daemon=True)
-            web_thread.start()
-            self.get_logger().info('[视觉] Web 线程已启动（后台）')
         
         self.get_logger().info(
             f'[视觉] 模块已启用 kp={self._vision_offset_kp:.2f} '
             f'max_ω={self._vision_max_angular:.2f} rad/s'
         )
+        self.get_logger().info('[视觉] 可视化已发布到 /vision_debug（RViz2/rqt 订阅此话题）')
     
     def _vision_offset_to_angular(self, offset: float) -> float:
         """
