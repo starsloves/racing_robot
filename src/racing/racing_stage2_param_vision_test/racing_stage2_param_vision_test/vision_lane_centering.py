@@ -16,7 +16,7 @@ import time
 import os
 from collections import deque
 from http.server import SimpleHTTPRequestHandler
-from socketserver import TCPServer
+from socketserver import ThreadingTCPServer
 
 import cv2
 import numpy as np
@@ -58,6 +58,10 @@ class VisionLaneCentering:
         self._combined_frame = None
         self._jpeg_output_path = '/tmp/vision_latest.jpg'
         
+        # HTTP 健康检查共享状态
+        self._http_server_start_time = time.time()
+        self._last_frame_save_time = 0.0  # 最后一次保存图像的时间戳
+        
         # FPS 控制（30 FPS 高刷新率）
         self._target_fps = 30
         self._min_frame_interval = 1.0 / self._target_fps
@@ -88,9 +92,12 @@ class VisionLaneCentering:
         self._last_time = time.perf_counter()
         self._infer_time_ms = 0.0
         
+# 创建占位图像（避免首次连接 404）
+        self._write_placeholder_image()
+
         # 启动 HTTP 静态服务器（后台线程）
         self._start_http_server()
-        
+
         self._node.get_logger().info('[视觉] 模块初始化完成，等待相机数据...')
         self._node.get_logger().info(
             f'[视觉] HTTP 服务已启动: http://0.0.0.0:{self.http_port}/vision_latest.jpg'
@@ -117,43 +124,127 @@ class VisionLaneCentering:
             return (self._latest_offset, self._latest_timestamp, valid)
     
     def _start_http_server(self):
-        """启动 HTTP 静态文件服务器（后台线程）"""
+        """启动 HTTP 静态文件服务器（后台线程，多线程处理请求）"""
+        parent_self = self  # 闭包引用
+        
         def serve():
             try:
-                # 切换到 /tmp 目录（提供 vision_latest.jpg）
-                os.chdir('/tmp')
+                parent_self._node.get_logger().info('[视觉] HTTP 服务线程启动中...')
                 
-                # 自定义 Handler，禁用缓存 + 静默 BrokenPipeError
+                # 自定义 Handler，禁用缓存 + /health 端点 + CORS 支持 + 静默 BrokenPipeError
                 class NoCacheHandler(SimpleHTTPRequestHandler):
-                    def end_headers(self):
-                        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-                        self.send_header('Pragma', 'no-cache')
-                        self.send_header('Expires', '0')
-                        super().end_headers()
+                    def do_OPTIONS(self):
+                        """处理 CORS preflight 请求"""
+                        self.send_response(200)
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+                        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Pragma, Cache-Control')
+                        self.send_header('Access-Control-Max-Age', '86400')
+                        self.end_headers()
                     
+                    def do_GET(self):
+                        if self.path == '/health' or self.path.startswith('/health?'):
+                            # 健康检查：返回服务状态 + 最后一帧时间
+                            try:
+                                with parent_self._lock:
+                                    last_frame_time = parent_self._last_frame_save_time
+                                    frame_count = parent_self._frame_count
+                                
+                                uptime = time.time() - parent_self._http_server_start_time
+                                age = time.time() - last_frame_time if last_frame_time > 0 else -1
+                                
+                                import json
+                                response = {
+                                    "status": "ok",
+                                    "uptime_sec": round(uptime, 2),
+                                    "last_frame_time": last_frame_time,
+                                    "frame_age_sec": round(age, 2) if age >= 0 else None,
+                                    "frame_count": frame_count
+                                }
+                                
+                                self.send_response(200)
+                                self.send_header('Content-Type', 'application/json')
+                                self.send_header('Access-Control-Allow-Origin', '*')
+                                self.send_header('Cache-Control', 'no-cache, no-store')
+                                self.end_headers()
+                                self.wfile.write(json.dumps(response).encode('utf-8'))
+                            except Exception as e:
+                                parent_self._node.get_logger().error(f'[视觉] /health 处理失败: {e}')
+                                self.send_error(500, str(e))
+                            return
+                        
+                        # 图像请求：固定返回 /tmp/vision_latest.jpg
+                        if self.path.startswith('/vision_latest.jpg'):
+                            try:
+                                with open(parent_self._jpeg_output_path, 'rb') as f:
+                                    content = f.read()
+                                self.send_response(200)
+                                self.send_header('Content-Type', 'image/jpeg')
+                                self.send_header('Content-Length', len(content))
+                                self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                                self.send_header('Pragma', 'no-cache')
+                                self.send_header('Expires', '0')
+                                self.end_headers()
+                                self.wfile.write(content)
+                            except FileNotFoundError:
+                                self.send_error(404, 'Image not found')
+                            except Exception as e:
+                                parent_self._node.get_logger().error(f'[视觉] 图像服务失败: {e}')
+                                self.send_error(500, str(e))
+                            return
+                        
+                        # 其他请求 404
+                        self.send_error(404)
+
                     def log_message(self, format, *args):
                         pass  # 禁止打印访问日志（避免刷屏）
-                    
+
                     def handle(self):
                         """重写 handle，捕获 BrokenPipeError"""
                         try:
                             super().handle()
                         except (BrokenPipeError, ConnectionResetError):
                             pass  # 浏览器取消请求，正常现象
+
+                parent_self._node.get_logger().info(f'[视觉] 尝试绑定 0.0.0.0:{parent_self.http_port}')
                 
-                with TCPServer(("0.0.0.0", self.http_port), NoCacheHandler) as httpd:
-                    self._node.get_logger().info(f'[视觉] HTTP 服务已绑定端口 {self.http_port}')
-                    httpd.serve_forever()
+                # 设置 SO_REUSEADDR（必须在创建前设置）
+                ThreadingTCPServer.allow_reuse_address = True
+                
+                httpd = ThreadingTCPServer(("0.0.0.0", parent_self.http_port), NoCacheHandler)
+                httpd.daemon_threads = True
+                
+                parent_self._node.get_logger().info(f'[视觉] ✓ HTTP 服务已创建，准备进入 serve_forever()')
+                httpd.serve_forever()
+                parent_self._node.get_logger().warn('[视觉] serve_forever() 退出（不应该发生）')
+            except OSError as e:
+                parent_self._node.get_logger().error(f'[视觉] ✗ HTTP 端口绑定失败（端口可能被占用）: {e}')
             except Exception as e:
-                self._node.get_logger().error(f'[视觉] HTTP 服务失败: {e}')
-        
-        http_thread = threading.Thread(target=serve, daemon=True)
+                parent_self._node.get_logger().error(f'[视觉] ✗ HTTP 服务失败: {e}')
+                import traceback
+                parent_self._node.get_logger().error(traceback.format_exc())
+
+        http_thread = threading.Thread(target=serve, daemon=True, name='VisionHTTPServer')
         http_thread.start()
-    
+        parent_self._node.get_logger().info(f'[视觉] HTTP 线程已启动（thread={http_thread.name}）')
+
+    def _write_placeholder_image(self):
+        """预生成占位图像，避免浏览器首次连接时 404"""
+        try:
+            placeholder = np.full((360, 640, 3), 30, dtype=np.uint8)
+            cv2.putText(placeholder, 'Waiting for camera data...', (50, 180),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(placeholder, f'http://0.0.0.0:{self.http_port}', (50, 220),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+            cv2.imwrite(self._jpeg_output_path, placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            self._node.get_logger().info('[视觉] 占位图像已写入')
+        except Exception as e:
+            self._node.get_logger().warn(f'[视觉] 写入占位图像失败: {e}')
+
     # ═══════════════════════════════════════════════════════
     # 内部推理逻辑
     # ═══════════════════════════════════════════════════════
-    
+
     def _image_callback(self, msg):
         """ROS 图像回调 → 推理 → 更新 offset"""
         try:
@@ -356,6 +447,10 @@ class VisionLaneCentering:
                     cv2.imwrite(temp_path, combined, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     os.replace(temp_path, self._jpeg_output_path)  # 原子操作
                     self._last_save_time = now
+                    
+                    # 记录最后一帧时间（供健康检查使用）
+                    with self._lock:
+                        self._last_frame_save_time = time.time()
                     
                     # 每 30 帧打印一次确认
                     if self._frame_count % 30 == 0:

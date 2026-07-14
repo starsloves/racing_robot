@@ -4,6 +4,21 @@
 状态机：WAITING_QR → INITIAL_TURN → STRAIGHT → TURNING → STRAIGHT → ... → COMPLETED
 直接集成 VisionLaneCentering 推理，无需 /vision_offset topic
 """
+import sys
+import os
+import importlib
+
+# 确保 racing_common 在路径中（兼容 colcon egg-link 不生效的环境）
+try:
+    importlib.import_module('racing_common')
+except ImportError:
+    _ws = os.path.expanduser('~/dev_ws')
+    for _d in ['build/racing_common', 'install/racing_common/lib/python3.10/site-packages']:
+        _p = os.path.join(_ws, _d)
+        if os.path.isdir(os.path.join(_p, 'racing_common')):
+            sys.path.insert(0, _p)
+            break
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, Bool

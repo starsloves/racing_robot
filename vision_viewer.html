@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>视觉车道中心 - 实时监控</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #1a1a1a;
+            color: #ffffff;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            color: #00ff00;
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #00ff00;
+            color: #000;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9em;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .image-container {
+            position: relative;
+            max-width: 100%;
+            background: #000;
+            border: 3px solid #00ff00;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+        }
+        
+        #vision-image {
+            display: block;
+            width: 100%;
+            height: auto;
+            max-width: 1600px;
+        }
+        
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5em;
+            color: #00ff00;
+        }
+        
+        .info-panel {
+            margin-top: 20px;
+            padding: 20px;
+            background: #2a2a2a;
+            border-radius: 8px;
+            max-width: 800px;
+            width: 100%;
+        }
+        
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #444;
+        }
+        
+        .info-row:last-child {
+            border-bottom: none;
+        }
+        
+        .info-label {
+            color: #888;
+        }
+        
+        .info-value {
+            color: #00ff00;
+            font-weight: bold;
+        }
+        
+        .error-message {
+            color: #ff4444;
+            padding: 10px;
+            background: #3a1a1a;
+            border-radius: 4px;
+            margin-top: 10px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚗 视觉车道中心 - 实时监控</h1>
+        <div class="status" id="status">● CONNECTING...</div>
+    </div>
+    
+    <div class="image-container">
+        <img id="vision-image" src="http://100.114.34.86:8080/vision_latest.jpg" alt="视觉处理画面">
+        <div class="loading-overlay" id="loading">
+            <div>正在加载...</div>
+        </div>
+    </div>
+    
+    <div class="info-panel">
+        <div class="info-row">
+            <span class="info-label">功能说明</span>
+            <span class="info-value">实时车道检测与偏移修正</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">图像布局</span>
+            <span class="info-value">左侧：裁剪输入 | 右侧：检测结果</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">偏移指示</span>
+            <span class="info-value">绿色 mask + bbox + 中心点偏移量</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">更新频率</span>
+            <span class="info-value">30 FPS（自动刷新）</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">连接地址</span>
+            <span class="info-value">http://100.114.34.86:8080/vision_latest.jpg</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">帧计数</span>
+            <span class="info-value" id="frame-count">-</span>
+        </div>
+    </div>
+    
+    <div class="error-message" id="error"></div>
+    
+    <script>
+        const BASE_URL = 'http://100.114.34.86:8080';
+        const img = document.getElementById('vision-image');
+        const loading = document.getElementById('loading');
+        const status = document.getElementById('status');
+        const errorDiv = document.getElementById('error');
+        const frameCountSpan = document.getElementById('frame-count');
+
+        let frameCount = 0;
+        let consecutiveErrors = 0;
+        let isLoading = false;
+        let phase = 'health_check';  // health_check → waiting_first_frame → live
+        let retryTimeout = null;
+
+        function setStatus(text, color) {
+            status.textContent = text;
+            status.style.background = color;
+        }
+
+        function showError(msg) {
+            errorDiv.textContent = msg;
+            errorDiv.style.display = msg ? 'block' : 'none';
+        }
+
+        // 指数退避：500ms, 1s, 2s, 4s, 5s(max)
+        function getBackoff(attempt) {
+            const delay = Math.min(500 * Math.pow(2, attempt), 5000);
+            return delay;
+        }
+
+        // ─── 阶段 1: 健康检查 ───
+        function healthCheck(attempt) {
+            setStatus('● CONNECTING', '#ff9900');
+            loading.innerHTML = `<div>正在连接服务器...<br><small>尝试 ${attempt + 1}</small></div>`;
+
+            fetch(`${BASE_URL}/health`, { mode: 'no-cors' })
+                .then(() => {
+                    // 服务器已开启，开始拉取图像
+                    phase = 'waiting_first_frame';
+                    loading.innerHTML = '<div>等待第一帧图像...</div>';
+                    setStatus('● WAITING', '#ff9900');
+                    refreshImage();
+                })
+                .catch(() => {
+                    const delay = getBackoff(attempt);
+                    retryTimeout = setTimeout(() => healthCheck(attempt + 1), delay);
+                    if (attempt > 10) {
+                        loading.innerHTML = `<div>连接失败<br><small>请检查板子节点是否运行</small></div>`;
+                        setStatus('● OFFLINE', '#ff4444');
+                        showError('多次连接服务器失败，请确认板端已启动');
+                    }
+                });
+        }
+
+        // ─── 阶段 2/3: 拉取图像 ───
+        function refreshImage() {
+            if (isLoading) return;
+            isLoading = true;
+            img.src = `${BASE_URL}/vision_latest.jpg?t=${Date.now()}`;
+        }
+
+        // 图像加载成功
+        img.onload = function() {
+            isLoading = false;
+            consecutiveErrors = 0;
+
+            if (phase === 'waiting_first_frame') {
+                phase = 'live';
+                loading.style.display = 'none';
+                showError('');
+            }
+
+            setStatus('● LIVE', '#00ff00');
+            frameCount++;
+            frameCountSpan.textContent = frameCount;
+
+            // 立即请求下一帧（链式，不堆积）
+            refreshImage();
+        };
+
+        // 图像加载失败
+        img.onerror = function() {
+            isLoading = false;
+            consecutiveErrors++;
+
+            if (phase === 'waiting_first_frame') {
+                // 服务器活着但还没图，继续等
+                loading.innerHTML = `<div>等待第一帧图像...<br><small>重试中</small></div>`;
+                const delay = getBackoff(consecutiveErrors - 1);
+                retryTimeout = setTimeout(refreshImage, delay);
+            } else {
+                // 曾经 live 过，但突然断了
+                if (consecutiveErrors > 3) {
+                    setStatus('● RECONNECTING', '#ff9900');
+                    showError(consecutiveErrors > 10 ? '连接不稳定，正在重连...' : '');
+                }
+                const delay = getBackoff(consecutiveErrors - 1);
+                retryTimeout = setTimeout(refreshImage, delay);
+
+                if (consecutiveErrors > 20) {
+                    setStatus('● OFFLINE', '#ff4444');
+                    loading.style.display = 'flex';
+                    loading.innerHTML = '<div>连接断开<br><small>正在后台重试...</small></div>';
+                    showError('长时间无数据，请检查板端运行状态');
+                }
+            }
+        };
+
+        // ─── 启动 ───
+        healthCheck(0);
+    </script>
+</body>
+</html>

@@ -16,7 +16,7 @@ import time
 import os
 from collections import deque
 from http.server import SimpleHTTPRequestHandler
-from socketserver import TCPServer
+from socketserver import ThreadingTCPServer
 
 import cv2
 import numpy as np
@@ -88,9 +88,12 @@ class VisionLaneCentering:
         self._last_time = time.perf_counter()
         self._infer_time_ms = 0.0
         
+# 创建占位图像（避免首次连接 404）
+        self._write_placeholder_image()
+
         # 启动 HTTP 静态服务器（后台线程）
         self._start_http_server()
-        
+
         self._node.get_logger().info('[视觉] 模块初始化完成，等待相机数据...')
         self._node.get_logger().info(
             f'[视觉] HTTP 服务已启动: http://0.0.0.0:{self.http_port}/vision_latest.jpg'
@@ -117,43 +120,67 @@ class VisionLaneCentering:
             return (self._latest_offset, self._latest_timestamp, valid)
     
     def _start_http_server(self):
-        """启动 HTTP 静态文件服务器（后台线程）"""
+        """启动 HTTP 静态文件服务器（后台线程，多线程处理请求）"""
         def serve():
             try:
                 # 切换到 /tmp 目录（提供 vision_latest.jpg）
                 os.chdir('/tmp')
-                
-                # 自定义 Handler，禁用缓存 + 静默 BrokenPipeError
+
+                # 自定义 Handler，禁用缓存 + /health 端点 + 静默 BrokenPipeError
                 class NoCacheHandler(SimpleHTTPRequestHandler):
+                    def do_GET(self):
+                        if self.path == '/health':
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'application/json')
+                            self.end_headers()
+                            self.wfile.write(b'{"status":"ok"}')
+                            return
+                        super().do_GET()
+
                     def end_headers(self):
                         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
                         self.send_header('Pragma', 'no-cache')
                         self.send_header('Expires', '0')
                         super().end_headers()
-                    
+
                     def log_message(self, format, *args):
                         pass  # 禁止打印访问日志（避免刷屏）
-                    
+
                     def handle(self):
                         """重写 handle，捕获 BrokenPipeError"""
                         try:
                             super().handle()
                         except (BrokenPipeError, ConnectionResetError):
                             pass  # 浏览器取消请求，正常现象
-                
-                with TCPServer(("0.0.0.0", self.http_port), NoCacheHandler) as httpd:
+
+                with ThreadingTCPServer(("0.0.0.0", self.http_port), NoCacheHandler) as httpd:
+                    httpd.daemon_threads = True
+                    httpd.allow_reuse_address = True
                     self._node.get_logger().info(f'[视觉] HTTP 服务已绑定端口 {self.http_port}')
                     httpd.serve_forever()
             except Exception as e:
                 self._node.get_logger().error(f'[视觉] HTTP 服务失败: {e}')
-        
+
         http_thread = threading.Thread(target=serve, daemon=True)
         http_thread.start()
-    
+
+    def _write_placeholder_image(self):
+        """预生成占位图像，避免浏览器首次连接时 404"""
+        try:
+            placeholder = np.full((360, 640, 3), 30, dtype=np.uint8)
+            cv2.putText(placeholder, 'Waiting for camera data...', (50, 180),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(placeholder, f'http://0.0.0.0:{self.http_port}', (50, 220),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+            cv2.imwrite(self._jpeg_output_path, placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            self._node.get_logger().info('[视觉] 占位图像已写入')
+        except Exception as e:
+            self._node.get_logger().warn(f'[视觉] 写入占位图像失败: {e}')
+
     # ═══════════════════════════════════════════════════════
     # 内部推理逻辑
     # ═══════════════════════════════════════════════════════
-    
+
     def _image_callback(self, msg):
         """ROS 图像回调 → 推理 → 更新 offset"""
         try:
