@@ -49,6 +49,9 @@ ros2 launch racing_stage2_param_test simple_avoid_test.launch.py
 ros2 launch racing_stage2_param_test vision_preview.launch.py
 ```
 
+# 视觉导航
+ros2 launch racing_stage2_param_vision_test visual_stage2.launch.py
+
 ### 第三阶段（测试包单独启动）
 ```bash
 ros2 launch racing_stage3_param_test enhanced_return_test.launch.py

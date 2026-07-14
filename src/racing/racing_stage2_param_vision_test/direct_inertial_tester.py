@@ -12,15 +12,11 @@ from racing_stage2_param_test.avoid_geometry import cross_segment_m
 from racing_stage2_param_test.scan_processor import ScanProcessor
 from racing_stage2_param_test.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
-from racing_stage2_param_test.direct_inertial_tester_vision import DirectInertialTesterVisionMixin
 
 
-class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMixin):
+class DirectInertialTester(Stage2InertialNavigator):
     def __init__(self):
         super().__init__()
-        
-        self._last_wheel_odom_msg = None  # 保存最新的 wheel odom 消息用于 marker 坐标转换
-        self._last_turn_target_yaw = None  # 上一个转弯的目标 yaw，用于直行段 heading 基准
 
         self.declare_parameter('test_direction', 'clockwise')
         self.declare_parameter('test_start_mode', 'auto')
@@ -43,14 +39,6 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
         self.declare_parameter('turn_obstacle_stop_m', 0.25)
         self.declare_parameter('corner_approach_m', 0.15)
         self.declare_parameter('turn_obstacle_creep_speed', 0.02)
-        # 转弯减速参数
-        self.declare_parameter('turn_slowdown_threshold_deg', 15.0)
-        self.declare_parameter('turn_min_speed_ratio', 0.4)
-        self.declare_parameter('turn_inertia_compensation_deg', 0.0)  # 已减速，无惯性补偿
-        # 转角系统性补偿（IMU/机械零点偏差）
-        self.declare_parameter('turn_angle_compensation_deg', 0.0)  # 每次转弯额外补偿角度
-        # 加速渐变参数（转弯后平滑过渡）
-        self.declare_parameter('move_accel_ramp_sec', 0.5)  # 转弯后加速渐变时长（秒）
 
         self.test_direction_raw = str(self.get_parameter('test_direction').value).strip()
         self.test_direction = self.resolve_test_direction(self.test_direction_raw)
@@ -84,9 +72,6 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
         self.left_clearance_distance = float('inf')
         self.right_clearance_distance = float('inf')
 
-        # 视觉模块初始化（必须在 avoider 之前，因为 avoider 需要视觉回调）
-        self._setup_vision_centering()
-        
         _avoid_cfg = AvoidConfig(
             detour_obstacle_distance=self.detour_obstacle_distance,
             avoid_turn_away_deg=float(self.get_parameter('avoid_turn_away_deg').value),
@@ -103,18 +88,11 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
             side_detour_threshold_m=float(self.get_parameter('side_detour_threshold_m').value),
             avoider_heading_tolerance_deg=float(self.get_parameter('avoider_heading_tolerance_deg').value),
         )
-        self._avoider = AvoidController(
-            self.cmd_pub, 
-            self.get_logger(), 
-            self.get_clock(), 
-            _avoid_cfg,
-            vision_callback=self._get_vision_angular_for_avoider  # 传递视觉回调
-        )
+        self._avoider = AvoidController(self.cmd_pub, self.get_logger(), self.get_clock(), _avoid_cfg)
 
         # 障碍物可视化（rviz2 调试用）
-        # 使用 laser 帧，和 LaserScan 点云保持一致，依赖 TF 自动转换
         self.obstacle_markers = ObstacleMarkerPublisher(
-            self, topic='/stage2_obstacle_markers', frame_id='laser', radius=0.13
+            self, topic='/stage2_obstacle_markers', frame_id='base_link', radius=0.13
         )
         self.all_clusters = []  # 缓存当前帧的所有聚类
         self._cluster_window_config = {
@@ -127,20 +105,8 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
         self._setup_wheel_odom_position()
         self._setup_session_log()
         self._pure_linear_after_avoid = False  # 避障完成后纯线速度直行
-        
-        # 加速渐变状态（转弯后平滑过渡）
-        self._just_finished_turn = False
-        self._turn_finish_time = 0.0
-        self._accel_ramp_duration = float(self.get_parameter('move_accel_ramp_sec').value)
-        self._last_ramp_pct = -1  # 记录上次日志的进度百分比
-        
         self.segment_end_pose = None  # 世界坐标系下的段终点（仅 world 模式使用）
         self._world_start_pose = None  # 世界坐标系下的起点信息
-        self._segment_is_world = False  # 当前段是否使用世界坐标系
-        self._segment_start_wheel_yaw = None  # 直行段起点轮速航向（用于 cross-track 与 odom 位置同坐标系）
-        self._map_origin_x = 2.50  # map→odom 变换参数（从 launch 传入）
-        self._map_origin_y = 2.80
-        self._map_origin_yaw = math.radians(90.0)
 
         self.get_logger().info(
             f'{self.test_feedback_prefix}节点已就绪，方向={self.direction_text()}，'
@@ -187,7 +153,6 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
             subdir,
             filename,
             session_title='direct inertial test session',
-            workspace_root=os.path.expanduser('~/dev_ws'),
         )
         self._last_telemetry_sec = 0.0
         self._last_wait_log_sec = 0.0
@@ -275,42 +240,14 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
         if (
             self.segment_start_pose is None
             or self.current_position is None
+            or self.segment_heading is None
         ):
-            return 0.0
-        nav_pos = self._nav_position()
-        if nav_pos is None:
-            return 0.0
-        # 用轮速航向（与 odom 位置同坐标系），fallback 到 IMU heading
-        heading_for_cross = self._segment_start_wheel_yaw if self._segment_start_wheel_yaw is not None else self.segment_heading
-        if heading_for_cross is None:
             return 0.0
         return cross_segment_m(
             self.segment_start_pose,
-            heading_for_cross,
-            nav_pos,
+            self.segment_heading,
+            self.current_position,
         )
-
-    def _odom_to_map(self, odom_xy):
-        """将 odom 帧坐标转换为 map 帧坐标。
-        
-        map→odom 静态变换: 平移 (2.50, 2.80)，旋转 90° (yaw)
-        odom_x = -(map_y - 2.80)  
-        odom_y = map_x - 2.50
-        
-        逆变换 → map_x = 2.50 + odom_y, map_y = 2.80 - odom_x
-        """
-        if odom_xy is None:
-            return None
-        ox, oy = odom_xy
-        return (self._map_origin_x + oy, self._map_origin_y - ox)
-    
-    def _nav_position(self):
-        """获取导航用位置：world 模式用 map 帧，否则用 odom 帧"""
-        if self.current_position is None:
-            return None
-        if self._segment_is_world:
-            return self._odom_to_map(self.current_position)
-        return self.current_position
 
     def _full_telemetry(self) -> str:
         now_sec = self.get_clock().now().nanoseconds / 1e9
@@ -535,7 +472,6 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
         return (now_sec - self._wheel_odom_first_rx_sec) >= self._wheel_odom_warmup_sec
 
     def _wheel_odom_callback(self, msg: Odometry) -> None:
-        self._last_wheel_odom_msg = msg  # 保存用于 marker 坐标转换
         position = msg.pose.pose.position
         twist = msg.twist.twist
         self.current_position = (float(position.x), float(position.y))
@@ -585,28 +521,24 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
         
         if not self._wheel_pose_source_active() or not self._wheel_odom_ready:
             self.current_position = self._last_ekf_position
+            if not self._wheel_pose_source_active():
+                self.current_yaw = self.current_odom_yaw
         self.try_start_mission()
 
     def projected_distance(self):
-        """使用 odom 帧的欧氏距离判断直行完成，避免航向偏差导致投影错误。
-        
-        改用累计行驶距离（直线距离）代替方向投影：
-        - 不依赖航向对齐
-        - 简单鲁棒
-        - 保留横偏修正保证轨迹直线性
-        """
         if (
             self.segment_start_pose is None
             or self.current_position is None
+            or self.segment_heading is None
         ):
             return 0.0
-        
-        # 直接用 odom 帧（current_position）计算欧氏距离
         dx = self.current_position[0] - self.segment_start_pose[0]
         dy = self.current_position[1] - self.segment_start_pose[1]
-        distance = math.hypot(dx, dy)
-        
-        return max(0.0, distance)
+        along = (
+            dx * math.cos(self.segment_heading)
+            + dy * math.sin(self.segment_heading)
+        )
+        return max(0.0, along)
 
     def _unify_segment_pose(self, segment) -> None:
         """段起点/航向/计程轴与 current_yaw(current_position) 完全对齐。
@@ -629,17 +561,13 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
             
             # 统一使用增量角度 angle_deg，简单可靠
             angle_deg = float(segment.get('angle_deg', 0.0))
-            # 应用系统性转角补偿（IMU/机械零点偏差）
-            angle_compensation_deg = float(self.get_parameter('turn_angle_compensation_deg').value)
-            compensated_angle_deg = angle_deg + angle_compensation_deg
             self.segment_target_yaw = self.normalize_angle(
-                self.segment_start_yaw + math.radians(compensated_angle_deg)
+                self.segment_start_yaw + math.radians(angle_deg)
             )
-            self._last_turn_target_yaw = self.segment_target_yaw  # 存给下一个直行段做 heading 基准
             
             self.get_logger().info(
                 f'[TURN] start={math.degrees(self.segment_start_yaw):.1f}deg '
-                f'angle_deg={angle_deg:.1f}deg comp={angle_compensation_deg:+.1f}deg → '
+                f'angle_deg={angle_deg:.1f}deg → '
                 f'target={math.degrees(self.segment_target_yaw):.1f}deg'
             )
             return
@@ -647,31 +575,48 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
         if seg_type != 'move':
             return
 
-        # 统一用 odom 相对坐标 + 欧氏距离完成直行
-        # 航向从 YAML 的 heading_deg（如果有）或当前 yaw 继承
-        self._segment_is_world = False
+        # 世界坐标系：使用 YAML 中的 target 绝对坐标
+        if is_world and 'target' in segment:
+            # anchor 用当前位置（段开始时记录）
+            if self.current_position is not None:
+                self.segment_start_pose = self.current_position
+            
+            # 目标点用 YAML 的 target
+            target = segment['target']
+            self.segment_end_pose = (float(target['x']), float(target['y']))
+            
+            # 从当前位置 → target 计算航向
+            if self.segment_start_pose is not None:
+                dx = self.segment_end_pose[0] - self.segment_start_pose[0]
+                dy = self.segment_end_pose[1] - self.segment_start_pose[1]
+                heading = math.atan2(dy, dx)
+                self.segment_heading = self.normalize_angle(heading)
+                self.segment_start_yaw = self.segment_heading
+                
+                # 计算实际距离
+                distance = math.sqrt(dx*dx + dy*dy)
+                
+                x0, y0 = self.segment_start_pose
+                x1, y1 = self.segment_end_pose
+                anchor_line = (
+                    f'desc={segment.get("description", "?")} '
+                    f'anchor=({x0:.3f},{y0:.3f}) target=({x1:.3f},{y1:.3f}) '
+                    f'dist={distance:.3f}m heading={self.format_yaw_deg(heading)}deg [WORLD]'
+                )
+                self.get_logger().info(f'{self.test_feedback_prefix}里程锚点: {anchor_line}')
+                self._log_session('ODOM_ANCHOR', anchor_line)
+            return
+
+        # 相对坐标系：从当前位置开始
         if self.current_position is not None:
             self.segment_start_pose = self.current_position
-        # 保存轮速航向（与 odom 位置同坐标系，用于 cross-track 计算）
-        self._segment_start_wheel_yaw = self.current_wheel_yaw if self.current_wheel_yaw is not None else yaw
-        
-        # 优先用 YAML 的 heading_deg（正交矩形边方向）
-        if 'heading_deg' in segment:
-            heading = self.normalize_angle(math.radians(float(segment['heading_deg'])))
-            self.segment_heading = heading
-            self.segment_start_yaw = heading
-        elif 'force_segment_heading' in segment:
+        if 'force_segment_heading' in segment:
             heading = self.normalize_angle(float(segment['force_segment_heading']))
             self.segment_heading = heading
             self.segment_start_yaw = heading
         else:
-            # 优先用上一个转弯的目标 yaw，确保直行朝正确方向修正
-            if self._last_turn_target_yaw is not None:
-                heading = self.normalize_angle(self._last_turn_target_yaw)
-            else:
-                heading = yaw
-            self.segment_heading = heading
-            self.segment_start_yaw = heading
+            self.segment_heading = yaw
+            self.segment_start_yaw = yaw
 
         if self.segment_start_pose is None:
             return
@@ -863,25 +808,31 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
             n_clusters = len(self.all_clusters)
             total_points = sum(len(c) for c in self.all_clusters) if self.all_clusters else 0
             
-            # # 打印到日志文件（用 _log_session 才能写入 RacingLogger 的文件）
-            # self._log_session('CLUSTER_VIZ',
-            #     f'clusters={n_clusters} points={total_points} '
-            #     f'window=[{self._cluster_window_config["min_x"]:.2f},{self._cluster_window_config["max_x"]:.2f}]×±{self._cluster_window_config["half_y"]:.2f}m')
-            
-            # 每次扫描都发布，无聚类时自动清理旧 marker
-            self.obstacle_markers.frame_id = msg.header.frame_id
-            self.obstacle_markers.publish_from_clusters(
-                self.all_clusters or [], color='red'
+            # 强制每次都打印（调试用）
+            self.get_logger().info(
+                f'[CLUSTER_VIZ] clusters={n_clusters}, points={total_points}, '
+                f'window=[{self._cluster_window_config["min_x"]:.2f}, {self._cluster_window_config["max_x"]:.2f}]×±{self._cluster_window_config["half_y"]:.2f}m',
+                throttle_duration_sec=1.0
             )
-            # self._log_session('MARKER_VIZ',
-            #     f'markers={n_clusters} frame={msg.header.frame_id}')
+            
+            if self.all_clusters:
+                self.obstacle_markers.publish_from_clusters(self.all_clusters, color='red')
+            else:
+                self.obstacle_markers.clear()
         except Exception as e:
-            self._log_session('CLUSTER_VIZ', f'ERROR: {e}')
             self.get_logger().warn(f'Obstacle visualization error: {e}', throttle_duration_sec=5.0)
 
     def _compute_move_lateral_angular(self) -> float:
-        """计算直行段横向角速度（覆盖父类，使用视觉优先逻辑）"""
-        return self._compute_move_lateral_angular_with_vision()
+        """计算直行段横向角速度。子类可覆盖以替换视觉居中。"""
+        if self._pure_linear_after_avoid:
+            return 0.0
+        if self.current_position is None or self.segment_heading is None:
+            return 0.0
+        nav_yaw = self.navigation_yaw()
+        if nav_yaw is None:
+            return 0.0
+        heading_error = self.angle_error(self.segment_heading, nav_yaw)
+        return self.clamp(self.heading_kp * heading_error, self.max_angular_speed)
 
     def run_move_segment(self):
         if self.current_segment is not None and self.current_segment.get('type') == 'move':
@@ -988,39 +939,6 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
 
         angular = self._compute_move_lateral_angular()
         linear = float(self.current_segment.get('speed', self.corridor_linear_speed))
-        
-        # === 加速渐变逻辑（转弯后平滑过渡）===
-        if self._just_finished_turn:
-            import time
-            elapsed = time.time() - self._turn_finish_time
-            
-            if elapsed < self._accel_ramp_duration:
-                # 渐变中：线性插值 turn_speed → target_speed
-                ratio = elapsed / self._accel_ramp_duration
-                turn_speed = float(self.get_parameter('turn_linear_speed').value)
-                linear_ramped = linear * ratio + turn_speed * (1.0 - ratio)
-                
-                # 日志记录渐变过程（首次 + 25%/50%/75%）
-                progress_pct = int(ratio * 100)
-                if progress_pct >= self._last_ramp_pct + 25:
-                    self._last_ramp_pct = (progress_pct // 25) * 25
-                    self._log_session(
-                        'ACCEL_RAMP',
-                        f'{progress_pct}% | v={linear_ramped:.3f} '
-                        f'(target={linear:.3f}) | elapsed={elapsed:.2f}s'
-                    )
-                
-                linear = linear_ramped
-            else:
-                # 渐变完成，重置标志
-                if self._just_finished_turn:  # 仅记录一次
-                    self._log_session(
-                        'ACCEL_RAMP',
-                        f'100% 渐变完成 | v={linear:.3f} | elapsed={elapsed:.2f}s'
-                    )
-                self._just_finished_turn = False
-                self._last_ramp_pct = -1
-        
         self.cmd_pub.publish(self.create_twist(linear, angular))
         self._maybe_log_telemetry('move')
 
@@ -1042,47 +960,19 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
             return
 
         error = self.angle_error(self.segment_target_yaw, nav_yaw)
-        
-        # 惯性补偿：提前若干度停止转弯
-        inertia_comp_deg = float(self.get_parameter('turn_inertia_compensation_deg').value)
-        effective_tolerance = turn_tolerance + math.radians(inertia_comp_deg)
-        
-        if abs(error) <= effective_tolerance:
-            # 设置加速渐变标志
-            self._just_finished_turn = True
-            self._turn_finish_time = self.get_clock().now().nanoseconds / 1e9
-            
+        if abs(error) <= turn_tolerance:
             self.publish_feedback(
                 f'{self.test_feedback_prefix}当前位置: '
                 f'{self.rectangle_segment_label(self.current_segment or {})}，'
                 '转弯完成，进入下一段'
             )
             self.cmd_pub.publish(self.create_twist())
-            
-            # 日志记录转弯完成
-            self._log_session(
-                'TURN_COMPLETE',
-                f'转弯完成 err={math.degrees(error):.2f}° | '
-                f'启动加速渐变 {self._accel_ramp_duration:.2f}s'
-            )
-            
             self.start_segment(self.plan_index + 1)
             return
 
-        # 计算基础角速度
         angular = self.clamp(self.turn_kp * error, self.turn_angular_speed)
         if abs(error) > turn_tolerance and abs(angular) < self.turn_min_angular_speed:
             angular = math.copysign(self.turn_min_angular_speed, error)
-        
-        # 转弯减速：剩余角度 < threshold 时线性衰减
-        slowdown_threshold_deg = float(self.get_parameter('turn_slowdown_threshold_deg').value)
-        min_speed_ratio = float(self.get_parameter('turn_min_speed_ratio').value)
-        
-        if abs(error) < math.radians(slowdown_threshold_deg):
-            # 线性衰减，保留最低比例防止电机死区
-            scale = abs(error) / math.radians(slowdown_threshold_deg)
-            scale = max(min_speed_ratio, scale)
-            angular *= scale
 
         self.cmd_pub.publish(self.create_twist(linear_speed, angular))
         self._maybe_log_telemetry(

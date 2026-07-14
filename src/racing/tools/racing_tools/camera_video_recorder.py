@@ -1,5 +1,5 @@
 import os
-import threading
+import subprocess
 from datetime import datetime
 
 import cv2
@@ -11,38 +11,42 @@ from sensor_msgs.msg import CompressedImage, Image
 
 
 class CameraVideoRecorder(Node):
-    """订阅相机话题，持续写入视频到 dev_ws 根目录。"""
+    """启动相机驱动 + 订阅相机话题，逐帧保存为 JPG 图片。"""
 
     def __init__(self):
         super().__init__('camera_video_recorder')
 
         self.declare_parameter('camera_topic', '/aurora/rgb/image_raw')
         self.declare_parameter('use_compressed', False)
-        self.declare_parameter('output_dir', 'log/video')
+        self.declare_parameter('output_dir', 'dev_ws/log/video')
         self.declare_parameter('output_prefix', 'stage2_path')
-        self.declare_parameter('fps', 15.0)
-        self.declare_parameter('fourcc', 'MJPG')
-        self.declare_parameter('file_ext', '.avi')
         self.declare_parameter('max_duration_sec', 0.0)
+        self.declare_parameter('rgb_fps', 15)
+        self.declare_parameter('resolution_mode_index', 2)
 
         self.camera_topic = str(self.get_parameter('camera_topic').value)
         self.use_compressed = bool(self.get_parameter('use_compressed').value)
-        self.output_dir = str(self.get_parameter('output_dir').value)
+        raw_dir = str(self.get_parameter('output_dir').value)
+        self.output_dir = raw_dir if os.path.isabs(raw_dir) else os.path.join(os.path.expanduser('~'), raw_dir)
         self.output_prefix = str(self.get_parameter('output_prefix').value)
-        self.target_fps = max(1.0, float(self.get_parameter('fps').value))
-        self.fourcc = str(self.get_parameter('fourcc').value).ljust(4)[:4]
-        self.file_ext = str(self.get_parameter('file_ext').value)
         self.max_duration_sec = max(0.0, float(self.get_parameter('max_duration_sec').value))
+        self.rgb_fps = int(self.get_parameter('rgb_fps').value)
+        self.resolution_mode_index = int(self.get_parameter('resolution_mode_index').value)
 
         self._bridge = CvBridge()
-        self._writer = None
-        self._writer_lock = threading.Lock()
         self._frame_count = 0
         self._started_at = None
-        self._output_path = ''
         self._stopped = False
+        self._session_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self._save_dir = os.path.join(self.output_dir, f'{self.output_prefix}_{self._session_ts}')
+        self._camera_proc = None
 
-        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self._save_dir, exist_ok=True)
+        self.get_logger().info(f'保存目录: {self._save_dir}')
+
+        # 启动相机驱动
+        self._start_camera_driver()
+
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
 
         if self.use_compressed:
@@ -63,74 +67,67 @@ class CameraVideoRecorder(Node):
         self.get_logger().info(
             f'录像节点就绪：topic={self.camera_topic}, '
             f'compressed={self.use_compressed}, '
-            f'output_dir={self.output_dir}, '
-            f'fps={self.target_fps:.1f}'
+            f'save_dir={self._save_dir}'
         )
 
-    def _build_output_path(self):
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'{self.output_prefix}_{timestamp}{self.file_ext}'
-        return os.path.join(self.output_dir, filename)
-
-    def _ensure_writer(self, frame):
-        if self._writer is not None:
-            return True
-
-        height, width = frame.shape[:2]
-        if width <= 0 or height <= 0:
-            return False
-
-        self._output_path = self._build_output_path()
-        fourcc = cv2.VideoWriter_fourcc(*self.fourcc)
-        writer = cv2.VideoWriter(
-            self._output_path,
-            fourcc,
-            self.target_fps,
-            (width, height),
-        )
-        if not writer.isOpened():
-            self.get_logger().error(
-                f'无法创建视频文件: {self._output_path} '
-                f'(fourcc={self.fourcc})'
+    def _start_camera_driver(self):
+        """启动 Aurora 930 相机驱动进程。"""
+        try:
+            self._camera_proc = subprocess.Popen(
+                [
+                    'ros2', 'run', 'deptrum-ros-driver-aurora930', 'aurora930_node',
+                    '--ros-args', '--log-level', 'warn',
+                    '-r', '__ns:=/aurora',
+                    '-p', f'rgb_enable:=True',
+                    '-p', f'ir_enable:=False',
+                    '-p', f'depth_enable:=False',
+                    '-p', f'rgbd_enable:=False',
+                    '-p', f'point_cloud_enable:=False',
+                    '-p', f'boot_order:=1',
+                    '-p', f'rgb_fps:={self.rgb_fps}',
+                    '-p', f'resolution_mode_index:={self.resolution_mode_index}',
+                    '-p', f'align_mode:=False',
+                    '-p', f'log_dir:=/tmp/',
+                    '-p', f'stream_sdk_log_enable:=False',
+                    '-p', f'heart_enable:=False',
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
-            return False
+            self.get_logger().info('相机驱动已启动 (aurora930_node)')
+        except Exception as e:
+            self.get_logger().error(f'启动相机驱动失败: {e}')
 
-        self._writer = writer
-        self._started_at = self.get_clock().now()
-        self.get_logger().info(f'开始录像: {self._output_path} ({width}x{height})')
-        return True
-
-    def _write_frame(self, frame):
+    def _save_frame(self, frame):
         if self._stopped or frame is None or frame.size == 0:
             return
 
-        with self._writer_lock:
-            if not self._ensure_writer(frame):
-                return
+        self._frame_count += 1
+        fname = f'frame_{self._frame_count:06d}.jpg'
+        path = os.path.join(self._save_dir, fname)
+        cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
-            if frame.ndim == 2:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-            elif frame.shape[2] == 4:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        if self._frame_count == 1:
+            self._started_at = self.get_clock().now()
+            self.get_logger().info(
+                f'开始逐帧保存: {self._save_dir} ({frame.shape[1]}x{frame.shape[0]})'
+            )
 
-            self._writer.write(frame)
-            self._frame_count += 1
+        if self._frame_count % 150 == 0:
+            self.get_logger().info(
+                f'已保存 {self._frame_count} 帧 -> {self._save_dir}'
+            )
 
-            if self._frame_count == 1 or self._frame_count % 150 == 0:
-                self.get_logger().info(
-                    f'已写入 {self._frame_count} 帧 -> {self._output_path}'
-                )
-
-            if (
-                self.max_duration_sec > 0.0
-                and self._started_at is not None
-                and (self.get_clock().now() - self._started_at).nanoseconds / 1e9
-                >= self.max_duration_sec
-            ):
-                self.get_logger().info(
-                    f'达到最大录像时长 {self.max_duration_sec:.0f}s，停止写入'
-                )
-                self._release_writer_locked()
+        if (
+            self.max_duration_sec > 0.0
+            and self._started_at is not None
+            and (self.get_clock().now() - self._started_at).nanoseconds / 1e9
+            >= self.max_duration_sec
+        ):
+            self.get_logger().info(
+                f'达到最大录像时长 {self.max_duration_sec:.0f}s，停止保存'
+            )
+            self._stopped = True
 
     def _image_callback(self, msg: Image):
         try:
@@ -138,7 +135,7 @@ class CameraVideoRecorder(Node):
         except Exception as exc:
             self.get_logger().warning(f'解码 Image 失败: {exc}')
             return
-        self._write_frame(frame)
+        self._save_frame(frame)
 
     def _compressed_callback(self, msg: CompressedImage):
         try:
@@ -146,23 +143,27 @@ class CameraVideoRecorder(Node):
         except Exception as exc:
             self.get_logger().warning(f'解码 CompressedImage 失败: {exc}')
             return
-        self._write_frame(frame)
+        self._save_frame(frame)
 
-    def _release_writer_locked(self):
-        if self._writer is None:
-            return
-
-        self._writer.release()
-        self._writer = None
-        self._stopped = True
-        self.get_logger().info(
-            f'录像已保存: {self._output_path} (共 {self._frame_count} 帧)'
-        )
+    def _stop_camera_driver(self):
+        if self._camera_proc is not None:
+            self._camera_proc.terminate()
+            try:
+                self._camera_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._camera_proc.kill()
+            self._camera_proc = None
+            self.get_logger().info('相机驱动已停止')
 
     def destroy_node(self):
-        with self._writer_lock:
-            self._release_writer_locked()
+        self._stopped = True
+        total = self._frame_count
+        self._stop_camera_driver()
         super().destroy_node()
+        if total > 0:
+            self.get_logger().info(
+                f'逐帧保存结束: {self._save_dir} (共 {total} 帧)'
+            )
 
 
 def main(args=None):

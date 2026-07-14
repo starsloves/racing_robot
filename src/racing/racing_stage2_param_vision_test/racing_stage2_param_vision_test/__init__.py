@@ -1,0 +1,1 @@
+"""Standalone stage2 inertial parameter tester package."""
