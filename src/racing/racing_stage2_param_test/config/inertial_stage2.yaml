@@ -110,6 +110,6 @@ stage2_inertial_navigator:
     vision_iou_thres: 0.45                   # NMS IOU 阈值
     vision_crop_ratio: 0.4                   # 图像裁剪比例（保留下方 40%）
     vision_offset_kp: 0.4                    # offset → angular 增益（大幅降低，防止过冲）
-    vision_max_angular: 0.6                  # 视觉修正最大角速度（降回 0.6，避免过度修正）
+    vision_max_angular: 0.8                  # 视觉修正最大角速度（降回 0.6，避免过度修正）
     vision_web_enabled: true                 # 是否启动 Web 服务（实时查看）
     vision_web_port: 8080                    # Web 服务端口

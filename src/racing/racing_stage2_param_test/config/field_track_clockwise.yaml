@@ -20,7 +20,7 @@ segments:
 
   # ── 第一段：从入口向左直行 ──────────────────────────
   - type: move
-    distance_m: 0.70
+    distance_m: 0.90
     description: rect_first_leg
 
   # ── 停稳（消除直行段残余角速度） ────────────────────
@@ -60,7 +60,7 @@ segments:
 
   # ── 第三段：矩形顶边向右 ────────────────────────────
   - type: move
-    distance_m: 2.65
+    distance_m: 2.80
     description: rect_top
 
   # ── 停稳（消除直行段残余角速度） ────────────────────
@@ -100,5 +100,5 @@ segments:
 
   # ── 返回起点 ────────────────────────────────────────
   - type: move
-    distance_m: 0.70
+    distance_m: 0.90
     description: rect_return_origin

@@ -101,6 +101,7 @@ class VisualStage2Navigator(Node):
         self.straight_distance = 0.0
         self.last_x = 0.0
         self.last_y = 0.0
+        self._last_turn_end_time = 0.0  # 上次转弯结束时间，防止频繁触发
         
         # 完成判断
         self.start_x = 0.0
@@ -236,12 +237,19 @@ class VisualStage2Navigator(Node):
     
     def _initial_turn(self):
         cmd = Twist()
-        target_angle = 85.0
+        target_angle = 78.0
         angle_turned = abs(math.degrees(self.yaw - self.turn_start_yaw))
         
         if angle_turned < target_angle - 5:
-            cmd.linear.x = self.get_parameter('v_turn').value
-            cmd.angular.z = self.turn_direction * self.get_parameter('w_turn').value
+            base_w = self.get_parameter('w_turn').value
+            # 接近目标时减速，减少惯性过冲
+            remaining = target_angle - angle_turned
+            if remaining < 20.0:
+                ratio = max(0.3, remaining / 20.0)
+            else:
+                ratio = 1.0
+            cmd.linear.x = self.get_parameter('v_turn').value * ratio
+            cmd.angular.z = self.turn_direction * base_w * ratio
             if not hasattr(self, '_last_turn_log_time') or (time.time() - self._last_turn_log_time) > 1.0:
                 self.logger.progress(f'初始转弯: {angle_turned:.1f}°/{target_angle}°, v={cmd.linear.x:.2f}, w={cmd.angular.z:.2f}, yaw={math.degrees(self.yaw):.1f}°')
                 self.get_logger().info(f'转弯中: {angle_turned:.1f}° / {target_angle}°')
@@ -249,10 +257,11 @@ class VisualStage2Navigator(Node):
         else:
             self.state = 'STRAIGHT'
             self.straight_distance = 0.0
+            self._last_turn_end_time = time.time()
             self.logger.feedback('首次转弯完成，进入直行跟踪')
             self.get_logger().info('首次转弯完成，进入直行跟踪')
         return cmd
-    
+
     def _straight_tracking(self):
         cmd = Twist()
         
@@ -260,6 +269,7 @@ class VisualStage2Navigator(Node):
             self.state = 'TURNING'
             self.turn_start_yaw = self.yaw
             self.turn_count += 1
+            self._last_turn_end_time = time.time()
             self.get_logger().info(f'检测到拐角，开始转弯 #{self.turn_count}')
             return self._corner_turning()
         
@@ -281,23 +291,42 @@ class VisualStage2Navigator(Node):
         angle_turned = abs(math.degrees(self.yaw - self.turn_start_yaw))
         center_threshold = self.get_parameter('offset_center_threshold').value
         
-        condition1 = (angle_turned >= 85.0) and self.vision_valid
-        condition2 = self.vision_valid and (abs(self.vision_offset) < center_threshold)
+        # 转弯判断：
+        # 1. 转够 85° 强制退出（不依赖视觉，防止视觉丢失时转不停）
+        # 2. 转够 75° 且视觉回中提前退出
+        # 3. 超过 100° 兜底退出（安全阀）
+        target_angle = 85.0
+        min_angle = 75.0
+        max_angle = 100.0
         
-        if condition1 or condition2:
+        condition1 = (angle_turned >= target_angle)
+        condition2 = (angle_turned >= min_angle) and self.vision_valid and (abs(self.vision_offset) < center_threshold)
+        condition3 = (angle_turned >= max_angle)
+        
+        if condition1 or condition2 or condition3:
             self.state = 'STRAIGHT'
             self.straight_distance = 0.0
-            reason = "视觉回中" if condition2 else "角度达标"
+            self._last_turn_end_time = time.time()
+            reason = "视觉回中" if condition2 else ("角度达标" if condition1 else "安全阀")
             self.get_logger().info(f'转弯#{self.turn_count}完成 ({reason}), 角度: {angle_turned:.1f}°')
         else:
-            cmd.linear.x = self.get_parameter('v_turn').value
-            # 拐角方向与入口转弯相反：入口左转则拐角右转，入口右转则拐角左转
-            cmd.angular.z = -self.turn_direction * self.get_parameter('w_turn').value
+            base_w = self.get_parameter('w_turn').value
+            # 接近目标时减速，减少惯性过冲
+            remaining = target_angle - angle_turned
+            if remaining < 20.0:
+                ratio = max(0.3, remaining / 20.0)
+            else:
+                ratio = 1.0
+            cmd.linear.x = self.get_parameter('v_turn').value * ratio
+            cmd.angular.z = -self.turn_direction * base_w * ratio
         
         return cmd
     
     def _should_start_turning(self):
         if self.straight_distance < 0.40:
+            return False
+        # 上次转弯后至少等 1.5s，防止频繁触发
+        if time.time() - self._last_turn_end_time < 1.5:
             return False
         if self.last_valid_time is not None:
             lost_time = time.time() - self.last_valid_time
