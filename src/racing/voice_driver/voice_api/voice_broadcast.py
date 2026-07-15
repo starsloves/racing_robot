@@ -55,29 +55,35 @@ class VoiceBroadcastService:
         return self._config
 
     def speak_text(self, text: str) -> bool:
-        """Speak API/LLM text according to AUDIO_OUTPUT in .env.
+        """Speak API/LLM text - 优先使用本地 CN-TTS 模块直接播报。
 
-        自定义/长文本优先走云端 TTS（DashScope 等）真正朗读原文；
-        MAE01 固件不支持任意长文本，仅作为无音箱时的兜底提示。
+        CN-TTS 支持自定义文本播报（GBK 编码），无需云端 API 和音箱。
         """
         cleaned = text.strip()
         if not cleaned:
-            self._log_error('Empty text')
+            self._log_error('[VOICE] Empty text')
             return False
 
         mode = self._config.resolved_audio_output()
-        self._log_info(f'AUDIO_OUTPUT={mode}  text_len={len(cleaned)}')
+        self._log_info(f'[VOICE] AUDIO_OUTPUT={mode}  text_len={len(cleaned)}')
+        self._log_info(f'[VOICE] 播报内容: "{cleaned[:100]}"{"..." if len(cleaned) > 100 else ""}')
 
-        # 1) 优先云端 TTS：能朗读任意 API 返回文本（需板载/USB 音箱）
-        if self._config.uses_alsa():
-            ok_alsa = self._speak_via_cloud_tts(cleaned)
-            if ok_alsa:
-                return True
-
-        # 2) 兜底：MAE01 模块（仅预设短句或 SYN6288 短文本，固件限制）
+        # 1) 优先：本地 CN-TTS 模块（支持任意中文/英文文本，无需音箱）
         if self._config.uses_mae01():
+            self._log_info('[VOICE] 尝试使用 CN-TTS 模块播报')
             ok_module = self._module.speak_text(cleaned)
             if ok_module:
+                self._log_info('[VOICE] CN-TTS 播报成功')
+                return True
+            else:
+                self._log_error('[VOICE] CN-TTS 播报失败，尝试备用方案')
+
+        # 2) 备用：云端 TTS（需要板载/USB 音箱）
+        if self._config.uses_alsa():
+            self._log_info('[VOICE] 尝试使用云端 TTS 播报')
+            ok_alsa = self._speak_via_cloud_tts(cleaned)
+            if ok_alsa:
+                self._log_info('[VOICE] 云端 TTS 播报成功')
                 return True
 
         if mode == 'mae01':

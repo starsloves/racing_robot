@@ -43,8 +43,8 @@ class Stage2InertialNavigator(Node):
         self.declare_parameter('heading_tolerance_deg', 4.0)
         self.declare_parameter('segment_timeout', 12.0)
         self.declare_parameter('odd_is_clockwise', True)
-        self.declare_parameter('clockwise_keywords', '顺时针,cw,clockwise')
-        self.declare_parameter('counterclockwise_keywords', '逆时针,ccw,counterclockwise')
+        self.declare_parameter('clockwise_keywords', '顺时针cw,clockwise')
+        self.declare_parameter('counterclockwise_keywords', '逆时针ccw,counterclockwise')
         self.declare_parameter('pre_loop_plan_json', '[]')
         self.declare_parameter('use_corridor_path', False)
         self.declare_parameter('corridor_waypoints_are_global', False)
@@ -1078,11 +1078,11 @@ class Stage2InertialNavigator(Node):
         self.mission_active = True
         self.reported_start = True
         if self.use_corridor_path and self.corridor_waypoints:
-            self.publish_feedback(f'第二阶段启动，方向: {self.direction}，先沿固定航点路径到通道入口')
+            self.publish_feedback(f'第二阶段启动，方向 {self.direction}，先沿固定航点路径到通道入口')
             self.start_corridor_path()
             return
 
-        self.publish_feedback(f'第二阶段启动，方向: {self.direction}')
+        self.publish_feedback(f'第二阶段启动，方向 {self.direction}')
         self.begin_inertial_plan_after_nav(nav_succeeded=False)
 
     def build_inertial_plan(self, nav_succeeded):
@@ -1129,7 +1129,7 @@ class Stage2InertialNavigator(Node):
         self.corridor_path_started_at = self.get_clock().now().nanoseconds / 1e9
         self.publish_corridor_path()
         self.publish_state('corridor_path_running')
-        self.publish_feedback(f'固定航点路径已启动，共 {len(self.corridor_waypoints)} 个航点')
+        self.publish_feedback(f'固定航点路径已启动，共{len(self.corridor_waypoints)} 个航点')
 
     def corridor_local_pose(self):
         if self.corridor_waypoints_are_global:

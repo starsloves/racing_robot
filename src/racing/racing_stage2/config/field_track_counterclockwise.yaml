@@ -1,0 +1,105 @@
+# field_track_counterclockwise.yaml — 逆时针矩形赛道（转角补偿 88°）
+# 导航方式：odom 相对坐标 + 欧氏距离，直行段禁用航向修正
+# 起点：Stage1 终点，车头朝向 90°（+Y）
+# 转角补偿：实测每次转弯多转约 2°，所以 90° 改为 88°
+# 入口先右转 88°（实际约 90°），四个拐角依次左转 88°（实际约 90°）
+
+track_type: rectangle_closed
+direction: counterclockwise
+
+segments:
+  # ── 入口对齐 ────────────────────────────────────────
+  # 原地右转 88°（实际会转约 90°）
+  - type: turn
+    angle_deg: -88.0
+    description: rect_enter_align
+
+  # ── 停稳（消除转弯残余角速度） ──────────────────────
+  - type: pause
+    duration: 0.05
+    description: settle_after_enter
+
+  # ── 第一段（底边向右） ──────────────────────────────
+  - type: move
+    distance_m: 1.05
+    description: rect_first_leg
+
+  # ── 停稳（消除直行段残余角速度） ────────────────────
+  - type: pause
+    duration: 0.05
+    description: settle_before_corner_1
+
+  # ── 右下拐角 ────────────────────────────────────────
+  - type: turn
+    angle_deg: 88.0
+    description: rect_corner_1
+
+  # ── 停稳（消除转弯残余角速度） ──────────────────────
+  - type: pause
+    duration: 0.05
+    description: settle_after_corner_1
+
+  # ── 第二段（右边向上） ──────────────────────────────
+  - type: move
+    distance_m: 0.40
+    description: rect_side_1
+
+  # ── 停稳（消除直行段残余角速度） ────────────────────
+  - type: pause
+    duration: 0.05
+    description: settle_before_corner_2
+
+  # ── 右上拐角 ────────────────────────────────────────
+  - type: turn
+    angle_deg: 88.0
+    description: rect_corner_2
+
+  # ── 停稳（消除转弯残余角速度） ──────────────────────
+  - type: pause
+    duration: 0.05
+    description: settle_after_corner_2
+
+  # ── 第三段（顶边向左） ──────────────────────────────
+  - type: move
+    distance_m: 2.90
+    description: rect_top
+
+  # ── 停稳（消除直行段残余角速度） ────────────────────
+  - type: pause
+    duration: 0.05
+    description: settle_before_corner_3
+
+  # ── 左上拐角 ────────────────────────────────────────
+  - type: turn
+    angle_deg: 88.0
+    description: rect_corner_3
+
+  # ── 停稳（消除转弯残余角速度） ──────────────────────
+  - type: pause
+    duration: 0.05
+    description: settle_after_corner_3
+
+  # ── 第四段（左边向下） ──────────────────────────────
+  - type: move
+    distance_m: 0.40
+    description: rect_side_2
+
+  # ── 停稳（消除直行段残余角速度） ────────────────────
+  - type: pause
+    duration: 0.05
+    description: settle_before_corner_4
+
+  # ── 左下拐角 ────────────────────────────────────────
+  - type: turn
+    angle_deg: 88.0
+    description: rect_corner_4
+
+  # ── 停稳（消除转弯残余角速度） ──────────────────────
+  - type: pause
+    duration: 0.05
+    description: settle_after_corner_4
+
+  # ── 返回起点 ────────────────────────────────────────
+  - type: move
+    distance_m: 1.05
+    description: rect_return_origin

@@ -1,1 +1,1 @@
-"""racing_stage2 package."""
+"""Standalone stage2 inertial parameter tester package."""

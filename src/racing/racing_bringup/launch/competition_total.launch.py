@@ -27,6 +27,7 @@ def generate_launch_description():
     include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
     include_obstacle_markers_arg = DeclareLaunchArgument('include_obstacle_markers', default_value='true')
     imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/imu/data')
+    test_direction_arg = DeclareLaunchArgument('test_direction', default_value='clockwise')
     map_yaml_arg = DeclareLaunchArgument(
         'map_yaml',
         default_value=os.path.join(bringup_dir, 'map', 'map_restricted.yaml'),
@@ -78,6 +79,10 @@ def generate_launch_description():
             'include_lidar': 'false',
             'include_bno055': 'false',
             'include_camera': 'false',
+            'test_direction': LaunchConfiguration('test_direction'),
+            'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
+            'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
+            'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
         }.items(),
         condition=IfCondition(LaunchConfiguration('include_stage3')),
     )
@@ -91,6 +96,7 @@ def generate_launch_description():
         include_bno055_arg,
         include_obstacle_markers_arg,
         imu_topic_arg,
+        test_direction_arg,
         map_yaml_arg,
         map_to_odom_x_arg,
         map_to_odom_y_arg,

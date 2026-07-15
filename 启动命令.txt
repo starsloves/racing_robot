@@ -1,61 +1,99 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ROS 2 竞速机器人启动命令速查
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 环境准备
 cd /home/sunrise/dev_ws
 source /opt/ros/humble/setup.bash
-
-# ═══════════════════════════════════════════════════════════════
-# 视觉赛道控制 — vision_inertial_tester
-# ═══════════════════════════════════════════════════════════════
-# plan段序列 + 开环转向 + 视觉居中PID
-
-# 编译
-colcon build --symlink-install --packages-select racing_stage2_param_test
 source install/setup.bash
 
-# 顺时针
-ros2 launch racing_stage2_param_test vision_inertial_test.launch.py
-
-# 逆时针
-ros2 launch racing_stage2_param_test vision_inertial_test.launch.py test_direction:=counterclockwise
-
-# ──────────────────────────────────────────────────────────
-# 惯导（对比用）
-# ──────────────────────────────────────────────────────────
-ros2 launch racing_stage2_param_test direct_inertial_test.launch.py
-
-# ──────────────────────────────────────────────────────────
-# 紧急停车
-# ──────────────────────────────────────────────────────────
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
-
-
-
-全局启动命令：
-```bash
+# ═══════════════════════════════════════════════════════════════════════════
+# 一、全局启动（三阶段联动）
+# ═══════════════════════════════════════════════════════════════════════════
 ros2 launch racing_bringup competition_total.launch.py
-```
 
-### 第一阶段（单独启动）
-```bash
-ros2 launchc racing_stage1 competition_stage1.launch.py
-```
+# ═══════════════════════════════════════════════════════════════════════════
+# 二、分阶段独立测试（官方包，自动发布话题）
+# ═══════════════════════════════════════════════════════════════════════════
 
-### 第二阶段（测试包单独启动）
-```bash
-ros2 launch racing_stage2_param_test direct_inertial_test.launch.py
-```
-另有辅助测试：
-```bash
-ros2 launch racing_stage2_param_test lidar_test.launch.py
-ros2 launch racing_stage2_param_test simple_avoid_test.launch.py
-ros2 launch racing_stage2_param_test vision_preview.launch.py
-```
+# Stage1 独立测试（起点 0.50, 0.20, ~10°）
+ros2 launch racing_stage1 competition_stage1.launch.py \
+    include_map_overlay:=true \
+    test_direction:=clockwise
 
-# 视觉导航
-ros2 launch racing_stage2_param_vision_test visual_stage2.launch.py
+# Stage2 独立测试 - 顺时针（通道入口 2.80, 3.10, 90°）
+ 
 
-### 第三阶段（测试包单独启动）
-```bash
-ros2 launch racing_stage3_param_test enhanced_return_test.launch.py
-```
+# Stage2 独立测试 - 逆时针
+ros2 launch racing_stage2 competition_stage2.launch.py \
+    include_map_overlay:=true \
+    test_direction:=counterclockwise
 
-### 相机启动+推理+web展示
+# Stage3 独立测试 - 顺时针（2.38, 3.32, 180°）
+ros2 launch racing_stage3 competition_stage3.launch.py \
+    include_map_overlay:=true \
+    test_direction:=clockwise
+
+# Stage3 独立测试 - 逆时针（2.38, 3.32, 0°）
+ros2 launch racing_stage3 competition_stage3.launch.py \
+    include_map_overlay:=true \
+    test_direction:=counterclockwise
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 三、工具命令
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 紧急停车
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
+    "{linear: {x: 0.0}, angular: {z: 0.0}}"
+
+# 相机启动 + 推理 + Web 展示（All-in-One）
 python3 ~/dev_ws/src/racing/tools/camera_all_in_one.py
+
+# 查看话题列表
+ros2 topic list
+
+# 查看里程计（验证初始位置）
+ros2 topic echo /odom_combined
+
+# 查看阶段和方向话题（验证测试发布器）
+ros2 topic echo /competition_phase
+ros2 topic echo /competition_qr_task
+
+# 查看 TF 树
+ros2 run tf2_tools view_frames
+
+# 实时监听 map→odom TF
+ros2 run tf2_ros tf2_echo map odom_combined
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 四、编译命令
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 编译所有包
+colcon build --symlink-install
+
+# 编译官方阶段包
+colcon build --symlink-install --packages-select \
+    racing_common racing_stage1 racing_stage2 racing_stage3
+
+# 清理重新编译
+rm -rf build/ install/ log/
+colcon build --symlink-install
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 附录：各阶段初始位置参数对照表
+# ═══════════════════════════════════════════════════════════════════════════
+# 
+# 阶段    | map_to_odom_x | map_to_odom_y | map_to_odom_yaw  | 说明
+# --------|---------------|---------------|------------------|------------------
+# Stage1  | 0.50          | 0.20          | 0.1745 (~10°)    | 起点区域
+# Stage2  | 2.80          | 3.10          | 1.5708 (90°)     | 通道入口
+# Stage3  | 2.38          | 3.32          | 3.1416 (180°)    | 整圈终点（顺时针）
+# Stage3  | 2.38          | 3.32          | 0.0 (0°)         | 整圈终点（逆时针）
+#
+# 详细说明：docs/stage_standalone_testing.md
+#
+# 独立测试自动发布话题：
+#   /competition_phase (Int32) - 阶段编号 (1/2/3)
+#   /competition_qr_task (String) - 方向 (clockwise/counterclockwise)

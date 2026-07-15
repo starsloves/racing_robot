@@ -9,8 +9,7 @@ setup(
     version='0.0.1',
     packages=[package_name],
     data_files=[
-        ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
+        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*launch.[pxy][yma]*'))),
         (os.path.join('share', package_name, 'config'), glob(os.path.join('config', '*'))),
@@ -26,6 +25,11 @@ setup(
         'console_scripts': [
             'stage2_inertial_navigator = racing_stage2.stage2_inertial_navigator:main',
             'lidar_obstacle_circle_markers = racing_stage2.lidar_obstacle_circle_markers:main',
+            'direct_inertial_tester = racing_stage2.direct_inertial_tester:main',
+            'vision_preview = racing_stage2.vision_preview:main',
+            'twist_cmd_relay = racing_stage2.twist_cmd_relay:main',
+            'data_recorder = racing_stage2.data_recorder:main',
+            'stage_test_publisher = racing_stage2.stage_test_publisher:main',
         ],
     },
 )

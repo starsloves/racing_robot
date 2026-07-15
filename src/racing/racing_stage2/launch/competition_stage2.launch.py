@@ -11,13 +11,15 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     stage2_dir = get_package_share_directory('racing_stage2')
+    bringup_dir = get_package_share_directory('origincar_bringup')
     support_launch_path = os.path.join(stage2_dir, 'launch', 'competition_support.launch.py')
+    map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
     inertial_config = os.path.join(stage2_dir, 'config', 'inertial_stage2.yaml')
     obstacle_marker_config = os.path.join(stage2_dir, 'config', 'obstacle_circle_markers.yaml')
 
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='true')
     include_lidar_arg = DeclareLaunchArgument('include_lidar', default_value='true')
-    include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='true')
+    include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
     include_camera_arg = DeclareLaunchArgument('include_camera', default_value='true')
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='false')
     include_obstacle_markers_arg = DeclareLaunchArgument('include_obstacle_markers', default_value='true')
@@ -27,6 +29,31 @@ def generate_launch_description():
     bno055_i2c_bus_arg = DeclareLaunchArgument('bno055_i2c_bus', default_value='5')
     bno055_i2c_addr_arg = DeclareLaunchArgument('bno055_i2c_addr', default_value='41')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
+    include_map_overlay_arg = DeclareLaunchArgument(
+        'include_map_overlay',
+        default_value='false',
+        description='Include map server and map→odom TF for standalone testing'
+    )
+    map_to_odom_x_arg = DeclareLaunchArgument(
+        'map_to_odom_x',
+        default_value='2.80',
+        description='Stage2 start X position in map frame (channel_entry)'
+    )
+    map_to_odom_y_arg = DeclareLaunchArgument(
+        'map_to_odom_y',
+        default_value='3.10',
+        description='Stage2 start Y position in map frame (channel_entry)'
+    )
+    map_to_odom_yaw_arg = DeclareLaunchArgument(
+        'map_to_odom_yaw',
+        default_value='1.5707963268',
+        description='Stage2 start yaw in map frame (rad, 90°)'
+    )
+    test_direction_arg = DeclareLaunchArgument(
+        'test_direction',
+        default_value='clockwise',
+        description='Test direction for standalone testing (clockwise/counterclockwise)'
+    )
 
     support_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(support_launch_path),
@@ -42,6 +69,29 @@ def generate_launch_description():
             'bno055_i2c_addr': LaunchConfiguration('bno055_i2c_addr'),
             'carto_slam': LaunchConfiguration('carto_slam'),
         }.items(),
+    )
+
+    map_overlay_stack = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(map_overlay_launch_path),
+        launch_arguments={
+            'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
+            'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
+            'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
+            'odom_frame': 'odom_combined',
+        }.items(),
+        condition=IfCondition(LaunchConfiguration('include_map_overlay')),
+    )
+
+    test_publisher = Node(
+        package='racing_stage2',
+        executable='stage_test_publisher',
+        name='stage_test_publisher',
+        parameters=[{
+            'stage_number': 2,
+            'test_direction': LaunchConfiguration('test_direction'),
+        }],
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('include_map_overlay')),
     )
 
     stage2_navigator = Node(
@@ -79,7 +129,14 @@ def generate_launch_description():
         bno055_i2c_bus_arg,
         bno055_i2c_addr_arg,
         carto_slam_arg,
+        include_map_overlay_arg,
+        map_to_odom_x_arg,
+        map_to_odom_y_arg,
+        map_to_odom_yaw_arg,
+        test_direction_arg,
         support_stack,
+        map_overlay_stack,
+        test_publisher,
         stage2_navigator,
         obstacle_circle_markers,
     ])

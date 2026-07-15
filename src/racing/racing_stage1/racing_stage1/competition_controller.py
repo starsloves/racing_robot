@@ -1,6 +1,20 @@
 import math
 
 import rclpy
+import sys
+import os
+
+# 添加 voice_api 路径以支持 CN-TTS
+voice_api_path = os.path.join(os.path.dirname(__file__), '../../../voice_driver')
+if voice_api_path not in sys.path:
+    sys.path.insert(0, voice_api_path)
+
+try:
+    from voice_api import CnTtsPlayer
+    CN_TTS_AVAILABLE = True
+except ImportError:
+    CN_TTS_AVAILABLE = False
+
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
@@ -206,6 +220,20 @@ class CompetitionController(Node):
             self, log_subdir='competition_stage1',
             log_filename='latest.log', session_title='Stage1 competition',
         )
+        # CN-TTS 语音播报初始化
+        self.tts_player = None
+        if CN_TTS_AVAILABLE:
+            try:
+                self.tts_player = CnTtsPlayer(port='/dev/ttyS1', baudrate=9600, logger=self.get_logger())
+                self.log.startup('CN-TTS 语音模块已初始化 (port=/dev/ttyS1, baud=9600)')
+                self.get_logger().info('[VOICE] CN-TTS 模块已初始化')
+            except Exception as e:
+                self.log.warn('VOICE', f'CN-TTS 初始化失败: {e}')
+                self.get_logger().warn(f'[VOICE] CN-TTS 初始化失败: {e}')
+        else:
+            self.log.warn('VOICE', 'CN-TTS 模块不可用（voice_api 未安装）')
+            self.get_logger().warn('[VOICE] CN-TTS 模块不可用')
+
 
         # 障碍物可视化（rviz2 调试用）
         self.obstacle_markers = ObstacleMarkerPublisher(
@@ -634,6 +662,9 @@ class CompetitionController(Node):
         self.qr_task = task
         self.task_pub.publish(String(data=task))
         
+        # 播报识别结果（方向 + 数字）
+        self._speak_qr_result(task)
+        
         # 如果启用后退功能，先进入 backing 状态；否则直接切换 phase2
         if self.enable_backing and len(self.path_record) > 0:
             self.phase1_motion_state = 'backing'
@@ -922,3 +953,52 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+    def _speak_qr_result(self, task):
+        """播报二维码识别结果：方向 + 数字"""
+        if self.tts_player is None:
+            self.log.warn('VOICE', 'CN-TTS 模块未初始化，无法播报')
+            return
+        
+        try:
+            # 提取方向和数字
+            direction_text = ""
+            numbers_text = ""
+            
+            if 'clockwise' in task.lower():
+                direction_text = "顺时针"
+            elif 'counterclockwise' in task.lower():
+                direction_text = "逆时针"
+            
+            # 提取数字（支持多种格式）
+            import re as re_local
+            numbers = re_local.findall(r'\d+', task)
+            if numbers:
+                # 数字按个位读，如 123 -> "1 2 3"
+                numbers_list = []
+                for num in numbers:
+                    numbers_list.extend(list(num))
+                numbers_text = " ".join(numbers_list)
+            
+            # 组合播报内容
+            if direction_text and numbers_text:
+                speak_text = f"{direction_text} {numbers_text}"
+            elif direction_text:
+                speak_text = direction_text
+            elif numbers_text:
+                speak_text = numbers_text
+            else:
+                speak_text = f"任务识别 {task}"
+            
+            # 详细日志记录
+            self.log.mission(f'QR播报开始: 原文="{task}" → 播报="{speak_text}"')
+            self.get_logger().info(f'[VOICE] 播报二维码: {speak_text}')
+            
+            # 执行播报
+            self.tts_player.speak_text(speak_text)
+            self.log.feedback(f'QR播报完成: "{speak_text}"')
+            
+        except Exception as e:
+            self.log.error('VOICE', f'播报失败: {e}')
+            self.get_logger().error(f'[VOICE] 播报异常: {e}')
+

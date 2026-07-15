@@ -29,4 +29,8 @@ htmlcov/
 # Temp / debug scripts (not part of source)
 seg_diagnostic.py
 
+docs
 video/
+
+AGENTS.md
+AGENTS_en_bak.md

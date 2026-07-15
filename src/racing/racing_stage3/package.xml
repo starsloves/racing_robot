@@ -3,14 +3,23 @@
 <package format="3">
   <name>racing_stage3</name>
   <version>0.0.1</version>
-  <description>Stage 3 return-to-p navigator for racing competition</description>
+  <description>Stage 3 return-to-p navigator and phase2 companion perception nodes for racing competition</description>
   <maintainer email="your_email@example.com">Your Name</maintainer>
   <license>Apache License 2.0</license>
 
+  <depend>ament_index_python</depend>
+  <depend>launch</depend>
+  <depend>launch_ros</depend>
   <depend>rclpy</depend>
-  <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>python3-numpy</depend>
+  <depend>python3-opencv</depend>
+  <depend>python3-yaml</depend>
+  <depend>racing_common</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

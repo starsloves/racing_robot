@@ -1,5 +1,6 @@
 import json
 import math
+import threading
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
@@ -7,6 +8,14 @@ from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Int32, String
+
+from racing_stage3.cmd_vel_stop import (
+    emergency_cli_stop_async,
+    init_without_ros_signal_handler,
+    install_stop_event,
+    publish_stop,
+    spin_until_stop,
+)
 
 
 class Stage3ReturnNavigator(Node):
@@ -368,16 +377,29 @@ class Stage3ReturnNavigator(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    init_without_ros_signal_handler(args)
     node = Stage3ReturnNavigator()
+    stop_event = threading.Event()
+    
+    def _stop_callback():
+        publish_stop(node.cmd_pub, repeat=10)
+    
+    install_stop_event(stop_event, _stop_callback, cli_topics=['/cmd_vel'])
+    
     try:
-        rclpy.spin(node)
+        spin_until_stop(node, stop_event)
     except KeyboardInterrupt:
         pass
     finally:
-        if rclpy.ok():
-            node.cmd_pub.publish(Twist())
-        node.destroy_node()
+        try:
+            if rclpy.ok():
+                publish_stop(node.cmd_pub, repeat=15)
+        except Exception:
+            pass
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
         if rclpy.ok():
             rclpy.shutdown()
 

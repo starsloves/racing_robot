@@ -20,6 +20,7 @@ def generate_launch_description():
     qr_launch_dir = os.path.join(qr_dir, 'launch')
     stage1_config_dir = os.path.join(stage1_dir, 'config')
     bringup_launch_dir = os.path.join(bringup_dir, 'launch')
+    map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
 
     device_arg = DeclareLaunchArgument('device', default_value='/dev/video0')
     include_camera_arg = DeclareLaunchArgument('include_camera', default_value='true')
@@ -29,11 +30,36 @@ def generate_launch_description():
     stage2_cmd_topic_arg = DeclareLaunchArgument('stage2_cmd_topic', default_value='/stage2_cmd_vel')
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='true')
     include_lidar_arg = DeclareLaunchArgument('include_lidar', default_value='true')
-    include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='true')
+    include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
     imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/imu/data')
     bno055_i2c_bus_arg = DeclareLaunchArgument('bno055_i2c_bus', default_value='5')
     bno055_i2c_addr_arg = DeclareLaunchArgument('bno055_i2c_addr', default_value='41')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
+    include_map_overlay_arg = DeclareLaunchArgument(
+        'include_map_overlay',
+        default_value='false',
+        description='Include map server and map→odom TF for standalone testing'
+    )
+    map_to_odom_x_arg = DeclareLaunchArgument(
+        'map_to_odom_x',
+        default_value='0.50',
+        description='Stage1 start X position in map frame'
+    )
+    map_to_odom_y_arg = DeclareLaunchArgument(
+        'map_to_odom_y',
+        default_value='0.20',
+        description='Stage1 start Y position in map frame'
+    )
+    map_to_odom_yaw_arg = DeclareLaunchArgument(
+        'map_to_odom_yaw',
+        default_value='0.1745329252',
+        description='Stage1 start yaw in map frame (rad, default ~10°)'
+    )
+    test_direction_arg = DeclareLaunchArgument(
+        'test_direction',
+        default_value='clockwise',
+        description='Test direction for standalone testing (clockwise/counterclockwise)'
+    )
 
     bringup_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(bringup_launch_dir, 'origincar_bringup.launch.py')),
@@ -41,6 +67,29 @@ def generate_launch_description():
             'carto_slam': LaunchConfiguration('carto_slam'),
         }.items(),
         condition=IfCondition(LaunchConfiguration('include_bringup')),
+    )
+
+    map_overlay_stack = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(map_overlay_launch_path),
+        launch_arguments={
+            'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
+            'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
+            'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
+            'odom_frame': 'odom_combined',
+        }.items(),
+        condition=IfCondition(LaunchConfiguration('include_map_overlay')),
+    )
+
+    test_publisher = Node(
+        package='racing_stage1',
+        executable='stage_test_publisher',
+        name='stage_test_publisher',
+        parameters=[{
+            'stage_number': 1,
+            'test_direction': LaunchConfiguration('test_direction'),
+        }],
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('include_map_overlay')),
     )
 
     base_launch = IncludeLaunchDescription(
@@ -104,7 +153,14 @@ def generate_launch_description():
         bno055_i2c_bus_arg,
         bno055_i2c_addr_arg,
         carto_slam_arg,
+        include_map_overlay_arg,
+        map_to_odom_x_arg,
+        map_to_odom_y_arg,
+        map_to_odom_yaw_arg,
+        test_direction_arg,
         bringup_launch,
+        map_overlay_stack,
+        test_publisher,
         base_launch,
         lidar_launch,
         bno055_node,
