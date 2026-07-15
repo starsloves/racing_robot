@@ -9,9 +9,9 @@ stage2_inertial_navigator:
     wheel_odom_warmup_sec: 0.40
     wheel_odom_warmup_min_msgs: 5
 
-    use_corridor_path: true
+    use_corridor_path: false
     pre_loop_plan_json: '[]'
-    post_corridor_path_plan_json: '[{"type":"pause","duration":0.20,"description":"corridor_arrive_settle"}]'
+    post_corridor_path_plan_json: '[]'
 
     session_log_subdir: direct_inertial_test
     session_log_filename: latest.log

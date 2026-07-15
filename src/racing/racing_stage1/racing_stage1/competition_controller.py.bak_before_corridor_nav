@@ -1,7 +1,4 @@
 import math
-import heapq
-import json
-import numpy as np
 
 import rclpy
 import sys
@@ -19,8 +16,7 @@ except ImportError:
     CN_TTS_AVAILABLE = False
 
 from geometry_msgs.msg import Twist
-from nav_msgs.msg import OccupancyGrid, Odometry, Path
-from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -99,25 +95,6 @@ class CompetitionController(Node):
         self.declare_parameter('back_align_yaw_deg', 90.0)
         self.declare_parameter('back_align_tolerance_deg', 5.0)
         self.declare_parameter('back_align_timeout_sec', 5.0)
-        self.declare_parameter('map_topic', '/map')
-        self.declare_parameter('corridor_path_topic', '/stage1_corridor_path')
-        self.declare_parameter('enable_corridor_navigation', True)
-        self.declare_parameter('corridor_waypoints_json', '[{"x":2.80,"y":3.10}]')
-        self.declare_parameter('corridor_waypoint_tolerance', 0.15)
-        self.declare_parameter('corridor_goal_tolerance', 0.10)
-        self.declare_parameter('corridor_goal_yaw_deg', 90.0)
-        self.declare_parameter('corridor_goal_yaw_tolerance_deg', 5.0)
-        self.declare_parameter('corridor_linear_speed', 0.14)
-        self.declare_parameter('corridor_timeout_sec', 30.0)
-        self.declare_parameter('pure_pursuit_lookahead_m', 0.45)
-        self.declare_parameter('pure_pursuit_turn_kp', 1.8)
-        self.declare_parameter('pure_pursuit_heading_stop_deg', 70.0)
-        self.declare_parameter('use_corridor_planner', True)
-        self.declare_parameter('planner_downsample', 4)
-        self.declare_parameter('planner_occupied_threshold', 50)
-        self.declare_parameter('planner_unknown_is_occupied', True)
-        self.declare_parameter('planner_obstacle_inflation_m', 0.14)
-        self.declare_parameter('planner_replan_period_sec', 0.5)
 
         self.output_cmd_topic = self.get_parameter('output_cmd_topic').value
         self.stage2_cmd_topic = self.get_parameter('stage2_cmd_topic').value
@@ -187,33 +164,6 @@ class CompetitionController(Node):
         self.back_align_yaw_rad = math.radians(float(self.get_parameter('back_align_yaw_deg').value))
         self.back_align_tolerance_rad = math.radians(float(self.get_parameter('back_align_tolerance_deg').value))
         self.back_align_timeout_sec = float(self.get_parameter('back_align_timeout_sec').value)
-        self.map_topic = str(self.get_parameter('map_topic').value)
-        self.corridor_path_topic = str(self.get_parameter('corridor_path_topic').value)
-        self.enable_corridor_navigation = bool(self.get_parameter('enable_corridor_navigation').value)
-        self.corridor_waypoints = self._parse_corridor_waypoints(
-            str(self.get_parameter('corridor_waypoints_json').value)
-        )
-        self.corridor_waypoint_tolerance = float(self.get_parameter('corridor_waypoint_tolerance').value)
-        self.corridor_goal_tolerance = float(self.get_parameter('corridor_goal_tolerance').value)
-        self.corridor_goal_yaw = math.radians(float(self.get_parameter('corridor_goal_yaw_deg').value))
-        self.corridor_goal_yaw_tolerance = math.radians(
-            float(self.get_parameter('corridor_goal_yaw_tolerance_deg').value)
-        )
-        self.corridor_linear_speed = float(self.get_parameter('corridor_linear_speed').value)
-        self.corridor_timeout_sec = float(self.get_parameter('corridor_timeout_sec').value)
-        self.pure_pursuit_lookahead = float(self.get_parameter('pure_pursuit_lookahead_m').value)
-        self.pure_pursuit_turn_kp = float(self.get_parameter('pure_pursuit_turn_kp').value)
-        self.pure_pursuit_heading_stop = math.radians(
-            float(self.get_parameter('pure_pursuit_heading_stop_deg').value)
-        )
-        self.use_corridor_planner = bool(self.get_parameter('use_corridor_planner').value)
-        self.planner_downsample = max(1, int(self.get_parameter('planner_downsample').value))
-        self.planner_occupied_threshold = int(self.get_parameter('planner_occupied_threshold').value)
-        self.planner_unknown_is_occupied = bool(self.get_parameter('planner_unknown_is_occupied').value)
-        self.planner_obstacle_inflation_m = float(
-            self.get_parameter('planner_obstacle_inflation_m').value
-        )
-        self.planner_replan_period_sec = float(self.get_parameter('planner_replan_period_sec').value)
 
         latched_qos = QoSProfile(
             depth=1,
@@ -228,12 +178,6 @@ class CompetitionController(Node):
         self.create_subscription(LaserScan, self.scan_topic, self.lidar_callback, 10)
         self.create_subscription(Imu, self.imu_topic, self.imu_callback, 10)
         self.create_subscription(Odometry, self.odom_topic, self.odom_callback, 10)
-        map_qos = QoSProfile(
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        )
-        self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, map_qos)
         self.create_subscription(String, self.qr_result_topic, self.qr_callback, 10)
         self.create_subscription(Twist, self.stage2_cmd_topic, self.stage2_cmd_callback, 10)
         self.create_subscription(String, self.stage2_state_topic, self.stage2_state_callback, 10)
@@ -270,14 +214,6 @@ class CompetitionController(Node):
         self.backing_started_time = None
         self.backing_path_index = -1
         self.aligning_started_time = None
-        self.latest_map = None
-        self.corridor_active = False
-        self.corridor_index = 0
-        self.corridor_started_at = None
-        self.corridor_path_points = []
-        self.corridor_path_updated_at = 0.0
-        self.corridor_resume_after_avoidance = False
-        self.corridor_path_pub = self.create_publisher(Path, self.corridor_path_topic, 10)
 
         # RacingLogger：日志文件 ~/dev_ws/log/competition_stage1/latest.log
         self.log = RacingLogger(
@@ -382,210 +318,6 @@ class CompetitionController(Node):
                     if len(self.path_record) > 1000:
                         self.path_record.pop(0)
 
-    def map_callback(self, msg):
-        self.latest_map = msg
-
-    @staticmethod
-    def _parse_corridor_waypoints(raw_json):
-        try:
-            raw_waypoints = json.loads(raw_json)
-        except (TypeError, json.JSONDecodeError):
-            return []
-        if not isinstance(raw_waypoints, list):
-            return []
-        result = []
-        for index, waypoint in enumerate(raw_waypoints):
-            if not isinstance(waypoint, dict):
-                continue
-            result.append({
-                'x': float(waypoint.get('x', 0.0)),
-                'y': float(waypoint.get('y', 0.0)),
-                'speed': float(waypoint.get('speed', 0.14)),
-                'description': str(waypoint.get('description', f'corridor_wp_{index}')),
-            })
-        return result
-
-    def start_corridor_navigation(self, reason):
-        if not self.enable_corridor_navigation or not self.corridor_waypoints:
-            self.phase1_motion_state = 'forward'
-            self.begin_phase_transition(2, reason)
-            return
-        self.corridor_active = True
-        self.corridor_index = 0
-        self.corridor_started_at = self.get_clock().now().nanoseconds / 1e9
-        self.corridor_path_points = []
-        self.corridor_path_updated_at = 0.0
-        self.phase1_motion_state = 'corridor'
-        self.stop_robot()
-        self.log.mission(f'后退完成，开始地图通道导航: {reason}')
-
-    def _map_world_to_grid(self, x, y, step):
-        info = self.latest_map.info
-        gx = int(math.floor((x - info.origin.position.x) / info.resolution))
-        gy = int(math.floor((y - info.origin.position.y) / info.resolution))
-        return gx // step, gy // step
-
-    def _map_grid_to_world(self, gx, gy, step):
-        info = self.latest_map.info
-        return (
-            info.origin.position.x + (gx * step + 0.5 * step) * info.resolution,
-            info.origin.position.y + (gy * step + 0.5 * step) * info.resolution,
-        )
-
-    def _corridor_occupancy(self, step):
-        info = self.latest_map.info
-        width = max(1, info.width // step)
-        height = max(1, info.height // step)
-        source = np.asarray(self.latest_map.data, dtype=np.int16).reshape(info.height, info.width)
-        occupied = np.zeros((height, width), dtype=bool)
-        for gy in range(height):
-            for gx in range(width):
-                block = source[gy * step:min((gy + 1) * step, info.height), gx * step:min((gx + 1) * step, info.width)]
-                if self.planner_unknown_is_occupied:
-                    occupied[gy, gx] = bool(np.any((block < 0) | (block >= self.planner_occupied_threshold)))
-                else:
-                    occupied[gy, gx] = bool(np.any(block >= self.planner_occupied_threshold))
-        radius = int(math.ceil(self.planner_obstacle_inflation_m / info.resolution / step))
-        if radius <= 0:
-            return occupied
-        original = occupied.copy()
-        for dy in range(-radius, radius + 1):
-            for dx in range(-radius, radius + 1):
-                if dx * dx + dy * dy > radius * radius:
-                    continue
-                source_y0 = max(0, -dy)
-                source_y1 = min(height, height - dy)
-                source_x0 = max(0, -dx)
-                source_x1 = min(width, width - dx)
-                target_y0 = max(0, dy)
-                target_y1 = min(height, height + dy)
-                target_x0 = max(0, dx)
-                target_x1 = min(width, width + dx)
-                occupied[target_y0:target_y1, target_x0:target_x1] |= original[source_y0:source_y1, source_x0:source_x1]
-        return occupied
-
-    @staticmethod
-    def _nearest_free(occupied, point):
-        gx, gy = point
-        height, width = occupied.shape
-        if 0 <= gx < width and 0 <= gy < height and not occupied[gy, gx]:
-            return point
-        for radius in range(1, 20):
-            for dx in range(-radius, radius + 1):
-                for dy in range(-radius, radius + 1):
-                    x, y = gx + dx, gy + dy
-                    if 0 <= x < width and 0 <= y < height and not occupied[y, x]:
-                        return x, y
-        return None
-
-    def plan_corridor_path(self, start, goal):
-        if self.latest_map is None:
-            return None
-        step = max(1, self.planner_downsample)
-        occupied = self._corridor_occupancy(step)
-        start_cell = self._nearest_free(occupied, self._map_world_to_grid(start[0], start[1], step))
-        goal_cell = self._nearest_free(occupied, self._map_world_to_grid(goal[0], goal[1], step))
-        if start_cell is None or goal_cell is None:
-            return []
-        frontier = [(0.0, start_cell)]
-        came_from = {start_cell: None}
-        cost = {start_cell: 0.0}
-        neighbors = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
-        while frontier:
-            _, current = heapq.heappop(frontier)
-            if current == goal_cell:
-                break
-            for dx, dy in neighbors:
-                nxt = current[0] + dx, current[1] + dy
-                if not (0 <= nxt[0] < occupied.shape[1] and 0 <= nxt[1] < occupied.shape[0]) or occupied[nxt[1], nxt[0]]:
-                    continue
-                move_cost = 1.4142 if dx and dy else 1.0
-                new_cost = cost[current] + move_cost
-                if new_cost >= cost.get(nxt, float('inf')):
-                    continue
-                cost[nxt] = new_cost
-                priority = new_cost + math.hypot(goal_cell[0] - nxt[0], goal_cell[1] - nxt[1])
-                heapq.heappush(frontier, (priority, nxt))
-                came_from[nxt] = current
-        if goal_cell not in came_from:
-            return []
-        cells = []
-        current = goal_cell
-        while current is not None:
-            cells.append(current)
-            current = came_from[current]
-        cells.reverse()
-        return [self._map_grid_to_world(x, y, step) for x, y in cells]
-
-    def _corridor_lookahead(self, path):
-        if not path:
-            return None
-        traveled = 0.0
-        previous = self.current_odom.pose.pose.position.x, self.current_odom.pose.pose.position.y
-        for point in path:
-            traveled += math.hypot(point[0] - previous[0], point[1] - previous[1])
-            if traveled >= self.pure_pursuit_lookahead:
-                return point
-            previous = point
-        return path[-1]
-
-    def handle_corridor_navigation(self):
-        if self.current_odom is None or self.current_yaw is None:
-            self.stop_robot()
-            return
-        now = self.get_clock().now().nanoseconds / 1e9
-        if self.corridor_started_at is not None and now - self.corridor_started_at > self.corridor_timeout_sec:
-            self.stop_robot()
-            self.log.error('CORRIDOR', '地图通道导航超时，保持 Stage1 停止，不提前进入 Stage2')
-            return
-        position = self.current_odom.pose.pose.position
-        current = (float(position.x), float(position.y))
-        while self.corridor_index < len(self.corridor_waypoints) - 1:
-            waypoint = self.corridor_waypoints[self.corridor_index]
-            if math.hypot(waypoint['x'] - current[0], waypoint['y'] - current[1]) > self.corridor_waypoint_tolerance:
-                break
-            self.corridor_index += 1
-        goal = self.corridor_waypoints[-1]
-        goal_distance = math.hypot(goal['x'] - current[0], goal['y'] - current[1])
-        if self.corridor_index == len(self.corridor_waypoints) - 1 and goal_distance <= self.corridor_goal_tolerance:
-            yaw_error = self.angle_error(self.corridor_goal_yaw, self.current_yaw)
-            if abs(yaw_error) > self.corridor_goal_yaw_tolerance:
-                angular = self.clamp(self.pure_pursuit_turn_kp * yaw_error, 0.8)
-                if abs(angular) < 0.2:
-                    angular = math.copysign(0.2, yaw_error)
-                self.cmd_pub.publish(self.create_twist(0.0, angular))
-                return
-            self.corridor_active = False
-            self.phase1_motion_state = 'forward'
-            self.stop_robot()
-            self.begin_phase_transition(2, '通道导航到达 (2.80, 3.10)，航向已对齐')
-            return
-        target_waypoint = self.corridor_waypoints[self.corridor_index]
-        if not self.use_corridor_planner:
-            target = (target_waypoint['x'], target_waypoint['y'])
-        elif now - self.corridor_path_updated_at >= self.planner_replan_period_sec or not self.corridor_path_points:
-            self.corridor_path_points = self.plan_corridor_path(current, (target_waypoint['x'], target_waypoint['y']))
-            self.corridor_path_updated_at = now
-            if not self.corridor_path_points:
-                self.stop_robot()
-                self.log.warn('CORRIDOR', '地图无可行通道路径，继续等待地图或路径恢复')
-                return
-            target = self._corridor_lookahead(self.corridor_path_points)
-        else:
-            target = self._corridor_lookahead(self.corridor_path_points)
-        dx = target[0] - current[0]
-        dy = target[1] - current[1]
-        target_x = math.cos(self.current_yaw) * dx + math.sin(self.current_yaw) * dy
-        target_y = -math.sin(self.current_yaw) * dx + math.cos(self.current_yaw) * dy
-        heading_error = math.atan2(target_y, max(target_x, 1e-6))
-        angular = self.clamp(self.pure_pursuit_turn_kp * heading_error, 0.8)
-        speed = min(float(target_waypoint.get('speed', self.corridor_linear_speed)), self.corridor_linear_speed)
-        if abs(heading_error) > self.pure_pursuit_heading_stop:
-            speed = 0.0
-        elif abs(heading_error) > math.radians(30.0):
-            speed *= 0.5
-        self.cmd_pub.publish(self.create_twist(speed, angular))
-
     def begin_avoidance(self, danger_angle):
         self.phase1_motion_state = 'avoiding'
         self.avoid_turn_direction = -1.0 if danger_angle > 0.0 else 1.0
@@ -674,11 +406,7 @@ class CompetitionController(Node):
         return False
 
     def finish_recovery(self):
-        if self.corridor_resume_after_avoidance and self.corridor_active:
-            self.phase1_motion_state = 'corridor'
-            self.corridor_resume_after_avoidance = False
-        else:
-            self.phase1_motion_state = 'forward'
+        self.phase1_motion_state = 'forward'
         self.avoid_started_time = None
         self.avoid_clear_since = None
         self.avoid_entry_yaw = None
@@ -852,10 +580,7 @@ class CompetitionController(Node):
 
     def lidar_callback(self, msg):
         if self.phase == 1:
-            was_corridor = self.phase1_motion_state == 'corridor'
             self.handle_phase1_lidar(msg)
-            if was_corridor and self.phase1_motion_state == 'avoiding':
-                self.corridor_resume_after_avoidance = True
             return
 
         min_dist = float('inf')
@@ -927,7 +652,7 @@ class CompetitionController(Node):
         if self.phase != 1:
             return
 
-        if self.phase1_motion_state != 'forward':
+        if self.phase1_motion_state in ('backing', 'aligning'):
             return
 
         task = msg.data.strip()
@@ -950,8 +675,9 @@ class CompetitionController(Node):
                 f'{len(self.path_record)} waypoints recorded'
             )
         else:
-            self.log.mission(f'qr detected: {task}, starting corridor navigation without backing')
-            self.start_corridor_navigation(f'qr detected: {task}, no backing path')
+            self.phase1_motion_state = 'forward'
+            self.log.mission(f'qr detected: {task}, switched to phase2 (no backing)')
+            self.begin_phase_transition(2, f'qr detected: {task}')
 
 
     def stage2_state_callback(self, msg):
@@ -988,10 +714,6 @@ class CompetitionController(Node):
             # backing 状态优先处理
             if self.phase1_motion_state == 'backing':
                 self.handle_backing()
-                return
-
-            if self.phase1_motion_state == 'corridor':
-                self.handle_corridor_navigation()
                 return
             
             # 注释掉对齐转向状态处理，直接跳过
@@ -1089,8 +811,12 @@ class CompetitionController(Node):
         if self.backing_started_time is not None:
             elapsed = (self.get_clock().now() - self.backing_started_time).nanoseconds / 1e9
             if elapsed > self.back_timeout_sec:
-                self.log.warn('BACKING', f'timeout after {elapsed:.1f}s, starting corridor navigation')
-                self.start_corridor_navigation(f'qr task={self.qr_task}, backing timeout')
+                self.log.warn('BACKING', f'timeout after {elapsed:.1f}s, entering phase2 directly')
+                self.phase1_motion_state = 'forward'
+                # 注释掉对齐转向，直接进 Stage2
+                # self.phase1_motion_state = 'aligning'
+                # self.aligning_started_time = self.get_clock().now()
+                self.begin_phase_transition(2, f'qr task={self.qr_task}, backing timeout, skip align')
                 return
         
         current_x = self.current_odom.pose.pose.position.x
@@ -1098,14 +824,23 @@ class CompetitionController(Node):
         
         # 检查是否到达目标 x 位置（map 坐标系）
         if current_x <= self.back_target_x:
-            self.log.segment(f'backing done at map_x={current_x:.2f}m, starting corridor navigation')
-            self.start_corridor_navigation(f'qr task={self.qr_task}, backing complete')
+            self.log.segment(f'backing done at map_x={current_x:.2f}m, entering phase2 directly')
+            self.phase1_motion_state = 'forward'
+            # 注释掉对齐转向，直接进 Stage2
+            # self.phase1_motion_state = 'aligning'
+            # self.aligning_started_time = self.get_clock().now()
+            self.begin_phase_transition(2, f'qr task={self.qr_task}, backing complete, skip align')
+            self.stop_robot()
             return
         
         # 检查路径是否倒序遍历完毕
         if self.backing_path_index < 0 or self.backing_path_index >= len(self.path_record):
-            self.log.warn('BACKING', 'path exhausted, starting corridor navigation')
-            self.start_corridor_navigation(f'qr task={self.qr_task}, backing path exhausted')
+            self.log.warn('BACKING', 'path exhausted, entering phase2 directly')
+            self.phase1_motion_state = 'forward'
+            # 注释掉对齐转向，直接进 Stage2
+            # self.phase1_motion_state = 'aligning'
+            # self.aligning_started_time = self.get_clock().now()
+            self.begin_phase_transition(2, f'qr task={self.qr_task}, path exhausted, skip align')
             return
         
         # 获取当前目标路点（包括来时的 yaw）
@@ -1121,8 +856,12 @@ class CompetitionController(Node):
                 f'target_yaw={math.degrees(target_yaw):.1f}°'
             )
             if self.backing_path_index < 0:
-                self.log.progress('backing reached start, starting corridor navigation')
-                self.start_corridor_navigation(f'qr task={self.qr_task}, backing reached start')
+                self.log.progress('backing reached start, entering phase2 directly')
+                self.phase1_motion_state = 'forward'
+                # 注释掉对齐转向，直接进 Stage2
+                # self.phase1_motion_state = 'aligning'
+                # self.aligning_started_time = self.get_clock().now()
+                self.begin_phase_transition(2, f'qr task={self.qr_task}, reached start, skip align')
                 return
             target_x, target_y, target_yaw = self.path_record[self.backing_path_index]
         
@@ -1154,8 +893,9 @@ class CompetitionController(Node):
         if self.aligning_started_time is not None:
             elapsed = (self.get_clock().now() - self.aligning_started_time).nanoseconds / 1e9
             if elapsed > self.back_align_timeout_sec:
-                self.log.warn('ALIGN', f'timeout after {elapsed:.1f}s, starting corridor navigation')
-                self.start_corridor_navigation('backing align timeout')
+                self.log.warn('ALIGN', f'timeout after {elapsed:.1f}s, forcing phase2')
+                self.phase1_motion_state = 'forward'
+                self.begin_phase_transition(2, f'align timeout, forcing phase2')
                 return
 
         heading_error = self.angle_error(self.back_align_yaw_rad, self.current_yaw)
@@ -1166,7 +906,8 @@ class CompetitionController(Node):
                 f'backing align done at yaw={math.degrees(self.current_yaw):.1f}°, '
                 f'switching to phase2'
             )
-            self.start_corridor_navigation(f'qr task={self.qr_task}, backing+align complete')
+            self.phase1_motion_state = 'forward'
+            self.begin_phase_transition(2, f'qr task={self.qr_task}, backing+align complete')
             return
 
         # 对齐转向：大角度时原地转（linear_x=0），小角度时微速前进配合转向
@@ -1190,47 +931,6 @@ class CompetitionController(Node):
         self.cmd_pub.publish(self.create_twist(linear_x, angular_z))
 
 
-    def _speak_qr_result(self, task):
-        if self.tts_player is None:
-            self.log.warn('VOICE', 'CN-TTS 模块未初始化，无法播报')
-            return
-
-        try:
-            direction_text = ""
-            numbers_text = ""
-
-            if 'clockwise' in task.lower():
-                direction_text = "顺时针"
-            elif 'counterclockwise' in task.lower():
-                direction_text = "逆时针"
-
-            import re as re_local
-            numbers = re_local.findall(r'\d+', task)
-            if numbers:
-                numbers_list = []
-                for num in numbers:
-                    numbers_list.extend(list(num))
-                numbers_text = " ".join(numbers_list)
-
-            if direction_text and numbers_text:
-                speak_text = f"{direction_text} {numbers_text}"
-            elif direction_text:
-                speak_text = direction_text
-            elif numbers_text:
-                speak_text = numbers_text
-            else:
-                speak_text = f"任务识别 {task}"
-
-            self.log.mission(f'QR播报开始: 原文="{task}" → 播报="{speak_text}"')
-            self.get_logger().info(f'[VOICE] 播报二维码: {speak_text}')
-
-            self.tts_player.speak_text(speak_text)
-            self.log.feedback(f'QR播报完成: "{speak_text}"')
-
-        except Exception as e:
-            self.log.error('VOICE', f'播报失败: {e}')
-            self.get_logger().error(f'[VOICE] 播报异常: {e}')
-
     def destroy_node(self):
         self.log.close()
         super().destroy_node()
@@ -1253,3 +953,52 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+    def _speak_qr_result(self, task):
+        """播报二维码识别结果：方向 + 数字"""
+        if self.tts_player is None:
+            self.log.warn('VOICE', 'CN-TTS 模块未初始化，无法播报')
+            return
+        
+        try:
+            # 提取方向和数字
+            direction_text = ""
+            numbers_text = ""
+            
+            if 'clockwise' in task.lower():
+                direction_text = "顺时针"
+            elif 'counterclockwise' in task.lower():
+                direction_text = "逆时针"
+            
+            # 提取数字（支持多种格式）
+            import re as re_local
+            numbers = re_local.findall(r'\d+', task)
+            if numbers:
+                # 数字按个位读，如 123 -> "1 2 3"
+                numbers_list = []
+                for num in numbers:
+                    numbers_list.extend(list(num))
+                numbers_text = " ".join(numbers_list)
+            
+            # 组合播报内容
+            if direction_text and numbers_text:
+                speak_text = f"{direction_text} {numbers_text}"
+            elif direction_text:
+                speak_text = direction_text
+            elif numbers_text:
+                speak_text = numbers_text
+            else:
+                speak_text = f"任务识别 {task}"
+            
+            # 详细日志记录
+            self.log.mission(f'QR播报开始: 原文="{task}" → 播报="{speak_text}"')
+            self.get_logger().info(f'[VOICE] 播报二维码: {speak_text}')
+            
+            # 执行播报
+            self.tts_player.speak_text(speak_text)
+            self.log.feedback(f'QR播报完成: "{speak_text}"')
+            
+        except Exception as e:
+            self.log.error('VOICE', f'播报失败: {e}')
+            self.get_logger().error(f'[VOICE] 播报异常: {e}')
+

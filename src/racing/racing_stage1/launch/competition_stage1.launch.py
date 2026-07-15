@@ -2,11 +2,38 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, RegisterEventHandler
 from launch.conditions import IfCondition
+from launch.event_handlers import OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+
+
+def _emergency_stop_action():
+    """紧急停车处理器：Ctrl+C 时立即停车并清理进程"""
+    return ExecuteProcess(
+        cmd=[
+            'bash', '-c',
+            (
+                'set +e; '
+                # 先停车
+                'ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '
+                '"{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" '
+                '2>/dev/null & '
+                # 杀掉相关进程
+                'pkill -15 -f lslidar_driver_node 2>/dev/null; '
+                'sleep 0.3; '
+                'pkill -9 -f lslidar_driver_node 2>/dev/null; '
+                'pkill -9 -f competition_controller 2>/dev/null; '
+                'pkill -9 -f qr_scanner 2>/dev/null; '
+                'pkill -9 -f stage_test_publisher 2>/dev/null; '
+                'pkill -9 -f origincar 2>/dev/null; '
+                'true'
+            ),
+        ],
+        output='log',
+    )
 
 
 def generate_launch_description():
@@ -35,10 +62,20 @@ def generate_launch_description():
     bno055_i2c_bus_arg = DeclareLaunchArgument('bno055_i2c_bus', default_value='5')
     bno055_i2c_addr_arg = DeclareLaunchArgument('bno055_i2c_addr', default_value='41')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
+    standalone_map_overlay_arg = DeclareLaunchArgument(
+        'standalone_map_overlay',
+        default_value='false',
+        description='Include map server and map→odom TF for standalone testing'
+    )
     include_map_overlay_arg = DeclareLaunchArgument(
         'include_map_overlay',
         default_value='false',
-        description='Include map server and map→odom TF for standalone testing'
+        description='Deprecated compatibility argument; use standalone_map_overlay'
+    )
+    enable_test_publisher_arg = DeclareLaunchArgument(
+        'enable_test_publisher',
+        default_value='false',
+        description='Publish fixed phase and direction topics for standalone testing'
     )
     map_to_odom_x_arg = DeclareLaunchArgument(
         'map_to_odom_x',
@@ -77,19 +114,20 @@ def generate_launch_description():
             'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
             'odom_frame': 'odom_combined',
         }.items(),
-        condition=IfCondition(LaunchConfiguration('include_map_overlay')),
+        condition=IfCondition(LaunchConfiguration('standalone_map_overlay')),
     )
 
     test_publisher = Node(
         package='racing_stage1',
-        executable='stage_test_publisher',
+        executable='stage_test_publisher_fixed',
         name='stage_test_publisher',
         parameters=[{
             'stage_number': 1,
             'test_direction': LaunchConfiguration('test_direction'),
+            'publish_phase': False,
         }],
         output='screen',
-        condition=IfCondition(LaunchConfiguration('include_map_overlay')),
+        condition=IfCondition(LaunchConfiguration('enable_test_publisher')),
     )
 
     base_launch = IncludeLaunchDescription(
@@ -153,7 +191,9 @@ def generate_launch_description():
         bno055_i2c_bus_arg,
         bno055_i2c_addr_arg,
         carto_slam_arg,
+        standalone_map_overlay_arg,
         include_map_overlay_arg,
+        enable_test_publisher_arg,
         map_to_odom_x_arg,
         map_to_odom_y_arg,
         map_to_odom_yaw_arg,
@@ -165,4 +205,8 @@ def generate_launch_description():
         lidar_launch,
         bno055_node,
         controller_node,
+        # 注册 Ctrl+C 时的紧急停车处理器
+        RegisterEventHandler(
+            OnShutdown(on_shutdown=[_emergency_stop_action()]),
+        ),
     ])

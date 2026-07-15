@@ -17,26 +17,36 @@ ros2 launch racing_bringup competition_total.launch.py
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Stage1 独立测试（起点 0.50, 0.20, ~10°）
+# 流程：前进避障 → 扫码 → 后退 → 地图导航到(2.80,3.10) → 切Phase2
 ros2 launch racing_stage1 competition_stage1.launch.py \
-    include_map_overlay:=true \
+    standalone_map_overlay:=true \
+    enable_test_publisher:=true \
     test_direction:=clockwise
 
 # Stage2 独立测试 - 顺时针（通道入口 2.80, 3.10, 90°）
- 
+ros2 launch racing_stage2 competition_stage2.launch.py \
+    standalone_map_overlay:=true \
+    enable_test_publisher:=true \
+    enable_cmd_relay:=true \
+    test_direction:=clockwise
 
 # Stage2 独立测试 - 逆时针
 ros2 launch racing_stage2 competition_stage2.launch.py \
-    include_map_overlay:=true \
+    standalone_map_overlay:=true \
+    enable_test_publisher:=true \
+    enable_cmd_relay:=true \
     test_direction:=counterclockwise
 
 # Stage3 独立测试 - 顺时针（2.38, 3.32, 180°）
 ros2 launch racing_stage3 competition_stage3.launch.py \
-    include_map_overlay:=true \
+    standalone_map_overlay:=true \
+    enable_test_publisher:=true \
     test_direction:=clockwise
 
 # Stage3 独立测试 - 逆时针（2.38, 3.32, 0°）
 ros2 launch racing_stage3 competition_stage3.launch.py \
-    include_map_overlay:=true \
+    standalone_map_overlay:=true \
+    enable_test_publisher:=true \
     test_direction:=counterclockwise
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -91,8 +101,6 @@ colcon build --symlink-install
 # Stage2  | 2.80          | 3.10          | 1.5708 (90°)     | 通道入口
 # Stage3  | 2.38          | 3.32          | 3.1416 (180°)    | 整圈终点（顺时针）
 # Stage3  | 2.38          | 3.32          | 0.0 (0°)         | 整圈终点（逆时针）
-#
-# 详细说明：docs/stage_standalone_testing.md
 #
 # 独立测试自动发布话题：
 #   /competition_phase (Int32) - 阶段编号 (1/2/3)

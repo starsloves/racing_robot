@@ -104,17 +104,3 @@ enhanced_return_navigator:
     planner_dynamic_obstacle_range_m: 0.7
     planner_replan_period_sec: 0.50
 
-    # ===== P 视觉检测（best_p.bin）=====
-    # P 模型路径（板端绝对路径）
-    p_model_path: /home/sunrise/dev_ws/src/racing/racing_stage3/models/best_p.bin
-    p_conf_thres: 0.25
-    p_iou_thres: 0.45
-    p_crop_ratio: 0.4
-    # 进入视觉接近态所需的最小置信度和连续检测帧数
-    p_approach_conf_threshold: 0.5
-    p_approach_consecutive_hits: 3
-    # 完成判定：bbox 水平方向填充比例达到此值认为已到达 P（0.5 = 50%）
-    p_complete_bbox_fill_ratio: 0.5
-    # 视觉接近态控制参数
-    p_approach_linear_speed: 0.06
-    p_approach_angular_kp: 0.8

@@ -65,23 +65,3 @@ competition_controller:
     back_align_yaw_deg: 90.0
     back_align_tolerance_deg: 5.0
     back_align_timeout_sec: 10.0  # 增加到10s，90°原地转约需2-3s
-    # 通道导航配置（后退完成后从 (2.0, y) 导航到通道口 (2.80, 3.10)）
-    map_topic: /map
-    corridor_path_topic: /stage1_corridor_path
-    enable_corridor_navigation: true
-    corridor_waypoints_json: '[{"x":2.80,"y":3.10}]'
-    corridor_waypoint_tolerance: 0.15
-    corridor_goal_tolerance: 0.10
-    corridor_goal_yaw_deg: 90.0
-    corridor_goal_yaw_tolerance_deg: 5.0
-    corridor_linear_speed: 0.14
-    corridor_timeout_sec: 30.0
-    pure_pursuit_lookahead_m: 0.45
-    pure_pursuit_turn_kp: 1.8
-    pure_pursuit_heading_stop_deg: 70.0
-    use_corridor_planner: true
-    planner_downsample: 4
-    planner_occupied_threshold: 50
-    planner_unknown_is_occupied: true
-    planner_obstacle_inflation_m: 0.14
-    planner_replan_period_sec: 0.5

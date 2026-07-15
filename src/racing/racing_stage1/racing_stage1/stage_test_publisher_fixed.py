@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
+"""Stage Test Publisher with correct QoS settings
+
+Publishes competition_phase and competition_qr_task topics with TRANSIENT_LOCAL
+durability to match subscriber expectations in competition_controller and other
+stage navigators.
+"""
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Int32, String
 
 
-class StageTestPublisher(Node):
+class StageTestPublisherFixed(Node):
     def __init__(self):
         super().__init__('stage_test_publisher')
         
         self.declare_parameter('stage_number', 1)
         self.declare_parameter('test_direction', 'clockwise')
+        self.declare_parameter('publish_phase', False)
         
         stage = self.get_parameter('stage_number').value
         direction = self.get_parameter('test_direction').value
+        self.publish_phase_enabled = bool(self.get_parameter('publish_phase').value)
         
+        # Use TRANSIENT_LOCAL durability to match subscriber expectations
         event_qos = QoSProfile(depth=1)
         event_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         event_qos.reliability = ReliabilityPolicy.RELIABLE
@@ -30,16 +39,20 @@ class StageTestPublisher(Node):
         self.task_msg = String()
         self.task_msg.data = direction
         
-        self.get_logger().info(f'Stage {stage} test publisher started (FIXED QoS), direction: {direction}')
+        self.get_logger().info(
+            f'Stage {stage} test publisher started (FIXED QoS), direction: {direction}, '
+            f'publish_phase={self.publish_phase_enabled}'
+        )
     
     def publish_topics(self):
-        self.phase_pub.publish(self.phase_msg)
+        if self.publish_phase_enabled:
+            self.phase_pub.publish(self.phase_msg)
         self.task_pub.publish(self.task_msg)
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = StageTestPublisher()
+    node = StageTestPublisherFixed()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

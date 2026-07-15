@@ -5,7 +5,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -29,10 +29,20 @@ def generate_launch_description():
     bno055_i2c_bus_arg = DeclareLaunchArgument('bno055_i2c_bus', default_value='5')
     bno055_i2c_addr_arg = DeclareLaunchArgument('bno055_i2c_addr', default_value='41')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
+    standalone_map_overlay_arg = DeclareLaunchArgument(
+        'standalone_map_overlay',
+        default_value='false',
+        description='Include map server and map→odom TF for standalone testing'
+    )
     include_map_overlay_arg = DeclareLaunchArgument(
         'include_map_overlay',
         default_value='false',
-        description='Include map server and map→odom TF for standalone testing'
+        description='Deprecated compatibility argument; use standalone_map_overlay'
+    )
+    enable_test_publisher_arg = DeclareLaunchArgument(
+        'enable_test_publisher',
+        default_value='false',
+        description='Publish phase and direction topics for standalone testing'
     )
     map_to_odom_x_arg = DeclareLaunchArgument(
         'map_to_odom_x',
@@ -53,6 +63,19 @@ def generate_launch_description():
         'test_direction',
         default_value='clockwise',
         description='Test direction for standalone testing (clockwise/counterclockwise)'
+    )
+    enable_cmd_relay_arg = DeclareLaunchArgument(
+        'enable_cmd_relay',
+        default_value='false',
+        description='Relay Stage2 velocity commands to the base controller'
+    )
+    relay_input_topic_arg = DeclareLaunchArgument(
+        'relay_input_topic',
+        default_value='/stage2_cmd_vel',
+    )
+    relay_output_topic_arg = DeclareLaunchArgument(
+        'relay_output_topic',
+        default_value='/cmd_vel',
     )
 
     support_stack = IncludeLaunchDescription(
@@ -79,7 +102,7 @@ def generate_launch_description():
             'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
             'odom_frame': 'odom_combined',
         }.items(),
-        condition=IfCondition(LaunchConfiguration('include_map_overlay')),
+        condition=IfCondition(LaunchConfiguration('standalone_map_overlay')),
     )
 
     test_publisher = Node(
@@ -91,7 +114,7 @@ def generate_launch_description():
             'test_direction': LaunchConfiguration('test_direction'),
         }],
         output='screen',
-        condition=IfCondition(LaunchConfiguration('include_map_overlay')),
+        condition=IfCondition(LaunchConfiguration('enable_test_publisher')),
     )
 
     stage2_navigator = Node(
@@ -102,9 +125,22 @@ def generate_launch_description():
             inertial_config,
             {
                 'imu_topic': LaunchConfiguration('imu_topic'),
+                # 独立测试模式：车已在入口位置，跳过走廊规划，直接惯导绕圈
             },
         ],
         output='screen',
+    )
+
+    cmd_relay = Node(
+        package='racing_stage2',
+        executable='twist_cmd_relay',
+        name='stage2_cmd_relay',
+        parameters=[{
+            'input_topic': LaunchConfiguration('relay_input_topic'),
+            'output_topic': LaunchConfiguration('relay_output_topic'),
+        }],
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('enable_cmd_relay')),
     )
 
     obstacle_circle_markers = Node(
@@ -129,14 +165,20 @@ def generate_launch_description():
         bno055_i2c_bus_arg,
         bno055_i2c_addr_arg,
         carto_slam_arg,
+        standalone_map_overlay_arg,
         include_map_overlay_arg,
+        enable_test_publisher_arg,
         map_to_odom_x_arg,
         map_to_odom_y_arg,
         map_to_odom_yaw_arg,
         test_direction_arg,
+        enable_cmd_relay_arg,
+        relay_input_topic_arg,
+        relay_output_topic_arg,
         support_stack,
         map_overlay_stack,
         test_publisher,
         stage2_navigator,
+        cmd_relay,
         obstacle_circle_markers,
     ])

@@ -28,6 +28,7 @@ setup(
             'phase3_test_trigger = racing_stage3_param_test.phase3_test_trigger:main',
             'stage3_test_simulator = racing_stage3_param_test.stage3_test_simulator:main',
             'twist_cmd_relay = racing_stage3_param_test.twist_cmd_relay:main',
+            'stage_test_publisher_fixed = racing_stage3_param_test.stage_test_publisher_fixed:main',
         ],
     },
 )

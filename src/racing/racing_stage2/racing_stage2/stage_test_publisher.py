@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Int32, String
 
 
@@ -14,8 +15,12 @@ class StageTestPublisher(Node):
         stage = self.get_parameter('stage_number').value
         direction = self.get_parameter('test_direction').value
         
-        self.phase_pub = self.create_publisher(Int32, '/competition_phase', 10)
-        self.task_pub = self.create_publisher(String, '/competition_qr_task', 10)
+        event_qos = QoSProfile(depth=1)
+        event_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        event_qos.reliability = ReliabilityPolicy.RELIABLE
+        
+        self.phase_pub = self.create_publisher(Int32, '/competition_phase', event_qos)
+        self.task_pub = self.create_publisher(String, '/competition_qr_task', event_qos)
         
         self.timer = self.create_timer(0.5, self.publish_topics)
         
@@ -25,7 +30,7 @@ class StageTestPublisher(Node):
         self.task_msg = String()
         self.task_msg.data = direction
         
-        self.get_logger().info(f'Stage {stage} test publisher started, direction: {direction}')
+        self.get_logger().info(f'Stage {stage} test publisher started (FIXED QoS), direction: {direction}')
     
     def publish_topics(self):
         self.phase_pub.publish(self.phase_msg)

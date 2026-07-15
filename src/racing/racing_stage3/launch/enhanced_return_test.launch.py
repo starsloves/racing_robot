@@ -1,7 +1,7 @@
 """Stage3 enhanced return test launch
 - Simulates Stage2 ending state (robot at map (2.80, 3.25))
 - Starts EnhancedReturnNavigator with Pure Pursuit + Avoidance
-- Starts Aurora 930 camera for P vision detection (HTTP port 8081)
+- Starts Aurora 930 camera for P vision detection (shared Web port 8080)
 - Uses map_overlay to provide map->odom TF
 - Starts hardware drivers, then auto-triggers phase=3 after delay
 """

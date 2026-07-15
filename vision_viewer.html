@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>竞速机器人视觉 - 实时监控</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #1a1a1a;
+            color: #ffffff;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            color: #00ff00;
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #00ff00;
+            color: #000;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+        
+        .status.connecting {
+            background: #ff9900;
+            animation: pulse 1.5s infinite;
+        }
+        
+        .status.ready {
+            background: #ffcc00;
+        }
+        
+        .status.live {
+            background: #00ff00;
+        }
+        
+        .status.stale {
+            background: #ff9900;
+            animation: pulse 2s infinite;
+        }
+        
+        .status.offline {
+            background: #ff4444;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        .image-container {
+            position: relative;
+            max-width: 100%;
+            background: #000;
+            border: 3px solid #00ff00;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+        }
+        
+        .image-container.stale {
+            border-color: #ff9900;
+            box-shadow: 0 0 20px rgba(255, 153, 0, 0.3);
+        }
+        
+        .image-container.offline {
+            border-color: #ff4444;
+            box-shadow: 0 0 20px rgba(255, 68, 68, 0.3);
+        }
+        
+        #vision-image {
+            display: block;
+            width: 100%;
+            height: auto;
+            max-width: 1600px;
+        }
+        
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5em;
+            color: #00ff00;
+        }
+        
+        .loading-overlay small {
+            font-size: 0.6em;
+            margin-top: 10px;
+            color: #888;
+        }
+        
+        .info-panel {
+            margin-top: 20px;
+            padding: 20px;
+            background: #2a2a2a;
+            border-radius: 8px;
+            max-width: 800px;
+            width: 100%;
+        }
+        
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #444;
+        }
+        
+        .info-row:last-child {
+            border-bottom: none;
+        }
+        
+        .info-label {
+            color: #888;
+        }
+        
+        .info-value {
+            color: #00ff00;
+            font-weight: bold;
+        }
+        
+        .error-message {
+            color: #ff4444;
+            padding: 10px;
+            background: #3a1a1a;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        
+        .hint-message {
+            color: #ff9900;
+            padding: 10px;
+            background: #3a2a1a;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚗 竞速机器人视觉 - 实时监控</h1>
+        <div class="status connecting" id="status">● CONNECTING</div>
+    </div>
+    
+    <div class="image-container" id="container">
+        <img id="vision-image" src="" alt="视觉处理画面">
+        <div class="loading-overlay" id="loading">
+            <div>正在连接...</div>
+        </div>
+    </div>
+    
+    <div class="info-panel">
+        <div class="info-row">
+            <span class="info-label">服务器地址</span>
+            <span class="info-value">http://100.114.34.86:8080</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">服务状态</span>
+            <span class="info-value" id="uptime">-</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">当前阶段</span>
+            <span class="info-value" id="phase">-</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">总帧数</span>
+            <span class="info-value" id="server-frames">-</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">最后一帧时长</span>
+            <span class="info-value" id="frame-age">-</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">已接收帧数</span>
+            <span class="info-value" id="client-frames">0</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">轮询状态</span>
+            <span class="info-value" id="poll-status">初始化...</span>
+        </div>
+        <div id="message-container"></div>
+    </div>
+    
+    <script>
+        const BASE_URL = 'http://100.114.34.86:8080';
+        const img = document.getElementById('vision-image');
+        const loading = document.getElementById('loading');
+        const status = document.getElementById('status');
+        const container = document.getElementById('container');
+        const messageContainer = document.getElementById('message-container');
+        
+        const uptimeSpan = document.getElementById('uptime');
+        const phaseSpan = document.getElementById('phase');
+        const serverFramesSpan = document.getElementById('server-frames');
+        const frameAgeSpan = document.getElementById('frame-age');
+        const clientFramesSpan = document.getElementById('client-frames');
+        const pollStatusSpan = document.getElementById('poll-status');
+        
+        let currentState = 'CONNECTING';  // OFFLINE / CONNECTING / READY / LIVE / STALE
+        let clientFrameCount = 0;
+        let healthPollCount = 0;  // 健康检查轮询计数
+        let imagePollCount = 0;  // 图片刷新轮询计数
+        let lastHealthPollTime = Date.now();
+        let lastImagePollTime = Date.now();
+
+        // ═══════════════════════════════════════════════════════
+        // 状态更新
+        // ═══════════════════════════════════════════════════════
+        
+        function setState(newState) {
+            if (currentState === newState) return;
+            currentState = newState;
+            
+            status.className = 'status ' + newState.toLowerCase();
+            container.className = 'image-container ' + (newState === 'STALE' ? 'stale' : newState === 'OFFLINE' ? 'offline' : '');
+            
+            const stateTexts = {
+                OFFLINE: '● OFFLINE',
+                CONNECTING: '● CONNECTING',
+                READY: '● READY',
+                LIVE: '● LIVE',
+                STALE: '● STALE'
+            };
+            status.textContent = stateTexts[newState];
+        }
+        
+        function showMessage(msg, type = 'error') {
+            const className = type === 'hint' ? 'hint-message' : 'error-message';
+            messageContainer.innerHTML = `<div class="${className}">${msg}</div>`;
+        }
+        
+        function clearMessage() {
+            messageContainer.innerHTML = '';
+        }
+        
+        // ═══════════════════════════════════════════════════════
+        // 健康检查轮询（每 1s）
+        // ═══════════════════════════════════════════════════════
+        
+        function pollHealth() {
+            const now = Date.now();
+            const elapsed = now - lastHealthPollTime;
+            lastHealthPollTime = now;
+            
+            healthPollCount++;
+            
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
+            
+            fetch(`${BASE_URL}/health?_t=${Date.now()}`, {
+                method: 'GET',
+                cache: 'no-store',
+                headers: {
+                    'Pragma': 'no-cache',
+                    'Cache-Control': 'no-cache'
+                },
+                signal: controller.signal
+            })
+            .then(response => {
+                clearTimeout(timeoutId);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.json();
+            })
+            .then(data => {
+                pollStatusSpan.textContent = `健康 #${healthPollCount} ✓ (间隔 ${elapsed}ms)`;
+                pollStatusSpan.style.color = '#00ff00';
+                uptimeSpan.textContent = `运行中 (${data.uptime_sec.toFixed(1)}s)`;
+                phaseSpan.textContent = data.phase === undefined ? '-' : `Stage ${data.phase}`;
+                serverFramesSpan.textContent = data.frame_count;
+                
+                const frameAge = data.frame_age_sec;
+                
+                if (frameAge === null) {
+                    setState('READY');
+                    loading.style.display = 'flex';
+                    loading.innerHTML = '<div>等待相机数据...<small>服务已启动，等待第一帧图像</small></div>';
+                    frameAgeSpan.textContent = '无数据';
+                    clearMessage();
+                } else if (frameAge < 2) {
+                    setState('LIVE');
+                    loading.style.display = 'none';
+                    frameAgeSpan.textContent = `${frameAge.toFixed(2)}s（活跃）`;
+                    clearMessage();
+                } else {
+                    setState('STALE');
+                    loading.style.display = 'flex';
+                    loading.innerHTML = '<div>流已停止<small>图像过期，可能节点已停止</small></div>';
+                    frameAgeSpan.textContent = `${frameAge.toFixed(1)}s（过期）`;
+                    showMessage('图像流已停止，请检查板端是否运行', 'hint');
+                }
+            })
+            .catch(error => {
+                clearTimeout(timeoutId);
+                
+                let errorType = 'unknown';
+                let errorMsg = error.message;
+                
+                if (error.name === 'AbortError') {
+                    errorType = 'timeout';
+                    errorMsg = 'timeout (3s)';
+                } else if (error.message.includes('HTTP')) {
+                    errorType = 'http_error';
+                    errorMsg = error.message;
+                } else if (error.name === 'TypeError' || errorMsg.includes('Failed to fetch')) {
+                    errorType = 'network_error';
+                    errorMsg = 'network error (connection refused)';
+                }
+                
+                pollStatusSpan.textContent = `健康 #${healthPollCount} ✗ ${errorMsg} (间隔 ${elapsed}ms)`;
+                pollStatusSpan.style.color = '#ff4444';
+                setState('OFFLINE');
+                loading.style.display = 'flex';
+                loading.innerHTML = '<div>服务离线<small>无法连接到板端服务器</small></div>';
+                uptimeSpan.textContent = '离线';
+                serverFramesSpan.textContent = '-';
+                frameAgeSpan.textContent = '-';
+                
+                if (errorType === 'timeout') {
+                    showMessage('连接超时（3s），服务器响应缓慢或网络不稳定');
+                } else if (errorType === 'network_error') {
+                    showMessage('网络错误（连接被拒绝），请检查：<br>1. 板端是否已启动 ros2 launch<br>2. HTTP 服务是否绑定 8080 端口<br>3. Tailscale 是否连接');
+                } else if (errorType === 'http_error') {
+                    showMessage(`服务器错误：${errorMsg}`);
+                } else {
+                    showMessage(`未知错误：${errorMsg}`);
+                }
+            })
+            .finally(() => {
+                setTimeout(pollHealth, 1000);
+            });
+        }
+        
+        // ═══════════════════════════════════════════════════════
+        // 图片刷新轮询（每 33ms ~30Hz，独立于健康检查）
+        // ═══════════════════════════════════════════════════════
+        
+        function refreshImage() {
+            const now = Date.now();
+            imagePollCount++;
+            lastImagePollTime = now;
+            
+            // 只在 LIVE/READY 状态时拉取图片
+            if (currentState !== 'LIVE' && currentState !== 'READY') {
+                setTimeout(refreshImage, 100);
+                return;
+            }
+            
+            // 直接设置 img.src，浏览器会自动取消前一个加载中的请求
+            img.src = `${BASE_URL}/vision_latest.jpg?t=${Date.now()}`;
+            
+            pollStatusSpan.textContent = `健康 #${healthPollCount} | 图像 #${imagePollCount}`;
+            setTimeout(refreshImage, 100);
+        }
+        
+        img.onload = function() {
+            clientFrameCount++;
+            clientFramesSpan.textContent = clientFrameCount;
+        };
+        
+        img.onerror = function() {
+            // 图片加载失败不影响整体状态
+        };
+        
+        // ═══════════════════════════════════════════════════════
+        // 启动（两个独立定时器）
+        // ═══════════════════════════════════════════════════════
+        
+        pollHealth();  // 健康状态轮询（每 1s）
+        refreshImage();  // 图片刷新轮询（每 100ms）
+    </script>
+</body>
+</html>

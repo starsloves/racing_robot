@@ -1,11 +1,11 @@
 """
 vision_p_detector.py — P 标牌视觉检测模块
 
-从 vision_lane_centering.py 裁剪，专用于 best_p.bin YOLOv8-Seg 推理：
+专用于 best_p.bin YOLO 检测模型推理：
 1. 订阅相机 topic，BPU 推理，缓存最新检测结果
-2. 只解码 bbox（不计算 mask，比车道线轻量）
+2. 解码 YOLO 检测头的 bbox 和单类别置信度，不计算 mask
 3. 提供 get_p_detection() 接口供导航节点调用
-4. HTTP 可视化服务（端口 8081，避免与 Stage2 的 8080 冲突）
+4. HTTP 图片、健康检查和自动刷新的 Web 页面（兼容 vision_viewer.html 的 8080 接口）
 """
 
 import threading
@@ -37,7 +37,7 @@ class VisionPDetector:
     """
 
     def __init__(self, parent_node, model_path, conf_thres=0.25, iou_thres=0.45,
-                 crop_ratio=0.4, input_size=640, http_port=8081):
+                 crop_ratio=0.4, input_size=640, http_port=8080):
         self._node = parent_node
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
@@ -53,12 +53,14 @@ class VisionPDetector:
 
         # HTTP 可视化
         self._combined_frame = None
-        self._jpeg_output_path = '/tmp/vision_p_latest.jpg'
+        # 与现有 vision_viewer.html 共用的图像路径。
+        self._jpeg_output_path = '/tmp/vision_latest.jpg'
         self._http_server_start_time = time.time()
         self._last_frame_save_time = 0.0
         self._target_fps = 30
         self._min_frame_interval = 1.0 / self._target_fps
         self._last_save_time = 0.0
+        self._layout_logged = False
 
         self.REG_MAX = 16
         self.strides = [8, 16, 32]
@@ -85,7 +87,8 @@ class VisionPDetector:
 
         self._node.get_logger().info('[P-DET] 模块初始化完成，等待相机数据...')
         self._node.get_logger().info(
-            f'[P-DET] HTTP 服务已启动 http://0.0.0.0:{self.http_port}/vision_p_latest.jpg'
+            f'[P-DET] Web 接口: http://0.0.0.0:{self.http_port}/vision_latest.jpg '
+            f'| health: /health'
         )
 
     def get_p_detection(self):
@@ -123,11 +126,35 @@ class VisionPDetector:
                         self.end_headers()
 
                     def do_GET(self):
+                        if self.path in ('/', '/index.html', '/vision_p.html'):
+                            body = f'''<!doctype html>
+<html><head><meta charset="utf-8"><title>Stage3 P YOLO</title>
+<style>body{{background:#202124;color:#eee;font-family:sans-serif;margin:20px}}
+img{{max-width:100%;border:1px solid #555}}#status{{margin:10px 0;color:#8f8}}</style></head>
+<body><h2>Stage3 P YOLO 实时画面</h2><div id="status">连接中...</div>
+<img id="frame" src="/vision_p_latest.jpg?t=0">
+<script>
+const image=document.getElementById('frame'), status=document.getElementById('status');
+function refresh(){{ image.src='/vision_p_latest.jpg?t='+Date.now(); }}
+async function health(){{ try{{ const r=await fetch('/health?t='+Date.now(),{{cache:'no-store'}}); const d=await r.json();
+status.textContent='status='+d.status+' | phase='+d.phase+' | frames='+d.frame_count+' | age='+d.frame_age_sec+'s';
+}}catch(e){{status.textContent='HTTP 等待中: '+e;}} }}
+setInterval(refresh, 150); setInterval(health, 500); refresh(); health();
+</script></body></html>'''.encode('utf-8')
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'text/html; charset=utf-8')
+                            self.send_header('Content-Length', len(body))
+                            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
+
                         if self.path == '/health' or self.path.startswith('/health?'):
                             try:
                                 with parent_self._lock:
                                     last_frame_time = parent_self._last_frame_save_time
                                     frame_count = parent_self._frame_count
+                                    phase = getattr(parent_self._node, 'phase', 3)
 
                                 uptime = time.time() - parent_self._http_server_start_time
                                 age = time.time() - last_frame_time if last_frame_time > 0 else -1
@@ -138,7 +165,8 @@ class VisionPDetector:
                                     "uptime_sec": round(uptime, 2),
                                     "last_frame_time": last_frame_time,
                                     "frame_age_sec": round(age, 2) if age >= 0 else None,
-                                    "frame_count": frame_count
+                                    "frame_count": frame_count,
+                                    "phase": phase,
                                 }
 
                                 self.send_response(200)
@@ -152,7 +180,10 @@ class VisionPDetector:
                                 self.send_error(500, str(e))
                             return
 
-                        if self.path.startswith('/vision_p_latest.jpg'):
+                        if (
+                            self.path.startswith('/vision_latest.jpg')
+                            or self.path.startswith('/vision_p_latest.jpg')
+                        ):
                             try:
                                 with open(parent_self._jpeg_output_path, 'rb') as f:
                                     content = f.read()
@@ -211,6 +242,23 @@ class VisionPDetector:
             cv2.putText(frame_before, f'INPUT (Bottom {int(self.crop_ratio*100)}%)',
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
+            # 总启动时检测器会早于 Stage3 创建。非 Stage3 阶段不做 BPU 推理，
+            # 但仍持续更新 Web 画面，避免网页停在占位图或上一帧。
+            if getattr(self._node, 'phase', 3) != 3:
+                frame_after = img_cropped.copy()
+                cv2.putText(
+                    frame_after,
+                    f'WAITING FOR PHASE 3 (current={getattr(self._node, "phase", 0)})',
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2,
+                )
+                with self._lock:
+                    self._detected = False
+                    self._confidence = 0.0
+                    self._bbox = None
+                    self._timestamp = time.time()
+                self._publish_visualization(frame_before, frame_after, 'P inference disabled')
+                return
+
             # 2. 预处理
             canvas, scale = self._letterbox(img_cropped, self.input_size)
             nv12 = self._bgr2nv12(canvas)
@@ -221,11 +269,25 @@ class VisionPDetector:
             self._infer_time_ms = (time.perf_counter() - t0) * 1000
 
             # 4. 后处理
+            # best_p.bin 是纯 YOLO 检测模型，不含 prototype/mask 输出。
+            # 6 个输出按 [cls80, reg80, cls40, reg40, cls20, reg20] 排列；
+            # 分类和 DFL 回归必须使用同一尺度的网格。
+            if len(outs) != 6:
+                raise ValueError(f'best_p.bin 输出数量异常: {len(outs)}，期望 6')
+
+            if not self._layout_logged:
+                self._node.get_logger().info(
+                    '[P-DET] 输出布局: '
+                    + ', '.join(f'{i}:{out.buffer.shape}' for i, out in enumerate(outs))
+                )
+                self._layout_logged = True
+
             all_bboxes, all_scores = [], []
             for si, s in enumerate(self.strides):
-                reg = outs[si*3].buffer.reshape(-1, 64)
-                cls = self._sigmoid(outs[si*3+1].buffer.reshape(-1, 1))
-                hg, wg = outs[si*3].buffer.shape[1:3]
+                cls = self._sigmoid(outs[si * 2].buffer.reshape(-1))
+                reg_output = outs[si * 2 + 1].buffer
+                reg = reg_output.reshape(-1, 64)
+                hg, wg = reg_output.shape[1:3]
                 sx, sy = np.meshgrid(np.arange(wg)+0.5, np.arange(hg)+0.5, indexing='xy')
                 ap = np.stack((sx.ravel(), sy.ravel()), axis=1).astype(np.float32)
                 box = self._dfl_decode(reg) * s
@@ -234,7 +296,7 @@ class VisionPDetector:
                 x2 = ap[:, 0] * s + box[:, 2]
                 y2 = ap[:, 1] * s + box[:, 3]
                 all_bboxes.append(np.column_stack([x1, y1, x2, y2]))
-                all_scores.append(cls[:, 0])
+                all_scores.append(cls)
 
             bboxes = np.concatenate(all_bboxes)
             scores = np.concatenate(all_scores)
@@ -306,58 +368,64 @@ class VisionPDetector:
                 self._bbox = best_bbox
                 self._timestamp = time.time()
 
-            # 7. FPS 统计
-            now = time.perf_counter()
-            self._fps_queue.append(now - self._last_time)
-            self._last_time = now
-            avg_fps = len(self._fps_queue) / sum(self._fps_queue) if self._fps_queue else 0
-
-            cv2.putText(frame_after, f'OUTPUT (FPS: {avg_fps:.1f} | Infer: {self._infer_time_ms:.1f}ms)',
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.putText(frame_after, f'P Detected: {"YES" if detected else "NO"}',
-                       (10, h_crop-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
-                       (0, 255, 0) if detected else (0, 0, 255), 2)
-
-            # 8. 拼接可视化
-            target_h = 360
-            before_resized = cv2.resize(frame_before,
-                                       (int(frame_before.shape[1] * target_h / frame_before.shape[0]), target_h))
-            after_resized = cv2.resize(frame_after,
-                                      (int(frame_after.shape[1] * target_h / frame_after.shape[0]), target_h))
-            combined = np.hstack([before_resized, after_resized])
-
-            mid_x = before_resized.shape[1]
-            cv2.line(combined, (mid_x, 0), (mid_x, target_h), (255, 255, 255), 3)
-
-            with self._lock:
-                self._combined_frame = combined.copy()
-                self._frame_count += 1
-
-            # 9. 保存到文件
-            now = time.perf_counter()
-            if now - self._last_save_time >= self._min_frame_interval:
-                try:
-                    temp_path = '/tmp/vision_p_latest_tmp.jpg'
-                    cv2.imwrite(temp_path, combined, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    os.replace(temp_path, self._jpeg_output_path)
-                    self._last_save_time = now
-
-                    with self._lock:
-                        self._last_frame_save_time = time.time()
-
-                    if self._frame_count % 30 == 0:
-                        file_size = os.path.getsize(self._jpeg_output_path) / 1024
-                        self._node.get_logger().info(
-                            f'[P-DET] 已保存第 {self._frame_count} 帧 '
-                            f'({combined.shape[1]}x{combined.shape[0]}, {file_size:.1f} KB, '
-                            f'{avg_fps:.1f} FPS)'
-                        )
-                except Exception as save_err:
-                    self._node.get_logger().error(f'[P-DET] 保存图像失败: {save_err}')
+            self._publish_visualization(
+                frame_before,
+                frame_after,
+                f'P Detected: {"YES" if detected else "NO"}',
+            )
 
         except Exception as e:
             if self._frame_count % 60 == 0:
                 self._node.get_logger().error(f'[P-DET] 推理失败: {e}')
+
+    def _publish_visualization(self, frame_before, frame_after, status_text):
+        now = time.perf_counter()
+        self._fps_queue.append(now - self._last_time)
+        self._last_time = now
+        avg_fps = len(self._fps_queue) / sum(self._fps_queue) if self._fps_queue else 0.0
+        cv2.putText(
+            frame_after,
+            f'OUTPUT (FPS: {avg_fps:.1f} | Infer: {self._infer_time_ms:.1f}ms)',
+            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2,
+        )
+        cv2.putText(
+            frame_after,
+            status_text,
+            (10, max(55, frame_after.shape[0] - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+            (0, 255, 0) if 'YES' in status_text else (0, 200, 255), 2,
+        )
+
+        target_h = 360
+        before_resized = cv2.resize(
+            frame_before,
+            (int(frame_before.shape[1] * target_h / frame_before.shape[0]), target_h),
+        )
+        after_resized = cv2.resize(
+            frame_after,
+            (int(frame_after.shape[1] * target_h / frame_after.shape[0]), target_h),
+        )
+        combined = np.hstack([before_resized, after_resized])
+        mid_x = before_resized.shape[1]
+        cv2.line(combined, (mid_x, 0), (mid_x, target_h), (255, 255, 255), 3)
+
+        with self._lock:
+            self._combined_frame = combined.copy()
+            self._frame_count += 1
+
+        if now - self._last_save_time < self._min_frame_interval:
+            return
+        try:
+            # OpenCV 根据扩展名选择编码器；临时文件也必须保留 .jpg 后缀。
+            temp_path = f'{self._jpeg_output_path}.tmp.jpg'
+            if not cv2.imwrite(temp_path, combined, [cv2.IMWRITE_JPEG_QUALITY, 85]):
+                raise RuntimeError('cv2.imwrite returned false')
+            os.replace(temp_path, self._jpeg_output_path)
+            self._last_save_time = now
+            with self._lock:
+                self._last_frame_save_time = time.time()
+        except Exception as save_err:
+            self._node.get_logger().error(f'[P-DET] 保存图像失败: {save_err}')
 
     def _sigmoid(self, x):
         return 1.0 / (1.0 + np.exp(-np.clip(x, -20, 20)))

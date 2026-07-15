@@ -27,6 +27,7 @@ setup(
             'vision_preview = racing_stage2_param_test.vision_preview:main',
             'twist_cmd_relay = racing_stage2_param_test.twist_cmd_relay:main',
             'data_recorder = racing_stage2_param_test.data_recorder:main',
+            'stage_test_publisher_fixed = racing_stage2_param_test.stage_test_publisher_fixed:main',
         ],
     },
 )

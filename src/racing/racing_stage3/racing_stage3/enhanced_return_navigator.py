@@ -51,23 +51,27 @@ class EnhancedReturnNavigator(Node):
             self.pursuit_linear_speed,
         )
 
-        # ── 状�?──
+        # ── 状态 ──
         self.phase = 1
         self.mission_active = False
         self.mission_finished = False
         self.start_after_time = None
 
-        # 位姿�?odom_combined，map 坐标系）
+        # 位姿（odom_combined，map 坐标系）
         self.current_position = None
         self.current_yaw = None
         self.odom_frame_id = 'odom'
 
-        # 路径状�?        self.path_started_at = None
+        # 路径状态
+        self.path_started_at = None
         self.path_index = 0
-        self._settled_start = None  # 近目标停滞计�?        self._filtered_heading_err = 0.0  # 航向误差低通滤�?
-        # 激光扫�?        self.latest_scan = None
+        self._settled_start = None
+        self._filtered_heading_err = 0.0
 
-        # ── 避障状�?──
+        # 激光扫描
+        self.latest_scan = None
+
+        # ── 避障状态 ──
         self.avoid_state = 'forward'
         self.avoid_turn_direction = 0.0
         self.avoid_started_time = None
@@ -96,7 +100,7 @@ class EnhancedReturnNavigator(Node):
         self.create_subscription(Odometry, self.odom_topic, self._odom_cb, 10)
         self.create_subscription(LaserScan, self.scan_topic, self._scan_cb, 10)
 
-        # ── A* 全局路径规划�?──
+        # ── A* 全局路径规划 ──
         self.global_planner = None
         if self.use_global_planner:
             planner_config = {
@@ -155,7 +159,7 @@ class EnhancedReturnNavigator(Node):
         self.declare_parameter('max_angular_speed', 0.8)
         self.declare_parameter('min_angular_speed', 0.45)
 
-        # ── 避障�?态，�?Stage1）──
+        # ── 避障状态（同 Stage1）──
         self.declare_parameter('avoid_linear_speed', 0.10)
         self.declare_parameter('avoid_angular_speed', 0.80)
         self.declare_parameter('avoid_min_duration_sec', 0.70)
@@ -204,7 +208,7 @@ class EnhancedReturnNavigator(Node):
         self.declare_parameter('planner_dynamic_obstacle_range_m', 0.7)
         self.declare_parameter('planner_replan_period_sec', 0.25)
 
-        # ── map→odom 偏移参数（同 Stage2 map_overlay，直接传参避�?TF 依赖）──
+        # ── map→odom 偏移参数（同 Stage2 map_overlay，直接传参避免 TF 依赖）──
         self.declare_parameter('test_direction', 'clockwise')
         self.declare_parameter('map_to_odom_x', 0.0)
         self.declare_parameter('map_to_odom_y', 0.0)
@@ -220,6 +224,7 @@ class EnhancedReturnNavigator(Node):
         self.declare_parameter('p_complete_bbox_fill_ratio', 0.5)
         self.declare_parameter('p_approach_linear_speed', 0.06)
         self.declare_parameter('p_approach_angular_kp', 0.8)
+        self.declare_parameter('p_web_port', 8080)
 
     def _read_params(self):
         self.phase_topic = str(self.get_parameter('phase_topic').value)
@@ -307,6 +312,7 @@ class EnhancedReturnNavigator(Node):
         self._p_complete_bbox_fill_ratio = float(self.get_parameter('p_complete_bbox_fill_ratio').value)
         self._p_approach_linear_speed = float(self.get_parameter('p_approach_linear_speed').value)
         self._p_approach_angular_kp = float(self.get_parameter('p_approach_angular_kp').value)
+        self.p_web_port = int(self.get_parameter('p_web_port').value)
 
     # ══════════════ 工具 ══════════════
 
@@ -342,12 +348,14 @@ class EnhancedReturnNavigator(Node):
     @staticmethod
     def _select_lookahead_point(path_points, lookahead_distance):
         """
-        �?A* 路径中选择预瞄点（距离起点 lookahead_distance 处）
+        从 A* 路径中选择预瞄点（距离起点 lookahead_distance 处）
 
         Args:
-            path_points: list of tuple(x, y), 路径点列�?            lookahead_distance: float, 预瞄距离（m�?
+            path_points: list of tuple(x, y), 路径点列表
+            lookahead_distance: float, 预瞄距离（m）
         Returns:
-            tuple(x, y): 预瞄点坐标，如果路径太短则返回终�?        """
+            tuple(x, y): 预瞄点坐标，如果路径太短则返回终点
+        """
         if not path_points:
             return None
         if len(path_points) == 1:
@@ -409,9 +417,12 @@ class EnhancedReturnNavigator(Node):
             conf_thres=self.p_conf_thres,
             iou_thres=self.p_iou_thres,
             crop_ratio=self.p_crop_ratio,
-            http_port=8081,  # P 检测用 8081 端口（Stage2 lane centering 用 8080）
+            http_port=self.p_web_port,
         )
-        self.log.startup(f'P detector enabled, model={self.p_model_path}, HTTP port=8081')
+        self.log.startup(
+            f'P detector enabled, model={self.p_model_path}, '
+            f'HTTP port={self.p_web_port}, endpoint=/vision_latest.jpg'
+        )
 
     # ══════════════ 回调 ══════════════
 
@@ -428,7 +439,7 @@ class EnhancedReturnNavigator(Node):
         raw_y = float(msg.pose.pose.position.y)
         raw_yaw = self._quat_to_yaw(msg.pose.pose.orientation)
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
-        # �?map_overlay 静�?TF：map_pos = R(odom_pos) + translation
+        # 经 map_overlay 静态 TF：map_pos = R(odom_pos) + translation
         cos_y = math.cos(self.map_odom_yaw)
         sin_y = math.sin(self.map_odom_yaw)
         self.current_position = (
@@ -497,7 +508,7 @@ class EnhancedReturnNavigator(Node):
         self.mission_finished = True
         self._publish_state('complete')
         self._publish_feedback('return complete, reached P point')
-        sys.stderr.write('\n=== �?STAGE3 RETURN COMPLETE �?===\n\n')
+        sys.stderr.write('\n=== STAGE3 RETURN COMPLETE ===\n\n')
 
     def _fail_mission(self, reason):
         self.cmd_pub.publish(Twist())
@@ -505,7 +516,7 @@ class EnhancedReturnNavigator(Node):
         self.mission_finished = True
         self._publish_state('failed')
         self._publish_feedback(f'return failed: {reason}')
-        sys.stderr.write(f'\n=== �?STAGE3 RETURN FAILED: {reason} ===\n\n')
+        sys.stderr.write(f'\n=== STAGE3 RETURN FAILED: {reason} ===\n\n')
 
 
     # ══════════════ P 视觉接近 ══════════════
@@ -638,7 +649,7 @@ class EnhancedReturnNavigator(Node):
         self.log.telemetry('P_VISUAL',
             f'offset={offset:+.3f} fill={fill_ratio:.2%} spd={speed:.2f} ang={angular:.2f} '
             f'bbox=({bbox_w:.0f}x{bbox_h:.0f}) conf={conf:.2f}')
-    # ══════════════ 主控制循�?══════════════
+    # ══════════════ 主控制循环 ══════════════
 
     def _control_loop(self):
         if self.phase != 3 or self.mission_finished:
@@ -651,7 +662,8 @@ class EnhancedReturnNavigator(Node):
             self._start_mission()
             return
 
-        # 1. 紧急停�?        if self._check_emergency_stop():
+        # 1. 紧急停止
+        if self._check_emergency_stop():
             return
 
         # 2. P 视觉接近态（最高优先级，接管后不受导航/避障控制）
@@ -663,7 +675,7 @@ class EnhancedReturnNavigator(Node):
         if self.avoid_state == 'forward' and self.latest_scan is not None:
             self._check_obstacle()
 
-        # 3. 若在避障�?�?运行避障
+        # 3. 若在避障状态，运行避障
         if self.avoid_state != 'forward':
             self._run_avoidance()
             return
@@ -721,7 +733,7 @@ class EnhancedReturnNavigator(Node):
         if self._check_p_completion():
             return
 
-        # ── 航向控制（heading controller，替�?Pure Pursuit curvature）──
+        # ── 航向控制（heading controller，替代 Pure Pursuit curvature）──
         wp = self.return_waypoints[self.path_index]
         target_x, target_y = wp['x'], wp['y']
 
@@ -739,12 +751,12 @@ class EnhancedReturnNavigator(Node):
                 self.cmd_pub.publish(self._twist(0.0, 0.0))
                 return
             if not planned_points:
-                # 路径规划失败，停�?                self.log.warn('PLANNER', f'blocked: no path from ({self.current_position[0]:.2f},{self.current_position[1]:.2f}) to ({target_x:.2f},{target_y:.2f})')
+                self.log.warn('PLANNER', f'blocked: no path from ({self.current_position[0]:.2f},{self.current_position[1]:.2f}) to ({target_x:.2f},{target_y:.2f})')
                 self._publish_state('planner_blocked')
                 self.cmd_pub.publish(self._twist(0.0, 0.0))
                 return
             
-            # 选择预瞄�?            lookahead_point = self._select_lookahead_point(planned_points, self.pursuit_lookahead)
+            lookahead_point = self._select_lookahead_point(planned_points, self.pursuit_lookahead)
             if lookahead_point is not None:
                 target_x, target_y = lookahead_point
                 self.log.telemetry('ASTAR', f'path_pts={len(planned_points)} lookahead=({target_x:.2f},{target_y:.2f})')
@@ -766,16 +778,16 @@ class EnhancedReturnNavigator(Node):
 
         self._publish_state(wp['desc'])
 
-        # 航向比例控制（平滑输出，�?min_angular 强制�?        angular = self._clamp(self.pursuit_turn_kp * heading_err, self.max_angular)
+        angular = self._clamp(self.pursuit_turn_kp * heading_err, self.max_angular)
         if abs(angular) < 1e-4:
             angular = 0.0
 
-        # 速度：大偏差慢行，小偏差全速；接近目标减�?        speed = self.pursuit_linear_speed
+        speed = self.pursuit_linear_speed
         if abs(heading_err) > math.radians(30.0):
             speed = self.pursuit_turn_linear
         elif abs(heading_err) > math.radians(5.0):
             speed = self.pursuit_linear_speed * 0.5
-        # 距离减速：dist < 0.30 时线性减速；dist < 0.15 时蠕�?        if target_dist < 0.30:
+        if target_dist < 0.30:
             speed = min(speed, 0.04 + 0.14 * (target_dist / 0.30))
             speed = max(speed, 0.04)
         if target_dist < 0.15:
@@ -789,7 +801,7 @@ class EnhancedReturnNavigator(Node):
         )
         self.cmd_pub.publish(self._twist(speed, angular))
 
-    # ══════════════ 避障�?态，�?Stage1）═════════════�?
+    # ══════════════ 避障状态（同 Stage1）═════════════
     def _clusters_in_window(self, scan_msg):
         clusters = []
         cur = []
@@ -824,12 +836,14 @@ class EnhancedReturnNavigator(Node):
 
     def _classify_cluster(self, cluster):
         """
-        分类聚类�?obstacle' �?'wall'
-        
-        墙壁特征（根据实测数据调整）�?        - 点数 > 40（实测墙�?50-60 点）
-        - 角度跨度 > 30°（实测墙�?39-42°�?        - 点密集连续（相邻点平均间�?< 0.012 m，实测墙�?0.007-0.010m�?        
+        分类聚类：'obstacle' 或 'wall'
+
+        墙壁特征（根据实测数据调整）：
+        - 点数 > 40（实测墙壁 50-60 点）
+        - 角度跨度 > 30度（实测墙壁 39-42度）
+        - 点密集连续（相邻点平均间距 < 0.012 m，实测墙壁 0.007-0.010m）
         Returns:
-            str: 'obstacle' �?'wall'
+            str: 'obstacle' 或 'wall'
         """
         if len(cluster) < 40:
             return 'obstacle'
@@ -840,7 +854,7 @@ class EnhancedReturnNavigator(Node):
         if angle_span < math.radians(30.0):
             return 'obstacle'
         
-        # 连续性：相邻点平均间距（墙壁非常密集�?        distances = []
+        distances = []
         for i in range(len(cluster) - 1):
             d = math.hypot(cluster[i+1][0] - cluster[i][0], 
                            cluster[i+1][1] - cluster[i][1])
@@ -883,10 +897,27 @@ class EnhancedReturnNavigator(Node):
             # 分类聚类
             cluster_type = self._classify_cluster(c)
             
-            # 日志：显示所有聚类的属性（用于调试）
-            self.log.telemetry
-            self.log.telemetry('FILTER_SUMMARY', 
-                f'walls={wall_count} obstacles={obstacle_count}')
+            if cluster_type == 'obstacle':
+                obstacle_count += 1
+                if best is None or nearest < best['dist']:
+                    nearest_pt = min(c, key=lambda p: p[2])
+                    danger_angle = math.atan2(nearest_pt[1], nearest_pt[0])
+                    danger_deg = math.degrees(danger_angle)
+                    best = {
+                        'dist': nearest,
+                        'danger_deg': danger_deg,
+                        'width': width,
+                        'pts': len(c),
+                    }
+            else:
+                wall_count += 1
+            
+            self.log.telemetry('CLUSTER',
+                f'type={cluster_type} dist={nearest:.2f} span={angle_span_deg:.1f} '
+                f'pts={len(c)} w={width:.2f} gap={avg_gap:.3f}')
+        
+        self.log.telemetry('FILTER_SUMMARY',
+            f'walls={wall_count} obstacles={obstacle_count}')
         
         return best
 

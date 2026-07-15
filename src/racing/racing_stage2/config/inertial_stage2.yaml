@@ -53,10 +53,10 @@ stage2_inertial_navigator:
     counterclockwise_keywords: 逆时针,ccw,counterclockwise  # 逆时针触发关键词
 
     # ── 通道导航 ──────────────────────────────────────
-    use_corridor_path: true                  # 是否使用通道路径规划
+    use_corridor_path: false                  # 是否使用通道路径规划
     corridor_waypoints_are_global: true      # 路点在 map 坐标系下
     global_frame_id: map                     # 全局坐标系
-    corridor_waypoints_json: '[{"x":2.50,"y":3.20,"speed":0.12,"yaw_deg":90.0,"description":"corridor_goal"}]'  # 通道终点（入口坐标）
+    corridor_waypoints_json: '[]'  # 通道路点（已由 Stage1 处理，此处清空）
     corridor_waypoint_tolerance: 0.18        # 路过点容差（m）
     corridor_goal_tolerance: 0.10            # 终点容差（m）
     corridor_goal_standoff_m: 0.18           # 终点前停车距离（m）
@@ -82,8 +82,8 @@ stage2_inertial_navigator:
     # ── 通道预循环控制 ────────────────────────────────
     corridor_path_skip_pre_loop_plan: true   # 是否跳过 pre_loop（已由总启动处理）
 
-    post_corridor_path_plan_json: '[{"type":"pause","duration":0.20,"description":"corridor_arrive_settle"}]'  # 被 direct_inertial_test.yaml 覆盖为相同值
-    pre_loop_plan_json: '[{"type":"turn","angle_deg":90.0,"description":"scan_leave_1"},{"type":"move","distance_m":0.18,"speed":0.08,"description":"scan_leave_2","allow_detour":false},{"type":"turn","angle_deg":90.0,"description":"to_corridor_axis"},{"type":"move","distance_m":1.20,"speed":0.12,"description":"corridor_staging","allow_detour":true},{"type":"pause","duration":0.15,"description":"corridor_staging_settle"},{"type":"pause","duration":0.10,"description":"loop_entry_settle"}]'  # 被 direct_inertial_test.yaml 覆盖为 '[]'
+    post_corridor_path_plan_json: '[]'       # Stage1 已完成通道导航，Stage2 直接从入口绕圈
+    pre_loop_plan_json: '[]'                 # 禁止重复执行入口/扫码离开/通道 staging
 
     # ── 环形赛道几何（用于矩形赛道规划） ──────────────
     loop_long_length_m: 3.42                 # 赛道长边（m）

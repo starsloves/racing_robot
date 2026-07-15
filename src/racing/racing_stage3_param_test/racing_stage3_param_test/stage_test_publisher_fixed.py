@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
+"""Stage Test Publisher with correct QoS settings
+
+Publishes competition_phase and competition_qr_task topics with TRANSIENT_LOCAL
+durability to match subscriber expectations in enhanced_return_navigator.
+"""
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Int32, String
 
 
-class StageTestPublisher(Node):
+class StageTestPublisherFixed(Node):
     def __init__(self):
         super().__init__('stage_test_publisher')
         
-        self.declare_parameter('stage_number', 1)
+        self.declare_parameter('stage_number', 3)
         self.declare_parameter('test_direction', 'clockwise')
         
         stage = self.get_parameter('stage_number').value
         direction = self.get_parameter('test_direction').value
         
+        # Use TRANSIENT_LOCAL durability to match subscriber expectations
         event_qos = QoSProfile(depth=1)
         event_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         event_qos.reliability = ReliabilityPolicy.RELIABLE
@@ -39,7 +45,7 @@ class StageTestPublisher(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = StageTestPublisher()
+    node = StageTestPublisherFixed()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
