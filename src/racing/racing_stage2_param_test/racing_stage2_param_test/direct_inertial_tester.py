@@ -6,7 +6,7 @@ import rclpy
 from nav_msgs.msg import Odometry
 
 from racing_stage2_param_test import field_track
-from racing_stage2.stage2_inertial_navigator import Stage2InertialNavigator
+from racing_stage2.stage2_inertial_base import Stage2InertialBase as Stage2InertialNavigator
 from racing_stage2_param_test.avoid_controller import AvoidConfig, AvoidController, NavState
 from racing_stage2_param_test.avoid_geometry import cross_segment_m
 from racing_stage2_param_test.scan_processor import ScanProcessor

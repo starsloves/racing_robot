@@ -1,4 +1,4 @@
-enhanced_return_navigator:
+stage3_return_navigator:
   ros__parameters:
     # ===== Topic =====
     phase_topic: competition_phase
@@ -54,6 +54,8 @@ enhanced_return_navigator:
     p_approach_linear_speed: 0.06
     # 接近时角速度 kp 增益
     p_approach_angular_kp: 0.8
+    # Stage3 专用 Web 端口（避免与 Stage2 冲突）
+    p_web_port: 8083
 
     # ===== 避障（4态，同 Stage1）=====
     avoid_linear_speed: 0.10

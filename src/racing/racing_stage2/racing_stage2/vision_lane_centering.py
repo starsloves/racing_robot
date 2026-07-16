@@ -48,6 +48,7 @@ class VisionLaneCentering:
         
         # 共享变量（线程安全）
         self._lock = threading.Lock()
+        self._inference_active = False  # 仅 phase=2/任务运行时推理
         self._latest_offset = 0.0
         self._latest_timestamp = 0.0
         self._valid = False
@@ -107,6 +108,22 @@ class VisionLaneCentering:
     # 外部接口（供导航节点调用）
     # ═══════════════════════════════════════════════════════
     
+    def set_inference_active(self, active: bool):
+        """启用/停用视觉推理。Stage1 期间应关闭，避免无意义刷屏和算力占用。"""
+        active = bool(active)
+        with self._lock:
+            prev = getattr(self, '_inference_active', False)
+            self._inference_active = active
+            if not active:
+                self._valid = False
+        if prev != active:
+            state = '启用' if active else '停用'
+            self._node.get_logger().info(f'[视觉] 推理已{state}')
+
+    def is_inference_active(self) -> bool:
+        with self._lock:
+            return bool(getattr(self, '_inference_active', False))
+
     def get_latest_offset(self):
         """
         获取最新的横向偏移量。
@@ -249,8 +266,11 @@ class VisionLaneCentering:
     def _image_callback(self, msg):
         """ROS 图像回调 → 推理 → 更新 offset"""
         try:
+            if not self.is_inference_active():
+                return
+
             if self._frame_count == 0:
-                self._node.get_logger().info('[视觉-诊断] 收到第一帧相机数据')
+                self._node.get_logger().info('[视觉] 收到第一帧相机数据（phase2 推理已启用）')
             
             # 1. 裁剪下方
             img_full = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -453,14 +473,7 @@ class VisionLaneCentering:
                     with self._lock:
                         self._last_frame_save_time = time.time()
                     
-                    # 每 30 帧打印一次确认
-                    if self._frame_count % 30 == 0:
-                        file_size = os.path.getsize(self._jpeg_output_path) / 1024
-                        self._node.get_logger().info(
-                            f'[视觉-诊断] 已保存第 {self._frame_count} 帧到 {self._jpeg_output_path} '
-                            f'({combined.shape[1]}x{combined.shape[0]}, {file_size:.1f} KB, '
-                            f'{avg_fps:.1f} FPS 推理, {self._target_fps} FPS 保存)'
-                        )
+                    # 帧保存仅写文件，不再刷终端诊断日志
                 except Exception as save_err:
                     self._node.get_logger().error(f'[视觉] 保存图像失败: {save_err}')
             

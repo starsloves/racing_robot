@@ -1,11 +1,9 @@
 # inertial_stage2.yaml — 第二阶段惯导导航基础参数（官方）
-# 本文件来自 racing_stage2/config/inertial_stage2.yaml，在此作为本地副本
-# 被 direct_inertial_test.launch.py 加载
+# 被 competition_stage2.launch.py 加载
 #
 # 参数加载优先级（后加载覆盖前）：
 #   1. inertial_stage2.yaml  ← 本文件（基础参数）
-#   2. direct_inertial_test.yaml  ← 测试执行覆盖
-#   3. avoid_controller.yaml  ← 避障专用覆盖
+#   2. avoid_controller.yaml  ← 避障专用覆盖
 #
 # detour_obstacle_distance / detour_front_angle_deg / detour_side_center_deg / detour_side_window_deg
 # 已移到 avoid_controller.yaml，由该文件统一管理
@@ -33,18 +31,18 @@ stage2_inertial_navigator:
     ring_linear_speed: 0.5                   # 环形赛道直行速度（m/s）
 
     # ── 转弯控制 ──────────────────────────────────────
-    # 以下3项被 direct_inertial_test.yaml 覆盖：
+    # 以下3项官方生产值：
     #   turn_angular_speed → 0.80, turn_min_angular_speed → 0.30, turn_kp → 2.0
     turn_linear_speed: 0.10                  # 转弯时前向速度（m/s）
-    turn_angular_speed: 0.65                 # 被 direct_inertial_test.yaml 覆盖为 0.80
-    turn_min_angular_speed: 0.45             # 被 direct_inertial_test.yaml 覆盖为 0.18
-    turn_kp: 1.8                             # 被 direct_inertial_test.yaml 覆盖为 2.0
+    turn_angular_speed: 0.80                 # 转弯角速度（rad/s）
+    turn_min_angular_speed: 0.30             # 最小转弯角速度（rad/s）
+    turn_kp: 2.0                             # 转弯比例增益
     heading_kp: 1.0                          # 直行航向保持比例增益（2.0 → 1.0，减小振荡）
     max_angular_speed: 0.8                   # 角速度上限（rad/s）
 
     # ── 到位精度 ──────────────────────────────────────
     distance_tolerance: 0.04                 # 直行到位判据（m）
-    heading_tolerance_deg: 3.5               # 被 direct_inertial_test.yaml 覆盖为 1.5
+    heading_tolerance_deg: 3.0               # 转弯到位容差（°）
     segment_timeout: 25.0                    # 单段超时时间（s）
 
     # ── 方向解析（扫码结果 → 行驶方向） ────────────────
@@ -53,7 +51,7 @@ stage2_inertial_navigator:
     counterclockwise_keywords: 逆时针,ccw,counterclockwise  # 逆时针触发关键词
 
     # ── 通道导航 ──────────────────────────────────────
-    use_corridor_path: false                  # 是否使用通道路径规划
+    use_corridor_path: false                  # 比赛默认 false：Stage1 已到入口
     corridor_waypoints_are_global: true      # 路点在 map 坐标系下
     global_frame_id: map                     # 全局坐标系
     corridor_waypoints_json: '[]'  # 通道路点（已由 Stage1 处理，此处清空）
@@ -82,8 +80,8 @@ stage2_inertial_navigator:
     # ── 通道预循环控制 ────────────────────────────────
     corridor_path_skip_pre_loop_plan: true   # 是否跳过 pre_loop（已由总启动处理）
 
-    post_corridor_path_plan_json: '[]'       # Stage1 已完成通道导航，Stage2 直接从入口绕圈
-    pre_loop_plan_json: '[]'                 # 禁止重复执行入口/扫码离开/通道 staging
+    post_corridor_path_plan_json: '[]'       # Stage1 已完成通道导航
+    pre_loop_plan_json: '[]'                 # 比赛无 pre_loop
 
     # ── 环形赛道几何（用于矩形赛道规划） ──────────────
     loop_long_length_m: 3.42                 # 赛道长边（m）
@@ -114,3 +112,17 @@ stage2_inertial_navigator:
     vision_web_enabled: true                 # 是否启动 Web 服务（实时查看）
     vision_web_port: 8082                    # 兼容旧名
     vision_http_port: 8082                   # 实际HTTP端口参数（Stage2）
+    navigation_pose_source: wheel                 # 比赛统一位姿源：轮速 /odom
+    wheel_odom_topic: /odom
+    wheel_odom_warmup_sec: 0.40
+    wheel_odom_warmup_min_msgs: 5
+    session_log_subdir: competition_stage2
+    session_log_filename: latest.log
+    session_telemetry_interval_sec: 0.25
+    test_feedback_prefix: 第二阶段
+    imu_heading_deadzone_deg: 0.3
+    imu_max_yaw_rate_deg_s: 600.0
+    vision_timeout_sec: 0.5
+    move_accel_ramp_sec: 0.5
+    turn_slowdown_threshold_deg: 10.0
+    turn_min_speed_ratio: 0.5

@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer='Your Name',
     maintainer_email='your_email@example.com',
-    description='Stage 3 return-to-p navigator and phase2 companion perception nodes for racing competition',
+    description='Stage 3 return-to-p navigator for racing competition',
     license='Apache License 2.0',
     tests_require=['pytest'],
     entry_points={

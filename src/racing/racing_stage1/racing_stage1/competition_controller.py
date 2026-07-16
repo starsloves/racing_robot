@@ -409,6 +409,13 @@ class CompetitionController(Node):
             })
         return result
 
+    def corridor_goal_point(self):
+        """返回通道导航最终目标点（来自 yaml corridor_waypoints_json 最后一点）。"""
+        if self.corridor_waypoints:
+            goal = self.corridor_waypoints[-1]
+            return float(goal['x']), float(goal['y'])
+        return None
+
     def start_corridor_navigation(self, reason):
         if not self.enable_corridor_navigation or not self.corridor_waypoints:
             self.phase1_motion_state = 'forward'
@@ -425,7 +432,14 @@ class CompetitionController(Node):
         self.log.mission(f'后退完成，开始地图通道导航: {reason}')
         if self.current_odom:
             pos = self.current_odom.pose.pose.position
-            self.log.progress(f'通道导航起点: ({pos.x:.2f}, {pos.y:.2f}), 目标: (2.80, 3.10), 距离: {math.hypot(pos.x - 2.80, pos.y - 3.10):.2f}m')
+            goal_xy = self.corridor_goal_point()
+            if goal_xy is not None:
+                gx, gy = goal_xy
+                self.log.progress(
+                    f'通道导航起点: ({pos.x:.2f}, {pos.y:.2f}), '
+                    f'目标: ({gx:.2f}, {gy:.2f}), '
+                    f'距离: {math.hypot(pos.x - gx, pos.y - gy):.2f}m'
+                )
 
     def _map_world_to_grid(self, x, y, step):
         info = self.latest_map.info
@@ -597,7 +611,12 @@ class CompetitionController(Node):
             self.corridor_active = False
             self.phase1_motion_state = 'forward'
             self.stop_robot()
-            self.begin_phase_transition(2, '通道导航到达 (2.80, 3.10)，航向已对齐')
+            goal_xy = self.corridor_goal_point()
+            if goal_xy is None:
+                reason = '通道导航到达，航向已对齐'
+            else:
+                reason = f'通道导航到达 ({goal_xy[0]:.2f}, {goal_xy[1]:.2f})，航向已对齐'
+            self.begin_phase_transition(2, reason)
             return
         target_waypoint = self.corridor_waypoints[self.corridor_index]
         if not self.use_corridor_planner:
@@ -1266,33 +1285,45 @@ class CompetitionController(Node):
             return
 
         try:
-            direction_text = ""
-            numbers_text = ""
-
-            if 'clockwise' in task.lower():
-                direction_text = "顺时针"
-            elif 'counterclockwise' in task.lower():
-                direction_text = "逆时针"
-
             import re as re_local
-            numbers = re_local.findall(r'\d+', task)
-            numbers_spoken = ""
-            if numbers:
-                # 提取所有数字并逐个字符展开
-                all_digits = ''.join(numbers)
-                numbers_spoken = ' '.join(list(all_digits))
 
-            # 播报格式：数字 + 方向，例如 "1 2 3 4 顺时针"
-            if numbers_spoken and direction_text:
-                speak_text = f"{numbers_spoken} {direction_text}"
-            elif numbers_spoken:
-                speak_text = numbers_spoken
+            raw = str(task or '').strip()
+            lowered = raw.lower()
+
+            # 方向：优先文本关键词，其次按数字奇偶推断
+            direction_text = ''
+            if any(k in lowered for k in ('counterclockwise', 'anticlockwise', 'anti-clockwise', 'ccw')) or '逆时针' in raw:
+                direction_text = '逆时针'
+            elif any(k in lowered for k in ('clockwise', 'cw')) or '顺时针' in raw:
+                direction_text = '顺时针'
+
+            numbers = re_local.findall(r'\d+', raw)
+            number_text = ''.join(numbers) if numbers else ''
+
+            if not direction_text and number_text:
+                # 无方向文本时，沿用赛事规则：奇=顺时针，偶=逆时针
+                try:
+                    numeric_value = int(number_text)
+                    direction_text = '顺时针' if (numeric_value % 2 == 1) else '逆时针'
+                except ValueError:
+                    pass
+
+            # 固定播报：数字 + 方向，例如 "1234 顺时针"
+            # 注意：播报内容完全取决于二维码原文；原文无数字时只能播方向
+            if number_text and direction_text:
+                speak_text = f'{number_text} {direction_text}'
+            elif number_text:
+                speak_text = number_text
             elif direction_text:
                 speak_text = direction_text
             else:
-                speak_text = f"任务识别 {task}"
+                speak_text = f'任务识别 {raw}'
 
-            self.log.mission(f'QR播报开始: 原文="{task}" → 播报="{speak_text}"')
+            if not number_text:
+                self.get_logger().warn(
+                    f'[VOICE] 二维码原文无数字，无法播报编号。原文="{raw}"，仅播报方向/原文'
+                )
+            self.log.mission(f'QR播报开始: 原文="{raw}" → 播报="{speak_text}"')
             self.get_logger().info(f'[VOICE] 播报二维码: {speak_text}')
 
             self.tts_player.speak_text(speak_text)

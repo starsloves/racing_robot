@@ -25,7 +25,6 @@ setup(
         'console_scripts': [
             'stage2_inertial_navigator = racing_stage2.stage2_inertial_navigator:main',
             'lidar_obstacle_circle_markers = racing_stage2.lidar_obstacle_circle_markers:main',
-            'direct_inertial_tester = racing_stage2.direct_inertial_tester:main',
             'vision_preview = racing_stage2.vision_preview:main',
             'twist_cmd_relay = racing_stage2.twist_cmd_relay:main',
             'data_recorder = racing_stage2.data_recorder:main',

@@ -6,26 +6,25 @@ import rclpy
 from nav_msgs.msg import Odometry
 
 from racing_stage2 import field_track
-from racing_stage2.stage2_inertial_base import Stage2InertialBase
+from racing_stage2.stage2_inertial_navigator import Stage2InertialNavigator
 from racing_stage2.avoid_controller import AvoidConfig, AvoidController, NavState
 from racing_stage2.avoid_geometry import cross_segment_m
 from racing_stage2.scan_processor import ScanProcessor
 from racing_stage2.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
-from racing_stage2.stage2_vision_mixin import Stage2VisionMixin
+from racing_stage2.direct_inertial_tester_vision import DirectInertialTesterVisionMixin
 
 
-class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
+class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMixin):
     def __init__(self):
-        super().__init__(node_name='stage2_inertial_navigator')
+        super().__init__()
         
         self._last_wheel_odom_msg = None  # 保存最新的 wheel odom 消息用于 marker 坐标转换
         self._last_turn_target_yaw = None  # 上一个转弯的目标 yaw，用于直行段 heading 基准
 
         self.declare_parameter('test_direction', 'clockwise')
-        self.declare_parameter('use_test_direction_fallback', False)
         self.declare_parameter('test_start_mode', 'auto')
-        self.declare_parameter('test_feedback_prefix', '第二阶段')
+        self.declare_parameter('test_feedback_prefix', '惯导参数测试')
         # field_track yaml 路径。空=根据 direction 自动选择 config/field_track_{direction}.yaml
         self.declare_parameter('field_track_yaml', '')
         # 避障参数（yaml 配置，直行避障使用）
@@ -55,9 +54,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 
         self.test_direction_raw = str(self.get_parameter('test_direction').value).strip()
         self.test_direction = self.resolve_test_direction(self.test_direction_raw)
-        self.use_test_direction_fallback = bool(self.get_parameter('use_test_direction_fallback').value)
         self.test_start_mode = str(self.get_parameter('test_start_mode').value).strip().lower() or 'auto'
-        self.test_feedback_prefix = str(self.get_parameter('test_feedback_prefix').value).strip() or '第二阶段'
+        self.test_feedback_prefix = str(self.get_parameter('test_feedback_prefix').value).strip() or '惯导参数测试'
         ft_custom = str(self.get_parameter('field_track_yaml').value)
         if ft_custom:
             self._field_track_yaml = ft_custom
@@ -66,13 +64,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             src_dir = os.path.dirname(here)
             self._field_track_yaml = field_track.resolve_yaml_path(src_dir, self.test_direction, '')
 
-        # 比赛默认待命：只有 competition_phase=2 后才启动
-        self.phase = 1
-        self.phase_initialized = False
-        self.waiting_for_phase2_start = False
-        # 独立测试可用 test_direction；比赛中方向以 competition_qr_task 为准
-        self.task_raw = ''
-        self.direction = None
+        # 不再写死 phase=2，改为从 competition_phase 话题获取
+        self.phase = 1  # 初始值为 1
+        self.phase_initialized = False  # 标记是否收到过有效的 phase 消息
+        self.task_raw = self.test_direction_raw
+        self.direction = self.test_direction
 
         self.reported_waiting_pose = False
         self.reported_start_delay = False
@@ -91,10 +87,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.right_clearance_distance = float('inf')
 
         # 视觉模块初始化（必须在 avoider 之前，因为 avoider 需要视觉回调）
-        # 默认关闭推理：Stage1 期间不跑视觉，等 phase=2 再启用
         self._setup_vision_centering()
-        if getattr(self, '_vision_node', None) is not None:
-            self._vision_node.set_inference_active(False)
         
         _avoid_cfg = AvoidConfig(
             detour_obstacle_distance=self.detour_obstacle_distance,
@@ -152,7 +145,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._map_origin_yaw = math.radians(90.0)
 
         self.get_logger().info(
-            f'{self.test_feedback_prefix}导航节点已就绪，方向={self.direction_text()}，'
+            f'{self.test_feedback_prefix}节点已就绪，方向={self.direction_text()}，'
             f'模式={self.start_mode_text()}，'
             f'field_track={self._field_track_yaml}，'
             f'避障=边转边避 away={_avoid_cfg.avoid_turn_away_deg:.0f}deg back={_avoid_cfg.avoid_turn_back_deg:.0f}deg recover={_avoid_cfg.avoid_recover_deg:.0f}deg×'
@@ -253,8 +246,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.imu_yaw = self.quaternion_to_yaw(msg.orientation)
         # 航向角始终使用 IMU，不管位置源是什么
         self.current_yaw = self.imu_yaw
-        if self.waiting_for_phase2_start:
-            self.try_start_mission()
+        self.try_start_mission()
 
     def _fmt_num(self, value, prec=3):
         if value is None:
@@ -579,8 +571,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 f'elapsed={elapsed:.2f}s | {self._full_telemetry()}',
             )
         self._maybe_log_telemetry('wheel_odom')
-        if self.waiting_for_phase2_start:
-            self.try_start_mission()
+        self.try_start_mission()
 
     def odom_callback(self, msg):
         ekf_pos = msg.pose.pose.position
@@ -596,8 +587,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         
         if not self._wheel_pose_source_active() or not self._wheel_odom_ready:
             self.current_position = self._last_ekf_position
-        if self.waiting_for_phase2_start:
-            self.try_start_mission()
+        self.try_start_mission()
 
     def projected_distance(self):
         """使用 odom 帧的欧氏距离判断直行完成，避免航向偏差导致投影错误。
@@ -731,8 +721,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         return 'clockwise'
 
     def direction_text(self):
-        direction = self.direction or self.test_direction or 'clockwise'
-        return '顺时针' if direction == 'clockwise' else '逆时针'
+        return '顺时针' if self.test_direction == 'clockwise' else '逆时针'
 
     def nav_succeeded_for_test_start(self):
         if self.test_start_mode in ('after_corridor', 'nav_succeeded', 'corridor', 'true'):
@@ -1105,12 +1094,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
     def finish_mission(self):
         self._log_session('MISSION', '完成 | ' + self._pose_diagnostic())
         super().finish_mission()
-        self._set_vision_inference_active(False)
-        self.get_logger().info('第二阶段完成')
-        # 独立测试工具可注入 _request_stop；比赛 total 场景保持节点存活待命
+        self.get_logger().info('第二阶段测试完成，自动退出')
         if hasattr(self, '_request_stop') and self._request_stop is not None:
             self._request_stop()
-
 
     def control_loop(self):
         if self.corridor_path_active:
@@ -1177,132 +1163,89 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self._world_start_pose = None
             return result
 
-    def _set_vision_inference_active(self, active: bool):
-        node = getattr(self, '_vision_node', None)
-        if node is not None and hasattr(node, 'set_inference_active'):
-            node.set_inference_active(active)
-
     def phase_callback(self, msg):
         previous_phase = self.phase
-        incoming = int(msg.data)
-        self.get_logger().info(
-            f'[PHASE] 收到 competition_phase={incoming} (之前={previous_phase}, initialized={self.phase_initialized})'
-        )
-
-        # 首次 latched 消息：phase=2 视为旧消息；phase=1 完成初始化
+        self.phase = int(msg.data)
+        self.get_logger().info(f'[PHASE] 收到 competition_phase={self.phase} (之前={previous_phase})')
+        
+        # 首次收到 phase 消息：如果是 phase=1，标记为已初始化；如果是 phase=2，可能是旧消息，拒绝
         if not self.phase_initialized:
-            if incoming == 1:
-                self.phase = 1
+            if self.phase == 1:
                 self.phase_initialized = True
-                self.waiting_for_phase2_start = False
-                self.get_logger().info('[PHASE] ✓ Phase 初始化完成: phase=1，等待 Stage1 发布 phase=2')
+                self.get_logger().info(f'[PHASE] ✓ Phase 初始化完成: phase=1')
+            elif self.phase == 2:
+                self.get_logger().warn(f'[PHASE] ⚠ 忽略启动时的 phase=2（可能是旧消息），等待 phase=1')
+                self.phase = 1  # 强制重置为 phase=1
                 return
-            if incoming == 2:
-                self.phase = 1
-                self.waiting_for_phase2_start = False
-                self.get_logger().warn('[PHASE] ⚠ 忽略启动时的 phase=2（可能是旧消息），等待 phase=1')
-                return
-            self.phase = incoming
-            return
-
-        self.phase = incoming
-        if previous_phase != self.phase and self.phase != 2:
-            self.waiting_for_phase2_start = False
-            self._set_vision_inference_active(False)
-            if self.mission_active or previous_phase == 2:
-                self.cmd_pub.publish(self.create_twist())
-                self.mission_active = False
-                self.publish_state('idle')
-            return
-
-        # 仅在真正切到 phase=2 时武装启动
-        if previous_phase != 2 and self.phase == 2:
-            self.waiting_for_phase2_start = True
-            self.start_after_time = None
-            self.reported_start_delay = False
-            self.reported_waiting_pose = False
-            self._set_vision_inference_active(True)
-            self.get_logger().info('[MISSION] 收到 phase=2，准备启动 Stage2')
-            self.try_start_mission()
-
+        
+        self.try_start_mission()
 
     def task_callback(self, msg):
-        raw = msg.data.strip()
-        self.task_raw = raw
-        parsed = self.parse_direction(raw)
-        if parsed is None and raw:
-            parsed = self.resolve_test_direction(raw)
-        self.direction = parsed
-        self.get_logger().info(f'[TASK] competition_qr_task="{raw}" → direction={self.direction}')
-        # 扫码方向可提前缓存；只有 phase=2 武装后才真正启动
-        if self.waiting_for_phase2_start:
-            self.try_start_mission()
-
+        self.task_raw = self.test_direction_raw
+        self.direction = self.test_direction
 
     def try_start_mission(self):
         if self.mission_active or self.mission_finished:
             return
 
-        # 默认静默：只有 stage1 切到 phase=2 后才会 armed
-        if not self.waiting_for_phase2_start:
+        # 不再强制设置 phase=2，改为检查实际的 phase 值
+        if self.phase != 2:
+            self.get_logger().info(f'[MISSION] try_start 被阻止: phase={self.phase} (需要2)', throttle_duration_sec=3.0)
+            return
+        
+        if not self.phase_initialized:
+            self.get_logger().warn(f'[MISSION] try_start 被阻止: phase 未初始化', throttle_duration_sec=3.0)
             return
 
-        if not self.phase_initialized or self.phase != 2:
-            self.waiting_for_phase2_start = False
-            return
-
-        if self.direction is None:
-            if self.use_test_direction_fallback and self.test_direction:
-                self.direction = self.test_direction
-                self.get_logger().info(
-                    f'[MISSION] direction 未从扫码获得，使用 test_direction={self.direction}'
-                )
-            else:
-                # 方向还没到，保持 armed，等 task_callback
-                return
-
+        # test_direction 仅在初始化时设置，运行时不修改
+        if not self.direction:
+            self.direction = self.test_direction
         missing_inputs = self._missing_pose_inputs()
+
         if missing_inputs:
             now_sec = self.get_clock().now().nanoseconds / 1e9
             if now_sec - self._last_wait_log_sec >= 3.0:
                 self._last_wait_log_sec = now_sec
+                wait_line = f'等待: {", ".join(missing_inputs)}'
                 if not self.reported_waiting_pose:
                     self.publish_feedback(
                         f'{self.test_feedback_prefix}等待输入就绪: '
-                        + ', '.join(missing_inputs)
+                        f'{", ".join(missing_inputs)}'
                     )
                     self.reported_waiting_pose = True
-                self.get_logger().info(
-                    f'{self.test_feedback_prefix}等待: {", ".join(missing_inputs)}'
-                )
+                self._log_session('STARTUP', f'{wait_line} | {self._full_telemetry()}')
+            self._maybe_log_telemetry('startup_wait')
             return
 
+        current_time = self.get_clock().now().nanoseconds / 1e9
         if self.start_after_time is None:
-            self.start_after_time = self.get_clock().now().nanoseconds / 1e9 + self.start_delay_sec
+            self.start_after_time = current_time + self.start_delay_sec
             if not self.reported_start_delay:
+                ready_line = (
+                    f'位姿就绪 delay={self.start_delay_sec:.2f}s | '
+                    f'{self._pose_diagnostic()}'
+                )
                 self.publish_feedback(
                     f'{self.test_feedback_prefix}位姿已就绪，'
                     f'{self.start_delay_sec:.2f}s 后开始'
                 )
+                self._log_session('STARTUP', ready_line)
                 self.reported_start_delay = True
-            self.get_logger().info(
-                f'[MISSION] ⏱ phase=2 已确认，{self.start_delay_sec}秒后启动'
-            )
             return
 
-        current_time = self.get_clock().now().nanoseconds / 1e9
         if current_time < self.start_after_time:
             return
 
-        self.get_logger().info(
-            f'[MISSION] ✓ Stage2 任务启动: phase=2, direction={self.direction}'
-        )
-        self.waiting_for_phase2_start = False
         self.mission_active = True
         self.reported_start = True
+        self._log_session(
+            'MISSION',
+            f'任务开始 方向={self.direction_text()} | {self._pose_diagnostic()}',
+        )
         self.publish_feedback(
             f'{self.test_feedback_prefix}开始执行，方向: {self.direction_text()}，'
-            f'模式: {self.start_mode_text()}'
+            f'模式: {self.start_mode_text()}，'
+            f'field_track: {self._field_track_yaml}'
         )
         self.begin_inertial_plan_after_nav(nav_succeeded=self.nav_succeeded_for_test_start())
 
@@ -1318,7 +1261,7 @@ def main(args=None):
     )
 
     init_without_ros_signal_handler(args)
-    node = Stage2InertialNavigator()
+    node = DirectInertialTester()
     stop_event = threading.Event()
 
     request_stop = install_stop_event(

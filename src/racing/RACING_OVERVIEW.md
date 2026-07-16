@@ -1,7 +1,8 @@
 # Racing 三阶段方案总览
 
 > **编辑约束**：本文档位于 `src/racing/RACING_OVERVIEW.md`。
-> Stage 2 和 Stage 3 的开发代码分别在 `racing_stage2_param_test` 和 `racing_stage3_param_test` 测试包。
+> Stage 2 / Stage 3 **官方生产代码**在 `racing_stage2` / `racing_stage3`。
+> `racing_stage2_param_test` / `racing_stage3_param_test` 仅用于独立调参，不作为 total 正式入口。
 > **本文档必须随阶段方案变更同步更新。**
 
 ---
@@ -20,16 +21,16 @@ competition_controller.py（Stage1 主控）
   │                └── QR 码扫描 → phase=2
   │
   ├── phase=2 ──── Stage2: 矩形赛道惯性导航
-  │                │ 测试包：racing_stage2_param_test
-  │                ├── DirectInertialTester — 轮速里程计 dead reckoning
-  │                ├── VisionLaneCentering — 视觉车道居中（mixin）
+  │                │ 官方包：racing_stage2
+  │                ├── Stage2InertialNavigator — 轮速惯导 + field_track
+  │                ├── Stage2VisionMixin — 视觉车道居中
   │                └── AvoidController — 独立避障模块
   │
   └── phase=3 ──── Stage3: 返程导航
-                   │ 测试包：racing_stage3_param_test
-                   ├── EnhancedReturnNavigator — Pure Pursuit + A*
+                   │ 官方包：racing_stage3
+                   ├── Stage3ReturnNavigator — Pure Pursuit + A* + P 视觉
                    ├── Stage1 4态避障复用
-                   └── 终点 P 点 (0.20, 0.20)
+                   └── 终点 P 点区域
 ```
 
 ### 1.2 关键 Topic 拓扑
@@ -37,20 +38,20 @@ competition_controller.py（Stage1 主控）
 | Topic | 类型 | 发布者 | 说明 |
 |---|---|---|---|
 | `/cmd_vel` | Twist | competition_controller (phase1) / Stage3 / twist_cmd_relay | phase1/3 控制输出 |
-| `/stage2_cmd_vel` | Twist | DirectInertialTester | phase2 独立控制 → twist_cmd_relay → /cmd_vel |
+| `/stage2_cmd_vel` | Twist | Stage2InertialNavigator | phase2 独立控制 → Stage1 转发 /cmd_vel |
 | `/odom` | Odometry | origincar_base | 轮速里程计（编码器）— **Stage2 主位姿源** |
 | `/odom_combined` | PoseWithCovarianceStamped | robot_localization EKF | IMU+轮速融合 — Stage2 仅诊断日志 / Stage3 使用 |
 | `/map` | OccupancyGrid | map_overlay | 全局地图 — Stage3 使用 |
 | `/scan` | LaserScan | 激光雷达 | 避障输入 |
 | `/imu/data` | Imu | BNO055 | **航向角（yaw）来源** — Stage2 角度基准 |
 | `competition_phase` | Int32 | competition_controller | 阶段序号（1/2/3） |
-| `stage2_state` | String | DirectInertialTester | Stage2 内部状态 |
-| `stage3_state` | String | EnhancedReturnNavigator | Stage3 内部状态 |
+| `stage2_state` | String | Stage2InertialNavigator | Stage2 内部状态 |
+| `stage3_state` | String | Stage3ReturnNavigator | Stage3 内部状态 |
 | `qr_scan_result` | String | qr_scanner | QR 解码结果 |
 | `competition_qr_task` | String | competition_controller | QR 扫描方向指令 |
 | `sign4return` | Int32 | competition_controller | 返程 AI 触发信号 |
-| `/stage2_obstacle_markers` | MarkerArray | DirectInertialTester | 障碍物聚类可视化（rviz2） |
-| `/vision_debug` | Image | DirectInertialTester | 视觉车道居中矫正图（rviz2） |
+| `/stage2_obstacle_markers` | MarkerArray | Stage2InertialNavigator | 障碍物聚类可视化（rviz2） |
+| `/vision_debug` | Image | Stage2InertialNavigator | 视觉车道居中矫正图（rviz2） |
 
 ### 1.3 坐标系
 
@@ -72,12 +73,12 @@ competition_controller.py（Stage1 主控）
 | 包 | 阶段 | 类型 | 说明 |
 |---|---|---|---|
 | `racing_stage1` | Stage1 | 只读 | 官方通道导航 + QR 扫码 |
-| `racing_stage2` | Stage2 | 只读 | 官方惯导导航基类（`Stage2InertialNavigator`） |
-| `racing_stage2_param_test` | Stage2 | **可编辑** | Stage2 参数测试主包 |
+| `racing_stage2` | Stage2 | **官方生产** | 正式惯导+视觉节点（`Stage2InertialNavigator`） |
+| `racing_stage2_param_test` | Stage2 | 独立调参 | Stage2 参数测试包（非 total 入口） |
 | `racing_stage2_field_record` | Stage2 | 辅助 | 场测数据记录 |
 | `racing_stage2_param_vision_test` | Stage2 | 辅助 | 视觉参数测试 |
-| `racing_stage3` | Stage3 | 只读 | 官方返程导航 |
-| `racing_stage3_param_test` | Stage3 | **可编辑** | Stage3 返程测试 |
+| `racing_stage3` | Stage3 | **官方生产** | 正式返程节点（`Stage3ReturnNavigator`） |
+| `racing_stage3_param_test` | Stage3 | 独立调参 | Stage3 参数测试包（非 total 入口） |
 | `racing_common` | 通用 | 工具 | RacingLogger, ObstacleMarkerPublisher 等 |
 | `qr_scanner` | Stage1 | 辅助 | WeChat CV 二维码扫描 |
 | `racing_vision_ai` | Stage3 | 辅助 | `sign4return=9` 触发→火山引擎大模型图生文 |
@@ -141,18 +142,18 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 
 ## 3. Stage 2: 矩形赛道惯性导航
 
-**包**：`racing_stage2_param_test`（可编辑）
+**包**：`racing_stage2`（官方生产）
 
-Stage 2 为**单一 DirectInertialTester**（继承 `Stage2InertialNavigator`），通过 `direct_inertial_tester_vision.py` mixin 可选集成视觉车道居中。VisionInertialTester 方案已废弃（代码移入 `bak/`）。
+Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + 视觉 mixin），通过 `direct_inertial_tester_vision.py` mixin 可选集成视觉车道居中。VisionInertialTester 方案已废弃（代码移入 `bak/`）。
 
 | 模块 | 核心文件 | 功能 |
 |---|---|---|
-| **导航** | `direct_inertial_tester.py` | 主控：YAML field_track + odom 欧氏距离 |
+| **导航** | `stage2_inertial_navigator.py` | 主控：YAML field_track + odom 欧氏距离 |
 | **场测赛道** | `field_track.py` | YAML 赛道段序加载 |
 | **避障** | `avoid_controller.py` | 独立 6 态闭环避障控制器 |
 | **避障几何** | `avoid_geometry.py` | 绕行路径规划（转向角 + 两脚距离） |
 | **雷达处理** | `scan_processor.py` | 前方/侧方障碍检测 |
-| **视觉修正** | `direct_inertial_tester_vision.py` | Vision + IMU 融合 mixin |
+| **视觉修正** | `stage2_vision_mixin.py` | Vision + IMU 融合 mixin |
 | **视觉检测** | `vision_lane_centering.py` | BPU YOLOv8-Seg 赛道分割 |
 | **日志** | `session_file_log.py` | 文件会话日志 |
 | **CSV 记录** | `data_recorder.py` | 遥测 CSV 记录 |
@@ -339,7 +340,7 @@ idle → turn_away(转α, 30°) → leg1(直行0.22m) → turn_back(转β, 40°)
 
 ## 4. Stage 3: 返程导航
 
-**包**：`racing_stage3_param_test`（可编辑）
+**包**：`racing_stage3`（官方生产）
 
 | 核心文件 | 行数 | 说明 |
 |---|---|---|
@@ -348,7 +349,7 @@ idle → turn_away(转α, 30°) → leg1(直行0.22m) → turn_back(转β, 40°)
 | `phase3_test_trigger.py` | — | 独立测试时发布 competition_phase=3 |
 | `stage3_test_simulator.py` | — | 返程测试仿真器 |
 
-**官方包**：`racing_stage3`（只读）
+**独立调参包**：`racing_stage3_param_test`
 
 ### 4.1 返程路径
 
@@ -436,20 +437,20 @@ ros2 launch racing_bringup competition_total.launch.py
 # ── Stage2 惯导测试 ──
 colcon build --symlink-install --packages-select racing_common racing_stage2_param_test
 source install/setup.bash
-ros2 launch racing_stage2_param_test direct_inertial_test.launch.py
-ros2 launch racing_stage2_param_test direct_inertial_test.launch.py test_direction:=counterclockwise
+ros2 launch racing_stage2 competition_stage2.launch.py
+ros2 launch racing_stage2 competition_stage2.launch.py test_direction:=counterclockwise
 
 # ── Stage2 带视觉车道居中 ──
-ros2 launch racing_stage2_param_test direct_inertial_test.launch.py \
+ros2 launch racing_stage2 competition_stage2.launch.py \
   vision_camera:=true
 
 # ── Stage3 返程测试 ──
 colcon build --symlink-install --packages-select racing_stage3_param_test
 source install/setup.bash
-ros2 launch racing_stage3_param_test enhanced_return_test.launch.py
+ros2 launch racing_stage3 competition_stage3.launch.py
 
 # ── 可视化调试 ──
-ros2 launch racing_stage2_param_test direct_inertial_test.launch.py \
+ros2 launch racing_stage2 competition_stage2.launch.py \
   enable_rviz:=true
 
 # 紧急停车

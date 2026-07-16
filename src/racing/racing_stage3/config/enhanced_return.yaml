@@ -1,4 +1,4 @@
-enhanced_return_navigator:
+stage3_return_navigator:
   ros__parameters:
     # ===== Topic =====
     phase_topic: competition_phase
