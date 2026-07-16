@@ -30,7 +30,7 @@ competition_controller:
     phase1_cluster_gap_tolerance: 0.12
     phase1_min_cluster_points: 3
     phase1_min_cluster_width: 0.06
-    phase1_max_cluster_width: 0.40
+    phase1_max_cluster_width: 0.55
     phase1_emergency_min_x: 0.08
     phase1_emergency_max_x: 0.45
     phase1_emergency_half_width: 0.12
@@ -72,18 +72,43 @@ competition_controller:
     map_topic: /map
     corridor_path_topic: /stage1_corridor_path
     enable_corridor_navigation: true
-    corridor_waypoints_json: '[{"x":2.20,"y":2.25}]'
-    corridor_waypoint_tolerance: 0.15
+    # 默认与总览/Stage2入口一致；若现场标定不同只改 yaml，不改代码
+    corridor_waypoints_json: '[{"x":2.50,"y":2.80,"speed":0.12,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    corridor_waypoint_tolerance: 0.18
     corridor_goal_tolerance: 0.10
     corridor_goal_yaw_deg: 90.0
-    corridor_goal_yaw_tolerance_deg: 10.0
+    corridor_goal_yaw_tolerance_deg: 4.0
+    # ρ-α-β 位姿镇定（边走边转；有角速度时保留蠕行线速度）
     corridor_linear_speed: 0.14
-    corridor_turn_linear_speed: 0.06   # 大角度转向时保持的微速（禁止 linear=0）
-    corridor_min_linear_speed: 0.04    # 有角速度时的最小线速度
-    corridor_timeout_sec: 60.0
-    pure_pursuit_lookahead_m: 0.30
+    turn_linear_speed: 0.05
+    turn_min_angular_speed: 0.20
+    turn_angular_speed: 0.8
+    max_angular_speed: 0.8
+    corridor_timeout_sec: 45.0
+    corridor_rho_kp: 0.85
+    corridor_alpha_kp: 2.0
+    corridor_beta_kp: 0.80
+    corridor_creep_speed: 0.04
+    corridor_beta_blend_distance: 0.55
+    corridor_reverse_enabled: false
+    # 终点 capture：近场进入锁存，明显离开才退出；过冲可短退
+    corridor_capture_distance: 0.18
+    corridor_capture_exit_distance: 0.30
+    corridor_capture_speed: 0.05
+    corridor_brake_distance: 0.40
+    corridor_brake_kp: 0.28
+    # map_x>阈值时盲开/通道都向左旋回；通道中再加横向 x 回正
+    corridor_left_recover_x: 3.50
+    corridor_left_recover_angular: 0.70
+    corridor_left_recover_linear: 0.06
+    corridor_lateral_kp: 1.6
+    corridor_x_tolerance: 0.06
+    phase1_avoid_startup_grace_sec: 1.5
+    # 旧 PP 参数保留兼容，不再作为主控制
+    pure_pursuit_lookahead_m: 0.45
     pure_pursuit_turn_kp: 1.8
-    pure_pursuit_heading_stop_deg: 175.0
+    pure_pursuit_heading_stop_deg: 70.0
+    corridor_near_distance: 0.45
     use_corridor_planner: false
     planner_downsample: 4
     planner_occupied_threshold: 50

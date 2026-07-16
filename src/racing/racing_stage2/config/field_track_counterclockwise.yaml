@@ -11,7 +11,7 @@ segments:
   # ── 入口对齐 ────────────────────────────────────────
   # 原地右转 88°（实际会转约 90°）
   - type: turn
-    angle_deg: -88.0
+    angle_deg: -80.0
     description: rect_enter_align
 
   # ── 停稳（消除转弯残余角速度） ──────────────────────
@@ -21,7 +21,7 @@ segments:
 
   # ── 第一段（底边向右） ──────────────────────────────
   - type: move
-    distance_m: 1.05
+    distance_m: 0.60
     description: rect_first_leg
 
   # ── 停稳（消除直行段残余角速度） ────────────────────
@@ -31,7 +31,7 @@ segments:
 
   # ── 右下拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 88.0
+    angle_deg: 75.0
     description: rect_corner_1
 
   # ── 停稳（消除转弯残余角速度） ──────────────────────
@@ -41,7 +41,7 @@ segments:
 
   # ── 第二段（右边向上） ──────────────────────────────
   - type: move
-    distance_m: 0.40
+    distance_m: 0.20
     description: rect_side_1
 
   # ── 停稳（消除直行段残余角速度） ────────────────────
@@ -51,7 +51,7 @@ segments:
 
   # ── 右上拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 88.0
+    angle_deg: 75.0
     description: rect_corner_2
 
   # ── 停稳（消除转弯残余角速度） ──────────────────────
@@ -61,7 +61,7 @@ segments:
 
   # ── 第三段（顶边向左） ──────────────────────────────
   - type: move
-    distance_m: 2.90
+    distance_m: 2.80
     description: rect_top
 
   # ── 停稳（消除直行段残余角速度） ────────────────────
@@ -71,7 +71,7 @@ segments:
 
   # ── 左上拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 88.0
+    angle_deg: 75.0
     description: rect_corner_3
 
   # ── 停稳（消除转弯残余角速度） ──────────────────────
@@ -81,7 +81,7 @@ segments:
 
   # ── 第四段（左边向下） ──────────────────────────────
   - type: move
-    distance_m: 0.40
+    distance_m: 0.20
     description: rect_side_2
 
   # ── 停稳（消除直行段残余角速度） ────────────────────
@@ -91,7 +91,7 @@ segments:
 
   # ── 左下拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 88.0
+    angle_deg: 75.0
     description: rect_corner_4
 
   # ── 停稳（消除转弯残余角速度） ──────────────────────
@@ -101,5 +101,5 @@ segments:
 
   # ── 返回起点 ────────────────────────────────────────
   - type: move
-    distance_m: 1.05
+    distance_m: 0.60
     description: rect_return_origin
