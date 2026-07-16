@@ -224,7 +224,7 @@ class EnhancedReturnNavigator(Node):
         self.declare_parameter('p_complete_bbox_fill_ratio', 0.5)
         self.declare_parameter('p_approach_linear_speed', 0.06)
         self.declare_parameter('p_approach_angular_kp', 0.8)
-        self.declare_parameter('p_web_port', 8080)
+        self.declare_parameter('p_web_port', 8083)
 
     def _read_params(self):
         self.phase_topic = str(self.get_parameter('phase_topic').value)

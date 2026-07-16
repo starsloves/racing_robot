@@ -15,6 +15,8 @@ def generate_launch_description():
     support_launch_path = os.path.join(stage2_dir, 'launch', 'competition_support.launch.py')
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
     inertial_config = os.path.join(stage2_dir, 'config', 'inertial_stage2.yaml')
+    direct_test_config = os.path.join(stage2_dir, 'config', 'direct_inertial_test.yaml')
+    avoid_controller_config = os.path.join(stage2_dir, 'config', 'avoid_controller.yaml')
     obstacle_marker_config = os.path.join(stage2_dir, 'config', 'obstacle_circle_markers.yaml')
 
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='true')
@@ -119,12 +121,16 @@ def generate_launch_description():
 
     stage2_navigator = Node(
         package='racing_stage2',
-        executable='stage2_inertial_navigator',
+        # 使用带视觉纠偏 + 8082 HTTP 可视化的 DirectInertialTester
+        executable='direct_inertial_tester',
         name='stage2_inertial_navigator',
         parameters=[
             inertial_config,
+            direct_test_config,
+            avoid_controller_config,
             {
                 'imu_topic': LaunchConfiguration('imu_topic'),
+                'test_direction': LaunchConfiguration('test_direction'),
                 # 独立测试模式：车已在入口位置，跳过走廊规划，直接惯导绕圈
             },
         ],

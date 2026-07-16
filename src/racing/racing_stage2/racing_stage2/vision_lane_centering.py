@@ -56,7 +56,7 @@ class VisionLaneCentering:
         
         # 可视化缓存（供 HTTP 服务）
         self._combined_frame = None
-        self._jpeg_output_path = '/tmp/vision_latest.jpg'
+        self._jpeg_output_path = '/tmp/stage2_vision.jpg'
         
         # HTTP 健康检查共享状态
         self._http_server_start_time = time.time()
@@ -174,7 +174,7 @@ class VisionLaneCentering:
                             return
                         
                         # 图像请求：固定返回 /tmp/vision_latest.jpg
-                        if self.path.startswith('/vision_latest.jpg'):
+                        if self.path.startswith('/image') or self.path.startswith('/vision_latest.jpg'):
                             try:
                                 with open(parent_self._jpeg_output_path, 'rb') as f:
                                     content = f.read()

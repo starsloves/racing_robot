@@ -19,7 +19,7 @@ def generate_launch_description():
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='true')
     include_lidar_arg = DeclareLaunchArgument('include_lidar', default_value='true')
     include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
-    include_camera_arg = DeclareLaunchArgument('include_camera', default_value='false')
+    include_camera_arg = DeclareLaunchArgument('include_camera', default_value='true')
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='false')
     rgb_fps_arg = DeclareLaunchArgument('rgb_fps', default_value='15')
     resolution_mode_index_arg = DeclareLaunchArgument('resolution_mode_index', default_value='2')

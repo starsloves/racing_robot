@@ -4,7 +4,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 
-from racing_stage2_param_test.cmd_vel_stop import (
+from racing_stage2.cmd_vel_stop import (
     init_without_ros_signal_handler,
     install_stop_event,
     publish_stop,

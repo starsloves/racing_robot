@@ -37,7 +37,7 @@ class VisionPDetector:
     """
 
     def __init__(self, parent_node, model_path, conf_thres=0.25, iou_thres=0.45,
-                 crop_ratio=0.4, input_size=640, http_port=8080):
+                 crop_ratio=0.4, input_size=640, http_port=8083):
         self._node = parent_node
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
@@ -54,7 +54,7 @@ class VisionPDetector:
         # HTTP 可视化
         self._combined_frame = None
         # 与现有 vision_viewer.html 共用的图像路径。
-        self._jpeg_output_path = '/tmp/vision_latest.jpg'
+        self._jpeg_output_path = '/tmp/stage3_vision.jpg'
         self._http_server_start_time = time.time()
         self._last_frame_save_time = 0.0
         self._target_fps = 30
@@ -181,7 +181,7 @@ setInterval(refresh, 150); setInterval(health, 500); refresh(); health();
                             return
 
                         if (
-                            self.path.startswith('/vision_latest.jpg')
+                            self.path.startswith('/image') or self.path.startswith('/vision_latest.jpg')
                             or self.path.startswith('/vision_p_latest.jpg')
                         ):
                             try:

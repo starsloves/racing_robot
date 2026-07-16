@@ -112,4 +112,5 @@ stage2_inertial_navigator:
     vision_offset_kp: 0.4                    # offset → angular 增益（大幅降低，防止过冲）
     vision_max_angular: 0.8                  # 视觉修正最大角速度（降回 0.6，避免过度修正）
     vision_web_enabled: true                 # 是否启动 Web 服务（实时查看）
-    vision_web_port: 8080                    # Web 服务端口
+    vision_web_port: 8082                    # 兼容旧名
+    vision_http_port: 8082                   # 实际HTTP端口参数（Stage2）

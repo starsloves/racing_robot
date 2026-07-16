@@ -54,8 +54,8 @@ enhanced_return_navigator:
     p_approach_linear_speed: 0.06
     # 接近时角速度 kp 增益
     p_approach_angular_kp: 0.8
-    # 与 vision_viewer.html 共用的 Web 端口和接口
-    p_web_port: 8080
+    # Stage3 专用 Web 端口（避免与 Stage2 冲突）
+    p_web_port: 8083
 
     # ===== 避障（4态，同 Stage1）=====
     avoid_linear_speed: 0.10
@@ -105,3 +105,4 @@ enhanced_return_navigator:
     planner_dynamic_obstacle_inflation_m: 0.04
     planner_dynamic_obstacle_range_m: 0.7
     planner_replan_period_sec: 0.50
+

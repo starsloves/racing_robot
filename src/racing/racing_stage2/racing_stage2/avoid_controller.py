@@ -14,7 +14,7 @@ import math
 from dataclasses import dataclass
 from geometry_msgs.msg import Twist
 
-from racing_stage2_param_test.avoid_geometry import (
+from racing_stage2.avoid_geometry import (
     build_avoid_plan,
     normalize_angle,
     obstacle_is_left,

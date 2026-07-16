@@ -29,20 +29,20 @@ class DirectInertialTesterVisionMixin:
     
     def _setup_vision_centering(self):
         """初始化视觉居中模块"""
-        from racing_stage2_param_test.vision_lane_centering import VisionLaneCentering
+        from racing_stage2.vision_lane_centering import VisionLaneCentering
         
         # 参数声明
         self.declare_parameter('vision_offset_correction_enabled', True)
         self.declare_parameter('imu_heading_correction_enabled', True)
         self.declare_parameter('fusion_mode_enabled', True)
         self.declare_parameter('vision_model_path', 
-            '/home/sunrise/dev_ws/src/racing/racing_stage2_param_test/models/bset.bin')
+            '/home/sunrise/dev_ws/src/racing/racing_stage2/models/bset.bin')
         self.declare_parameter('vision_conf_thres', 0.25)
         self.declare_parameter('vision_iou_thres', 0.45)
         self.declare_parameter('vision_crop_ratio', 0.4)
         self.declare_parameter('vision_offset_kp', 1.2)
         self.declare_parameter('vision_max_angular', 0.6)
-        self.declare_parameter('vision_http_port', 8080)
+        self.declare_parameter('vision_http_port', 8082)
         
         # 融合策略参数
         self.declare_parameter('imu_heading_deadzone_deg', 0.3)
@@ -82,7 +82,7 @@ class DirectInertialTesterVisionMixin:
         self._offset_history = []
         self._offset_filter_size = 5  # 取最近 5 帧平均
         
-        # 创建视觉节点（自动启动 HTTP 服务，保存图像到 /tmp/vision_latest.jpg）
+        # 创建视觉节点（自动启动 HTTP 服务，保存图像到 /tmp/stage2_vision.jpg）
         self._vision_node = VisionLaneCentering(self, model_path, conf, iou, crop, http_port)
         
         self.get_logger().info(
