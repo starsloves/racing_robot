@@ -5,14 +5,14 @@ import os
 import rclpy
 from nav_msgs.msg import Odometry
 
-from racing_stage2_param_test import field_track
+from racing_stage2 import field_track
 from racing_stage2.stage2_inertial_navigator import Stage2InertialNavigator
-from racing_stage2_param_test.avoid_controller import AvoidConfig, AvoidController, NavState
-from racing_stage2_param_test.avoid_geometry import cross_segment_m
-from racing_stage2_param_test.scan_processor import ScanProcessor
-from racing_stage2_param_test.session_file_log import SessionFileLog
+from racing_stage2.avoid_controller import AvoidConfig, AvoidController, NavState
+from racing_stage2.avoid_geometry import cross_segment_m
+from racing_stage2.scan_processor import ScanProcessor
+from racing_stage2.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
-from racing_stage2_param_test.direct_inertial_tester_vision import DirectInertialTesterVisionMixin
+from racing_stage2.direct_inertial_tester_vision import DirectInertialTesterVisionMixin
 
 
 class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMixin):
@@ -1228,7 +1228,7 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
 def main(args=None):
     import threading
 
-    from racing_stage2_param_test.cmd_vel_stop import (
+    from racing_stage2.cmd_vel_stop import (
         init_without_ros_signal_handler,
         install_stop_event,
         publish_stop,

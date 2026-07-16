@@ -198,6 +198,9 @@ setInterval(refresh, 150); setInterval(health, 500); refresh(); health();
                                 self.wfile.write(content)
                             except FileNotFoundError:
                                 self.send_error(404, 'Image not found')
+                            except BrokenPipeError:
+                                # 客户端提前断开连接（浏览器刷新/超时），忽略
+                                pass
                             except Exception as e:
                                 parent_self._node.get_logger().error(f'[P-DET] 图像服务失败: {e}')
                                 self.send_error(500, str(e))

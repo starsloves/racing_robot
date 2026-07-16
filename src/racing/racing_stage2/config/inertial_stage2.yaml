@@ -105,7 +105,7 @@ stage2_inertial_navigator:
     fusion_mode_enabled: true                # true=开启纠偏总开关（再按imu/vision子开关决定源）；false=关闭所有纠偏
     fusion_weight_imu: 0.5                   # 融合模式中 IMU 权重（视觉无效时自动切 IMU 100%）
     fusion_weight_vision: 0.5                # 融合模式中视觉权重
-    vision_model_path: /home/sunrise/dev_ws/src/racing/racing_stage2_param_test/models/bset.bin  # BPU 模型路径
+    vision_model_path: /home/sunrise/dev_ws/src/racing/racing_stage2/models/bset.bin  # BPU 模型路径
     vision_conf_thres: 0.25                  # 检测置信度阈值
     vision_iou_thres: 0.45                   # NMS IOU 阈值
     vision_crop_ratio: 0.4                   # 图像裁剪比例（保留下方 40%）

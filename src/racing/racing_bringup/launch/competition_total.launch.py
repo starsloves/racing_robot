@@ -54,6 +54,8 @@ def generate_launch_description():
             'include_depth': LaunchConfiguration('include_depth'),
             'include_bno055': LaunchConfiguration('include_bno055'),
             'imu_topic': LaunchConfiguration('imu_topic'),
+            'standalone_map_overlay': 'false',
+            'include_map_overlay': 'false',
         }.items(),
         condition=IfCondition(LaunchConfiguration('include_stage1')),
     )
@@ -68,6 +70,8 @@ def generate_launch_description():
             'include_depth': 'false',
             'include_obstacle_markers': LaunchConfiguration('include_obstacle_markers'),
             'imu_topic': LaunchConfiguration('imu_topic'),
+            'standalone_map_overlay': 'false',
+            'include_map_overlay': 'false',
         }.items(),
         condition=IfCondition(LaunchConfiguration('include_stage2')),
     )
@@ -83,6 +87,8 @@ def generate_launch_description():
             'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
             'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
             'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
+            'standalone_map_overlay': 'false',
+            'include_map_overlay': 'false',
         }.items(),
         condition=IfCondition(LaunchConfiguration('include_stage3')),
     )

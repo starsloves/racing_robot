@@ -1,14 +1,14 @@
 # field_track_clockwise.yaml — 顺时针矩形赛道（odom欧氏距离+标准90°）
 # 导航方式：odom 相对坐标 + 欧氏距离，直行段禁用航向修正
 # 起点：Stage1 终点，车头朝向 90°（+Y）
-# 转角补偿：实测每次转弯多转约 2°，所以 90° 改为 75°
+# 转角补偿：实测每次转弯多转约 2°，所以 90° 改为 80°
 
 track_type: rectangle_closed
 direction: clockwise
 
 segments:
   # ── 入口转弯 ────────────────────────────────────────
-  # 原地左转 75°（实际会转约 90°）
+  # 原地左转 80°（实际会转约 90°）
   - type: turn
     angle_deg: 80.0
     description: rect_enter_align
@@ -20,7 +20,7 @@ segments:
 
   # ── 第一段：从入口向左直行 ──────────────────────────
   - type: move
-    distance_m: 0.90
+    distance_m: 0.60
     description: rect_first_leg
 
   # ── 停稳（消除直行段残余角速度） ────────────────────
