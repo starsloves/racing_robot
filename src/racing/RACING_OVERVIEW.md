@@ -59,10 +59,11 @@ competition_controller.py（Stage1 主控）
 |---|---|---|
 | `/odom` | 局部里程计 | 轮速编码器积分，**Stage2 主位姿源**（xy + yaw + 计程 + 控制同源） |
 | `/odom_combined` | 局部里程计 | EKF 融合 IMU+轮速，Stage2 仅诊断、Stage3 使用 |
-| `/map` | 全局地图 | SLAM 建图坐标系，map→odom 静态变换 (2.50, 2.80) @ 90° |
+| `/map` | 全局地图 | 全局地图坐标系；`map→odom_combined` 静态变换由 launch 参数注入（默认 0.50, 0.20 @ ~10°） |
 
 ### 1.4 位姿源规则
 
+- **Stage1 通道导航位置使用 TF `map <- base_footprint`**（目标点是 map 坐标，不能直接拿 `/odom_combined` xy）
 - **里程计（`/odom`）**：仅用于位置/距离计数（`x`、`y`、位移）
 - **IMU（`/imu/data`）**：用于提供航向角（`yaw`），同时为激光雷达提供角度基准
 - **禁止**使用 `/odom` 的角度参与导航计算，角度来源必须为 IMU
