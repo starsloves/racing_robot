@@ -179,6 +179,7 @@ class Stage2InertialNavigator(Node):
         self.phase = 1
         self.task_raw = ''
         self.direction = None
+        self.phase_initialized = False  # 标记是否收到过有效的 phase 消息
         self.current_yaw = None
         self.current_position = None
         self.current_odom_yaw = None
@@ -852,6 +853,18 @@ class Stage2InertialNavigator(Node):
     def phase_callback(self, msg):
         previous_phase = self.phase
         self.phase = int(msg.data)
+        self.get_logger().info(f'[PHASE] 收到 competition_phase={self.phase} (之前={previous_phase})')
+        
+        # 首次收到 phase 消息：如果是 phase=1，标记为已初始化；如果是 phase=2，可能是旧消息，拒绝
+        if not self.phase_initialized:
+            if self.phase == 1:
+                self.phase_initialized = True
+                self.get_logger().info(f'[PHASE] ✓ Phase 初始化完成: phase=1')
+            elif self.phase == 2:
+                self.get_logger().warn(f'[PHASE] ⚠ 忽略启动时的 phase=2（可能是旧消息），等待 phase=1')
+                self.phase = 1  # 强制重置为 phase=1
+                return
+        
         if previous_phase != self.phase and self.phase != 2:
             self.reset_mission(clear_task=False)
         self.try_start_mission()
@@ -1063,18 +1076,25 @@ class Stage2InertialNavigator(Node):
         if self.mission_active or self.mission_finished:
             return
         if self.phase != 2 or self.direction is None:
+            if self.phase != 2:
+                self.get_logger().info(f'[MISSION] try_start 被阻止: phase={self.phase} (需要2), direction={self.direction}')
+            elif self.direction is None:
+                self.get_logger().info(f'[MISSION] try_start 被阻止: phase=2 ✓, 但 direction=None')
             return
         if self.current_yaw is None or self.current_position is None:
+            self.get_logger().info(f'[MISSION] try_start 被阻止: 等待传感器数据 yaw={self.current_yaw} pos={self.current_position}')
             return
 
         if self.start_after_time is None:
             self.start_after_time = self.get_clock().now().nanoseconds / 1e9 + self.start_delay_sec
+            self.get_logger().info(f'[MISSION] ⏱ 启动延迟计时开始: {self.start_delay_sec}秒后启动')
             return
 
         current_time = self.get_clock().now().nanoseconds / 1e9
         if current_time < self.start_after_time:
             return
 
+        self.get_logger().info(f'[MISSION] ✓ Stage2 任务启动: phase=2, direction={self.direction}')
         self.mission_active = True
         self.reported_start = True
         if self.use_corridor_path and self.corridor_waypoints:

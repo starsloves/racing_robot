@@ -2,6 +2,7 @@ import math
 import heapq
 import json
 import numpy as np
+import threading
 
 import rclpy
 import sys
@@ -305,7 +306,9 @@ class CompetitionController(Node):
         )
         self._phase1_last_clusters = []  # 缓存上一帧的聚类结果
 
+        # 初始化时立即发布 phase=1，覆盖可能存在的旧 TRANSIENT_LOCAL 消息
         self.publish_phase()
+        self.log.startup(f'✓ 初始 phase={self.phase} 已发布到 {self.phase_topic}')
         self.create_timer(1.0 / max(control_rate_hz, 1.0), self.control_loop)
 
         self.log.startup('competition controller ready: phase1 blind drive, phase2 corridor, phase3 return-to-p')
@@ -332,10 +335,12 @@ class CompetitionController(Node):
 
     def begin_phase_transition(self, target_phase, reason):
         if self.phase == target_phase:
+            self.log.progress(f'Phase切换请求被忽略: 已经是 phase={target_phase}')
             return
 
         self.phase = target_phase
         self.publish_phase()
+        self.log.mission(f'✓ Phase切换执行: {self.phase-1} → {target_phase}, 原因: {reason}')
         self.stop_robot()
         self.latest_stage2_cmd = Twist()
         self.latest_stage2_cmd_time = None
@@ -343,7 +348,6 @@ class CompetitionController(Node):
             self.transition_end_time = self.get_clock().now() + Duration(seconds=self.transition_stop_duration)
         else:
             self.transition_end_time = None
-        self.log.mission(f'phase {target_phase}: {reason}')
 
     def clamp(self, value, limit):
         return max(-limit, min(limit, value))
@@ -1002,11 +1006,8 @@ class CompetitionController(Node):
 
         self.qr_task = task
         self.task_pub.publish(String(data=task))
-        
-        # 播报识别结果（方向 + 数字）
-        self._speak_qr_result(task)
-        
-        # 如果启用后退功能，先进入 backing 状态；否则直接切换 phase2
+
+        # 立即启动后退，不等待播报完成
         if self.enable_backing and len(self.path_record) > 0:
             self.phase1_motion_state = 'backing'
             self.backing_started_time = self.get_clock().now()
@@ -1018,6 +1019,9 @@ class CompetitionController(Node):
         else:
             self.log.mission(f'qr detected: {task}, starting corridor navigation without backing')
             self.start_corridor_navigation(f'qr detected: {task}, no backing path')
+        
+        # 异步播报识别结果（后台线程执行，不阻塞后退）
+        self._speak_qr_result_async(task)
 
 
     def stage2_state_callback(self, msg):
@@ -1272,18 +1276,19 @@ class CompetitionController(Node):
 
             import re as re_local
             numbers = re_local.findall(r'\d+', task)
+            numbers_spoken = ""
             if numbers:
-                numbers_list = []
-                for num in numbers:
-                    numbers_list.extend(list(num))
-                numbers_text = " ".join(numbers_list)
+                # 提取所有数字并逐个字符展开
+                all_digits = ''.join(numbers)
+                numbers_spoken = ' '.join(list(all_digits))
 
-            if direction_text and numbers_text:
-                speak_text = f"{direction_text} {numbers_text}"
+            # 播报格式：数字 + 方向，例如 "1 2 3 4 顺时针"
+            if numbers_spoken and direction_text:
+                speak_text = f"{numbers_spoken} {direction_text}"
+            elif numbers_spoken:
+                speak_text = numbers_spoken
             elif direction_text:
                 speak_text = direction_text
-            elif numbers_text:
-                speak_text = numbers_text
             else:
                 speak_text = f"任务识别 {task}"
 
@@ -1296,6 +1301,15 @@ class CompetitionController(Node):
         except Exception as e:
             self.log.error('VOICE', f'播报失败: {e}')
             self.get_logger().error(f'[VOICE] 播报异常: {e}')
+    
+    def _speak_qr_result_async(self, task):
+        """异步播报二维码识别结果（后台线程执行）"""
+        def speak_worker():
+            self._speak_qr_result(task)
+        
+        thread = threading.Thread(target=speak_worker, daemon=True, name='TTS-QR-Broadcast')
+        thread.start()
+        self.log.progress(f'QR播报已启动后台线程，车辆开始后退')
 
     def destroy_node(self):
         self.log.close()

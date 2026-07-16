@@ -64,7 +64,9 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
             src_dir = os.path.dirname(here)
             self._field_track_yaml = field_track.resolve_yaml_path(src_dir, self.test_direction, '')
 
-        self.phase = 2
+        # 不再写死 phase=2，改为从 competition_phase 话题获取
+        self.phase = 1  # 初始值为 1
+        self.phase_initialized = False  # 标记是否收到过有效的 phase 消息
         self.task_raw = self.test_direction_raw
         self.direction = self.test_direction
 
@@ -1162,7 +1164,21 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
             return result
 
     def phase_callback(self, msg):
-        self.phase = 2
+        previous_phase = self.phase
+        self.phase = int(msg.data)
+        self.get_logger().info(f'[PHASE] 收到 competition_phase={self.phase} (之前={previous_phase})')
+        
+        # 首次收到 phase 消息：如果是 phase=1，标记为已初始化；如果是 phase=2，可能是旧消息，拒绝
+        if not self.phase_initialized:
+            if self.phase == 1:
+                self.phase_initialized = True
+                self.get_logger().info(f'[PHASE] ✓ Phase 初始化完成: phase=1')
+            elif self.phase == 2:
+                self.get_logger().warn(f'[PHASE] ⚠ 忽略启动时的 phase=2（可能是旧消息），等待 phase=1')
+                self.phase = 1  # 强制重置为 phase=1
+                return
+        
+        self.try_start_mission()
 
     def task_callback(self, msg):
         self.task_raw = self.test_direction_raw
@@ -1172,9 +1188,18 @@ class DirectInertialTester(Stage2InertialNavigator, DirectInertialTesterVisionMi
         if self.mission_active or self.mission_finished:
             return
 
-        self.phase = 2
-        self.direction = self.test_direction
+        # 不再强制设置 phase=2，改为检查实际的 phase 值
+        if self.phase != 2:
+            self.get_logger().info(f'[MISSION] try_start 被阻止: phase={self.phase} (需要2)', throttle_duration_sec=3.0)
+            return
+        
+        if not self.phase_initialized:
+            self.get_logger().warn(f'[MISSION] try_start 被阻止: phase 未初始化', throttle_duration_sec=3.0)
+            return
 
+        # test_direction 仅在初始化时设置，运行时不修改
+        if not self.direction:
+            self.direction = self.test_direction
         missing_inputs = self._missing_pose_inputs()
 
         if missing_inputs:
