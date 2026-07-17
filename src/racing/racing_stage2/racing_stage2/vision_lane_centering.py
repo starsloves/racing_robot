@@ -3,12 +3,13 @@
 vision_lane_centering.py — 视觉车道居中模块
 
 从 camera_all_in_one.py 抽离的推理节点，提供：
-1. 订阅相机 topic，BPU 推理，缓存最新 offset
-2. 实时保存处理后的可视化图像到 /tmp/vision_latest.jpg
+1. 订阅相机 topic，裁剪下方 ROI 后 BPU 推理；mask 质心纠偏 + 中心竖带到位停纠
+2. 实时保存处理后的可视化图像到 /tmp/vision_latest.jpg（仅下方 ROI）
 3. 提供 HTTP 静态服务（端口 8080）供浏览器查看
 
 共享接口：
     get_latest_offset() -> (offset: float, timestamp: float, valid: bool)
+    get_latest_remaining() -> (remaining_m, free_ratio, timestamp, valid)
 """
 
 import threading
@@ -54,6 +55,20 @@ class VisionLaneCentering:
         self._valid = False
         self._detection_timeout_sec = 0.5  # 超过 0.5s 无检测 → invalid
         self._last_valid_state = None  # 记录上次有效状态（用于检测状态变化）
+        # 纵向剩余距离（由赛道 mask 顶部位置粗估）
+        self._latest_remaining_m = None
+        self._latest_free_ratio = 0.0
+        self._range_valid = False
+        self._range_near_m = 0.15
+        self._range_far_m = 2.50
+        self._range_center_band = 0.30
+        self._range_occ_thresh = 0.12
+        # 横向居中：mask 质心 + 中心竖带到位
+        self._offset_center_band = 0.12
+        self._offset_center_occ_thresh = 0.40
+        self._offset_centroid_bottom_ratio = 0.60
+        self._latest_center_ratio = 0.0
+        self._latest_centered = False
         
         # 可视化缓存（供 HTTP 服务）
         self._combined_frame = None
@@ -116,6 +131,7 @@ class VisionLaneCentering:
             self._inference_active = active
             if not active:
                 self._valid = False
+                self._range_valid = False
         if prev != active:
             state = '启用' if active else '停用'
             self._node.get_logger().info(f'[视觉] 推理已{state}')
@@ -139,6 +155,132 @@ class VisionLaneCentering:
             age = now - self._latest_timestamp
             valid = self._valid and (age < self._detection_timeout_sec)
             return (self._latest_offset, self._latest_timestamp, valid)
+
+    def configure_range_estimate(self, near_m=0.15, far_m=2.50,
+                                 center_band=0.30, occ_thresh=0.12,
+                                 timeout_sec=None):
+        """配置 mask→剩余距离 的粗标定参数。"""
+        with self._lock:
+            self._range_near_m = max(0.0, float(near_m))
+            self._range_far_m = max(self._range_near_m + 1e-3, float(far_m))
+            self._range_center_band = min(0.9, max(0.05, float(center_band)))
+            self._range_occ_thresh = min(0.9, max(0.01, float(occ_thresh)))
+            if timeout_sec is not None:
+                self._detection_timeout_sec = max(0.05, float(timeout_sec))
+
+    def configure_offset_estimate(self, center_band=0.12, occ_thresh=0.40,
+                                  centroid_bottom_ratio=0.60):
+        """配置 mask 质心纠偏与中心竖带到位判据。"""
+        with self._lock:
+            self._offset_center_band = min(0.8, max(0.02, float(center_band)))
+            self._offset_center_occ_thresh = min(0.95, max(0.05, float(occ_thresh)))
+            self._offset_centroid_bottom_ratio = min(1.0, max(0.1, float(centroid_bottom_ratio)))
+
+    def _estimate_offset_from_mask(self, mask, fallback_cx=None, fallback_cy=None):
+        """
+        由 SEG mask 估计横向 offset。
+
+        规则：
+        1) 中心竖带 mask 占比足够高 → 已居中，offset=0
+        2) 否则用近场（底部）mask 质心相对画面中心
+        3) mask 为空时回退 bbox 中心（由调用方传入 fallback_cx）
+
+        返回：(offset, center_ratio, centered, cx, cy)
+            offset 为 None 表示需调用方用 bbox 回退
+        """
+        if mask is None or mask.size == 0:
+            return None, 0.0, False, fallback_cx, fallback_cy
+
+        h, w = mask.shape[:2]
+        if h < 4 or w < 4:
+            return None, 0.0, False, fallback_cx, fallback_cy
+
+        binary = (mask > 0).astype(np.uint8)
+        half_band = max(1, int(round(w * float(self._offset_center_band) * 0.5)))
+        mid = w // 2
+        x0 = max(0, mid - half_band)
+        x1 = min(w, mid + half_band)
+        band = binary[:, x0:x1]
+        center_ratio = float(band.mean()) if band.size else 0.0
+
+        # 中心竖带已被赛道占满 → 到位停纠
+        if center_ratio >= float(self._offset_center_occ_thresh):
+            return 0.0, center_ratio, True, float(mid), float(h * 0.75)
+
+        # 近场质心：只用底部若干行，减少远景干扰
+        bottom_ratio = float(self._offset_centroid_bottom_ratio)
+        y_start = int(h * (1.0 - bottom_ratio))
+        y_start = max(0, min(h - 1, y_start))
+        near = binary[y_start:, :]
+        if np.any(near > 0):
+            ys, xs = np.where(near > 0)
+            cx = float(xs.mean())
+            cy = float(ys.mean() + y_start)
+        else:
+            ys, xs = np.where(binary > 0)
+            if xs.size == 0:
+                return None, center_ratio, False, fallback_cx, fallback_cy
+            cx = float(xs.mean())
+            cy = float(ys.mean())
+
+        offset = cx / (w / 2.0) - 1.0
+        offset = float(np.clip(offset, -1.0, 1.0))
+        return offset, center_ratio, False, cx, cy
+
+    def get_latest_remaining(self):
+
+        """
+        获取最新的视觉剩余距离估计。
+
+        返回：
+            (remaining_m, free_ratio, timestamp, valid)
+            - remaining_m: float|None，前方赛道剩余距离粗估值（m）
+            - free_ratio: float，中心带赛道向上延伸比例 [0,1]
+            - timestamp: float，检测时刻
+            - valid: bool，是否有效
+        """
+        with self._lock:
+            now = time.time()
+            age = now - self._latest_timestamp
+            valid = (
+                self._valid
+                and self._range_valid
+                and self._latest_remaining_m is not None
+                and (age < self._detection_timeout_sec)
+            )
+            return (
+                self._latest_remaining_m,
+                float(self._latest_free_ratio),
+                self._latest_timestamp,
+                valid,
+            )
+
+    def _estimate_remaining_from_mask(self, mask):
+        """由赛道 mask 中心带顶部位置粗估前方剩余距离。"""
+        if mask is None or mask.size == 0:
+            return None, 0.0
+        h, w = mask.shape[:2]
+        if h < 8 or w < 8:
+            return None, 0.0
+
+        band = max(1, int(round(w * self._range_center_band * 0.5)))
+        cx = w // 2
+        x0 = max(0, cx - band)
+        x1 = min(w, cx + band)
+        center = mask[:, x0:x1]
+        if center.size == 0:
+            return None, 0.0
+
+        row_occ = center.mean(axis=1)
+        occupied = np.where(row_occ > self._range_occ_thresh)[0]
+        if occupied.size == 0:
+            return float(self._range_near_m), 0.0
+
+        top_y = int(occupied.min())
+        free_ratio = 1.0 - (top_y / float(max(1, h - 1)))
+        free_ratio = float(np.clip(free_ratio, 0.0, 1.0))
+        remaining = self._range_near_m + free_ratio * (self._range_far_m - self._range_near_m)
+        return float(remaining), free_ratio
     
     def _start_http_server(self):
         """启动 HTTP 静态文件服务器（后台线程，多线程处理请求）"""
@@ -165,7 +307,9 @@ class VisionLaneCentering:
 <html><head><meta charset="utf-8"><title>Stage2 SEG</title>
 <style>body{{background:#202124;color:#eee;font-family:sans-serif;margin:20px}}
 img{{max-width:100%;border:1px solid #555}}#status{{margin:10px 0;color:#8f8}}</style></head>
-<body><h2>Stage2 SEG 实时推理画面</h2><div id="status">连接中...</div>
+<body><h2>Stage2 SEG 实时推理画面</h2>
+<p>仅下方 ROI（默认 40%）；mask质心纠偏，中心竖带到位则停</p>
+<div id="status">连接中...</div>
 <img id="frame" src="/stream.mjpg">
 <script>
 const status=document.getElementById('status');
@@ -338,16 +482,24 @@ setInterval(health, 500); health();
             if self._frame_count == 0:
                 self._node.get_logger().info('[视觉] 收到第一帧相机数据（phase2 推理已启用）')
             
-            # 1. 使用完整相机画面
+            # 1. 仅保留画面下方 crop_ratio 区域（默认 40% 近场）
             img_full = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             h_full, w_full = img_full.shape[:2]
-            crop_start_row = 0
-            img_cropped = img_full.copy()
+            crop_ratio = float(np.clip(self.crop_ratio, 0.1, 1.0))
+            crop_start_row = int(h_full * (1.0 - crop_ratio))
+            if crop_start_row < 0:
+                crop_start_row = 0
+            if crop_start_row >= h_full:
+                crop_start_row = max(0, h_full - 1)
+            img_cropped = img_full[crop_start_row:, :].copy()
             h_crop, w_crop = img_cropped.shape[:2]
             
             frame_before = img_cropped.copy()
-            cv2.putText(frame_before, 'INPUT (Full frame)', 
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(
+                frame_before,
+                f'INPUT (Bottom {int(round(crop_ratio * 100))}%)',
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
+            )
             
             # 2. 预处理
             canvas, scale = self._letterbox(img_cropped, self.input_size)
@@ -386,11 +538,16 @@ setInterval(health, 500); health();
             scores = scores[keep]
             masks_coeff = masks_coeff[keep]
             
-            # 5. 计算 offset（取第一个检测）
+            # 5. 计算 offset / 剩余距离（取第一个检测）
             frame_after = img_cropped.copy()
             best_offset = 0.0
             best_box = None
             best_score = 0.0
+            best_mask = None
+            best_remaining_m = None
+            best_free_ratio = 0.0
+            best_center_ratio = 0.0
+            best_centered = False
             detection_valid = False
             
             if len(bboxes) > 0:
@@ -438,30 +595,76 @@ setInterval(health, 500); health();
                             mr = cv2.resize(mcrop, (bw, bh))
                             mb = (mr > 0.5).astype(np.uint8)
                             mf = np.zeros((h_crop, w_crop), dtype=np.uint8)
-                            mf[int(y1):int(y1)+bh, int(x1):int(x1)+bw] = mb
+                            y0i = int(y1)
+                            x0i = int(x1)
+                            y1i = min(h_crop, y0i + bh)
+                            x1i = min(w_crop, x0i + bw)
+                            mf[y0i:y1i, x0i:x1i] = mb[:y1i - y0i, :x1i - x0i]
                             cm = np.zeros_like(frame_after)
                             cm[mf > 0] = (0, 255, 0)
                             frame_after = cv2.addWeighted(frame_after, 1.0, cm, 0.4, 0)
                             ct, _ = cv2.findContours(mf, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                             cv2.drawContours(frame_after, ct, -1, (0, 255, 0), 2)
+                        else:
+                            mf = None
+                    else:
+                        mf = None
                     
-                    cv2.rectangle(frame_after, (int(x1), int(y1)), (int(x2), int(y2)), 
+                    cv2.rectangle(frame_after, (int(x1), int(y1)), (int(x2), int(y2)),
                                  (0, 255, 0), 2)
-                    cx = int((x1 + x2) / 2)
-                    cy = int((y1 + y2) / 2)
+
+                    # bbox 中心仅作 fallback / 参考
+                    bbox_cx = (x1 + x2) * 0.5
+                    bbox_cy = (y1 + y2) * 0.5
+                    offset, center_ratio, centered, cx_f, cy_f = self._estimate_offset_from_mask(
+                        mf, fallback_cx=bbox_cx, fallback_cy=bbox_cy
+                    )
+                    if offset is None:
+                        # mask 无效：回退 bbox 中心
+                        cx_f = float(bbox_cx)
+                        cy_f = float(bbox_cy)
+                        offset = cx_f / (w_crop / 2.0) - 1.0
+                        offset = float(np.clip(offset, -1.0, 1.0))
+                        center_ratio = 0.0
+                        centered = False
+
+                    cx = int(round(cx_f if cx_f is not None else bbox_cx))
+                    cy = int(round(cy_f if cy_f is not None else bbox_cy))
+
+                    # 中心竖带可视化
+                    half_band = max(1, int(round(w_crop * float(self._offset_center_band) * 0.5)))
+                    mid = w_crop // 2
+                    band_color = (0, 255, 0) if centered else (0, 165, 255)
+                    cv2.rectangle(
+                        frame_after,
+                        (max(0, mid - half_band), 0),
+                        (min(w_crop - 1, mid + half_band), h_crop - 1),
+                        band_color, 1,
+                    )
+                    cv2.line(frame_after, (mid, 0), (mid, h_crop - 1), (255, 255, 255), 1)
                     cv2.circle(frame_after, (cx, cy), 5, (0, 0, 255), -1)
-                    cv2.line(frame_after, (cx, cy), (w_crop//2, h_crop//2), (255, 0, 0), 2)
-                    
-                    offset = cx / (w_crop / 2) - 1.0
-                    cv2.putText(frame_after, f'conf={scores[i]:.2f} off={offset:+.2f}', 
-                               (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 
-                               0.5, (0, 255, 255), 2)
-                    
-                    # 取第一个检测的 offset
+                    cv2.line(frame_after, (cx, cy), (mid, h_crop // 2), (255, 0, 0), 2)
+
+                    rem_m, free_ratio = self._estimate_remaining_from_mask(mf)
+                    rem_txt = f'{rem_m:.2f}m' if rem_m is not None else 'N/A'
+                    state_txt = 'CENTERED' if centered else f'off={offset:+.2f}'
+                    cv2.putText(
+                        frame_after,
+                        f'conf={scores[i]:.2f} {state_txt} ctr={center_ratio:.2f} rem={rem_txt}',
+                        (int(x1), max(20, int(y1) - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2,
+                    )
+
+                    # 取第一个检测的 offset + 纵向剩余
                     if not detection_valid:
-                        best_offset = offset
+                        best_offset = float(offset)
                         best_box = box  # 保存用于日志
                         best_score = scores[i]  # 保存用于日志
+                        best_mask = mf
+                        best_remaining_m = rem_m
+                        best_free_ratio = free_ratio
+                        best_center_ratio = float(center_ratio)
+                        best_centered = bool(centered)
                         detection_valid = True
             
             # 6. 更新共享变量 + 状态变化日志
@@ -470,27 +673,41 @@ setInterval(health, 500); health();
                     self._latest_offset = float(best_offset)
                     self._latest_timestamp = time.time()
                     self._valid = True
+                    self._latest_center_ratio = float(best_center_ratio)
+                    self._latest_centered = bool(best_centered)
+                    if best_remaining_m is not None:
+                        self._latest_remaining_m = float(best_remaining_m)
+                        self._latest_free_ratio = float(best_free_ratio)
+                        self._range_valid = True
+                    else:
+                        self._range_valid = False
                     
                     # 状态变化日志：从失效→恢复
                     if self._last_valid_state is False:
+                        rem_txt = (
+                            f'{best_remaining_m:.2f}m'
+                            if best_remaining_m is not None else 'N/A'
+                        )
                         if best_box is not None:
                             self._node.get_logger().info(
-                                f'[VISION] 推理成功 offset={best_offset:+.3f} | '
+                                f'[VISION] 推理成功 offset={best_offset:+.3f} rem={rem_txt} | '
                                 f'bbox=({int(best_box[0])},{int(best_box[1])})→'
                                 f'({int(best_box[2])},{int(best_box[3])}) '
                                 f'conf={best_score:.2f}'
                             )
                         else:
                             self._node.get_logger().info(
-                                f'[VISION] 推理成功 offset={best_offset:+.3f}'
+                                f'[VISION] 推理成功 offset={best_offset:+.3f} rem={rem_txt}'
                             )
                     self._last_valid_state = True
                 else:
                     self._valid = False  # 本帧无检测
+                    self._range_valid = False
+                    self._latest_center_ratio = 0.0
+                    self._latest_centered = False
                     
                     # 状态变化日志：从有效→失效
                     if self._last_valid_state is True:
-                        detections = None  # 占位，实际从 bboxes 长度获取
                         det_count = len(bboxes) if 'bboxes' in locals() else 0
                         self._node.get_logger().warn(
                             f'[VISION] 推理失败：无有效检测 | '

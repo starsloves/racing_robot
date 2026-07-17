@@ -129,8 +129,11 @@ class CompetitionController(Node):
         self.declare_parameter('corridor_left_recover_x', 3.50)
         self.declare_parameter('corridor_left_recover_angular', 0.70)
         self.declare_parameter('corridor_left_recover_linear', 0.06)
-        self.declare_parameter('corridor_lateral_kp', 1.6)
-        self.declare_parameter('corridor_x_tolerance', 0.06)
+        self.declare_parameter('corridor_lateral_kp', 1.8)
+        self.declare_parameter('corridor_x_tolerance', 0.08)
+        self.declare_parameter('corridor_heading_kp', 1.0)
+        self.declare_parameter('corridor_stanley_k', 1.2)
+        self.declare_parameter('corridor_align_linear_speed', 0.0)
         self.declare_parameter('phase1_avoid_startup_grace_sec', 1.5)
         # 兼容旧参数名（不再作为主控制）
         self.declare_parameter('corridor_capture_distance', 0.18)
@@ -255,6 +258,9 @@ class CompetitionController(Node):
         self.corridor_left_recover_linear = float(self.get_parameter('corridor_left_recover_linear').value)
         self.corridor_lateral_kp = float(self.get_parameter('corridor_lateral_kp').value)
         self.corridor_x_tolerance = float(self.get_parameter('corridor_x_tolerance').value)
+        self.corridor_heading_kp = float(self.get_parameter('corridor_heading_kp').value)
+        self.corridor_stanley_k = float(self.get_parameter('corridor_stanley_k').value)
+        self.corridor_align_linear_speed = float(self.get_parameter('corridor_align_linear_speed').value)
         self.phase1_avoid_startup_grace_sec = float(self.get_parameter('phase1_avoid_startup_grace_sec').value)
         self.pure_pursuit_lookahead = float(self.get_parameter('pure_pursuit_lookahead_m').value)
         self.pure_pursuit_turn_kp = float(self.get_parameter('pure_pursuit_turn_kp').value)
@@ -330,8 +336,9 @@ class CompetitionController(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self._map_pose_warned = False
         self.corridor_active = False
-        self.corridor_nav_mode = 'idle'  # polar | capture | left_recover | idle
+        self.corridor_nav_mode = 'idle'  # centerline | settle_xy | align_yaw | left_recover | idle
         self.corridor_capture_active = False
+        self.corridor_align_active = False
         self._node_start_time = self.get_clock().now()
         self.corridor_index = 0
         self.corridor_started_at = None
@@ -546,8 +553,9 @@ class CompetitionController(Node):
             self.begin_phase_transition(2, reason)
             return
         self.corridor_active = True
-        self.corridor_nav_mode = 'polar'
+        self.corridor_nav_mode = 'centerline'
         self.corridor_capture_active = False
+        self.corridor_align_active = False
         self._corridor_timeout_logged = False
         self.corridor_index = 0
         self.corridor_started_at = self.get_clock().now().nanoseconds / 1e9
@@ -765,10 +773,11 @@ class CompetitionController(Node):
     def handle_corridor_navigation(self):
         """
         Stage1 通道导航：
-          1) map_x>阈值：left_recover 向左旋回
-          2) 中段：前进 ρ-α-β + 横向 x 修正
-          3) 终点：capture 锁存，body-frame 微修正（过冲可短退）
-          4) 位置+航向到位后 phase=2
+          1) map_x 过大：left_recover 向左旋回
+          2) 中段：中线 Stanley + LOS（centerline）
+          3) 近场：settle_xy 只收位置，不抢终航向
+          4) 到位后：align_yaw 原地对 90°
+          5) 位置+航向到位后 phase=2
         """
         now_ts = self.get_clock().now().nanoseconds / 1e9
         map_xy = self.get_map_position()
@@ -783,6 +792,7 @@ class CompetitionController(Node):
             self.corridor_active = False
             self.corridor_nav_mode = 'idle'
             self.corridor_capture_active = False
+            self.corridor_align_active = False
             self.phase1_motion_state = 'forward'
             if not getattr(self, '_corridor_timeout_logged', False):
                 self._corridor_timeout_logged = True
@@ -799,6 +809,7 @@ class CompetitionController(Node):
         final_goal = self.corridor_waypoints[-1]
         final_goal_xy = (float(final_goal['x']), float(final_goal['y']))
         is_final = self.corridor_index >= len(self.corridor_waypoints) - 1
+        centerline_x = float(final_goal_xy[0])
 
         dx = goal_xy[0] - pose_xy[0]
         dy = goal_xy[1] - pose_xy[1]
@@ -806,17 +817,20 @@ class CompetitionController(Node):
         final_dx = final_goal_xy[0] - pose_xy[0]
         final_dy = final_goal_xy[1] - pose_xy[1]
         final_rho = math.hypot(final_dx, final_dy)
+        # map_x_err>0：目标在右侧，车偏左，需要右转（ω<0）
+        map_x_err = final_dx if is_final else (centerline_x - pose_xy[0])
+        cte = pose_xy[0] - centerline_x  # >0 车在中线右侧
         yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
         los = math.atan2(dy, dx) if rho > 1e-6 else yaw
         alpha = self.angle_error(los, yaw)
-        beta = self.angle_error(self.corridor_goal_yaw, los) if is_final else 0.0
 
         cos_yaw = math.cos(yaw)
         sin_yaw = math.sin(yaw)
         target_x = cos_yaw * dx + sin_yaw * dy
         target_y = -sin_yaw * dx + cos_yaw * dy
-        # map 横向误差（目标 x - 当前 x）：正值表示目标在右侧，需右修；负值在左
-        map_x_err = final_dx if is_final else dx
+        # 中线点机体系横向：正值=中线在车左侧
+        line_dx = centerline_x - pose_xy[0]
+        line_target_y = -sin_yaw * line_dx
 
         if now_ts - self._corridor_last_log_time >= 1.0:
             elapsed = now_ts - self.corridor_started_at if self.corridor_started_at else 0.0
@@ -848,33 +862,37 @@ class CompetitionController(Node):
         if left_cmd is not None and final_rho > self.corridor_goal_tolerance:
             self.corridor_nav_mode = 'left_recover'
             self.corridor_capture_active = False
+            self.corridor_align_active = False
             self.cmd_pub.publish(left_cmd)
             return
 
-        # capture 滞回
+        # 近场滞回：进入 settle，明显离开才退回中线跟踪
         if is_final:
             if (not self.corridor_capture_active) and final_rho <= self.corridor_capture_distance:
                 self.corridor_capture_active = True
+                self.corridor_align_active = False
                 self.log.progress(
-                    f'capture enter: ρ={final_rho:.2f}m x={pose_xy[0]:.2f} xerr={map_x_err:+.2f}'
+                    f'settle enter: ρ={final_rho:.2f}m x={pose_xy[0]:.2f} xerr={map_x_err:+.2f}'
                 )
-            elif self.corridor_capture_active and final_rho >= self.corridor_capture_exit_distance:
+            elif self.corridor_capture_active and (not self.corridor_align_active) and final_rho >= self.corridor_capture_exit_distance:
                 self.corridor_capture_active = False
                 self.log.progress(
-                    f'capture exit: ρ={final_rho:.2f}m x={pose_xy[0]:.2f}'
+                    f'settle exit: ρ={final_rho:.2f}m x={pose_xy[0]:.2f}'
                 )
 
-        # 完成：距离 + x 精度 + 航向
-        x_ok = abs(map_x_err) <= max(self.corridor_x_tolerance, self.corridor_goal_tolerance)
-        if (
+        pos_ok = (
             is_final
             and final_rho <= self.corridor_goal_tolerance
-            and x_ok
-            and abs(yaw_error) <= self.corridor_goal_yaw_tolerance
-        ):
+            and abs(map_x_err) <= self.corridor_x_tolerance
+        )
+        yaw_ok = abs(yaw_error) <= self.corridor_goal_yaw_tolerance
+
+        # 完成：位置到位 + 航向到位
+        if pos_ok and yaw_ok:
             self.corridor_active = False
             self.corridor_nav_mode = 'idle'
             self.corridor_capture_active = False
+            self.corridor_align_active = False
             self.phase1_motion_state = 'forward'
             self.stop_robot()
             reason = (
@@ -884,61 +902,69 @@ class CompetitionController(Node):
             self.begin_phase_transition(2, reason)
             return
 
-        # ===== capture：优先把 x 拉回，再拧航向 =====
-        if is_final and self.corridor_capture_active:
-            self.corridor_nav_mode = 'capture'
-            # body x 拉近点；同时对 map_x 误差给额外横向角速度
-            linear = self.clamp(1.6 * target_x, self.corridor_capture_speed)
-            # 当 yaw≈90° 时，target_y 与 map_x_err 相关；再叠加显式 x 修正
-            lateral_term = 3.0 * target_y + self.corridor_lateral_kp * map_x_err
-            yaw_weight = max(0.20, min(1.0, 1.0 - (final_rho / max(self.corridor_capture_exit_distance, 1e-3))))
-            # x 还没对齐时，先弱化终航向，避免边拧边漂
-            if abs(map_x_err) > self.corridor_x_tolerance:
-                yaw_weight *= 0.35
-            angular = self.clamp(
-                lateral_term + self.corridor_alpha_kp * yaw_weight * yaw_error,
-                self.max_angular_speed,
-            )
-
-            if final_rho <= self.corridor_goal_tolerance and abs(map_x_err) <= self.corridor_x_tolerance:
-                # 位置/ x 已够好：蠕行拧终航向
-                angular = self.clamp(self.corridor_alpha_kp * yaw_error, self.turn_angular_speed)
-                if abs(angular) < self.turn_min_angular_speed and abs(yaw_error) > self.corridor_goal_yaw_tolerance:
-                    angular = math.copysign(self.turn_min_angular_speed, yaw_error if yaw_error != 0.0 else 1.0)
-                if target_x < -0.02:
-                    linear = -max(self.corridor_creep_speed, 0.03)
-                else:
-                    linear = max(self.corridor_creep_speed, 0.03)
-            else:
-                # x 偏差大时：用侧向修正主导，线速度限制更低
-                if abs(map_x_err) > self.corridor_x_tolerance:
-                    linear = self.clamp(linear, min(self.corridor_capture_speed, 0.04))
-                if abs(angular) > 0.05 and abs(linear) < max(self.corridor_creep_speed, 0.03):
-                    direction = -1.0 if target_x < 0.0 else 1.0
-                    linear = direction * max(self.corridor_creep_speed, 0.03)
-
+        # ===== 位置到位后：原地对齐终航向 =====
+        if pos_ok or self.corridor_align_active:
+            if not self.corridor_align_active:
+                self.corridor_align_active = True
+                self.corridor_capture_active = True
+                self.log.progress(
+                    f'align_yaw enter: ρ={final_rho:.2f}m xerr={map_x_err:+.2f} '
+                    f'yaw_err={math.degrees(yaw_error):.1f}°'
+                )
+            self.corridor_nav_mode = 'align_yaw'
+            angular = self.clamp(self.corridor_alpha_kp * yaw_error, self.turn_angular_speed)
+            if abs(angular) < self.turn_min_angular_speed and abs(yaw_error) > self.corridor_goal_yaw_tolerance:
+                angular = math.copysign(self.turn_min_angular_speed, yaw_error if yaw_error != 0.0 else 1.0)
+            # 航向对齐时默认原地转；若轻微过冲允许极慢前后修正
+            linear = float(self.corridor_align_linear_speed)
+            if abs(map_x_err) > self.corridor_x_tolerance * 0.5 or final_rho > self.corridor_goal_tolerance * 0.8:
+                # 对齐过程中位置又漂了：给一点点 body 前向修正，但不主导
+                linear = self.clamp(0.8 * target_x, max(self.corridor_creep_speed, 0.03))
             if now_ts - getattr(self, '_approach_log_time', 0.0) >= 0.5:
                 self._approach_log_time = now_ts
                 self.log.progress(
-                    f'capture: ρ={final_rho:.2f}m x={pose_xy[0]:.2f} xerr={map_x_err:+.2f} '
-                    f'body=({target_x:.2f},{target_y:.2f}) yaw_err={math.degrees(yaw_error):.1f}° '
-                    f'v={linear:.2f} w={angular:.2f}'
+                    f'align_yaw: ρ={final_rho:.2f}m xerr={map_x_err:+.2f} '
+                    f'yaw_err={math.degrees(yaw_error):.1f}° v={linear:.2f} w={angular:.2f}'
                 )
             self.cmd_pub.publish(self.create_twist(linear, angular))
             return
 
-        # ===== 中段前进：ρ-α-β + 显式 map_x 横向修正 =====
-        self.corridor_nav_mode = 'polar'
+        # ===== 近场 settle_xy：只收位置，不抢终航向 =====
+        if is_final and self.corridor_capture_active:
+            self.corridor_nav_mode = 'settle_xy'
+            # 机体系点镇定：target_y>0 表示目标在左侧 → 左转(+)
+            linear = self.clamp(1.4 * target_x, self.corridor_capture_speed)
+            # 横向只信 body-frame，避免再叠错误 map_x 项
+            angular = self.clamp(
+                2.4 * target_y + self.corridor_lateral_kp * line_target_y,
+                self.max_angular_speed,
+            )
+            if abs(map_x_err) > self.corridor_x_tolerance:
+                linear = self.clamp(linear, min(self.corridor_capture_speed, 0.04))
+            if abs(angular) > 0.08:
+                linear = self.clamp(linear, max(self.corridor_creep_speed, 0.03))
+            # 过冲：目标在车后则短退
+            if target_x < -0.03:
+                linear = -max(self.corridor_creep_speed, 0.03)
+            elif abs(linear) < max(self.corridor_creep_speed, 0.03) and final_rho > self.corridor_goal_tolerance:
+                linear = max(self.corridor_creep_speed, 0.03)
+
+            if now_ts - getattr(self, '_approach_log_time', 0.0) >= 0.5:
+                self._approach_log_time = now_ts
+                self.log.progress(
+                    f'settle_xy: ρ={final_rho:.2f}m x={pose_xy[0]:.2f} xerr={map_x_err:+.2f} '
+                    f'body=({target_x:.2f},{target_y:.2f}) v={linear:.2f} w={angular:.2f}'
+                )
+            self.cmd_pub.publish(self.create_twist(linear, angular))
+            return
+
+        # ===== 中段：中线 Stanley + LOS =====
+        self.corridor_nav_mode = 'centerline'
         reverse = False
         control_alpha = alpha
         if self.corridor_reverse_enabled and abs(alpha) > (math.pi * 0.75):
             reverse = True
             control_alpha = self.normalize_angle(alpha + math.copysign(math.pi, alpha))
-
-        if is_final and self.corridor_beta_blend_distance > 1e-6:
-            beta_scale = max(0.0, min(1.0, 1.0 - (rho / self.corridor_beta_blend_distance)))
-        else:
-            beta_scale = 0.0 if not is_final else 1.0
 
         speed_cap = abs(float(waypoint.get('speed', self.corridor_linear_speed)))
         speed_cap = max(self.corridor_creep_speed, min(self.corridor_linear_speed, speed_cap))
@@ -964,16 +990,30 @@ class CompetitionController(Node):
         else:
             linear = abs(linear)
 
-        # 横向：LOS α + 对 map_x 的额外修正，避免一路漂到 2.4x
-        lateral_boost = 0.0
-        if is_final:
-            # 近场加强 x 回正；远场也给一点，防止只追 LOS 过冲到左侧
-            lat_scale = 1.0 if rho < 1.2 else 0.55
-            lateral_boost = self.corridor_lateral_kp * lat_scale * map_x_err
+        # Stanley：line_target_y>0 表示中线在车左，应左转(+)
+        v_ref = max(abs(linear), 0.05)
+        stanley = math.atan2(self.corridor_stanley_k * line_target_y, v_ref)
+
+        # 近终点逐渐把航向目标拧到 90°；远场主要跟 LOS/中线
+        if is_final and self.corridor_beta_blend_distance > 1e-6:
+            yaw_blend = max(0.0, min(1.0, 1.0 - (rho / self.corridor_beta_blend_distance)))
+        else:
+            yaw_blend = 0.0
+        # 偏离中线较大时减弱终航向，避免被 90° 硬拉
+        if abs(cte) > 0.20:
+            yaw_blend *= 0.35
+
+        # 横向：body 中线项 + map_x 修正（偏左 map_x_err>0 → 右转 ω<0）
+        lat_scale = 1.0 if rho < 1.2 else 0.60
+        lateral_boost = (
+            self.corridor_lateral_kp * lat_scale * line_target_y
+            - 0.35 * self.corridor_lateral_kp * lat_scale * map_x_err
+        )
 
         angular = (
             self.corridor_alpha_kp * control_alpha
-            + (self.corridor_beta_kp * beta_scale) * beta
+            + stanley
+            + self.corridor_heading_kp * yaw_blend * yaw_error
             + lateral_boost
         )
         angular = self.clamp(angular, self.max_angular_speed)
@@ -986,9 +1026,9 @@ class CompetitionController(Node):
         if now_ts - getattr(self, '_approach_log_time', 0.0) >= 1.0:
             self._approach_log_time = now_ts
             self.log.progress(
-                f'polar: ρ={rho:.2f}m x={pose_xy[0]:.2f} xerr={map_x_err:+.2f} '
+                f'centerline: ρ={rho:.2f}m x={pose_xy[0]:.2f} xerr={map_x_err:+.2f} cte={cte:+.2f} '
                 f'yaw={math.degrees(yaw):.1f}° α={math.degrees(control_alpha):.1f}° '
-                f'lat={lateral_boost:.2f} rev={int(reverse)} v={linear:.2f} w={angular:.2f}'
+                f'stanley={stanley:.2f} lat={lateral_boost:.2f} v={linear:.2f} w={angular:.2f}'
             )
 
         self.cmd_pub.publish(self.create_twist(linear, angular))
@@ -1085,7 +1125,7 @@ class CompetitionController(Node):
     def finish_recovery(self):
         if self.corridor_resume_after_avoidance and self.corridor_active:
             self.phase1_motion_state = 'corridor'
-            self.corridor_nav_mode = 'corridor_path'
+            self.corridor_nav_mode = 'centerline'
             self.corridor_resume_after_avoidance = False
         else:
             self.phase1_motion_state = 'forward'

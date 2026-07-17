@@ -44,6 +44,8 @@ stage3_return_navigator:
     p_conf_thres: 0.25
     p_iou_thres: 0.45
     p_crop_ratio: 1.0
+    # 仅当 map 坐标 y 小于该阈值时启动视觉寻 P / YOLO 推理
+    p_vision_enable_y_max: 2.0
     # 触发视觉接近的置信度阈值
     p_approach_conf_threshold: 0.5
     # 连续检测次数阈值（抗抖动）

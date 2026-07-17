@@ -135,7 +135,17 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 **后端**：WeChat CV（OpenCV contrib）
 **流程**：车到通道特定位置 → 扫描二维码 → 解析方向指令 → 发布到 `qr_scan_result` → competition_controller 设置 phase=2
 
-### 2.5 阶段切换
+### 2.5 通道导航（map 中线）
+
+- 位姿：`TF map <- base_footprint`（xy）+ IMU yaw
+- 路点：中线途经点 + 终点，默认 `x=2.50` → `(2.50,3.10)@90°`
+- 控制：
+  1. `centerline`：LOS + Stanley 贴中线（横向 body/`line_target_y`，`map_x_err` 符号已修正为偏左右转）
+  2. `settle_xy`：近场只收位置，不抢终航向
+  3. `align_yaw`：位置到位后原地转到 `corridor_goal_yaw`
+- 放行：`ρ` + `|xerr|` + `|yaw_err|` 同时满足，或超时策略放行 Stage2
+
+### 2.6 阶段切换
 
 - Stage1 完成 → `competition_phase` 发布 phase=2
 - competition_controller 进入 `process_phase2_supervisor()`：监听 `/stage2_cmd_vel` 并转发到 `/cmd_vel`
@@ -323,8 +333,10 @@ idle → turn_away(转α, 30°) → leg1(直行0.22m) → turn_back(转β, 40°)
 | 模型 | `models/bset.bin`（地平线 bayes-e BPU 量化） |
 | 输入 | 1×640×640 uint8 |
 | 输出 | 检测头 + 1×160×160 赛道概率图 |
-| 后处理 | `mask = prob > 0.5` → 二值化 → 水平中线 → 偏差 → ω |
+| 后处理 | 下方 `vision_crop_ratio` ROI（默认 40%）→ mask 近场质心偏差 → `ω=-kp*offset` |
+| 到位判据 | 中心竖带 mask 占比 ≥ `vision_center_occ_thresh` 时 offset=0 停纠 |
 | 滑动平均 | 最近 5 帧均值（防止单帧跳变） |
+| 可视化 | HTTP `/` 与 `/stream.mjpg` 仅显示下方 ROI + 中心竖带 |
 
 ### 3.6 调参速查
 
@@ -394,7 +406,8 @@ phase=3 收到
           │   ├─ [A* 启用] plan_global_path() → select_path_lookahead_point()
           │   ├─ Pure Pursuit: 航向差 > heading_stop → 原地转; 否则曲率控制
           │   └─ [避障] Stage1 4态聚类避障（interrupt running）
-          └─ P YOLO 连续检测到 P 点：
+          └─ 仅当 map y < p_vision_enable_y_max(默认 2.0) 后启动 P 视觉：
+              ├─ YOLO 连续检测到 P 点
               ├─ p_approaching：按 P 框中心低通纠偏并加速接近
               ├─ bbox fill 达阈值：沿当前行驶方向额外前进 0.50m
               └─ → finish_mission()
@@ -415,6 +428,7 @@ idle → armed → running(PurePursuit + A*) → p_approaching → p_extra_forwa
 | 路点到不了 | `waypoint_tolerance` | ↑ |
 | P 点停不准 | `goal_tolerance` | ↓ |
 | P 点航向靠不拢 | `goal_yaw_tolerance_deg` | ↑ 放宽 |
+| 过早误检 P / 太晚才开视觉 | `p_vision_enable_y_max` | ↑ 更早开 / ↓ 更晚开 |
 | P 点视觉接近太慢 | `p_approach_linear_speed` | ↑ |
 | P 点接近左右抖 | `p_approach_angular_kp` / `p_approach_angular_deadband` | ↓ / ↑ |
 | P 点停车过早 | `p_extra_forward_distance_m` | ↑ |

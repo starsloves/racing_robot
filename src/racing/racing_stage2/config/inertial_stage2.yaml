@@ -106,9 +106,13 @@ stage2_inertial_navigator:
     vision_model_path: /home/sunrise/dev_ws/src/racing/racing_stage2/models/bset.bin  # BPU 模型路径
     vision_conf_thres: 0.25                  # 检测置信度阈值
     vision_iou_thres: 0.45                   # NMS IOU 阈值
-    vision_crop_ratio: 0.5                   # 全画面推理（当前代码不裁剪）
+    vision_crop_ratio: 0.4                   # 仅下方 40% ROI 参与推理/纠偏/显示
     vision_offset_kp: 0.4                    # offset → angular 增益（大幅降低，防止过冲）
+    vision_offset_max_sec: 1.0               # 单段视觉横向纠偏最长 1s，超时停用防过冲
     vision_max_angular: 0.8                  # 视觉修正最大角速度（降回 0.6，避免过度修正）
+    vision_center_band: 0.12                 # 中心竖带宽度占画面宽比例（到位判据）
+    vision_center_occ_thresh: 0.40           # 中心竖带 mask 占比 >= 此值视为已居中
+    vision_centroid_bottom_ratio: 0.60       # 质心只用 ROI 底部该比例区域
     vision_web_enabled: true                 # 是否启动 Web 服务（实时查看）
     vision_web_port: 8082                    # 兼容旧名
     vision_http_port: 8082                   # 实际HTTP端口参数（Stage2）
@@ -123,6 +127,19 @@ stage2_inertial_navigator:
     imu_heading_deadzone_deg: 0.3
     imu_max_yaw_rate_deg_s: 600.0
     vision_timeout_sec: 0.5
+    # ── 视觉纵向定长/修正（用 SEG mask 顶部位置粗估剩余距离）──
+    vision_length_correction_enabled: true   # 启用后 move 段可按视觉修正目标长度
+    vision_length_min_progress_ratio: 0.45   # 至少走完名义长度的该比例后才允许视觉提前结束
+    vision_length_min_progress_m: 0.12       # 同时满足最小已走距离（m）
+    vision_length_stop_remaining_m: 0.28     # 视觉剩余距离低于该值并连续确认后结束 move
+    vision_length_confirm_frames: 3          # 连续确认帧数，防抖
+    vision_length_max_shorten_ratio: 0.45    # 最多缩短名义长度的比例
+    vision_length_max_extend_ratio: 0.25     # 最多延长名义长度的比例
+    vision_length_max_extend_m: 0.35         # 最多延长的绝对距离（m）
+    vision_range_near_m: 0.15                # mask 贴底时对应近距（m）
+    vision_range_far_m: 2.50                 # mask 顶到画面顶部时对应远距（m）
+    vision_range_center_band: 0.30           # 中心带宽度占画面比例
+    vision_range_occ_thresh: 0.12            # 中心带行占用阈值
     move_accel_ramp_sec: 0.5
     turn_slowdown_threshold_deg: 10.0
     turn_min_speed_ratio: 0.5

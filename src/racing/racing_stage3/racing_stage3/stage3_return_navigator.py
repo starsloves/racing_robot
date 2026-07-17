@@ -233,6 +233,8 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_approach_offset_filter_alpha', 0.35)
         self.declare_parameter('p_extra_forward_distance_m', 0.50)
         self.declare_parameter('p_extra_forward_speed', 0.08)
+        # map y below this threshold enables P vision / YOLO inference
+        self.declare_parameter('p_vision_enable_y_max', 2.0)
         self.declare_parameter('p_web_port', 8083)
 
     def _read_params(self):
@@ -326,6 +328,7 @@ class Stage3ReturnNavigator(Node):
         self._p_approach_offset_filter_alpha = float(self.get_parameter('p_approach_offset_filter_alpha').value)
         self._p_extra_forward_distance_m = float(self.get_parameter('p_extra_forward_distance_m').value)
         self._p_extra_forward_speed = float(self.get_parameter('p_extra_forward_speed').value)
+        self.p_vision_enable_y_max = float(self.get_parameter('p_vision_enable_y_max').value)
         self.p_web_port = int(self.get_parameter('p_web_port').value)
 
     # ══════════════ 工具 ══════════════
@@ -446,6 +449,22 @@ class Stage3ReturnNavigator(Node):
         if detector is not None and hasattr(detector, 'set_inference_active'):
             detector.set_inference_active(active)
 
+    def _should_enable_p_vision(self) -> bool:
+        # Enable P vision only when map y is below the configured threshold.
+        if self.current_position is None:
+            return False
+        return float(self.current_position[1]) < float(self.p_vision_enable_y_max)
+
+    def _update_p_inference_gate(self):
+        # Gate YOLO inference by phase and y threshold; keep on during approach.
+        if self.phase != 3 or self.mission_finished:
+            self._set_p_inference_active(False)
+            return
+        if self._p_approaching or self._p_extra_forward_active:
+            self._set_p_inference_active(True)
+            return
+        self._set_p_inference_active(self._should_enable_p_vision())
+
     def _phase_cb(self, msg):
         prev = self.phase
         incoming = int(msg.data)
@@ -503,7 +522,8 @@ class Stage3ReturnNavigator(Node):
         self._settled_start = None
         self.avoid_state = 'forward'
         self.start_after_time = self._now_sec() + self.start_delay_sec
-        self._set_p_inference_active(True)
+        # Do not enable vision at phase=3 immediately; wait until y gate opens.
+        self._update_p_inference_gate()
         init_yaw_deg = 180.0 if self.test_direction == 'clockwise' else 0.0
         self.current_yaw = math.radians(init_yaw_deg)
         self._publish_state('armed')
@@ -580,6 +600,9 @@ class Stage3ReturnNavigator(Node):
         返回 True 时调用 _finish_mission()。
         """
         if self._p_detector is None:
+            return False
+        # Start visual P search only after y gate; keep going once approaching.
+        if (not self._p_approaching) and (not self._should_enable_p_vision()):
             return False
         
         detected, conf, bbox, ts = self._p_detector.get_p_detection()
@@ -772,6 +795,9 @@ class Stage3ReturnNavigator(Node):
                 return
             self._start_mission()
             return
+
+        # Gate P vision inference by y threshold (keep on during approach).
+        self._update_p_inference_gate()
 
         # 1. 紧急停止
         if self._check_emergency_stop():

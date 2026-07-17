@@ -805,6 +805,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.active_turn_heading_tolerance = self.heading_tolerance
         self._pure_linear_after_avoid = False  # 新段恢复惯导全控制
         self._avoider.reset()
+        if hasattr(self, '_reset_vision_length_state'):
+            self._reset_vision_length_state()
 
         if self.current_segment is None or self.plan_index != index:
             return
@@ -898,9 +900,18 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 
     def run_move_segment(self):
         if self.current_segment is not None and self.current_segment.get('type') == 'move':
-            target_distance = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
-            progress = max(0.0, min(self.projected_distance(), target_distance))
-            ratio = progress / target_distance
+            nominal_target = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
+            progress_raw = self.projected_distance()
+            if hasattr(self, '_vision_adjusted_move_target'):
+                target_distance, vis_rem, free_ratio, vis_valid, vis_reason = (
+                    self._vision_adjusted_move_target(nominal_target, progress_raw)
+                )
+            else:
+                target_distance, vis_rem, free_ratio, vis_valid, vis_reason = (
+                    nominal_target, None, 0.0, False, 'no_mixin'
+                )
+            progress = max(0.0, min(progress_raw, target_distance))
+            ratio = progress / max(1e-6, target_distance)
             bucket = -1
             if ratio >= 0.75:
                 bucket = 3
@@ -913,33 +924,39 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 self.last_progress_bucket = bucket
                 if bucket >= 0:
                     label = self.rectangle_segment_label(self.current_segment)
+                    rem_txt = f'{vis_rem:.2f}m' if vis_rem is not None else 'N/A'
                     progress_line = (
                         f'{label} 进度 {bucket * 25}% '
-                        f'({progress:.2f}/{target_distance:.2f}m)'
+                        f'({progress:.2f}/{target_distance:.2f}m'
+                        f' nom={nominal_target:.2f}m vis_rem={rem_txt})'
                     )
                     self.get_logger().info(
                         f'{self.test_feedback_prefix}当前位置: {progress_line}'
                     )
                     self._log_session(
                         'PROGRESS',
-                        f'{progress_line} | {self._pose_diagnostic()}',
+                        f'{progress_line} | valid={vis_valid} reason={vis_reason} '
+                        f'free={free_ratio:.2f} | {self._pose_diagnostic()}',
                     )
-
-            if progress >= target_distance - self.distance_tolerance and self.last_progress_bucket < 4:
-                self.last_progress_bucket = 4
-                self.publish_feedback(
-                    f'{self.test_feedback_prefix}当前位置: '
-                    f'{self.rectangle_segment_label(self.current_segment)}，'
-                    f'直行到位，准备切换到下一段'
-                )
 
         # 优先：段完成检查（放在避障之前，确保段不会被避障阻塞）
         if self.current_position is not None and self.segment_heading is not None:
             progress = self.projected_distance()
             if (self.current_segment is not None
                     and self.current_segment.get('type') == 'move'):
-                target_distance = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
-                if progress >= target_distance - self.distance_tolerance:
+                nominal_target = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
+                if hasattr(self, '_vision_move_should_finish'):
+                    should_finish, target_distance, vis_rem, free_ratio, finish_reason = (
+                        self._vision_move_should_finish(
+                            nominal_target, progress, self.distance_tolerance
+                        )
+                    )
+                else:
+                    target_distance = nominal_target
+                    should_finish = progress >= target_distance - self.distance_tolerance
+                    vis_rem, free_ratio, finish_reason = None, 0.0, 'odom_only'
+
+                if should_finish:
                     # 避障进行中 → 延迟切段，等避障完成
                     if self._avoider.is_active:
                         nav = NavState(
@@ -952,10 +969,21 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                         )
                         self._avoider.step(nav)
                         return
+                    if self.last_progress_bucket < 4:
+                        self.last_progress_bucket = 4
+                        self.publish_feedback(
+                            f'{self.test_feedback_prefix}当前位置: '
+                            f'{self.rectangle_segment_label(self.current_segment)}，'
+                            f'直行到位，准备切换到下一段'
+                        )
+                    rem_txt = f'{vis_rem:.2f}m' if vis_rem is not None else 'N/A'
                     self._log_session(
                         'SEGMENT_DONE',
                         f'{self.current_segment.get("description", "?")} '
-                        f'{progress:.3f}/{target_distance:.2f}m | {self._pose_diagnostic()}',
+                        f'{progress:.3f}/{target_distance:.2f}m '
+                        f'nom={nominal_target:.2f}m vis_rem={rem_txt} '
+                        f'free={free_ratio:.2f} reason={finish_reason} | '
+                        f'{self._pose_diagnostic()}',
                     )
                     self.cmd_pub.publish(self.create_twist())
                     self.start_segment(self.plan_index + 1)
@@ -963,8 +991,14 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 
         # ── 接近拐角检测：段末尾切换转弯障碍检测 ──
         if self.current_position is not None and self.segment_heading is not None and self.current_segment is not None:
-            target_distance = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
+            nominal_target = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
             progress = self.projected_distance()
+            if hasattr(self, '_vision_adjusted_move_target'):
+                target_distance, _, _, _, _ = self._vision_adjusted_move_target(
+                    nominal_target, progress
+                )
+            else:
+                target_distance = nominal_target
             remaining = target_distance - progress
             corner_approach = float(self.get_parameter('corner_approach_m').value)
             if remaining <= corner_approach:
