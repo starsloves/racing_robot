@@ -28,12 +28,12 @@ stage2_inertial_navigator:
 
     # ── 直行速度 ──────────────────────────────────────
     corridor_linear_speed: 0.14              # 通道段直行速度（m/s）
-    ring_linear_speed: 0.5                   # 环形赛道直行速度（m/s）
+    ring_linear_speed: 0.32                  # 环形赛道直行速度（m/s），先降速纯惯导
 
     # ── 转弯控制 ──────────────────────────────────────
     # 以下3项官方生产值：
     #   turn_angular_speed → 0.80, turn_min_angular_speed → 0.30, turn_kp → 2.0
-    turn_linear_speed: 0.10                  # 转弯时前向速度（m/s）
+    turn_linear_speed: 0.07                  # 转弯时前向速度（m/s）
     turn_angular_speed: 0.80                 # 转弯角速度（rad/s）
     turn_min_angular_speed: 0.30             # 最小转弯角速度（rad/s）
     turn_kp: 2.0                             # 转弯比例增益
@@ -99,14 +99,14 @@ stage2_inertial_navigator:
 
     # ── 纠偏开关（直行段横向修正，三种模式，硬件 IMU 失效自动降级） ──
     imu_heading_correction_enabled: false     # IMU 航向纠偏
-    vision_offset_correction_enabled: true   # 视觉 offset 纠偏（关闭则连视觉模块都不加载）
-    fusion_mode_enabled: true                # true=开启纠偏总开关（再按imu/vision子开关决定源）；false=关闭所有纠偏
+    vision_offset_correction_enabled: false  # 暂停使用 SEG 模型，Stage2 先只跑惯导
+    fusion_mode_enabled: false               # 关闭视觉/融合纠偏，只保留惯导段序与避障
     fusion_weight_imu: 0.5                   # 融合模式中 IMU 权重（视觉无效时自动切 IMU 100%）
     fusion_weight_vision: 0.5                # 融合模式中视觉权重
     vision_model_path: /home/sunrise/dev_ws/src/racing/racing_stage2/models/bset.bin  # BPU 模型路径
     vision_conf_thres: 0.25                  # 检测置信度阈值
     vision_iou_thres: 0.45                   # NMS IOU 阈值
-    vision_crop_ratio: 0.4                   # 图像裁剪比例（保留下方 40%）
+    vision_crop_ratio: 1.0                   # 全画面推理（当前代码不裁剪）
     vision_offset_kp: 0.4                    # offset → angular 增益（大幅降低，防止过冲）
     vision_max_angular: 0.8                  # 视觉修正最大角速度（降回 0.6，避免过度修正）
     vision_web_enabled: true                 # 是否启动 Web 服务（实时查看）

@@ -2,7 +2,7 @@ from setuptools import setup
 import os
 from glob import glob
 
-package_name = 'racing_tools'
+package_name = 'racing_stage2_seg_follow'
 
 setup(
     name=package_name,
@@ -16,16 +16,14 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='Your Name',
-    maintainer_email='your_email@example.com',
-    description='Racing debugging tools',
+    maintainer='sunrise',
+    maintainer_email='sunrise@example.com',
+    description='Standalone Stage2 SEG centerline follower experiment package',
     license='Apache License 2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'data_recorder = racing_tools.data_recorder:main',
-            'camera_video_recorder = racing_tools.camera_video_recorder:main',
-            'initial_scan_map_localizer = racing_tools.initial_scan_map_localizer:main',
+            'seg_line_follower = racing_stage2_seg_follow.seg_line_follower:main',
         ],
     },
 )

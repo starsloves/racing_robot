@@ -43,7 +43,7 @@ stage3_return_navigator:
     p_model_path: /home/sunrise/dev_ws/src/racing/racing_stage3/models/best_p.bin
     p_conf_thres: 0.25
     p_iou_thres: 0.45
-    p_crop_ratio: 0.4
+    p_crop_ratio: 1.0
     # 触发视觉接近的置信度阈值
     p_approach_conf_threshold: 0.5
     # 连续检测次数阈值（抗抖动）
@@ -51,9 +51,18 @@ stage3_return_navigator:
     # 完成条件：bbox 宽度填充画面比例（0.5 = 50%）
     p_complete_bbox_fill_ratio: 0.5
     # 接近时线速度 (m/s)
-    p_approach_linear_speed: 0.06
-    # 接近时角速度 kp 增益
-    p_approach_angular_kp: 0.8
+    p_approach_linear_speed: 0.08
+    # 接近时角速度 kp 增益：偏小一点，避免 P 点接近时左右追抖
+    p_approach_angular_kp: 0.35
+    # 中心死区：P 点在画面中心 ±6% 内不再继续修正
+    p_approach_angular_deadband: 0.06
+    # P 视觉接近最大角速度
+    p_approach_max_angular: 0.22
+    # offset 低通滤波系数，越小越稳，越大响应越快
+    p_approach_offset_filter_alpha: 0.35
+    # P 点视觉到达后，继续沿当前行驶方向额外前进
+    p_extra_forward_distance_m: 0.50
+    p_extra_forward_speed: 0.08
     # Stage3 专用 Web 端口（避免与 Stage2 冲突）
     p_web_port: 8083
 
@@ -105,4 +114,3 @@ stage3_return_navigator:
     planner_dynamic_obstacle_inflation_m: 0.04
     planner_dynamic_obstacle_range_m: 0.7
     planner_replan_period_sec: 0.50
-

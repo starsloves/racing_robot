@@ -160,6 +160,28 @@ class VisionLaneCentering:
                         self.end_headers()
                     
                     def do_GET(self):
+                        if self.path in ('/', '/index.html', '/seg.html'):
+                            body = f'''<!doctype html>
+<html><head><meta charset="utf-8"><title>Stage2 SEG</title>
+<style>body{{background:#202124;color:#eee;font-family:sans-serif;margin:20px}}
+img{{max-width:100%;border:1px solid #555}}#status{{margin:10px 0;color:#8f8}}</style></head>
+<body><h2>Stage2 SEG 实时推理画面</h2><div id="status">连接中...</div>
+<img id="frame" src="/stream.mjpg">
+<script>
+const status=document.getElementById('status');
+async function health(){{ try{{ const r=await fetch('/health?t='+Date.now(),{{cache:'no-store'}}); const d=await r.json();
+status.textContent='status='+d.status+' | frames='+d.frame_count+' | age='+d.frame_age_sec+'s';
+}}catch(e){{status.textContent='HTTP 等待中: '+e;}} }}
+setInterval(health, 500); health();
+</script></body></html>'''.encode('utf-8')
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'text/html; charset=utf-8')
+                            self.send_header('Content-Length', len(body))
+                            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
+
                         if self.path == '/health' or self.path.startswith('/health?'):
                             # 健康检查：返回服务状态 + 最后一帧时间
                             try:
@@ -188,6 +210,50 @@ class VisionLaneCentering:
                             except Exception as e:
                                 parent_self._node.get_logger().error(f'[视觉] /health 处理失败: {e}')
                                 self.send_error(500, str(e))
+                            return
+
+                        if self.path.startswith('/stream.mjpg'):
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+                            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                            self.send_header('Pragma', 'no-cache')
+                            self.send_header('Expires', '0')
+                            self.send_header('Access-Control-Allow-Origin', '*')
+                            self.end_headers()
+                            last_sent = 0.0
+                            while True:
+                                try:
+                                    frame = None
+                                    with parent_self._lock:
+                                        if parent_self._combined_frame is not None:
+                                            frame = parent_self._combined_frame.copy()
+                                    if frame is not None:
+                                        ok, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                                        if ok:
+                                            content = encoded.tobytes()
+                                            self.wfile.write(b'--frame\r\n')
+                                            self.wfile.write(b'Content-Type: image/jpeg\r\n')
+                                            self.wfile.write(f'Content-Length: {len(content)}\r\n\r\n'.encode('ascii'))
+                                            self.wfile.write(content)
+                                            self.wfile.write(b'\r\n')
+                                            last_sent = time.time()
+                                    elif time.time() - last_sent > 0.5:
+                                        with open(parent_self._jpeg_output_path, 'rb') as f:
+                                            content = f.read()
+                                        self.wfile.write(b'--frame\r\n')
+                                        self.wfile.write(b'Content-Type: image/jpeg\r\n')
+                                        self.wfile.write(f'Content-Length: {len(content)}\r\n\r\n'.encode('ascii'))
+                                        self.wfile.write(content)
+                                        self.wfile.write(b'\r\n')
+                                        last_sent = time.time()
+                                    time.sleep(parent_self._min_frame_interval)
+                                except (BrokenPipeError, ConnectionResetError):
+                                    break
+                                except FileNotFoundError:
+                                    time.sleep(0.2)
+                                except Exception as e:
+                                    parent_self._node.get_logger().error(f'[视觉] MJPEG 流失败: {e}')
+                                    break
                             return
                         
                         # 图像请求：固定返回 /tmp/vision_latest.jpg
@@ -272,15 +338,15 @@ class VisionLaneCentering:
             if self._frame_count == 0:
                 self._node.get_logger().info('[视觉] 收到第一帧相机数据（phase2 推理已启用）')
             
-            # 1. 裁剪下方
+            # 1. 使用完整相机画面
             img_full = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             h_full, w_full = img_full.shape[:2]
-            crop_start_row = int(h_full * (1 - self.crop_ratio))
-            img_cropped = img_full[crop_start_row:, :].copy()
+            crop_start_row = 0
+            img_cropped = img_full.copy()
             h_crop, w_crop = img_cropped.shape[:2]
             
             frame_before = img_cropped.copy()
-            cv2.putText(frame_before, f'INPUT (Bottom {int(self.crop_ratio*100)}%)', 
+            cv2.putText(frame_before, 'INPUT (Full frame)', 
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
             # 2. 预处理

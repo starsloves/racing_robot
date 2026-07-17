@@ -73,13 +73,13 @@ competition_controller:
     corridor_path_topic: /stage1_corridor_path
     enable_corridor_navigation: true
     # 默认与总览/Stage2入口一致；若现场标定不同只改 yaml，不改代码
-    corridor_waypoints_json: '[{"x":2.50,"y":2.80,"speed":0.12,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    corridor_waypoints_json: '[{"x":2.50,"y":2.80,"speed":0.16,"yaw_deg":90.0,"description":"corridor_goal"}]'
     corridor_waypoint_tolerance: 0.18
     corridor_goal_tolerance: 0.10
     corridor_goal_yaw_deg: 90.0
     corridor_goal_yaw_tolerance_deg: 4.0
     # ρ-α-β 位姿镇定（边走边转；有角速度时保留蠕行线速度）
-    corridor_linear_speed: 0.14
+    corridor_linear_speed: 0.18
     turn_linear_speed: 0.05
     turn_min_angular_speed: 0.20
     turn_angular_speed: 0.8

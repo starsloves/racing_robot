@@ -1,0 +1,43 @@
+seg_line_follower:
+  ros__parameters:
+    image_topic: /aurora/rgb/image_raw
+    cmd_vel_topic: /cmd_vel
+    debug_image_topic: /stage2_seg_follow/debug_image
+    phase_topic: competition_phase
+    qr_task_topic: competition_qr_task
+    model_path: /home/sunrise/dev_ws/src/racing/racing_stage2/models/bset.bin
+
+    # 只保留画面中间 ROI：左右各裁 160px
+    # 以 640px 宽为基准；如果相机实际是 320px，会自动缩放为左右各 80px
+    crop_left_px: 160
+    crop_right_px: 160
+    crop_reference_width: 640
+    scale_crop_to_image_width: true
+
+    # 独立实验默认直接运行；接入比赛时再改 true 等 phase=2
+    phase_gate_enabled: false
+    target_phase: 2
+
+    conf_thres: 0.25
+    iou_thres: 0.45
+    mask_threshold: 0.50
+    min_mask_pixels_per_row: 12
+    min_valid_rows: 4
+    sample_rows: 9
+    lookahead_ratio: 0.62
+
+    # 低速安全跟线：先确认中线稳定，再逐步加速
+    linear_speed: 0.08
+    corner_linear_speed: 0.05
+    min_linear_speed: 0.03
+    angular_kp: 1.25
+    angular_kd: 0.20
+    curvature_kp: 0.45
+    max_angular_speed: 0.55
+    deadband: 0.035
+    offset_filter_alpha: 0.35
+    lost_timeout_sec: 0.35
+    search_angular_speed: 0.16
+
+    http_port: 8092
+    publish_debug_image: true

@@ -1,0 +1,36 @@
+initial_scan_map_localizer:
+  ros__parameters:
+    map_topic: /map
+    scan_topic: /scan
+    marker_topic: /initial_scan_map_localizer/markers
+    pose_topic: /initial_scan_map_localizer/pose
+    map_frame: map
+
+    # 当前手填初值附近搜索；先不要扩大太多，避免对称场地误匹配
+    initial_x: 0.50
+    initial_y: 0.20
+    initial_yaw_deg: 10.0
+    search_xy_range_m: 0.50
+    search_yaw_range_deg: 20.0
+
+    coarse_xy_step_m: 0.05
+    coarse_yaw_step_deg: 2.0
+    fine_xy_range_m: 0.08
+    fine_yaw_range_deg: 3.0
+    fine_xy_step_m: 0.01
+    fine_yaw_step_deg: 0.5
+
+    occupied_threshold: 50
+    unknown_is_occupied: false
+    min_scan_range_m: 0.15
+    max_scan_range_m: 2.50
+    scan_downsample: 3
+    max_distance_score_m: 0.35
+    inlier_distance_m: 0.08
+    confidence_distance_scale_m: 0.08
+    min_points_required: 20
+
+    # 安全默认：只匹配一次，只打印/可视化，不接管 map->odom_combined
+    match_once: true
+    publish_markers: true
+    marker_republish_sec: 1.0

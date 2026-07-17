@@ -338,7 +338,12 @@ class CompetitionController(Node):
         self.corridor_path_points = []
         self.corridor_path_updated_at = 0.0
         self.corridor_resume_after_avoidance = False
-        self.corridor_path_pub = self.create_publisher(Path, self.corridor_path_topic, 10)
+        path_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self.corridor_path_pub = self.create_publisher(Path, self.corridor_path_topic, path_qos)
 
         # RacingLogger：日志文件 ~/dev_ws/log/competition_stage1/latest.log
         self.log = RacingLogger(
@@ -565,6 +570,7 @@ class CompetitionController(Node):
                 f'目标(map): ({gx:.2f}, {gy:.2f}), '
                 f'距离: {math.hypot(map_xy[0] - gx, map_xy[1] - gy):.2f}m'
             )
+            self.publish_corridor_path(map_xy)
 
     def _map_world_to_grid(self, x, y, step):
         info = self.latest_map.info
@@ -671,6 +677,38 @@ class CompetitionController(Node):
         self.log.progress(f'路径规划成功: {len(cells)} 个路点, 耗时 {(plan_end_time - plan_start_time)*1000:.1f}ms')
         return [self._map_grid_to_world(x, y, step) for x, y in cells]
 
+    def publish_corridor_path(self, start_xy=None):
+        """发布 Stage1 通道导航路径到 RViz。"""
+        points = []
+        if start_xy is not None:
+            points.append((float(start_xy[0]), float(start_xy[1])))
+        if self.use_corridor_planner and start_xy is not None and self.corridor_waypoints:
+            goal = self.corridor_waypoints[-1]
+            planned = self.plan_corridor_path(start_xy, (float(goal['x']), float(goal['y'])))
+            if planned:
+                points = planned
+        if not points:
+            map_xy = self.get_map_position()
+            if map_xy is not None:
+                points.append((float(map_xy[0]), float(map_xy[1])))
+        for waypoint in self.corridor_waypoints[self.corridor_index:]:
+            points.append((float(waypoint['x']), float(waypoint['y'])))
+        if len(points) < 2:
+            return
+
+        path_msg = Path()
+        path_msg.header.stamp = self.get_clock().now().to_msg()
+        path_msg.header.frame_id = self.map_frame
+        for x, y in points:
+            pose = PoseStamped()
+            pose.header = path_msg.header
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.w = 1.0
+            path_msg.poses.append(pose)
+        self.corridor_path_pub.publish(path_msg)
+
     def _corridor_lookahead(self, path, current_xy):
         if not path:
             self.log.error('CORRIDOR', 'Lookahead: 路径为空！')
@@ -745,10 +783,11 @@ class CompetitionController(Node):
             self.corridor_active = False
             self.corridor_nav_mode = 'idle'
             self.corridor_capture_active = False
-            self.stop_robot()
+            self.phase1_motion_state = 'forward'
             if not getattr(self, '_corridor_timeout_logged', False):
                 self._corridor_timeout_logged = True
-                self.log.error('CORRIDOR', '地图通道导航超时，保持 Stage1 停止，不提前进入 Stage2')
+                self.log.warn('CORRIDOR', '地图通道导航超时，放行进入 Stage2')
+            self.begin_phase_transition(2, '地图通道导航超时，按策略放行进入 Stage2')
             return
 
         pose_xy = (float(map_xy[0]), float(map_xy[1]))
@@ -793,6 +832,7 @@ class CompetitionController(Node):
                 f'mode={self.corridor_nav_mode} cap={int(self.corridor_capture_active)} '
                 f'{elapsed:.0f}s{odom_txt}'
             )
+            self.publish_corridor_path(pose_xy)
             print(
                 f"\r[Stage1导航] map({pose_xy[0]:.2f}, {pose_xy[1]:.2f}) → "
                 f"目标({final_goal_xy[0]:.2f}, {final_goal_xy[1]:.2f}) | 距离{final_rho:.2f}m | "

@@ -88,6 +88,10 @@ class Stage3ReturnNavigator(Node):
         self._p_consecutive_hits = 0
         self._p_approach_conf_threshold = 0.5
         self._p_complete_bbox_fill_ratio = 0.5
+        self._p_offset_filtered = 0.0
+        self._p_extra_forward_active = False
+        self._p_extra_forward_start_pose = None
+        self._p_extra_forward_heading = None
 
         # ── Pub/Sub ──
         qos_latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -224,6 +228,11 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_complete_bbox_fill_ratio', 0.5)
         self.declare_parameter('p_approach_linear_speed', 0.06)
         self.declare_parameter('p_approach_angular_kp', 0.8)
+        self.declare_parameter('p_approach_angular_deadband', 0.06)
+        self.declare_parameter('p_approach_max_angular', 0.22)
+        self.declare_parameter('p_approach_offset_filter_alpha', 0.35)
+        self.declare_parameter('p_extra_forward_distance_m', 0.50)
+        self.declare_parameter('p_extra_forward_speed', 0.08)
         self.declare_parameter('p_web_port', 8083)
 
     def _read_params(self):
@@ -312,6 +321,11 @@ class Stage3ReturnNavigator(Node):
         self._p_complete_bbox_fill_ratio = float(self.get_parameter('p_complete_bbox_fill_ratio').value)
         self._p_approach_linear_speed = float(self.get_parameter('p_approach_linear_speed').value)
         self._p_approach_angular_kp = float(self.get_parameter('p_approach_angular_kp').value)
+        self._p_approach_angular_deadband = float(self.get_parameter('p_approach_angular_deadband').value)
+        self._p_approach_max_angular = float(self.get_parameter('p_approach_max_angular').value)
+        self._p_approach_offset_filter_alpha = float(self.get_parameter('p_approach_offset_filter_alpha').value)
+        self._p_extra_forward_distance_m = float(self.get_parameter('p_extra_forward_distance_m').value)
+        self._p_extra_forward_speed = float(self.get_parameter('p_extra_forward_speed').value)
         self.p_web_port = int(self.get_parameter('p_web_port').value)
 
     # ══════════════ 工具 ══════════════
@@ -419,12 +433,18 @@ class Stage3ReturnNavigator(Node):
             crop_ratio=self.p_crop_ratio,
             http_port=self.p_web_port,
         )
+        self._set_p_inference_active(False)
         self.log.startup(
             f'P detector enabled, model={self.p_model_path}, '
             f'HTTP port={self.p_web_port}, endpoint=/vision_latest.jpg'
         )
 
     # ══════════════ 回调 ══════════════
+
+    def _set_p_inference_active(self, active: bool):
+        detector = getattr(self, '_p_detector', None)
+        if detector is not None and hasattr(detector, 'set_inference_active'):
+            detector.set_inference_active(active)
 
     def _phase_cb(self, msg):
         prev = self.phase
@@ -437,18 +457,22 @@ class Stage3ReturnNavigator(Node):
             if incoming == 1:
                 self.phase = 1
                 self.phase_initialized = True
+                self._set_p_inference_active(False)
                 self.get_logger().info('[PHASE] ✓ Phase 初始化完成: phase=1')
                 return
             if incoming == 3:
                 self.phase = 1
+                self._set_p_inference_active(False)
                 self.get_logger().warn('[PHASE] ⚠ 忽略启动时的 phase=3（可能是旧消息），等待 phase=1')
                 return
             self.phase = incoming
+            self._set_p_inference_active(False)
             return
 
         self.phase = incoming
         if prev == 3 and self.phase != 3:
             self._reset_mission()
+            self._set_p_inference_active(False)
         elif prev != 3 and self.phase == 3:
             self._arm_mission()
 
@@ -479,6 +503,7 @@ class Stage3ReturnNavigator(Node):
         self._settled_start = None
         self.avoid_state = 'forward'
         self.start_after_time = self._now_sec() + self.start_delay_sec
+        self._set_p_inference_active(True)
         init_yaw_deg = 180.0 if self.test_direction == 'clockwise' else 0.0
         self.current_yaw = math.radians(init_yaw_deg)
         self._publish_state('armed')
@@ -499,6 +524,11 @@ class Stage3ReturnNavigator(Node):
         self._p_approaching = False
         self._p_consecutive_hits = 0
         self._p_approach_start_pose = None
+        self._p_offset_filtered = 0.0
+        self._p_extra_forward_active = False
+        self._p_extra_forward_start_pose = None
+        self._p_extra_forward_heading = None
+        self._set_p_inference_active(False)
         self._publish_state('idle')
 
     def _start_mission(self):
@@ -524,6 +554,8 @@ class Stage3ReturnNavigator(Node):
         self.cmd_pub.publish(Twist())
         self.mission_active = False
         self.mission_finished = True
+        self._p_extra_forward_active = False
+        self._set_p_inference_active(False)
         self._publish_state('complete')
         self._publish_feedback('return complete, reached P point')
         sys.stderr.write('\n=== STAGE3 RETURN COMPLETE ===\n\n')
@@ -532,6 +564,8 @@ class Stage3ReturnNavigator(Node):
         self.cmd_pub.publish(Twist())
         self.mission_active = False
         self.mission_finished = True
+        self._p_extra_forward_active = False
+        self._set_p_inference_active(False)
         self._publish_state('failed')
         self._publish_feedback(f'return failed: {reason}')
         sys.stderr.write(f'\n=== STAGE3 RETURN FAILED: {reason} ===\n\n')
@@ -592,6 +626,7 @@ class Stage3ReturnNavigator(Node):
     def _enter_p_approach(self, conf, bbox):
         """进入 P 视觉接近态——视觉模块接管控制"""
         self._p_approaching = True
+        self._p_offset_filtered = 0.0
         if self.current_position is not None:
             self._p_approach_start_pose = self.current_position
         self._publish_state('p_approaching')
@@ -602,6 +637,51 @@ class Stage3ReturnNavigator(Node):
         self.log.segment(
             f'P approach start conf={conf:.2f} '
             f'pos=({self.current_position[0]:.2f},{self.current_position[1]:.2f})'
+        )
+
+    def _enter_p_extra_forward(self, fill_ratio, conf):
+        """P 点视觉到达后，沿当前行驶方向额外前进一段距离。"""
+        if self.current_position is None:
+            self._finish_mission()
+            return
+        self._p_approaching = False
+        self._p_extra_forward_active = True
+        self._p_extra_forward_start_pose = self.current_position
+        self._p_extra_forward_heading = self.current_yaw
+        self._publish_state('p_extra_forward')
+        self._publish_feedback(
+            f'P reached visually, extra forward {self._p_extra_forward_distance_m:.2f}m'
+        )
+        self.log.segment(
+            f'P visual threshold reached: fill_ratio={fill_ratio:.2%} conf={conf:.2f}, '
+            f'extra_forward={self._p_extra_forward_distance_m:.2f}m '
+            f'pos=({self.current_position[0]:.2f},{self.current_position[1]:.2f})'
+        )
+
+    def _run_p_extra_forward(self):
+        if self.current_position is None or self._p_extra_forward_start_pose is None:
+            self.cmd_pub.publish(self._twist(self._p_extra_forward_speed, 0.0))
+            return
+        dx = self.current_position[0] - self._p_extra_forward_start_pose[0]
+        dy = self.current_position[1] - self._p_extra_forward_start_pose[1]
+        traveled = math.hypot(dx, dy)
+        if traveled >= self._p_extra_forward_distance_m:
+            self.log.segment(
+                f'P extra forward complete: {traveled:.2f}/'
+                f'{self._p_extra_forward_distance_m:.2f}m'
+            )
+            self._finish_mission()
+            return
+
+        angular = 0.0
+        if self.current_yaw is not None and self._p_extra_forward_heading is not None:
+            yaw_error = self._angle_error(self._p_extra_forward_heading, self.current_yaw)
+            angular = self._clamp(1.0 * yaw_error, self._p_approach_max_angular)
+        self.cmd_pub.publish(self._twist(self._p_extra_forward_speed, angular))
+        self.log.telemetry(
+            'P_EXTRA',
+            f'dist={traveled:.2f}/{self._p_extra_forward_distance_m:.2f}m '
+            f'spd={self._p_extra_forward_speed:.2f} ang={angular:.2f}'
         )
 
     def _run_p_approach(self):
@@ -650,22 +730,35 @@ class Stage3ReturnNavigator(Node):
                 f'P approach complete: fill_ratio={fill_ratio:.2%} '
                 f'bbox=({bbox_w}x{bbox_h}) conf={conf:.2f}'
             )
-            self._finish_mission()
+            self._enter_p_extra_forward(fill_ratio, conf)
             return
         
-        # 视觉导向控制：偏移越大越强的角速度
-        angular = -self._p_approach_angular_kp * offset
-        angular = max(-0.4, min(0.4, angular))
+        # 视觉导向控制：低通滤波 + 中心死区，避免 P 点接近时左右追抖
+        alpha = max(0.0, min(1.0, self._p_approach_offset_filter_alpha))
+        self._p_offset_filtered = (
+            alpha * offset + (1.0 - alpha) * self._p_offset_filtered
+        )
+        filtered_offset = self._p_offset_filtered
+        if abs(filtered_offset) <= self._p_approach_angular_deadband:
+            angular = 0.0
+        else:
+            effective_offset = math.copysign(
+                abs(filtered_offset) - self._p_approach_angular_deadband,
+                filtered_offset,
+            )
+            angular = -self._p_approach_angular_kp * effective_offset
+        angular = max(-self._p_approach_max_angular, min(self._p_approach_max_angular, angular))
         
         # 偏移较大时减速，偏移较小时加速
         speed = self._p_approach_linear_speed
-        if abs(offset) > 0.3:
+        if abs(filtered_offset) > 0.3:
             speed = speed * 0.5
         
         self.cmd_pub.publish(self._twist(speed, angular))
         
         self.log.telemetry('P_VISUAL',
-            f'offset={offset:+.3f} fill={fill_ratio:.2%} spd={speed:.2f} ang={angular:.2f} '
+            f'offset={offset:+.3f} filt={filtered_offset:+.3f} fill={fill_ratio:.2%} '
+            f'spd={speed:.2f} ang={angular:.2f} '
             f'bbox=({bbox_w:.0f}x{bbox_h:.0f}) conf={conf:.2f}')
     # ══════════════ 主控制循环 ══════════════
 
@@ -685,6 +778,10 @@ class Stage3ReturnNavigator(Node):
             return
 
         # 2. P 视觉接近态（最高优先级，接管后不受导航/避障控制）
+        if self._p_extra_forward_active:
+            self._run_p_extra_forward()
+            return
+
         if self._p_approaching:
             self._run_p_approach()
             return

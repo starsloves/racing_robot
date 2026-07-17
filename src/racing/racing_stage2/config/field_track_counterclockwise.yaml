@@ -1,15 +1,14 @@
-# field_track_counterclockwise.yaml — 逆时针矩形赛道（转角补偿 88°）
+# field_track_counterclockwise.yaml — 逆时针矩形赛道（四个矩形拐角标准90°）
 # 导航方式：odom 相对坐标 + 欧氏距离，直行段禁用航向修正
 # 起点：Stage1 终点，车头朝向 90°（+Y）
-# 转角补偿：实测每次转弯多转约 2°，所以 90° 改为 88°
-# 入口先右转 88°（实际约 90°），四个拐角依次左转 88°（实际约 90°）
+# 四个矩形拐角按标准 90° 执行；入口转角按当前实测配置
 
 track_type: rectangle_closed
 direction: counterclockwise
 
 segments:
   # ── 入口对齐 ────────────────────────────────────────
-  # 原地右转 88°（实际会转约 90°）
+  # 原地右转 80°
   - type: turn
     angle_deg: -80.0
     description: rect_enter_align
@@ -31,7 +30,7 @@ segments:
 
   # ── 右下拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 75.0
+    angle_deg: 90.0
     description: rect_corner_1
 
   # ── 停稳（消除转弯残余角速度） ──────────────────────
@@ -51,7 +50,7 @@ segments:
 
   # ── 右上拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 75.0
+    angle_deg: 90.0
     description: rect_corner_2
 
   # ── 停稳（消除转弯残余角速度） ──────────────────────
@@ -71,7 +70,7 @@ segments:
 
   # ── 左上拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 75.0
+    angle_deg: 90.0
     description: rect_corner_3
 
   # ── 停稳（消除转弯残余角速度） ──────────────────────
@@ -91,7 +90,7 @@ segments:
 
   # ── 左下拐角 ────────────────────────────────────────
   - type: turn
-    angle_deg: 75.0
+    angle_deg: 90.0
     description: rect_corner_4
 
   # ── 停稳（消除转弯残余角速度） ──────────────────────

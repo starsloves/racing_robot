@@ -75,12 +75,14 @@ competition_controller.py（Stage1 主控）
 |---|---|---|---|
 | `racing_stage1` | Stage1 | 只读 | 官方通道导航 + QR 扫码 |
 | `racing_stage2` | Stage2 | **官方生产** | 正式惯导+视觉节点（`Stage2InertialNavigator`） |
+| `racing_stage2_seg_follow` | Stage2 | 独立实验 | 一键启动底盘+相机的 SEG 中线跟线包，网页显示裁剪ROI，按左右边线中点发布低速控制 |
 | `racing_stage2_param_test` | Stage2 | 独立调参 | Stage2 参数测试包（非 total 入口） |
 | `racing_stage2_field_record` | Stage2 | 辅助 | 场测数据记录 |
 | `racing_stage2_param_vision_test` | Stage2 | 辅助 | 视觉参数测试 |
 | `racing_stage3` | Stage3 | **官方生产** | 正式返程节点（`Stage3ReturnNavigator`） |
 | `racing_stage3_param_test` | Stage3 | 独立调参 | Stage3 参数测试包（非 total 入口） |
 | `racing_common` | 通用 | 工具 | RacingLogger, ObstacleMarkerPublisher 等 |
+| `racing_tools` | 通用 | 诊断工具 | 数据记录、相机录像、初始 scan-to-map 位姿估计 |
 | `qr_scanner` | Stage1 | 辅助 | WeChat CV 二维码扫描 |
 | `racing_vision_ai` | Stage3 | 辅助 | `sign4return=9` 触发→火山引擎大模型图生文 |
 | `voice_driver` | 通用 | 辅助 | MAE01 模块 + API TTS 语音播报 |
@@ -156,6 +158,7 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 | **雷达处理** | `scan_processor.py` | 前方/侧方障碍检测 |
 | **视觉修正** | `stage2_vision_mixin.py` | Vision + IMU 融合 mixin |
 | **视觉检测** | `vision_lane_centering.py` | BPU YOLOv8-Seg 赛道分割 |
+| **SEG跟线实验** | `racing_stage2_seg_follow` | 独立包，启动底盘+相机，网页只显示裁剪ROI，用左右赛道边线中点跟线，默认低速发布 `/cmd_vel` |
 | **日志** | `session_file_log.py` | 文件会话日志 |
 | **CSV 记录** | `data_recorder.py` | 遥测 CSV 记录 |
 | **指令中继** | `twist_cmd_relay.py` | `/stage2_cmd_vel` → `/cmd_vel` |
@@ -168,9 +171,9 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 
 | 参数 | 值 | 说明 |
 |---|---|---|
-| `ring_linear_speed` | 0.5 m/s | 环形赛道直行速度 |
+| `ring_linear_speed` | 0.32 m/s | 环形赛道直行速度（当前降速纯惯导） |
 | `corridor_linear_speed` | 0.14 m/s | 通道段直行速度 |
-| `turn_linear_speed` | 0.10 m/s | 转弯时前向速度 |
+| `turn_linear_speed` | 0.07 m/s | 转弯时前向速度 |
 | `turn_angular_speed` | 0.65 rad/s | 被 test.yaml 覆盖为 0.80 |
 | `turn_kp` | 1.8 | 被 test.yaml 覆盖为 2.0 |
 | `heading_kp` | 1.0 | 直行航向保持比例增益 |
@@ -179,7 +182,8 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 | `segment_timeout` | 25.0 s | 单段超时时间 |
 | `corridor_goal` | (2.50, 3.20) @ 90° | 通道终点（入口坐标） |
 | `detour_enabled` | true | 避障开关 |
-| `fusion_mode_enabled` | true | 纠偏总开关 |
+| `vision_offset_correction_enabled` | false | 当前暂停 SEG 模型，仅惯导+避障 |
+| `fusion_mode_enabled` | false | 当前关闭视觉/融合纠偏 |
 | `fusion_weight_imu` | 0.3 | IMU 融合权重 |
 | `fusion_weight_vision` | 0.7 | 视觉融合权重 |
 | `vision_model_path` | models/bset.bin | BPU 模型路径 |
@@ -345,10 +349,10 @@ idle → turn_away(转α, 30°) → leg1(直行0.22m) → turn_back(转β, 40°)
 
 | 核心文件 | 行数 | 说明 |
 |---|---|---|
-| `enhanced_return_navigator.py` | 906 | 测试方案主体：Pure Pursuit + A* + Stage1 4态避障 |
+| `stage3_return_navigator.py` | — | 官方返程主体：Pure Pursuit + A* + Stage1 4态避障 + P 视觉 |
 | `global_path_planner.py` | — | A* 规划 mixin（TF 转换 / occupancy grid / scan overlay）|
-| `phase3_test_trigger.py` | — | 独立测试时发布 competition_phase=3 |
-| `stage3_test_simulator.py` | — | 返程测试仿真器 |
+| `phase3_test_trigger.py` | — | 独立测试工具，正式 total 不启动 |
+| `stage3_test_simulator.py` | — | 返程测试工具，正式 total 不启动 |
 
 **独立调参包**：`racing_stage3_param_test`
 
@@ -390,15 +394,16 @@ phase=3 收到
           │   ├─ [A* 启用] plan_global_path() → select_path_lookahead_point()
           │   ├─ Pure Pursuit: 航向差 > heading_stop → 原地转; 否则曲率控制
           │   └─ [避障] Stage1 4态聚类避障（interrupt running）
-          └─ 末段 + 距目标 < goal_tolerance：
-              ├─ 航向差 > goal_yaw_tolerance → 原地对齐
+          └─ P YOLO 连续检测到 P 点：
+              ├─ p_approaching：按 P 框中心低通纠偏并加速接近
+              ├─ bbox fill 达阈值：沿当前行驶方向额外前进 0.50m
               └─ → finish_mission()
 ```
 
 ### 4.4 状态机
 
 ```
-idle → armed → running(PurePursuit + A*) → align_yaw → complete
+idle → armed → running(PurePursuit + A*) → p_approaching → p_extra_forward → complete
   ↑         running 时可中断为：
   └── avoiding → countersteer → recovering → running
 ```
@@ -410,6 +415,9 @@ idle → armed → running(PurePursuit + A*) → align_yaw → complete
 | 路点到不了 | `waypoint_tolerance` | ↑ |
 | P 点停不准 | `goal_tolerance` | ↓ |
 | P 点航向靠不拢 | `goal_yaw_tolerance_deg` | ↑ 放宽 |
+| P 点视觉接近太慢 | `p_approach_linear_speed` | ↑ |
+| P 点接近左右抖 | `p_approach_angular_kp` / `p_approach_angular_deadband` | ↓ / ↑ |
+| P 点停车过早 | `p_extra_forward_distance_m` | ↑ |
 | 震荡 | `pursuit_turn_kp` | ↓ |
 | A* 频繁重规划耗资源 | `planner_replan_period_sec` | ↑ |
 | 无 map 时 A* 阻塞 | `use_occupancy_grid_planner` | false（切纯路点模式）|
@@ -426,6 +434,7 @@ idle → armed → running(PurePursuit + A*) → align_yaw → complete
 | Voice Driver | `voice_driver` | MAE01 模块 + API TTS 语音播报 |
 | RacingLogger | `racing_common` | 统一日志工具（所有节点共用） |
 | ObstacleMarkerPublisher | `racing_common` | 障碍物可视化 marker（rviz2） |
+| InitialScanMapLocalizer | `racing_tools` | `/scan` 与 `/map` 边缘匹配，输出初始 `(x,y,yaw,confidence)` 和 RViz marker；默认不发布 TF |
 
 ---
 

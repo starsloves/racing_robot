@@ -50,6 +50,7 @@ class VisionPDetector:
         self._confidence = 0.0
         self._bbox = None
         self._timestamp = 0.0
+        self._inference_active = False
 
         # HTTP 可视化
         self._combined_frame = None
@@ -95,6 +96,25 @@ class VisionPDetector:
         with self._lock:
             return (self._detected, self._confidence, self._bbox, self._timestamp)
 
+    def set_inference_active(self, active: bool):
+        """启用/停用 P YOLO 推理。仅 phase=3 期间应启用。"""
+        active = bool(active)
+        with self._lock:
+            previous = self._inference_active
+            self._inference_active = active
+            if not active:
+                self._detected = False
+                self._confidence = 0.0
+                self._bbox = None
+                self._timestamp = time.time()
+        if previous != active:
+            state = '启用' if active else '停用'
+            self._node.get_logger().info(f'[P-DET] YOLO 推理已{state}')
+
+    def is_inference_active(self) -> bool:
+        with self._lock:
+            return bool(self._inference_active)
+
     def _write_placeholder_image(self):
         """预生成占位图像，避免浏览器首次连接时 404"""
         try:
@@ -131,15 +151,14 @@ class VisionPDetector:
 <html><head><meta charset="utf-8"><title>Stage3 P YOLO</title>
 <style>body{{background:#202124;color:#eee;font-family:sans-serif;margin:20px}}
 img{{max-width:100%;border:1px solid #555}}#status{{margin:10px 0;color:#8f8}}</style></head>
-<body><h2>Stage3 P YOLO 实时画面</h2><div id="status">连接中...</div>
-<img id="frame" src="/vision_p_latest.jpg?t=0">
+<body><h2>Stage3 P YOLO 实时推理画面</h2><div id="status">连接中...</div>
+<img id="frame" src="/stream.mjpg">
 <script>
-const image=document.getElementById('frame'), status=document.getElementById('status');
-function refresh(){{ image.src='/vision_p_latest.jpg?t='+Date.now(); }}
+const status=document.getElementById('status');
 async function health(){{ try{{ const r=await fetch('/health?t='+Date.now(),{{cache:'no-store'}}); const d=await r.json();
-status.textContent='status='+d.status+' | phase='+d.phase+' | frames='+d.frame_count+' | age='+d.frame_age_sec+'s';
+status.textContent='status='+d.status+' | phase='+d.phase+' | yolo='+(d.inference_active?'on':'off')+' | frames='+d.frame_count+' | age='+d.frame_age_sec+'s';
 }}catch(e){{status.textContent='HTTP 等待中: '+e;}} }}
-setInterval(refresh, 150); setInterval(health, 500); refresh(); health();
+setInterval(health, 500); health();
 </script></body></html>'''.encode('utf-8')
                             self.send_response(200)
                             self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -155,6 +174,7 @@ setInterval(refresh, 150); setInterval(health, 500); refresh(); health();
                                     last_frame_time = parent_self._last_frame_save_time
                                     frame_count = parent_self._frame_count
                                     phase = getattr(parent_self._node, 'phase', 3)
+                                    inference_active = parent_self._inference_active
 
                                 uptime = time.time() - parent_self._http_server_start_time
                                 age = time.time() - last_frame_time if last_frame_time > 0 else -1
@@ -167,6 +187,7 @@ setInterval(refresh, 150); setInterval(health, 500); refresh(); health();
                                     "frame_age_sec": round(age, 2) if age >= 0 else None,
                                     "frame_count": frame_count,
                                     "phase": phase,
+                                    "inference_active": inference_active,
                                 }
 
                                 self.send_response(200)
@@ -178,6 +199,50 @@ setInterval(refresh, 150); setInterval(health, 500); refresh(); health();
                             except Exception as e:
                                 parent_self._node.get_logger().error(f'[P-DET] /health 处理失败: {e}')
                                 self.send_error(500, str(e))
+                            return
+
+                        if self.path.startswith('/stream.mjpg'):
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+                            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                            self.send_header('Pragma', 'no-cache')
+                            self.send_header('Expires', '0')
+                            self.send_header('Access-Control-Allow-Origin', '*')
+                            self.end_headers()
+                            last_sent = 0.0
+                            while True:
+                                try:
+                                    frame = None
+                                    with parent_self._lock:
+                                        if parent_self._combined_frame is not None:
+                                            frame = parent_self._combined_frame.copy()
+                                    if frame is not None:
+                                        ok, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                                        if ok:
+                                            content = encoded.tobytes()
+                                            self.wfile.write(b'--frame\r\n')
+                                            self.wfile.write(b'Content-Type: image/jpeg\r\n')
+                                            self.wfile.write(f'Content-Length: {len(content)}\r\n\r\n'.encode('ascii'))
+                                            self.wfile.write(content)
+                                            self.wfile.write(b'\r\n')
+                                            last_sent = time.time()
+                                    elif time.time() - last_sent > 0.5:
+                                        with open(parent_self._jpeg_output_path, 'rb') as f:
+                                            content = f.read()
+                                        self.wfile.write(b'--frame\r\n')
+                                        self.wfile.write(b'Content-Type: image/jpeg\r\n')
+                                        self.wfile.write(f'Content-Length: {len(content)}\r\n\r\n'.encode('ascii'))
+                                        self.wfile.write(content)
+                                        self.wfile.write(b'\r\n')
+                                        last_sent = time.time()
+                                    time.sleep(parent_self._min_frame_interval)
+                                except (BrokenPipeError, ConnectionResetError):
+                                    break
+                                except FileNotFoundError:
+                                    time.sleep(0.2)
+                                except Exception as e:
+                                    parent_self._node.get_logger().error(f'[P-DET] MJPEG 流失败: {e}')
+                                    break
                             return
 
                         if (
@@ -234,24 +299,24 @@ setInterval(refresh, 150); setInterval(health, 500); refresh(); health();
 
     def _image_callback(self, msg):
         try:
-            # 1. 裁剪下方
+            # 1. 使用完整相机画面
             img_full = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             h_full, w_full = img_full.shape[:2]
-            crop_start_row = int(h_full * (1 - self.crop_ratio))
-            img_cropped = img_full[crop_start_row:, :].copy()
+            crop_start_row = 0
+            img_cropped = img_full.copy()
             h_crop, w_crop = img_cropped.shape[:2]
 
             frame_before = img_cropped.copy()
-            cv2.putText(frame_before, f'INPUT (Bottom {int(self.crop_ratio*100)}%)',
+            cv2.putText(frame_before, 'INPUT (Full frame)',
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-            # 总启动时检测器会早于 Stage3 创建。非 Stage3 阶段不做 BPU 推理，
+            # 总启动时检测器会早于 Stage3 创建。未启用时不做 BPU 推理，
             # 但仍持续更新 Web 画面，避免网页停在占位图或上一帧。
-            if getattr(self._node, 'phase', 3) != 3:
+            if not self.is_inference_active():
                 frame_after = img_cropped.copy()
                 cv2.putText(
                     frame_after,
-                    f'WAITING FOR PHASE 3 (current={getattr(self._node, "phase", 0)})',
+                    f'P YOLO DISABLED (phase={getattr(self._node, "phase", 0)})',
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2,
                 )
                 with self._lock:
@@ -338,12 +403,12 @@ setInterval(refresh, 150); setInterval(health, 500); refresh(); health();
                     x2 = max(0, min(w_crop-1, box[2]/scale))
                     y2 = max(0, min(h_crop-1, box[3]/scale))
                     
-                    # 转换到全图坐标（供外部调用）
+                    # 全图坐标（供外部调用）
                     best_bbox = (
                         int(x1), 
-                        int(y1 + crop_start_row), 
+                        int(y1), 
                         int(x2), 
-                        int(y2 + crop_start_row)
+                        int(y2)
                     )
                     detected = True
 
