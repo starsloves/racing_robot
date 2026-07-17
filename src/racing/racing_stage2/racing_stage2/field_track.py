@@ -2,7 +2,8 @@
 
 用法：
     plan = load_plan('config/field_track_clockwise.yaml', 'clockwise')
-    # → [{'type':'turn','angle_deg':95.0,'description':'rect_enter_align'},
+    # → [{'type':'arc','steering_angle_deg':15.0,'duration_sec':6.0,
+    #     'description':'rect_enter_align'},
     #    {'type':'move','distance_m':1.10,'speed':ring_v,'allow_detour':True,
     #     'description':'rect_first_leg'}, ...]
 """
@@ -67,7 +68,19 @@ def load_plan(yaml_path: str, direction: str,
             # 如果是世界坐标系，标记
             if is_world:
                 entry['coordinate_system'] = 'world'
-        
+
+        elif seg_type == 'arc':
+            if 'steering_angle_deg' not in entry or 'duration_sec' not in entry:
+                raise ValueError(
+                    'arc segment requires steering_angle_deg and duration_sec: '
+                    f'{entry.get("description", "unnamed")}'
+                )
+            if float(entry['duration_sec']) <= 0.0:
+                raise ValueError(
+                    'arc duration_sec must be positive: '
+                    f'{entry.get("description", "unnamed")}'
+                )
+
         plan.append(entry)
 
     # 如果是世界坐标系，返回起点信息（用于初始化）

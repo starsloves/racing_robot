@@ -938,6 +938,21 @@ class Stage2InertialBase(Node):
                     'angle_deg': float(raw_segment.get('angle_deg', 0.0)),
                     'description': raw_segment.get('description', 'pre_turn'),
                 })
+            elif segment_type == 'arc':
+                duration_sec = float(raw_segment.get('duration_sec', 0.0))
+                steering_angle_deg = float(raw_segment.get('steering_angle_deg', 0.0))
+                if duration_sec <= 0.0:
+                    self.get_logger().error(
+                        f'{param_name} arc requires positive duration_sec; '
+                        f'skip {raw_segment.get("description", "pre_arc")}'
+                    )
+                    continue
+                sanitized_segments.append({
+                    'type': 'arc',
+                    'steering_angle_deg': steering_angle_deg,
+                    'duration_sec': duration_sec,
+                    'description': raw_segment.get('description', 'pre_arc'),
+                })
             elif segment_type == 'move':
                 sanitized_segments.append({
                     'type': 'move',
@@ -1225,6 +1240,12 @@ class Stage2InertialBase(Node):
                 self.segment_start_yaw + math.radians(self.current_segment['angle_deg'])
             )
             self.publish_state(self.current_segment['description'])
+        elif self.current_segment['type'] == 'arc':
+            # 舵角定时段不以 IMU 航向或车体角速度判定完成。
+            # 下一段 move 从实际当前航向重新建立基准。
+            self.segment_target_yaw = None
+            self.segment_heading = None
+            self.publish_state(self.current_segment['description'])
         elif self.current_segment['type'] == 'move':
             self.segment_heading = self.segment_start_yaw
             self.publish_state(self.current_segment['description'])
@@ -1273,6 +1294,13 @@ class Stage2InertialBase(Node):
         segment_type = self.current_segment['type']
         if segment_type == 'turn':
             self.run_turn_segment()
+            return
+        if segment_type == 'arc':
+            # 基类无 arc 专实现时退化为 turn，正式节点会覆盖
+            if hasattr(self, 'run_arc_segment'):
+                self.run_arc_segment()
+            else:
+                self.run_turn_segment()
             return
         if segment_type == 'move':
             self.run_move_segment()

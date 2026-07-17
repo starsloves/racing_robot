@@ -467,6 +467,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 parts.append(
                     f"target_yaw={self.format_yaw_deg(self.segment_target_yaw)}deg"
                 )
+        elif seg_type == 'arc':
+            parts.append(f"steering={float(segment.get('steering_angle_deg', 0.0)):+.1f}deg")
+            parts.append(f"duration={float(segment.get('duration_sec', 0.0)):.2f}s")
         elif seg_type == 'pause':
             parts.append(f"duration={float(segment.get('duration', 0.0)):.2f}s")
         parts.append(self._pose_diagnostic())
@@ -488,6 +491,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 lines.append(
                     f'  [{index}] turn {desc} '
                     f'{float(segment.get("angle_deg", 0.0)):.0f}deg'
+                )
+            elif seg_type == 'arc':
+                lines.append(
+                    f'  [{index}] arc {desc} '
+                    f'steering={float(segment.get("steering_angle_deg", 0.0)):+.1f}deg '
+                    f't={float(segment.get("duration_sec", 0.0)):.2f}s'
                 )
             elif seg_type == 'pause':
                 lines.append(
@@ -651,8 +660,21 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             
             self.get_logger().info(
                 f'[TURN] start={math.degrees(self.segment_start_yaw):.1f}deg '
-                f'angle_deg={angle_deg:.1f}deg comp={angle_compensation_deg:+.1f}deg → '
+                f'angle_deg={angle_deg:.1f}deg comp={angle_compensation_deg:+.1f}deg -> '
                 f'target={math.degrees(self.segment_target_yaw):.1f}deg'
+            )
+            return
+
+        if seg_type == 'arc':
+            if self.current_position is not None:
+                self.segment_start_pose = self.current_position
+            self._last_turn_target_yaw = None
+            self._arc_timer_last_log_sec = -1.0
+            self._log_session(
+                'ARC_SETUP',
+                f'steering={float(segment.get("steering_angle_deg", 0.0)):+.1f}deg '
+                f'duration={float(segment.get("duration_sec", 0.0)):.2f}s '
+                f'linear={float(self.turn_linear_speed):.3f}m/s'
             )
             return
 
@@ -849,6 +871,16 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             )
             return
 
+        if segment_type == 'arc':
+            steering_angle_deg = float(segment.get('steering_angle_deg', 0.0))
+            duration_sec = float(segment.get('duration_sec', 0.0))
+            turn_text = '左打舵' if steering_angle_deg > 0.0 else '右打舵'
+            self.publish_feedback(
+                f'{self.test_feedback_prefix}当前位置: {label}，开始{turn_text} '
+                f'{abs(steering_angle_deg):.0f}°，持续{duration_sec:.1f}s'
+            )
+            return
+
         if segment_type == 'pause':
             self.publish_feedback(f'{self.test_feedback_prefix}当前位置: {label}，短暂停稳')
 
@@ -1010,7 +1042,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                     return
                 # 前方空间够，不进避障，正常完成段
             else:
-                # 正常避障
+                # 正常避障：每帧 step 以支持触发；仅 active→idle 记一次完成
+                was_avoiding = bool(self._avoider.is_active)
                 nav = NavState(
                     position=self.current_position,
                     yaw=self.navigation_yaw(),
@@ -1021,17 +1054,21 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 )
                 if self._avoider.step(nav):
                     return
-                # 避障完成，航向已正确，纯线速度直行
-                self._pure_linear_after_avoid = True
-                self._log_session(
-                    'AVOID',
-                    f'避障完成，纯线速度直行 | {self._pose_diagnostic()}'
-                )
+                if was_avoiding and not self._avoider.is_active:
+                    self._pure_linear_after_avoid = True
+                    self._log_session(
+                        'AVOID',
+                        f'避障完成，恢复段控制 | {self._pose_diagnostic()}'
+                    )
 
         if self.current_position is None or self.segment_heading is None:
             self.cmd_pub.publish(self.create_twist())
             self._maybe_log_telemetry('move_no_pose')
             return
+
+        # 避障完成后继续混合纠偏（IMU 主 + 视觉辅），不再锁死纯直线
+        if self._pure_linear_after_avoid:
+            self._pure_linear_after_avoid = False
 
         angular = self._compute_move_lateral_angular()
         linear = float(self.current_segment.get('speed', self.corridor_linear_speed))
@@ -1071,6 +1108,61 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.cmd_pub.publish(self.create_twist(linear, angular))
         self._maybe_log_telemetry('move')
 
+    def run_arc_segment(self):
+        """Hold a fixed steering angle, then return the steering to center."""
+        segment = self.current_segment or {}
+        if self.segment_started_at is None:
+            self.cmd_pub.publish(self.create_twist())
+            self._maybe_log_telemetry('arc_no_pose')
+            return
+
+        steering_angle_deg = float(segment.get('steering_angle_deg', 0.0))
+        duration_sec = max(0.01, float(segment.get('duration_sec', 0.0)))
+        elapsed = max(0.0, self.get_clock().now().nanoseconds / 1e9 - self.segment_started_at)
+        progress = min(1.0, elapsed / duration_sec)
+        linear = float(self.turn_linear_speed)
+        # angular.z is the existing chassis steering-angle channel.  It is
+        # expressed in radians here; it is not a rotational velocity.
+        # The production launch uses the direct Twist path.  Its angular.z
+        # field is passed to the chassis steering channel unchanged, so the
+        # configured degree value is intentionally sent as-is.  It is not a
+        # body yaw rate and must not be converted to rad/s or radians.
+        steering_cmd = steering_angle_deg
+
+        log_bucket = min(4, int(elapsed / max(duration_sec / 4.0, 0.25)))
+        if log_bucket > getattr(self, '_arc_timer_last_log_sec', -1):
+            self._arc_timer_last_log_sec = log_bucket
+            self._log_session(
+                'ARC_TIMER',
+                f'{self.rectangle_segment_label(segment)} '
+                f'elapsed={elapsed:.2f}/{duration_sec:.2f}s '
+                f'progress={progress * 100:.0f}% steering={steering_angle_deg:+.1f}deg '
+                f'steering_cmd={steering_cmd:+.1f}deg linear={linear:.3f}m/s'
+            )
+
+        if elapsed >= duration_sec:
+            self._just_finished_turn = True
+            self._turn_finish_time = self.get_clock().now().nanoseconds / 1e9
+            self.cmd_pub.publish(self.create_twist(linear, 0.0))
+            self._log_session(
+                'ARC_COMPLETE',
+                f'steering={steering_angle_deg:+.1f}deg duration={duration_sec:.2f}s '
+                f'recenter=0.0deg linear={linear:.3f}m/s | {self._pose_diagnostic()}'
+            )
+            self.publish_feedback(
+                f'{self.test_feedback_prefix}当前位置: '
+                f'{self.rectangle_segment_label(segment)}，圆弧完成，进入下一段'
+            )
+            self.start_segment(self.plan_index + 1)
+            return
+
+        self.cmd_pub.publish(self.create_twist(linear, steering_cmd))
+        self._maybe_log_telemetry(
+            f'arc_timer elapsed={elapsed:.2f}/{duration_sec:.2f}s '
+            f'steering={steering_angle_deg:+.1f}deg steering_cmd={steering_cmd:+.1f}deg '
+            f'linear={linear:.3f}m/s'
+        )
+
     def run_turn_segment(self):
         turn_tolerance = self.active_turn_heading_tolerance
         linear_speed = float(
@@ -1089,42 +1181,53 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             return
 
         error = self.angle_error(self.segment_target_yaw, nav_yaw)
-        
+
         # 惯性补偿：提前若干度停止转弯
         inertia_comp_deg = float(self.get_parameter('turn_inertia_compensation_deg').value)
         effective_tolerance = turn_tolerance + math.radians(inertia_comp_deg)
-        
-        if abs(error) <= effective_tolerance:
+
+        # 视觉辅助提前结束：必须先转完大部分名义角，且误差进入窗口，
+        # 且中心竖带连续充满 hold_sec。绝不单独靠视觉结束转弯。
+        vis_assist = False
+        if hasattr(self, 'vision_turn_assist_ready') and self.segment_start_yaw is not None:
+            total = abs(self.angle_error(self.segment_target_yaw, self.segment_start_yaw))
+            done = abs(self.angle_error(nav_yaw, self.segment_start_yaw))
+            progress_ratio = (done / total) if total > 1e-3 else 1.0
+            vis_assist = bool(
+                self.vision_turn_assist_ready(progress_ratio, abs(math.degrees(error)))
+            )
+
+        if abs(error) <= effective_tolerance or vis_assist:
             # 设置加速渐变标志
             self._just_finished_turn = True
             self._turn_finish_time = self.get_clock().now().nanoseconds / 1e9
-            
+
+            reason = 'vis_center_hold' if (vis_assist and abs(error) > effective_tolerance) else 'yaw_tol'
             self.publish_feedback(
                 f'{self.test_feedback_prefix}当前位置: '
                 f'{self.rectangle_segment_label(self.current_segment or {})}，'
                 '转弯完成，进入下一段'
             )
             self.cmd_pub.publish(self.create_twist())
-            
-            # 日志记录转弯完成
+
             self._log_session(
                 'TURN_COMPLETE',
-                f'转弯完成 err={math.degrees(error):.2f}° | '
+                f'转弯完成 err={math.degrees(error):.2f}° reason={reason} | '
                 f'启动加速渐变 {self._accel_ramp_duration:.2f}s'
             )
-            
+
             self.start_segment(self.plan_index + 1)
             return
 
-        # 计算基础角速度
+        # 计算基础角速度（IMU 目标角主导）
         angular = self.clamp(self.turn_kp * error, self.turn_angular_speed)
         if abs(error) > turn_tolerance and abs(angular) < self.turn_min_angular_speed:
             angular = math.copysign(self.turn_min_angular_speed, error)
-        
+
         # 转弯减速：剩余角度 < threshold 时线性衰减
         slowdown_threshold_deg = float(self.get_parameter('turn_slowdown_threshold_deg').value)
         min_speed_ratio = float(self.get_parameter('turn_min_speed_ratio').value)
-        
+
         if abs(error) < math.radians(slowdown_threshold_deg):
             # 线性衰减，保留最低比例防止电机死区
             scale = abs(error) / math.radians(slowdown_threshold_deg)
@@ -1135,6 +1238,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._maybe_log_telemetry(
             f'turn err={math.degrees(error):.1f}deg'
         )
+
 
     def finish_mission(self):
         self._log_session('MISSION', '完成 | ' + self._pose_diagnostic())
@@ -1178,6 +1282,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         segment_type = self.current_segment['type']
         if segment_type == 'turn':
             self.run_turn_segment()
+        elif segment_type == 'arc':
+            self.run_arc_segment()
         elif segment_type == 'move':
             self.run_move_segment()
         elif segment_type == 'pause':
@@ -1343,6 +1449,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 
 def main(args=None):
     import threading
+    import traceback
 
     from racing_stage2.cmd_vel_stop import (
         init_without_ros_signal_handler,
@@ -1352,25 +1459,43 @@ def main(args=None):
     )
 
     init_without_ros_signal_handler(args)
-    node = Stage2InertialNavigator()
+    node = None
     stop_event = threading.Event()
-
-    request_stop = install_stop_event(
-        stop_event,
-        lambda: publish_stop(node.cmd_pub),
-        cli_topics=['/cmd_vel', '/stage2_cmd_vel'],
-    )
-
-    node._request_stop = request_stop
+    request_stop = None
     try:
+        node = Stage2InertialNavigator()
+        request_stop = install_stop_event(
+            stop_event,
+            lambda: publish_stop(node.cmd_pub),
+            cli_topics=['/cmd_vel', '/stage2_cmd_vel'],
+        )
+        node._request_stop = request_stop
         spin_until_stop(node, stop_event)
     except KeyboardInterrupt:
-        request_stop()
-    finally:
-        request_stop()
+        if request_stop is not None:
+            request_stop()
+    except Exception as exc:
+        tb = traceback.format_exc()
         try:
-            node.destroy_node()
+            if node is not None:
+                node.get_logger().error(f'Stage2 crashed: {exc}\n{tb}')
         except Exception:
             pass
-        if rclpy.ok():
-            rclpy.shutdown()
+        print(f'[Stage2 FATAL] {exc}\n{tb}', flush=True)
+        raise
+    finally:
+        if request_stop is not None:
+            try:
+                request_stop()
+            except Exception:
+                pass
+        try:
+            if node is not None:
+                node.destroy_node()
+        except Exception:
+            pass
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass

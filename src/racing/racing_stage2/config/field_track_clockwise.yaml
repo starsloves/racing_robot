@@ -1,104 +1,61 @@
-# field_track_clockwise.yaml — 顺时针矩形赛道（odom欧氏距离+标准90°）
-# 导航方式：odom 相对坐标 + 欧氏距离，直行段禁用航向修正
-# 起点：Stage1 终点，车头朝向 90°（+Y）
-# 四个矩形拐角按标准 90° 执行；入口转角按当前实测配置
+# 顺时针矩形赛道 — 固定舵角 + 固定持续时间控制
+# 起点：Stage1区域进入后，名义车头约90°（+Y方向）
 
 track_type: rectangle_closed
 direction: clockwise
 
 segments:
-  # ── 入口转弯 ────────────────────────────────────────
-  # 原地左转 80°
-  - type: turn
-    angle_deg: 80.0
+  # 入口对齐：左打舵15°，保持6秒，结束回正
+  - type: arc
+    steering_angle_deg: 15.0
+    duration_sec: 6.0
     description: rect_enter_align
 
-  # ── 停稳（消除转弯残余角速度） ──────────────────────
-  - type: pause
-    duration: 0.05
-    description: settle_after_enter
-
-  # ── 第一段：从入口向左直行 ──────────────────────────
+  # 底边：向左直行0.70m
   - type: move
-    distance_m: 0.60
+    distance_m: 0.70
     description: rect_first_leg
 
-  # ── 停稳（消除直行段残余角速度） ────────────────────
-  - type: pause
-    duration: 0.05
-    description: settle_before_corner_1
-
-  # ── 左下拐角 ────────────────────────────────────────
-  - type: turn
-    angle_deg: -90.0
+  # 左下拐角：右打舵15°，保持6秒，结束回正
+  - type: arc
+    steering_angle_deg: -15.0
+    duration_sec: 6.0
     description: rect_corner_1
 
-  # ── 停稳（消除转弯残余角速度） ──────────────────────
-  - type: pause
-    duration: 0.05
-    description: settle_after_corner_1
-
-  # ── 第二段：矩形左边向上 ────────────────────────────
+  # 左边：向上直行0.35m
   - type: move
-    distance_m: 0.20
+    distance_m: 0.35
     description: rect_side_1
 
-  # ── 停稳（消除直行段残余角速度） ────────────────────
-  - type: pause
-    duration: 0.05
-    description: settle_before_corner_2
-
-  # ── 左上拐角 ────────────────────────────────────────
-  - type: turn
-    angle_deg: -90.0
+  # 左上拐角：右打舵15°，保持6秒，结束回正
+  - type: arc
+    steering_angle_deg: -15.0
+    duration_sec: 6.0
     description: rect_corner_2
 
-  # ── 停稳（消除转弯残余角速度） ──────────────────────
-  - type: pause
-    duration: 0.05
-    description: settle_after_corner_2
-
-  # ── 第三段：矩形顶边向右 ────────────────────────────
+  # 顶边：向右直行2.80m
   - type: move
     distance_m: 2.80
     description: rect_top
 
-  # ── 停稳（消除直行段残余角速度） ────────────────────
-  - type: pause
-    duration: 0.05
-    description: settle_before_corner_3
-
-  # ── 右上拐角 ────────────────────────────────────────
-  - type: turn
-    angle_deg: -90.0
+  # 右上拐角：右打舵15°，保持6秒，结束回正
+  - type: arc
+    steering_angle_deg: -15.0
+    duration_sec: 6.0
     description: rect_corner_3
 
-  # ── 停稳（消除转弯残余角速度） ──────────────────────
-  - type: pause
-    duration: 0.05
-    description: settle_after_corner_3
-
-  # ── 第四段：矩形右边向下 ────────────────────────────
+  # 右边：向下直行0.35m
   - type: move
-    distance_m: 0.20
+    distance_m: 0.35
     description: rect_side_2
 
-  # ── 停稳（消除直行段残余角速度） ────────────────────
-  - type: pause
-    duration: 0.05
-    description: settle_before_corner_4
-
-  # ── 右下拐角 ────────────────────────────────────────
-  - type: turn
-    angle_deg: -90.0
+  # 右下拐角：右打舵15°，保持6秒，结束回正
+  - type: arc
+    steering_angle_deg: -15.0
+    duration_sec: 6.0
     description: rect_corner_4
 
-  # ── 停稳（消除转弯残余角速度） ──────────────────────
-  - type: pause
-    duration: 0.05
-    description: settle_after_corner_4
-
-  # ── 返回起点 ────────────────────────────────────────
+  # 返回起点：直行0.90m
   - type: move
     distance_m: 0.90
     description: rect_return_origin

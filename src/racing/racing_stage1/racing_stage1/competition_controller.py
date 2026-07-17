@@ -126,6 +126,12 @@ class CompetitionController(Node):
         self.declare_parameter('corridor_creep_speed', 0.04)
         self.declare_parameter('corridor_beta_blend_distance', 0.55)
         self.declare_parameter('corridor_reverse_enabled', False)
+        self.declare_parameter('corridor_entry_reorient_enabled', True)
+        self.declare_parameter('corridor_entry_reorient_angle_deg', 50.0)
+        self.declare_parameter('corridor_entry_reorient_done_deg', 25.0)
+        self.declare_parameter('corridor_entry_reorient_timeout_sec', 4.0)
+        self.declare_parameter('corridor_centerline_reorient_deg', 55.0)
+        self.declare_parameter('corridor_avoid_while_reorient', False)
         self.declare_parameter('corridor_left_recover_x', 3.50)
         self.declare_parameter('corridor_left_recover_angular', 0.70)
         self.declare_parameter('corridor_left_recover_linear', 0.06)
@@ -145,12 +151,25 @@ class CompetitionController(Node):
         self.declare_parameter('pure_pursuit_lookahead_m', 0.45)
         self.declare_parameter('pure_pursuit_turn_kp', 1.8)
         self.declare_parameter('pure_pursuit_heading_stop_deg', 70.0)
-        self.declare_parameter('use_corridor_planner', False)
+        self.declare_parameter('use_corridor_planner', True)
         self.declare_parameter('planner_downsample', 4)
         self.declare_parameter('planner_occupied_threshold', 50)
         self.declare_parameter('planner_unknown_is_occupied', True)
         self.declare_parameter('planner_obstacle_inflation_m', 0.14)
-        self.declare_parameter('planner_replan_period_sec', 0.5)
+        self.declare_parameter('planner_replan_period_sec', 2.5)
+        # 区域进入：不要求精准到点/精准航向，进入入口区域即可切 Stage2
+        self.declare_parameter('corridor_entry_region_radius_m', 0.35)
+        self.declare_parameter('corridor_entry_yaw_tolerance_deg', 30.0)
+        self.declare_parameter('corridor_require_yaw_for_release', False)
+        self.declare_parameter('corridor_path_follow_mode', 'pure_pursuit')  # pure_pursuit | stanley
+        self.declare_parameter('corridor_force_reorient_enabled', False)
+        self.declare_parameter('corridor_pp_min_lookahead_m', 0.25)
+        self.declare_parameter('corridor_pp_speed_scale', 1.0)
+        self.declare_parameter('corridor_log_period_sec', 0.5)
+        self.declare_parameter('corridor_replan_min_progress_m', 0.35)
+        self.declare_parameter('corridor_replan_offpath_m', 0.28)
+        self.declare_parameter('corridor_min_cruise_speed', 0.10)
+        self.declare_parameter('corridor_max_turn_linear_speed', 0.08)
 
         self.output_cmd_topic = self.get_parameter('output_cmd_topic').value
         self.stage2_cmd_topic = self.get_parameter('stage2_cmd_topic').value
@@ -247,6 +266,22 @@ class CompetitionController(Node):
         self.corridor_creep_speed = float(self.get_parameter('corridor_creep_speed').value)
         self.corridor_beta_blend_distance = float(self.get_parameter('corridor_beta_blend_distance').value)
         self.corridor_reverse_enabled = bool(self.get_parameter('corridor_reverse_enabled').value)
+        self.corridor_entry_reorient_enabled = bool(self.get_parameter('corridor_entry_reorient_enabled').value)
+        self.corridor_entry_reorient_angle = math.radians(
+            float(self.get_parameter('corridor_entry_reorient_angle_deg').value)
+        )
+        self.corridor_entry_reorient_done = math.radians(
+            float(self.get_parameter('corridor_entry_reorient_done_deg').value)
+        )
+        self.corridor_entry_reorient_timeout_sec = float(
+            self.get_parameter('corridor_entry_reorient_timeout_sec').value
+        )
+        self.corridor_centerline_reorient = math.radians(
+            float(self.get_parameter('corridor_centerline_reorient_deg').value)
+        )
+        self.corridor_avoid_while_reorient = bool(
+            self.get_parameter('corridor_avoid_while_reorient').value
+        )
         self.corridor_capture_distance = float(self.get_parameter('corridor_capture_distance').value)
         self.corridor_capture_exit_distance = float(self.get_parameter('corridor_capture_exit_distance').value)
         self.corridor_capture_speed = float(self.get_parameter('corridor_capture_speed').value)
@@ -275,6 +310,42 @@ class CompetitionController(Node):
             self.get_parameter('planner_obstacle_inflation_m').value
         )
         self.planner_replan_period_sec = float(self.get_parameter('planner_replan_period_sec').value)
+        self.corridor_entry_region_radius = float(
+            self.get_parameter('corridor_entry_region_radius_m').value
+        )
+        self.corridor_entry_yaw_tolerance = math.radians(
+            float(self.get_parameter('corridor_entry_yaw_tolerance_deg').value)
+        )
+        self.corridor_require_yaw_for_release = bool(
+            self.get_parameter('corridor_require_yaw_for_release').value
+        )
+        self.corridor_path_follow_mode = str(
+            self.get_parameter('corridor_path_follow_mode').value
+        ).strip().lower()
+        self.corridor_force_reorient_enabled = bool(
+            self.get_parameter('corridor_force_reorient_enabled').value
+        )
+        self.corridor_pp_min_lookahead = float(
+            self.get_parameter('corridor_pp_min_lookahead_m').value
+        )
+        self.corridor_pp_speed_scale = float(
+            self.get_parameter('corridor_pp_speed_scale').value
+        )
+        self.corridor_log_period_sec = float(
+            self.get_parameter('corridor_log_period_sec').value
+        )
+        self.corridor_replan_min_progress_m = float(
+            self.get_parameter('corridor_replan_min_progress_m').value
+        )
+        self.corridor_replan_offpath_m = float(
+            self.get_parameter('corridor_replan_offpath_m').value
+        )
+        self.corridor_min_cruise_speed = float(
+            self.get_parameter('corridor_min_cruise_speed').value
+        )
+        self.corridor_max_turn_linear_speed = float(
+            self.get_parameter('corridor_max_turn_linear_speed').value
+        )
 
         latched_qos = QoSProfile(
             depth=1,
@@ -336,7 +407,7 @@ class CompetitionController(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self._map_pose_warned = False
         self.corridor_active = False
-        self.corridor_nav_mode = 'idle'  # centerline | settle_xy | align_yaw | left_recover | idle
+        self.corridor_nav_mode = 'idle'  # path_follow | left_recover | idle
         self.corridor_capture_active = False
         self.corridor_align_active = False
         self._node_start_time = self.get_clock().now()
@@ -345,6 +416,20 @@ class CompetitionController(Node):
         self.corridor_path_points = []
         self.corridor_path_updated_at = 0.0
         self.corridor_resume_after_avoidance = False
+        self.corridor_entry_reorient_active = False
+        self.corridor_entry_reorient_started_at = None
+        self.corridor_desired_heading = None
+        self.corridor_planned_path = []
+        self.corridor_path_cursor = 0
+        self.corridor_last_plan_reason = ''
+        self.corridor_planning_failures = 0
+        self._corridor_timeout_logged = False
+        self._corridor_last_log_time = 0.0
+        self._corridor_last_detail_log_time = 0.0
+        self._corridor_occ_cache_key = None
+        self._corridor_occ_cache = None
+        self._corridor_last_plan_pose = None
+        self._corridor_plan_count = 0
         path_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -401,6 +486,107 @@ class CompetitionController(Node):
         msg.linear.x = float(linear_x)
         msg.angular.z = float(angular_z)
         return msg
+
+    def corridor_segment_heading(self, pose_xy=None, goal_xy=None):
+        """通道当前段期望航向：优先 LOS，失败时回落 corridor_goal_yaw。"""
+        if pose_xy is not None and goal_xy is not None:
+            dx = float(goal_xy[0]) - float(pose_xy[0])
+            dy = float(goal_xy[1]) - float(pose_xy[1])
+            if math.hypot(dx, dy) > 1e-3:
+                return math.atan2(dy, dx)
+        if (
+            self.corridor_waypoints
+            and 0 <= self.corridor_index < len(self.corridor_waypoints)
+        ):
+            waypoint = self.corridor_waypoints[self.corridor_index]
+            if 'yaw_deg' in waypoint:
+                return math.radians(float(waypoint['yaw_deg']))
+        return float(self.corridor_goal_yaw)
+
+    def update_corridor_desired_heading(self, pose_xy=None, goal_xy=None):
+        heading = self.corridor_segment_heading(pose_xy=pose_xy, goal_xy=goal_xy)
+        self.corridor_desired_heading = heading
+        # 通道内 recovery 必须跟通道航向，禁止回锁 phase1 盲开航向
+        self.desired_heading = heading
+        return heading
+
+    def begin_corridor_entry_reorient(self, reason, pose_xy=None, goal_xy=None):
+        heading = self.update_corridor_desired_heading(pose_xy=pose_xy, goal_xy=goal_xy)
+        yaw = self.current_yaw if self.current_yaw is not None else 0.0
+        # 倒车结束车头几乎反向时，直接以通道终航向 90° 为重定向目标，更稳
+        if self.current_yaw is not None and abs(self.angle_error(heading, yaw)) >= math.radians(90.0):
+            heading = float(self.corridor_goal_yaw)
+            self.corridor_desired_heading = heading
+            self.desired_heading = heading
+        self.corridor_entry_reorient_active = True
+        self.corridor_entry_reorient_started_at = self.get_clock().now().nanoseconds / 1e9
+        self.corridor_nav_mode = 'reorient'
+        err = self.angle_error(heading, yaw) if self.current_yaw is not None else 0.0
+        self.log.progress(
+            f'corridor reorient enter: {reason}, '
+            f'target={math.degrees(heading):.1f}° '
+            f'yaw={math.degrees(yaw):.1f}° '
+            f'err={math.degrees(err):.1f}°'
+        )
+        return heading
+
+    def finish_corridor_entry_reorient(self, reason):
+        self.corridor_entry_reorient_active = False
+        self.corridor_entry_reorient_started_at = None
+        if self.corridor_nav_mode == 'reorient':
+            self.corridor_nav_mode = 'centerline'
+        yaw = self.current_yaw if self.current_yaw is not None else 0.0
+        target = self.corridor_desired_heading if self.corridor_desired_heading is not None else self.corridor_goal_yaw
+        err = self.angle_error(target, yaw) if self.current_yaw is not None else 0.0
+        self.log.progress(
+            f'corridor reorient done: {reason}, '
+            f'yaw={math.degrees(yaw):.1f}° '
+            f'target={math.degrees(target):.1f}° '
+            f'err={math.degrees(err):.1f}°'
+        )
+
+    def handle_corridor_entry_reorient(self, pose_xy, goal_xy, now_ts):
+        # 倒车结束车头几乎反向时，优先对准通道终航向 90°；否则跟当前段 LOS
+        if abs(self.angle_error(self.corridor_goal_yaw, self.current_yaw)) >= math.radians(90.0):
+            target_heading = float(self.corridor_goal_yaw)
+            self.corridor_desired_heading = target_heading
+            self.desired_heading = target_heading
+        else:
+            target_heading = self.update_corridor_desired_heading(pose_xy=pose_xy, goal_xy=goal_xy)
+
+        yaw = float(self.current_yaw)
+        # 始终最短角原地拧，禁止大角度边走边拧把车甩出通道
+        heading_error = self.angle_error(target_heading, yaw)
+        started = self.corridor_entry_reorient_started_at
+        elapsed = (now_ts - started) if started is not None else 0.0
+        abs_err = abs(heading_error)
+
+        if abs_err <= self.corridor_entry_reorient_done:
+            self.finish_corridor_entry_reorient('aligned')
+            return False
+        if elapsed >= self.corridor_entry_reorient_timeout_sec:
+            self.finish_corridor_entry_reorient(f'timeout {elapsed:.1f}s')
+            return False
+
+        self.corridor_nav_mode = 'reorient'
+        angular = self.clamp(self.corridor_alpha_kp * heading_error, self.turn_angular_speed)
+        if abs_err > self.corridor_entry_reorient_done and abs(angular) < self.turn_min_angular_speed:
+            angular = math.copysign(self.turn_min_angular_speed, heading_error if heading_error != 0.0 else 1.0)
+
+        # 大角度只原地转；误差 <45° 后再极慢前进
+        linear = 0.0
+        if abs_err < math.radians(45.0):
+            linear = min(self.corridor_creep_speed, max(0.02, self.turn_linear_speed * 0.5))
+
+        if now_ts - getattr(self, '_reorient_log_time', 0.0) >= 0.5:
+            self._reorient_log_time = now_ts
+            self.log.progress(
+                f'reorient: target={math.degrees(target_heading):.1f}° '
+                f'yaw={math.degrees(yaw):.1f}° err={math.degrees(heading_error):.1f}° '
+                f'v={linear:.2f} w={angular:.2f} t={elapsed:.1f}s'
+            )
+        self.cmd_pub.publish(self.create_twist(linear, angular))
+        return True
 
     def publish_phase(self):
         self.phase_pub.publish(Int32(data=self.phase))
@@ -553,34 +739,66 @@ class CompetitionController(Node):
             self.begin_phase_transition(2, reason)
             return
         self.corridor_active = True
-        self.corridor_nav_mode = 'centerline'
+        self.corridor_nav_mode = 'path_follow'
         self.corridor_capture_active = False
         self.corridor_align_active = False
+        self.corridor_entry_reorient_active = False
+        self.corridor_entry_reorient_started_at = None
         self._corridor_timeout_logged = False
-        self.corridor_index = 0
+        self.corridor_index = max(0, len(self.corridor_waypoints) - 1)
         self.corridor_started_at = self.get_clock().now().nanoseconds / 1e9
         self.corridor_path_points = []
+        self.corridor_planned_path = []
+        self.corridor_path_cursor = 0
         self.corridor_path_updated_at = 0.0
         self.corridor_planning_failures = 0
+        self.corridor_last_plan_reason = ''
+        self._corridor_last_plan_pose = None
+        self._corridor_plan_count = 0
         self.phase1_motion_state = 'corridor'
         self.stop_robot()
-        self.log.mission(f'后退完成，开始地图通道导航: {reason}')
+        self.log.mission(f'后退完成，开始地图自由空间区域进入: {reason}')
         map_xy = self.get_map_position()
         goal_xy = self.corridor_goal_point()
         if map_xy is not None and goal_xy is not None:
+            target_heading = self.update_corridor_desired_heading(pose_xy=map_xy, goal_xy=goal_xy)
             gx, gy = goal_xy
             odom_txt = ''
             if self.current_odom is not None:
                 op = self.current_odom.pose.pose.position
                 odom_txt = f', odom=({op.x:.2f},{op.y:.2f})'
+            yaw_txt = ''
+            if self.current_yaw is not None:
+                yaw_err = self.angle_error(self.corridor_goal_yaw, self.current_yaw)
+                yaw_txt = (
+                    f', yaw={math.degrees(self.current_yaw):.1f}° '
+                    f'target={math.degrees(self.corridor_goal_yaw):.1f}° '
+                    f'err={math.degrees(yaw_err):.1f}°'
+                )
+            dist = math.hypot(map_xy[0] - gx, map_xy[1] - gy)
             self.log.progress(
-                f'通道导航起点(map): ({map_xy[0]:.2f}, {map_xy[1]:.2f}){odom_txt}, '
-                f'目标(map): ({gx:.2f}, {gy:.2f}), '
-                f'距离: {math.hypot(map_xy[0] - gx, map_xy[1] - gy):.2f}m'
+                f'区域进入起点(map): ({map_xy[0]:.2f}, {map_xy[1]:.2f}){odom_txt}, '
+                f'目标区域中心(map): ({gx:.2f}, {gy:.2f}), 距离: {dist:.2f}m, '
+                f'半径={self.corridor_entry_region_radius:.2f}m, '
+                f'yaw_tol={math.degrees(self.corridor_entry_yaw_tolerance):.1f}°, '
+                f'require_yaw={self.corridor_require_yaw_for_release}, '
+                f'planner={self.use_corridor_planner}, mode={self.corridor_path_follow_mode}{yaw_txt}'
             )
+            planned = self.refresh_corridor_planned_path(map_xy, goal_xy, reason='start')
             self.publish_corridor_path(map_xy)
+            self.log.segment(
+                f'corridor start plan_pts={len(planned or [])} '
+                f'cursor=0 goal=({gx:.2f},{gy:.2f}) reason={reason}'
+            )
+        else:
+            self.update_corridor_desired_heading()
+            self.log.warn(
+                'CORRIDOR',
+                f'区域进入启动时位姿不足: map={map_xy is not None}, yaw={self.current_yaw is not None}'
+            )
 
     def _map_world_to_grid(self, x, y, step):
+
         info = self.latest_map.info
         gx = int(math.floor((x - info.origin.position.x) / info.resolution))
         gy = int(math.floor((y - info.origin.position.y) / info.resolution))
@@ -594,35 +812,63 @@ class CompetitionController(Node):
         )
 
     def _corridor_occupancy(self, step):
+        """Vectorized occupancy grid with map-stamp cache to avoid multi-second Python loops."""
         info = self.latest_map.info
+        stamp = getattr(self.latest_map.header, 'stamp', None)
+        stamp_key = (
+            int(getattr(stamp, 'sec', 0) or 0),
+            int(getattr(stamp, 'nanosec', 0) or 0),
+            int(info.width),
+            int(info.height),
+            float(info.resolution),
+            int(step),
+            int(self.planner_occupied_threshold),
+            bool(self.planner_unknown_is_occupied),
+            float(self.planner_obstacle_inflation_m),
+        )
+        if self._corridor_occ_cache is not None and self._corridor_occ_cache_key == stamp_key:
+            return self._corridor_occ_cache
+
+        t0 = self.get_clock().now().nanoseconds / 1e9
         width = max(1, info.width // step)
         height = max(1, info.height // step)
         source = np.asarray(self.latest_map.data, dtype=np.int16).reshape(info.height, info.width)
-        occupied = np.zeros((height, width), dtype=bool)
-        for gy in range(height):
-            for gx in range(width):
-                block = source[gy * step:min((gy + 1) * step, info.height), gx * step:min((gx + 1) * step, info.width)]
-                if self.planner_unknown_is_occupied:
-                    occupied[gy, gx] = bool(np.any((block < 0) | (block >= self.planner_occupied_threshold)))
-                else:
-                    occupied[gy, gx] = bool(np.any(block >= self.planner_occupied_threshold))
-        radius = int(math.ceil(self.planner_obstacle_inflation_m / info.resolution / step))
-        if radius <= 0:
-            return occupied
-        original = occupied.copy()
-        for dy in range(-radius, radius + 1):
-            for dx in range(-radius, radius + 1):
-                if dx * dx + dy * dy > radius * radius:
-                    continue
-                source_y0 = max(0, -dy)
-                source_y1 = min(height, height - dy)
-                source_x0 = max(0, -dx)
-                source_x1 = min(width, width - dx)
-                target_y0 = max(0, dy)
-                target_y1 = min(height, height + dy)
-                target_x0 = max(0, dx)
-                target_x1 = min(width, width + dx)
-                occupied[target_y0:target_y1, target_x0:target_x1] |= original[source_y0:source_y1, source_x0:source_x1]
+        usable_h = height * step
+        usable_w = width * step
+        cropped = source[:usable_h, :usable_w]
+        blocks = cropped.reshape(height, step, width, step)
+        if self.planner_unknown_is_occupied:
+            occupied = np.any((blocks < 0) | (blocks >= self.planner_occupied_threshold), axis=(1, 3))
+        else:
+            occupied = np.any(blocks >= self.planner_occupied_threshold, axis=(1, 3))
+
+        radius = int(math.ceil(self.planner_obstacle_inflation_m / max(info.resolution, 1e-6) / step))
+        if radius > 0:
+            yy, xx = np.ogrid[-radius:radius + 1, -radius:radius + 1]
+            disk = (xx * xx + yy * yy) <= (radius * radius)
+            inflated = occupied.copy()
+            ys, xs = np.where(occupied)
+            for y, x in zip(ys.tolist(), xs.tolist()):
+                for dy in range(-radius, radius + 1):
+                    ny = y + dy
+                    if ny < 0 or ny >= height:
+                        continue
+                    for dx in range(-radius, radius + 1):
+                        if not disk[dy + radius, dx + radius]:
+                            continue
+                        nx = x + dx
+                        if 0 <= nx < width:
+                            inflated[ny, nx] = True
+            occupied = inflated
+
+        self._corridor_occ_cache_key = stamp_key
+        self._corridor_occ_cache = occupied
+        dt_ms = (self.get_clock().now().nanoseconds / 1e9 - t0) * 1000.0
+        if dt_ms > 80.0:
+            self.log.progress(
+                f'occupancy grid rebuild {width}x{height} step={step} '
+                f'inflate={radius} took {dt_ms:.1f}ms'
+            )
         return occupied
 
     @staticmethod
@@ -688,19 +934,19 @@ class CompetitionController(Node):
     def publish_corridor_path(self, start_xy=None):
         """发布 Stage1 通道导航路径到 RViz。"""
         points = []
-        if start_xy is not None:
+        if self.corridor_planned_path:
+            points = [(float(x), float(y)) for x, y in self.corridor_planned_path]
+        elif start_xy is not None:
             points.append((float(start_xy[0]), float(start_xy[1])))
-        if self.use_corridor_planner and start_xy is not None and self.corridor_waypoints:
-            goal = self.corridor_waypoints[-1]
-            planned = self.plan_corridor_path(start_xy, (float(goal['x']), float(goal['y'])))
-            if planned:
-                points = planned
+            goal_xy = self.corridor_goal_point()
+            if goal_xy is not None:
+                points.append((float(goal_xy[0]), float(goal_xy[1])))
         if not points:
             map_xy = self.get_map_position()
             if map_xy is not None:
                 points.append((float(map_xy[0]), float(map_xy[1])))
-        for waypoint in self.corridor_waypoints[self.corridor_index:]:
-            points.append((float(waypoint['x']), float(waypoint['y'])))
+            for waypoint in self.corridor_waypoints[self.corridor_index:]:
+                points.append((float(waypoint['x']), float(waypoint['y'])))
         if len(points) < 2:
             return
 
@@ -716,6 +962,105 @@ class CompetitionController(Node):
             pose.pose.orientation.w = 1.0
             path_msg.poses.append(pose)
         self.corridor_path_pub.publish(path_msg)
+        self.corridor_path_points = points
+
+    def _path_cross_track_m(self, path, pose_xy):
+        """Approximate distance from pose to current planned polyline."""
+        if not path or len(path) < 2:
+            return 0.0
+        best = float('inf')
+        idx = max(0, min(self.corridor_path_cursor, len(path) - 2))
+        # only check local segment neighborhood for speed
+        for i in range(max(0, idx - 1), min(len(path) - 1, idx + 8)):
+            x1, y1 = path[i]
+            x2, y2 = path[i + 1]
+            dx = x2 - x1
+            dy = y2 - y1
+            seg_len2 = dx * dx + dy * dy
+            if seg_len2 < 1e-9:
+                d = math.hypot(pose_xy[0] - x1, pose_xy[1] - y1)
+            else:
+                t = ((pose_xy[0] - x1) * dx + (pose_xy[1] - y1) * dy) / seg_len2
+                t = max(0.0, min(1.0, t))
+                px = x1 + t * dx
+                py = y1 + t * dy
+                d = math.hypot(pose_xy[0] - px, pose_xy[1] - py)
+            if d < best:
+                best = d
+        return 0.0 if not math.isfinite(best) else best
+
+    def _should_refresh_corridor_path(self, pose_xy, now_ts, force=False, reason='periodic'):
+        if force or not self.corridor_planned_path:
+            return True, reason if force else 'empty'
+        age = now_ts - float(self.corridor_path_updated_at or 0.0)
+        if age < max(0.4, float(self.planner_replan_period_sec) * 0.35):
+            return False, 'too_soon'
+        progress = 0.0
+        if self._corridor_last_plan_pose is not None:
+            progress = math.hypot(
+                pose_xy[0] - self._corridor_last_plan_pose[0],
+                pose_xy[1] - self._corridor_last_plan_pose[1],
+            )
+        offpath = self._path_cross_track_m(self.corridor_planned_path, pose_xy)
+        if offpath >= self.corridor_replan_offpath_m:
+            return True, f'offpath_{offpath:.2f}m'
+        if progress >= self.corridor_replan_min_progress_m and age >= self.planner_replan_period_sec:
+            return True, f'progress_{progress:.2f}m'
+        if age >= max(self.planner_replan_period_sec * 2.0, 4.0):
+            return True, f'stale_{age:.1f}s'
+        return False, f'hold age={age:.1f}s prog={progress:.2f}m off={offpath:.2f}m'
+
+    def refresh_corridor_planned_path(self, start_xy, goal_xy, reason='periodic'):
+        """Plan/refresh free-space path; fall back to straight line on failure."""
+        now_ts = self.get_clock().now().nanoseconds / 1e9
+        planned = None
+        plan_mode = 'fallback_line'
+        if self.use_corridor_planner:
+            planned = self.plan_corridor_path(start_xy, goal_xy)
+            if planned and len(planned) >= 2:
+                plan_mode = 'astar'
+            else:
+                self.corridor_planning_failures += 1
+                self.log.warn(
+                    'CORRIDOR',
+                    f'A* plan failed reason={reason} failures={self.corridor_planning_failures} '
+                    f'start=({start_xy[0]:.2f},{start_xy[1]:.2f}) '
+                    f'goal=({goal_xy[0]:.2f},{goal_xy[1]:.2f}) -> fallback line'
+                )
+                planned = None
+        if planned is None:
+            planned = [
+                (float(start_xy[0]), float(start_xy[1])),
+                (float(goal_xy[0]), float(goal_xy[1])),
+            ]
+        self.corridor_planned_path = planned
+        self.corridor_path_cursor = 0
+        self.corridor_path_updated_at = now_ts
+        self.corridor_last_plan_reason = f'{reason}:{plan_mode}'
+        self._corridor_last_plan_pose = (float(start_xy[0]), float(start_xy[1]))
+        self._corridor_plan_count = int(getattr(self, '_corridor_plan_count', 0)) + 1
+        path_len = 0.0
+        for i in range(1, len(planned)):
+            path_len += math.hypot(planned[i][0] - planned[i - 1][0], planned[i][1] - planned[i - 1][1])
+        self.log.segment(
+            f'corridor plan refresh reason={reason} mode={plan_mode} pts={len(planned)} '
+            f'len={path_len:.2f}m start=({start_xy[0]:.2f},{start_xy[1]:.2f}) '
+            f'goal=({goal_xy[0]:.2f},{goal_xy[1]:.2f}) count={self._corridor_plan_count}'
+        )
+        return planned
+
+    def _advance_path_cursor(self, path, pose_xy):
+        if not path:
+            return 0
+        idx = max(0, min(self.corridor_path_cursor, len(path) - 1))
+        # 推进到最近前方点，避免 lookahead 回退
+        while idx < len(path) - 1:
+            d = math.hypot(path[idx][0] - pose_xy[0], path[idx][1] - pose_xy[1])
+            if d > max(0.12, self.corridor_pp_min_lookahead * 0.5):
+                break
+            idx += 1
+        self.corridor_path_cursor = idx
+        return idx
 
     def _corridor_lookahead(self, path, current_xy):
         if not path:
@@ -723,28 +1068,21 @@ class CompetitionController(Node):
             return None
         if current_xy is None:
             return path[-1]
+        idx = self._advance_path_cursor(path, current_xy)
+        lookahead = max(self.pure_pursuit_lookahead, self.corridor_pp_min_lookahead)
         traveled = 0.0
         previous = current_xy
-        for point in path:
+        for point in path[idx:]:
             traveled += math.hypot(point[0] - previous[0], point[1] - previous[1])
-            if traveled >= self.pure_pursuit_lookahead:
+            if traveled >= lookahead:
                 return point
             previous = point
         return path[-1]
 
     def maybe_advance_corridor_waypoint(self, pose_xy):
-        """距当前路点足够近则推进到下一路点。"""
-        while self.corridor_index < len(self.corridor_waypoints) - 1:
-            waypoint = self.corridor_waypoints[self.corridor_index]
-            distance = math.hypot(waypoint['x'] - pose_xy[0], waypoint['y'] - pose_xy[1])
-            if distance > self.corridor_waypoint_tolerance:
-                return
-            self.corridor_index += 1
-            self.log.progress(
-                f'corridor waypoint advanced → index={self.corridor_index}/'
-                f'{len(self.corridor_waypoints)-1}'
-            )
-
+        """兼容旧接口：区域进入时固定盯最终入口目标。"""
+        if self.corridor_waypoints:
+            self.corridor_index = max(0, len(self.corridor_waypoints) - 1)
 
     def _lookup_map_x(self):
         map_xy = self.get_map_position()
@@ -770,21 +1108,35 @@ class CompetitionController(Node):
             )
         return self.create_twist(linear, angular)
 
+    def _corridor_region_release_ready(self, pose_xy, goal_xy, yaw):
+        rho = math.hypot(goal_xy[0] - pose_xy[0], goal_xy[1] - pose_xy[1])
+        yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
+        pos_ok = rho <= self.corridor_entry_region_radius
+        yaw_ok = abs(yaw_error) <= self.corridor_entry_yaw_tolerance
+        if self.corridor_require_yaw_for_release:
+            ready = pos_ok and yaw_ok
+        else:
+            ready = pos_ok
+        return ready, rho, yaw_error, pos_ok, yaw_ok
+
     def handle_corridor_navigation(self):
         """
-        Stage1 通道导航：
-          1) map_x 过大：left_recover 向左旋回
-          2) 中段：中线 Stanley + LOS（centerline）
-          3) 近场：settle_xy 只收位置，不抢终航向
-          4) 到位后：align_yaw 原地对 90°
-          5) 位置+航向到位后 phase=2
+        Stage1 通道导航（区域进入）：
+          1) A* 规划自由空间路径（失败则直线 fallback）
+          2) Pure Pursuit 跟踪路径（允许斜穿）
+          3) 进入入口区域即切 Stage2；默认不强制精准航向
+          4) 超时策略放行
         """
         now_ts = self.get_clock().now().nanoseconds / 1e9
         map_xy = self.get_map_position()
-        if not hasattr(self, '_corridor_last_log_time'):
-            self._corridor_last_log_time = 0.0
 
         if map_xy is None or self.current_yaw is None:
+            if now_ts - self._corridor_last_detail_log_time >= 1.0:
+                self._corridor_last_detail_log_time = now_ts
+                self.log.warn(
+                    'CORRIDOR',
+                    f'位姿不足，停车等待 map={map_xy is not None} yaw={self.current_yaw is not None}'
+                )
             self.stop_robot()
             return
 
@@ -793,245 +1145,164 @@ class CompetitionController(Node):
             self.corridor_nav_mode = 'idle'
             self.corridor_capture_active = False
             self.corridor_align_active = False
+            self.corridor_entry_reorient_active = False
+            self.corridor_entry_reorient_started_at = None
             self.phase1_motion_state = 'forward'
-            if not getattr(self, '_corridor_timeout_logged', False):
+            if not self._corridor_timeout_logged:
                 self._corridor_timeout_logged = True
-                self.log.warn('CORRIDOR', '地图通道导航超时，放行进入 Stage2')
-            self.begin_phase_transition(2, '地图通道导航超时，按策略放行进入 Stage2')
+                goal = self.corridor_goal_point()
+                rho_txt = 'n/a'
+                if goal is not None:
+                    rho_txt = f'{math.hypot(map_xy[0]-goal[0], map_xy[1]-goal[1]):.2f}m'
+                self.log.warn(
+                    'CORRIDOR',
+                    f'region entry TIMEOUT {self.corridor_timeout_sec:.1f}s, force Stage2 | '
+                    f'map=({map_xy[0]:.2f},{map_xy[1]:.2f}) yaw={math.degrees(self.current_yaw):.1f}deg '
+                    f'rho={rho_txt} plans={getattr(self, "_corridor_plan_count", 0)} '
+                    f'last_plan={self.corridor_last_plan_reason or "none"}'
+                )
+            self.begin_phase_transition(2, '地图通道区域进入超时，按策略放行进入 Stage2')
             return
 
         pose_xy = (float(map_xy[0]), float(map_xy[1]))
         yaw = float(self.current_yaw)
-        self.maybe_advance_corridor_waypoint(pose_xy)
-
-        waypoint = self.corridor_waypoints[self.corridor_index]
-        goal_xy = (float(waypoint['x']), float(waypoint['y']))
-        final_goal = self.corridor_waypoints[-1]
-        final_goal_xy = (float(final_goal['x']), float(final_goal['y']))
-        is_final = self.corridor_index >= len(self.corridor_waypoints) - 1
-        centerline_x = float(final_goal_xy[0])
-
-        dx = goal_xy[0] - pose_xy[0]
-        dy = goal_xy[1] - pose_xy[1]
-        rho = math.hypot(dx, dy)
-        final_dx = final_goal_xy[0] - pose_xy[0]
-        final_dy = final_goal_xy[1] - pose_xy[1]
-        final_rho = math.hypot(final_dx, final_dy)
-        # map_x_err>0：目标在右侧，车偏左，需要右转（ω<0）
-        map_x_err = final_dx if is_final else (centerline_x - pose_xy[0])
-        cte = pose_xy[0] - centerline_x  # >0 车在中线右侧
-        yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
-        los = math.atan2(dy, dx) if rho > 1e-6 else yaw
-        alpha = self.angle_error(los, yaw)
-
-        cos_yaw = math.cos(yaw)
-        sin_yaw = math.sin(yaw)
-        target_x = cos_yaw * dx + sin_yaw * dy
-        target_y = -sin_yaw * dx + cos_yaw * dy
-        # 中线点机体系横向：正值=中线在车左侧
-        line_dx = centerline_x - pose_xy[0]
-        line_target_y = -sin_yaw * line_dx
-
-        if now_ts - self._corridor_last_log_time >= 1.0:
-            elapsed = now_ts - self.corridor_started_at if self.corridor_started_at else 0.0
-            odom_txt = ''
-            if self.current_odom is not None:
-                op = self.current_odom.pose.pose.position
-                odom_txt = f' odom=({op.x:.2f},{op.y:.2f})'
-            self.log.segment(
-                f'导航(map): ({pose_xy[0]:.2f},{pose_xy[1]:.2f})→'
-                f'({final_goal_xy[0]:.2f},{final_goal_xy[1]:.2f}) {final_rho:.2f}m '
-                f'xerr={map_x_err:+.2f} yaw={math.degrees(yaw):.0f}° '
-                f'α={math.degrees(alpha):.0f}° err={math.degrees(yaw_error):.0f}° '
-                f'mode={self.corridor_nav_mode} cap={int(self.corridor_capture_active)} '
-                f'{elapsed:.0f}s{odom_txt}'
-            )
-            self.publish_corridor_path(pose_xy)
-            print(
-                f"\r[Stage1导航] map({pose_xy[0]:.2f}, {pose_xy[1]:.2f}) → "
-                f"目标({final_goal_xy[0]:.2f}, {final_goal_xy[1]:.2f}) | 距离{final_rho:.2f}m | "
-                f"xerr{map_x_err:+.2f} | 航向{math.degrees(yaw):.0f}° | "
-                f"mode={self.corridor_nav_mode} | 用时{elapsed:.0f}s",
-                end="",
-                flush=True,
-            )
-            self._corridor_last_log_time = now_ts
-
-        # map_x 过大：强制向左旋回（通道导航内）
-        left_cmd = self.maybe_left_recover_cmd('corridor_left_recover')
-        if left_cmd is not None and final_rho > self.corridor_goal_tolerance:
-            self.corridor_nav_mode = 'left_recover'
-            self.corridor_capture_active = False
-            self.corridor_align_active = False
-            self.cmd_pub.publish(left_cmd)
+        goal_xy = self.corridor_goal_point()
+        if goal_xy is None:
+            self.log.error('CORRIDOR', '无入口目标点，直接放行 Stage2')
+            self.begin_phase_transition(2, '无入口目标点，直接进入 Stage2')
             return
+        goal_xy = (float(goal_xy[0]), float(goal_xy[1]))
+        self.corridor_index = max(0, len(self.corridor_waypoints) - 1)
 
-        # 近场滞回：进入 settle，明显离开才退回中线跟踪
-        if is_final:
-            if (not self.corridor_capture_active) and final_rho <= self.corridor_capture_distance:
-                self.corridor_capture_active = True
-                self.corridor_align_active = False
-                self.log.progress(
-                    f'settle enter: ρ={final_rho:.2f}m x={pose_xy[0]:.2f} xerr={map_x_err:+.2f}'
-                )
-            elif self.corridor_capture_active and (not self.corridor_align_active) and final_rho >= self.corridor_capture_exit_distance:
-                self.corridor_capture_active = False
-                self.log.progress(
-                    f'settle exit: ρ={final_rho:.2f}m x={pose_xy[0]:.2f}'
-                )
-
-        pos_ok = (
-            is_final
-            and final_rho <= self.corridor_goal_tolerance
-            and abs(map_x_err) <= self.corridor_x_tolerance
-        )
-        yaw_ok = abs(yaw_error) <= self.corridor_goal_yaw_tolerance
-
-        # 完成：位置到位 + 航向到位
-        if pos_ok and yaw_ok:
+        ready, rho, yaw_error, pos_ok, yaw_ok = self._corridor_region_release_ready(pose_xy, goal_xy, yaw)
+        if ready:
             self.corridor_active = False
             self.corridor_nav_mode = 'idle'
             self.corridor_capture_active = False
             self.corridor_align_active = False
+            self.corridor_entry_reorient_active = False
+            self.corridor_entry_reorient_started_at = None
             self.phase1_motion_state = 'forward'
             self.stop_robot()
             reason = (
-                f'通道导航到达 map({pose_xy[0]:.2f}, {pose_xy[1]:.2f})≈'
-                f'({final_goal_xy[0]:.2f}, {final_goal_xy[1]:.2f})，航向已对齐'
+                f'region entry OK map({pose_xy[0]:.2f},{pose_xy[1]:.2f})~'
+                f'({goal_xy[0]:.2f},{goal_xy[1]:.2f}) rho={rho:.2f}m '
+                f'yaw={math.degrees(yaw):.1f}deg err={math.degrees(yaw_error):.1f}deg '
+                f'pos_ok={pos_ok} yaw_ok={yaw_ok} require_yaw={self.corridor_require_yaw_for_release} '
+                f'plans={getattr(self, "_corridor_plan_count", 0)} last_plan={self.corridor_last_plan_reason or "none"}'
             )
+            self.log.mission(reason)
             self.begin_phase_transition(2, reason)
             return
 
-        # ===== 位置到位后：原地对齐终航向 =====
-        if pos_ok or self.corridor_align_active:
-            if not self.corridor_align_active:
-                self.corridor_align_active = True
-                self.corridor_capture_active = True
+        # 条件重规划：进度/偏航/过期才重算，避免每 0.5s 阻塞 1.7s
+        need_replan, replan_why = self._should_refresh_corridor_path(
+            pose_xy, now_ts, force=not self.corridor_planned_path, reason='empty'
+        )
+        if need_replan:
+            self.refresh_corridor_planned_path(pose_xy, goal_xy, reason=replan_why)
+            self.publish_corridor_path(pose_xy)
+        elif now_ts - self._corridor_last_detail_log_time >= max(1.0, self.corridor_log_period_sec * 2.0):
+            # 低频打印 hold 原因，方便场测排查
+            pass
+
+        path = self.corridor_planned_path
+        if not path:
+            path = [pose_xy, goal_xy]
+            self.corridor_planned_path = path
+
+        # map_x 过大：强制向左旋回
+        left_cmd = self.maybe_left_recover_cmd('corridor_left_recover')
+        if left_cmd is not None and rho > self.corridor_entry_region_radius:
+            self.corridor_nav_mode = 'left_recover'
+            self.cmd_pub.publish(left_cmd)
+            if now_ts - self._corridor_last_detail_log_time >= self.corridor_log_period_sec:
+                self._corridor_last_detail_log_time = now_ts
                 self.log.progress(
-                    f'align_yaw enter: ρ={final_rho:.2f}m xerr={map_x_err:+.2f} '
-                    f'yaw_err={math.degrees(yaw_error):.1f}°'
+                    f'left_recover during region entry ρ={rho:.2f}m '
+                    f'map=({pose_xy[0]:.2f},{pose_xy[1]:.2f})'
                 )
-            self.corridor_nav_mode = 'align_yaw'
-            angular = self.clamp(self.corridor_alpha_kp * yaw_error, self.turn_angular_speed)
-            if abs(angular) < self.turn_min_angular_speed and abs(yaw_error) > self.corridor_goal_yaw_tolerance:
-                angular = math.copysign(self.turn_min_angular_speed, yaw_error if yaw_error != 0.0 else 1.0)
-            # 航向对齐时默认原地转；若轻微过冲允许极慢前后修正
-            linear = float(self.corridor_align_linear_speed)
-            if abs(map_x_err) > self.corridor_x_tolerance * 0.5 or final_rho > self.corridor_goal_tolerance * 0.8:
-                # 对齐过程中位置又漂了：给一点点 body 前向修正，但不主导
-                linear = self.clamp(0.8 * target_x, max(self.corridor_creep_speed, 0.03))
-            if now_ts - getattr(self, '_approach_log_time', 0.0) >= 0.5:
-                self._approach_log_time = now_ts
-                self.log.progress(
-                    f'align_yaw: ρ={final_rho:.2f}m xerr={map_x_err:+.2f} '
-                    f'yaw_err={math.degrees(yaw_error):.1f}° v={linear:.2f} w={angular:.2f}'
-                )
-            self.cmd_pub.publish(self.create_twist(linear, angular))
             return
 
-        # ===== 近场 settle_xy：只收位置，不抢终航向 =====
-        if is_final and self.corridor_capture_active:
-            self.corridor_nav_mode = 'settle_xy'
-            # 机体系点镇定：target_y>0 表示目标在左侧 → 左转(+)
-            linear = self.clamp(1.4 * target_x, self.corridor_capture_speed)
-            # 横向只信 body-frame，避免再叠错误 map_x 项
-            angular = self.clamp(
-                2.4 * target_y + self.corridor_lateral_kp * line_target_y,
-                self.max_angular_speed,
-            )
-            if abs(map_x_err) > self.corridor_x_tolerance:
-                linear = self.clamp(linear, min(self.corridor_capture_speed, 0.04))
-            if abs(angular) > 0.08:
-                linear = self.clamp(linear, max(self.corridor_creep_speed, 0.03))
-            # 过冲：目标在车后则短退
-            if target_x < -0.03:
-                linear = -max(self.corridor_creep_speed, 0.03)
-            elif abs(linear) < max(self.corridor_creep_speed, 0.03) and final_rho > self.corridor_goal_tolerance:
-                linear = max(self.corridor_creep_speed, 0.03)
+        self.corridor_nav_mode = 'path_follow'
+        look_pt = self._corridor_lookahead(path, pose_xy)
+        if look_pt is None:
+            look_pt = goal_xy
+        dx = look_pt[0] - pose_xy[0]
+        dy = look_pt[1] - pose_xy[1]
+        los = math.atan2(dy, dx) if (abs(dx) + abs(dy)) > 1e-6 else yaw
+        alpha = self.angle_error(los, yaw)
+        self.corridor_desired_heading = los
 
-            if now_ts - getattr(self, '_approach_log_time', 0.0) >= 0.5:
-                self._approach_log_time = now_ts
-                self.log.progress(
-                    f'settle_xy: ρ={final_rho:.2f}m x={pose_xy[0]:.2f} xerr={map_x_err:+.2f} '
-                    f'body=({target_x:.2f},{target_y:.2f}) v={linear:.2f} w={angular:.2f}'
-                )
-            self.cmd_pub.publish(self.create_twist(linear, angular))
-            return
+        # Pure Pursuit 几何曲率
+        ld = max(math.hypot(dx, dy), self.corridor_pp_min_lookahead)
+        # body frame target
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        target_x = cos_yaw * dx + sin_yaw * dy
+        target_y = -sin_yaw * dx + cos_yaw * dy
 
-        # ===== 中段：中线 Stanley + LOS =====
-        self.corridor_nav_mode = 'centerline'
-        reverse = False
-        control_alpha = alpha
-        if self.corridor_reverse_enabled and abs(alpha) > (math.pi * 0.75):
-            reverse = True
-            control_alpha = self.normalize_angle(alpha + math.copysign(math.pi, alpha))
+        speed_cap = max(self.corridor_min_cruise_speed, self.corridor_linear_speed * self.corridor_pp_speed_scale)
+        heading_scale = max(0.35, abs(math.cos(alpha)))
+        linear = min(speed_cap, max(self.corridor_min_cruise_speed, self.corridor_rho_kp * max(rho, 0.35) * heading_scale))
 
-        speed_cap = abs(float(waypoint.get('speed', self.corridor_linear_speed)))
-        speed_cap = max(self.corridor_creep_speed, min(self.corridor_linear_speed, speed_cap))
+        if rho < self.corridor_brake_distance:
+            brake_cap = max(self.corridor_creep_speed, self.corridor_brake_kp * max(rho, 0.12))
+            linear = min(linear, max(self.corridor_creep_speed, brake_cap))
+        if abs(alpha) > math.radians(45.0):
+            linear = min(linear, max(self.corridor_creep_speed, self.corridor_max_turn_linear_speed))
+        if abs(alpha) > math.radians(70.0):
+            # 大角时允许略走一点弧，不要趴在 0.04 蠕行
+            linear = min(linear, max(self.corridor_creep_speed, 0.06))
 
-        heading_scale = max(0.20, abs(math.cos(control_alpha)))
-        linear = min(speed_cap, self.corridor_rho_kp * rho * heading_scale)
-
-        if is_final and self.corridor_brake_distance > 1e-6 and rho < self.corridor_brake_distance:
-            brake_cap = max(self.corridor_creep_speed, self.corridor_brake_kp * rho)
-            if rho < 0.25:
-                brake_cap = min(brake_cap, max(self.corridor_creep_speed, 0.05))
-            if rho < 0.15:
-                brake_cap = min(brake_cap, max(self.corridor_creep_speed, 0.03))
-            linear = min(linear, brake_cap)
-
-        if abs(control_alpha) > math.radians(45.0):
-            linear = min(linear, max(self.corridor_creep_speed, self.turn_linear_speed))
-        if abs(control_alpha) > math.radians(70.0):
-            linear = min(linear, max(self.corridor_creep_speed, 0.03))
-
-        if reverse:
-            linear = -abs(linear)
+        if self.corridor_path_follow_mode == 'stanley':
+            v_ref = max(abs(linear), 0.08)
+            angular = self.corridor_alpha_kp * alpha + math.atan2(self.corridor_stanley_k * target_y, v_ref)
         else:
-            linear = abs(linear)
+            # pure pursuit: curvature = 2*y / ld^2
+            curvature = 2.0 * target_y / max(ld * ld, 1e-3)
+            angular = self.pure_pursuit_turn_kp * curvature * max(abs(linear), 0.08)
+            # 大航向误差时叠加 LOS P 项，避免斜穿时拧不过来
+            if abs(alpha) > math.radians(25.0):
+                angular += 0.55 * self.corridor_alpha_kp * alpha
 
-        # Stanley：line_target_y>0 表示中线在车左，应左转(+)
-        v_ref = max(abs(linear), 0.05)
-        stanley = math.atan2(self.corridor_stanley_k * line_target_y, v_ref)
-
-        # 近终点逐渐把航向目标拧到 90°；远场主要跟 LOS/中线
-        if is_final and self.corridor_beta_blend_distance > 1e-6:
-            yaw_blend = max(0.0, min(1.0, 1.0 - (rho / self.corridor_beta_blend_distance)))
-        else:
-            yaw_blend = 0.0
-        # 偏离中线较大时减弱终航向，避免被 90° 硬拉
-        if abs(cte) > 0.20:
-            yaw_blend *= 0.35
-
-        # 横向：body 中线项 + map_x 修正（偏左 map_x_err>0 → 右转 ω<0）
-        lat_scale = 1.0 if rho < 1.2 else 0.60
-        lateral_boost = (
-            self.corridor_lateral_kp * lat_scale * line_target_y
-            - 0.35 * self.corridor_lateral_kp * lat_scale * map_x_err
-        )
-
-        angular = (
-            self.corridor_alpha_kp * control_alpha
-            + stanley
-            + self.corridor_heading_kp * yaw_blend * yaw_error
-            + lateral_boost
-        )
         angular = self.clamp(angular, self.max_angular_speed)
+        if abs(angular) > 0.25:
+            linear = min(linear, max(self.corridor_creep_speed, self.corridor_max_turn_linear_speed))
+        elif abs(angular) > 0.12:
+            linear = min(linear, max(self.corridor_min_cruise_speed * 0.8, 0.08))
 
-        if abs(angular) > 0.05:
-            min_lin = max(self.corridor_creep_speed, 0.03)
-            if abs(linear) < min_lin:
-                linear = math.copysign(min_lin, -1.0 if reverse else 1.0)
-
-        if now_ts - getattr(self, '_approach_log_time', 0.0) >= 1.0:
-            self._approach_log_time = now_ts
-            self.log.progress(
-                f'centerline: ρ={rho:.2f}m x={pose_xy[0]:.2f} xerr={map_x_err:+.2f} cte={cte:+.2f} '
-                f'yaw={math.degrees(yaw):.1f}° α={math.degrees(control_alpha):.1f}° '
-                f'stanley={stanley:.2f} lat={lateral_boost:.2f} v={linear:.2f} w={angular:.2f}'
-            )
+        # 极近区域只做缓慢收敛，不再 align_yaw
+        if rho < max(0.22, self.corridor_entry_region_radius * 0.75):
+            linear = min(linear, max(self.corridor_creep_speed, 0.08))
 
         self.cmd_pub.publish(self.create_twist(linear, angular))
+
+        if now_ts - self._corridor_last_log_time >= self.corridor_log_period_sec:
+            self._corridor_last_log_time = now_ts
+            elapsed = now_ts - self.corridor_started_at if self.corridor_started_at else 0.0
+            cursor = self.corridor_path_cursor
+            offpath = self._path_cross_track_m(path, pose_xy)
+            self.log.segment(
+                f'region_entry map=({pose_xy[0]:.2f},{pose_xy[1]:.2f})->'
+                f'({goal_xy[0]:.2f},{goal_xy[1]:.2f}) rho={rho:.2f}m '
+                f'yaw={math.degrees(yaw):.1f}deg yerr={math.degrees(yaw_error):.1f}deg '
+                f'alpha={math.degrees(alpha):.1f}deg look=({look_pt[0]:.2f},{look_pt[1]:.2f}) '
+                f'body=({target_x:.2f},{target_y:.2f}) ld={ld:.2f} offpath={offpath:.2f}m '
+                f'v={linear:.2f} w={angular:.2f} mode={self.corridor_nav_mode} '
+                f'plan={self.corridor_last_plan_reason} pts={len(path)} cursor={cursor} '
+                f'plans={getattr(self, "_corridor_plan_count", 0)} '
+                f'pos_ok={pos_ok} yaw_ok={yaw_ok} t={elapsed:.1f}s'
+            )
+            print(
+                f"\r[Stage1区域进入] map({pose_xy[0]:.2f},{pose_xy[1]:.2f}) → "
+                f"({goal_xy[0]:.2f},{goal_xy[1]:.2f}) | ρ{rho:.2f}m | "
+                f"yaw{math.degrees(yaw):.0f}°/err{math.degrees(yaw_error):.0f}° | "
+                f"v{linear:.2f} w{angular:.2f} | {elapsed:.0f}s",
+                end="",
+                flush=True,
+            )
+            self.publish_corridor_path(pose_xy)
 
     def begin_avoidance(self, danger_angle):
         if self.phase1_motion_state == 'corridor' or self.corridor_active:
@@ -1045,12 +1316,16 @@ class CompetitionController(Node):
         self.recovery_deadline = None
         self.recovery_uses_heading = False
 
-        if self.desired_heading is None and self.current_yaw is not None:
+        if self.corridor_active or self.corridor_resume_after_avoidance:
+            # 通道避障后 recovery 必须回到通道航向，而不是 phase1 盲开锁向
+            self.update_corridor_desired_heading()
+        elif self.desired_heading is None and self.current_yaw is not None:
             self.desired_heading = self.current_yaw
 
         self.log.feedback(
             f'avoid start dir={self.avoid_turn_direction:.0f} '
-            f'danger_angle={danger_angle:.0f}°'
+            f'danger_angle={danger_angle:.0f}° '
+            f'desired_yaw={(math.degrees(self.desired_heading) if self.desired_heading is not None else float("nan")):.1f}°'
         )
 
     def begin_counter_steer(self):
@@ -1089,6 +1364,8 @@ class CompetitionController(Node):
         self.phase1_motion_state = 'recovering'
         self.avoid_clear_since = None
         self.counter_steer_deadline = None
+        if self.corridor_active or self.corridor_resume_after_avoidance:
+            self.update_corridor_desired_heading()
         self.recovery_uses_heading = self.current_yaw is not None and self.desired_heading is not None
         if self.recovery_uses_heading:
             heading_error = abs(self.angle_error(self.desired_heading, self.current_yaw))
@@ -1125,10 +1402,36 @@ class CompetitionController(Node):
     def finish_recovery(self):
         if self.corridor_resume_after_avoidance and self.corridor_active:
             self.phase1_motion_state = 'corridor'
-            self.corridor_nav_mode = 'centerline'
             self.corridor_resume_after_avoidance = False
+            map_xy = self.get_map_position()
+            if map_xy is not None and self.corridor_waypoints:
+                goal_xy = (
+                    float(self.corridor_waypoints[self.corridor_index]['x']),
+                    float(self.corridor_waypoints[self.corridor_index]['y']),
+                )
+                target = self.update_corridor_desired_heading(pose_xy=map_xy, goal_xy=goal_xy)
+                yaw_err = None
+                if self.current_yaw is not None:
+                    yaw_err = abs(self.angle_error(target, self.current_yaw))
+                if (
+                    self.corridor_entry_reorient_enabled
+                    and yaw_err is not None
+                    and yaw_err >= self.corridor_entry_reorient_done
+                ):
+                    self.begin_corridor_entry_reorient(
+                        'post-avoid resume',
+                        pose_xy=map_xy,
+                        goal_xy=goal_xy,
+                    )
+                else:
+                    self.corridor_nav_mode = 'centerline'
+            else:
+                self.update_corridor_desired_heading()
+                self.corridor_nav_mode = 'centerline'
+            self.log.feedback('recovery complete, return to corridor')
         else:
             self.phase1_motion_state = 'forward'
+            self.log.feedback('recovery complete, return to forward')
         self.avoid_started_time = None
         self.avoid_clear_since = None
         self.avoid_entry_yaw = None
@@ -1136,8 +1439,6 @@ class CompetitionController(Node):
         self.counter_steer_deadline = None
         self.recovery_deadline = None
         self.recovery_uses_heading = False
-
-        self.log.feedback('recovery complete, return to forward')
 
     def avoid_turn_reached(self):
         if self.current_yaw is None or self.avoid_entry_yaw is None:
@@ -1250,6 +1551,17 @@ class CompetitionController(Node):
     def handle_phase1_lidar(self, scan_msg):
         # 后退阶段完全不处理激光避障，由后退逻辑全权控制
         if self.phase1_motion_state == 'backing':
+            return
+
+        # 通道入口大角度重定向时默认不避障，避免被侧墙二次打断并反向拉航向
+        if (
+            self.phase1_motion_state == 'corridor'
+            and self.corridor_entry_reorient_active
+            and not self.corridor_avoid_while_reorient
+        ):
+            self.obstacle_found = False
+            self.closest_obstacle_distance = float('inf')
+            self.avoid_cmd = Twist()
             return
 
         # 启动宽限期：避免上电瞬间噪声/侧墙误触发

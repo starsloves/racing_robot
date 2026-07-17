@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-vision_lane_centering.py — 视觉车道居中模块
+vision_lane_centering.py — 视觉车道中线跟随模块
 
-从 camera_all_in_one.py 抽离的推理节点，提供：
-1. 订阅相机 topic，裁剪下方 ROI 后 BPU 推理；mask 质心纠偏 + 中心竖带到位停纠
-2. 实时保存处理后的可视化图像到 /tmp/vision_latest.jpg（仅下方 ROI）
-3. 提供 HTTP 静态服务（端口 8080）供浏览器查看
+提供：
+1. 订阅相机 topic，裁剪下方+中间 ROI 后 BPU YOLOv8-Seg 推理
+2. 多行采样赛道 mask 中心线 + 前瞻点误差 + 曲率估计
+3. 实时保存可视化到 /tmp/stage2_vision.jpg，并提供 HTTP 预览
 
 共享接口：
-    get_latest_offset() -> (offset: float, timestamp: float, valid: bool)
+    get_latest_offset() -> (offset, timestamp, valid)  # 兼容旧接口，offset≈中线误差
+    get_latest_line_status() -> dict(error, curve, valid, confidence, remaining_m, centered, timestamp)
     get_latest_remaining() -> (remaining_m, free_ratio, timestamp, valid)
 """
 
@@ -39,12 +40,13 @@ class VisionLaneCentering:
             - valid: 是否有效（超时或无检测→False）
     """
     
-    def __init__(self, parent_node, model_path, conf_thres=0.25, iou_thres=0.45, 
-                 crop_ratio=0.4, http_port=8080):
+    def __init__(self, parent_node, model_path, conf_thres=0.25, iou_thres=0.45,
+                 crop_ratio=0.4, http_port=8080, crop_side_ratio=0.20):
         self._node = parent_node
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.crop_ratio = crop_ratio
+        self.crop_side_ratio = float(np.clip(crop_side_ratio, 0.0, 0.45))
         self.http_port = http_port
         
         # 共享变量（线程安全）
@@ -69,6 +71,19 @@ class VisionLaneCentering:
         self._offset_centroid_bottom_ratio = 0.60
         self._latest_center_ratio = 0.0
         self._latest_centered = False
+        # 多行中线跟随
+        self._sample_rows = 9
+        self._lookahead_ratio = 0.62
+        self._min_mask_pixels_per_row = 12
+        self._min_valid_rows = 4
+        self._mask_threshold = 0.50
+        self._offset_filter_alpha = 0.35
+        self._latest_curve = 0.0
+        self._latest_confidence = 0.0
+        self._latest_valid_rows = 0
+        self._filtered_error = 0.0
+        self._has_filtered_error = False
+        self._centerline_mode = True  # True=多行中线；False=旧质心兼容
         
         # 可视化缓存（供 HTTP 服务）
         self._combined_frame = None
@@ -156,6 +171,24 @@ class VisionLaneCentering:
             valid = self._valid and (age < self._detection_timeout_sec)
             return (self._latest_offset, self._latest_timestamp, valid)
 
+    def get_latest_center_status(self):
+        """
+        返回中心竖带到位状态。
+
+        返回：
+            (centered, center_ratio, timestamp, valid)
+        """
+        with self._lock:
+            now = time.time()
+            age = now - self._latest_timestamp
+            valid = self._valid and (age < self._detection_timeout_sec)
+            return (
+                bool(self._latest_centered) if valid else False,
+                float(self._latest_center_ratio),
+                self._latest_timestamp,
+                valid,
+            )
+
     def configure_range_estimate(self, near_m=0.15, far_m=2.50,
                                  center_band=0.30, occ_thresh=0.12,
                                  timeout_sec=None):
@@ -170,11 +203,99 @@ class VisionLaneCentering:
 
     def configure_offset_estimate(self, center_band=0.12, occ_thresh=0.40,
                                   centroid_bottom_ratio=0.60):
-        """配置 mask 质心纠偏与中心竖带到位判据。"""
+        """配置 mask 质心纠偏与中心竖带到位判据（兼容旧模式）。"""
         with self._lock:
             self._offset_center_band = min(0.8, max(0.02, float(center_band)))
             self._offset_center_occ_thresh = min(0.95, max(0.05, float(occ_thresh)))
             self._offset_centroid_bottom_ratio = min(1.0, max(0.1, float(centroid_bottom_ratio)))
+
+    def configure_centerline_follow(
+        self,
+        sample_rows=9,
+        lookahead_ratio=0.62,
+        min_mask_pixels_per_row=12,
+        min_valid_rows=4,
+        mask_threshold=0.50,
+        offset_filter_alpha=0.35,
+        enabled=True,
+    ):
+        """配置多行中线跟随参数。"""
+        with self._lock:
+            self._sample_rows = max(3, int(sample_rows))
+            self._lookahead_ratio = float(min(0.95, max(0.05, lookahead_ratio)))
+            self._min_mask_pixels_per_row = max(1, int(min_mask_pixels_per_row))
+            self._min_valid_rows = max(2, int(min_valid_rows))
+            self._mask_threshold = float(min(0.95, max(0.05, mask_threshold)))
+            self._offset_filter_alpha = float(min(1.0, max(0.05, offset_filter_alpha)))
+            self._centerline_mode = bool(enabled)
+
+    def get_latest_line_status(self):
+        """返回中线跟随结构化状态。"""
+        with self._lock:
+            age = time.time() - self._latest_timestamp if self._latest_timestamp > 0 else 999.0
+            valid = bool(self._valid and age < self._detection_timeout_sec)
+            return {
+                'error': float(self._latest_offset) if valid else 0.0,
+                'curve': float(self._latest_curve) if valid else 0.0,
+                'valid': valid,
+                'confidence': float(self._latest_confidence) if valid else 0.0,
+                'remaining_m': self._latest_remaining_m if (valid and self._range_valid) else None,
+                'centered': bool(self._latest_centered) if valid else False,
+                'center_ratio': float(self._latest_center_ratio) if valid else 0.0,
+                'valid_rows': int(self._latest_valid_rows) if valid else 0,
+                'timestamp': float(self._latest_timestamp),
+                'age': float(age),
+            }
+
+    def _extract_centerline_from_mask(self, mask):
+        """多行采样 mask 中心线。
+
+        返回:
+            samples: list[(x, y)] 从近到远
+            error: 归一化横向误差 [-1,1]，负=偏左，正=偏右
+            curve: 近远场中点差估计曲率
+            confidence: 0~1
+            target_xy: 前瞻点
+        """
+        if mask is None or mask.size == 0:
+            return [], None, 0.0, 0.0, None
+        h, w = mask.shape[:2]
+        if h < 8 or w < 8:
+            return [], None, 0.0, 0.0, None
+        rows = np.linspace(int(h * 0.90), int(h * 0.25), self._sample_rows).astype(int)
+        samples = []
+        for y in rows:
+            y0 = max(0, y - 1)
+            y1 = min(h, y + 2)
+            xs = np.where(mask[y0:y1, :] > 0)[1]
+            if xs.size < self._min_mask_pixels_per_row:
+                continue
+            cx = float(xs.mean())
+            samples.append((cx, float(y)))
+        # 至少 3 行即可给出弱中线；正式阈值由上层 conf/rows 再过滤
+        min_rows = max(3, min(self._min_valid_rows, self._sample_rows))
+        if len(samples) < min_rows and len(samples) < 3:
+            return samples, None, 0.0, 0.0, None
+        if len(samples) < self._min_valid_rows:
+            # 弱有效：仍返回 error，但 confidence 打折
+            pass
+
+        # samples 已近→远；前瞻点取偏远一点
+        target_idx = int(round((len(samples) - 1) * max(0.0, min(1.0, 1.0 - self._lookahead_ratio))))
+        target_idx = max(0, min(len(samples) - 1, target_idx))
+        target = samples[target_idx]
+        mid_x = 0.5 * float(w)
+        raw_error = (target[0] - mid_x) / max(mid_x, 1.0)
+        raw_error = float(np.clip(raw_error, -1.0, 1.0))
+
+        near = samples[0][0]
+        far = samples[-1][0]
+        curve = float(np.clip((far - near) / max(mid_x, 1.0), -1.0, 1.0))
+        coverage = float(len(samples)) / float(max(self._sample_rows, 1))
+        confidence = min(1.0, coverage)
+        if len(samples) < self._min_valid_rows:
+            confidence *= 0.55
+        return samples, raw_error, curve, confidence, target
 
     def _estimate_offset_from_mask(self, mask, fallback_cx=None, fallback_cy=None):
         """
@@ -308,7 +429,7 @@ class VisionLaneCentering:
 <style>body{{background:#202124;color:#eee;font-family:sans-serif;margin:20px}}
 img{{max-width:100%;border:1px solid #555}}#status{{margin:10px 0;color:#8f8}}</style></head>
 <body><h2>Stage2 SEG 实时推理画面</h2>
-<p>仅下方 ROI（默认 40%）；mask质心纠偏，中心竖带到位则停</p>
+<p>ROI=下方40%+中间60%宽；mask质心纠偏，中心竖带到位则停</p>
 <div id="status">连接中...</div>
 <img id="frame" src="/stream.mjpg">
 <script>
@@ -482,23 +603,27 @@ setInterval(health, 500); health();
             if self._frame_count == 0:
                 self._node.get_logger().info('[视觉] 收到第一帧相机数据（phase2 推理已启用）')
             
-            # 1. 仅保留画面下方 crop_ratio 区域（默认 40% 近场）
+            # 1. ROI：下方 crop_ratio + 左右各裁 crop_side_ratio（默认底40% + 中60%）
             img_full = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             h_full, w_full = img_full.shape[:2]
             crop_ratio = float(np.clip(self.crop_ratio, 0.1, 1.0))
+            side_ratio = float(np.clip(self.crop_side_ratio, 0.0, 0.45))
             crop_start_row = int(h_full * (1.0 - crop_ratio))
-            if crop_start_row < 0:
-                crop_start_row = 0
-            if crop_start_row >= h_full:
-                crop_start_row = max(0, h_full - 1)
-            img_cropped = img_full[crop_start_row:, :].copy()
+            crop_start_row = max(0, min(h_full - 1, crop_start_row))
+            side_px = int(w_full * side_ratio)
+            x0 = max(0, side_px)
+            x1 = min(w_full, w_full - side_px)
+            if x1 <= x0 + 8:
+                x0, x1 = 0, w_full
+            img_cropped = img_full[crop_start_row:, x0:x1].copy()
             h_crop, w_crop = img_cropped.shape[:2]
-            
+
             frame_before = img_cropped.copy()
+            keep_w = max(1, 100 - int(round(side_ratio * 200)))
             cv2.putText(
                 frame_before,
-                f'INPUT (Bottom {int(round(crop_ratio * 100))}%)',
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
+                f'INPUT (Bottom {int(round(crop_ratio * 100))}% | Mid {keep_w}%W)',
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2,
             )
             
             # 2. 预处理
@@ -548,6 +673,9 @@ setInterval(health, 500); health();
             best_free_ratio = 0.0
             best_center_ratio = 0.0
             best_centered = False
+            best_curve = 0.0
+            best_confidence = 0.0
+            best_valid_rows = 0
             detection_valid = False
             
             if len(bboxes) > 0:
@@ -613,27 +741,70 @@ setInterval(health, 500); health();
                     cv2.rectangle(frame_after, (int(x1), int(y1)), (int(x2), int(y2)),
                                  (0, 255, 0), 2)
 
-                    # bbox 中心仅作 fallback / 参考
+                    # 中线跟随主路径；质心仅作 fallback
                     bbox_cx = (x1 + x2) * 0.5
                     bbox_cy = (y1 + y2) * 0.5
-                    offset, center_ratio, centered, cx_f, cy_f = self._estimate_offset_from_mask(
-                        mf, fallback_cx=bbox_cx, fallback_cy=bbox_cy
-                    )
-                    if offset is None:
-                        # mask 无效：回退 bbox 中心
-                        cx_f = float(bbox_cx)
-                        cy_f = float(bbox_cy)
-                        offset = cx_f / (w_crop / 2.0) - 1.0
-                        offset = float(np.clip(offset, -1.0, 1.0))
-                        center_ratio = 0.0
-                        centered = False
+                    curve = 0.0
+                    confidence = 0.0
+                    valid_rows = 0
+                    samples = []
+                    target_xy = None
+                    mid = w_crop // 2
+
+                    if self._centerline_mode and mf is not None:
+                        samples, line_err, curve, confidence, target_xy = self._extract_centerline_from_mask(mf)
+                        valid_rows = len(samples)
+                        if line_err is not None:
+                            if self._has_filtered_error:
+                                alpha = float(self._offset_filter_alpha)
+                                self._filtered_error = (
+                                    (1.0 - alpha) * self._filtered_error + alpha * float(line_err)
+                                )
+                            else:
+                                self._filtered_error = float(line_err)
+                                self._has_filtered_error = True
+                            offset = float(np.clip(self._filtered_error, -1.0, 1.0))
+                            center_ratio = max(0.0, 1.0 - abs(offset))
+                            centered = abs(offset) < 0.08 and abs(curve) < 0.20
+                            if target_xy is not None:
+                                cx_f, cy_f = float(target_xy[0]), float(target_xy[1])
+                            else:
+                                cx_f, cy_f = float(bbox_cx), float(bbox_cy)
+                        else:
+                            # fallback centroid still needs non-zero confidence or fusion rejects it
+                            offset, center_ratio, centered, cx_f, cy_f = self._estimate_offset_from_mask(
+                                mf, fallback_cx=bbox_cx, fallback_cy=bbox_cy
+                            )
+                            if offset is None:
+                                cx_f = float(bbox_cx)
+                                cy_f = float(bbox_cy)
+                                offset = cx_f / (w_crop / 2.0) - 1.0
+                                offset = float(np.clip(offset, -1.0, 1.0))
+                                center_ratio = 0.0
+                                centered = False
+                            # weak confidence: det score * row coverage
+                            confidence = float(np.clip(0.35 * float(scores[i]) + 0.15 * min(1.0, valid_rows / max(self._sample_rows, 1)), 0.0, 0.75))
+                            curve = 0.0
+                    else:
+                        offset, center_ratio, centered, cx_f, cy_f = self._estimate_offset_from_mask(
+                            mf, fallback_cx=bbox_cx, fallback_cy=bbox_cy
+                        )
+                        if offset is None:
+                            cx_f = float(bbox_cx)
+                            cy_f = float(bbox_cy)
+                            offset = cx_f / (w_crop / 2.0) - 1.0
+                            offset = float(np.clip(offset, -1.0, 1.0))
+                            center_ratio = 0.0
+                            centered = False
+                        confidence = float(np.clip(0.45 * float(scores[i]), 0.0, 0.80))
+                        curve = 0.0
+                        valid_rows = max(valid_rows, 1 if offset is not None else 0)
 
                     cx = int(round(cx_f if cx_f is not None else bbox_cx))
                     cy = int(round(cy_f if cy_f is not None else bbox_cy))
 
-                    # 中心竖带可视化
+                    # 中心竖带 + 中线可视化
                     half_band = max(1, int(round(w_crop * float(self._offset_center_band) * 0.5)))
-                    mid = w_crop // 2
                     band_color = (0, 255, 0) if centered else (0, 165, 255)
                     cv2.rectangle(
                         frame_after,
@@ -642,20 +813,30 @@ setInterval(health, 500); health();
                         band_color, 1,
                     )
                     cv2.line(frame_after, (mid, 0), (mid, h_crop - 1), (255, 255, 255), 1)
-                    cv2.circle(frame_after, (cx, cy), 5, (0, 0, 255), -1)
-                    cv2.line(frame_after, (cx, cy), (mid, h_crop // 2), (255, 0, 0), 2)
+                    if samples:
+                        for sx, sy in samples:
+                            cv2.circle(frame_after, (int(sx), int(sy)), 3, (255, 255, 0), -1)
+                        for a, b in zip(samples[:-1], samples[1:]):
+                            cv2.line(
+                                frame_after,
+                                (int(a[0]), int(a[1])),
+                                (int(b[0]), int(b[1])),
+                                (0, 255, 255), 2,
+                            )
+                    cv2.circle(frame_after, (cx, cy), 6, (0, 0, 255), -1)
+                    cv2.line(frame_after, (mid, h_crop - 1), (cx, cy), (255, 0, 0), 2)
 
                     rem_m, free_ratio = self._estimate_remaining_from_mask(mf)
                     rem_txt = f'{rem_m:.2f}m' if rem_m is not None else 'N/A'
-                    state_txt = 'CENTERED' if centered else f'off={offset:+.2f}'
+                    state_txt = 'CENTERED' if centered else f'e={offset:+.2f} c={curve:+.2f}'
                     cv2.putText(
                         frame_after,
-                        f'conf={scores[i]:.2f} {state_txt} ctr={center_ratio:.2f} rem={rem_txt}',
+                        f'conf={scores[i]:.2f} {state_txt} rows={valid_rows} rem={rem_txt}',
                         (int(x1), max(20, int(y1) - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2,
                     )
 
-                    # 取第一个检测的 offset + 纵向剩余
+                    # 取第一个检测的中线误差 + 纵向剩余
                     if not detection_valid:
                         best_offset = float(offset)
                         best_box = box  # 保存用于日志
@@ -665,6 +846,9 @@ setInterval(health, 500); health();
                         best_free_ratio = free_ratio
                         best_center_ratio = float(center_ratio)
                         best_centered = bool(centered)
+                        best_curve = float(curve)
+                        best_confidence = float(confidence)
+                        best_valid_rows = int(valid_rows)
                         detection_valid = True
             
             # 6. 更新共享变量 + 状态变化日志
@@ -675,6 +859,9 @@ setInterval(health, 500); health();
                     self._valid = True
                     self._latest_center_ratio = float(best_center_ratio)
                     self._latest_centered = bool(best_centered)
+                    self._latest_curve = float(best_curve)
+                    self._latest_confidence = float(best_confidence)
+                    self._latest_valid_rows = int(best_valid_rows)
                     if best_remaining_m is not None:
                         self._latest_remaining_m = float(best_remaining_m)
                         self._latest_free_ratio = float(best_free_ratio)
@@ -690,14 +877,14 @@ setInterval(health, 500); health();
                         )
                         if best_box is not None:
                             self._node.get_logger().info(
-                                f'[VISION] 推理成功 offset={best_offset:+.3f} rem={rem_txt} | '
+                                f'[VISION] 推理成功 e={best_offset:+.3f} curve={best_curve:+.3f} rows={best_valid_rows} rem={rem_txt} | '
                                 f'bbox=({int(best_box[0])},{int(best_box[1])})→'
                                 f'({int(best_box[2])},{int(best_box[3])}) '
                                 f'conf={best_score:.2f}'
                             )
                         else:
                             self._node.get_logger().info(
-                                f'[VISION] 推理成功 offset={best_offset:+.3f} rem={rem_txt}'
+                                f'[VISION] 推理成功 e={best_offset:+.3f} curve={best_curve:+.3f} rows={best_valid_rows} rem={rem_txt}'
                             )
                     self._last_valid_state = True
                 else:
@@ -705,6 +892,10 @@ setInterval(health, 500); health();
                     self._range_valid = False
                     self._latest_center_ratio = 0.0
                     self._latest_centered = False
+                    self._latest_curve = 0.0
+                    self._latest_confidence = 0.0
+                    self._latest_valid_rows = 0
+                    self._has_filtered_error = False
                     
                     # 状态变化日志：从有效→失效
                     if self._last_valid_state is True:

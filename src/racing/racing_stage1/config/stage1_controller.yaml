@@ -1,49 +1,69 @@
+# Stage1 竞赛控制器参数配置
+# 功能模块：盲开、激光避障、二维码识别、路径后退、地图通道导航
 competition_controller:
   ros__parameters:
+    # ── 话题配置 ──────────────────────────────────────
     output_cmd_topic: /cmd_vel
     stage2_cmd_topic: /stage2_cmd_vel
     scan_topic: /scan
     imu_topic: /imu/data
-    odom_topic: /odom_combined  # 仅用于路径记录/后退；通道导航位置统一走 TF map
-    map_frame: map
-    base_frame: base_footprint
-    odom_frame: odom_combined
+    odom_topic: /odom_combined
+    map_topic: /map
     qr_result_topic: qr_scan_result
     phase_topic: competition_phase
     task_topic: competition_qr_task
     stage2_state_topic: stage2_state
     stage3_state_topic: stage3_state
+
+    # ── 坐标系配置 ────────────────────────────────────
+    map_frame: map
+    base_frame: base_footprint
+    odom_frame: odom_combined
+
+    # ── 控制频率 ──────────────────────────────────────
     control_rate_hz: 20.0
+
+    # ── 盲开速度 ──────────────────────────────────────
     blind_linear_speed: 0.2
     blind_angular_speed: 0.0
+
+    # ── 激光避障参数 ──────────────────────────────────
+    # 避障窗口：前方检测区域
+    phase1_window_min_x: 0.18
+    phase1_window_max_x: 0.85
+    phase1_window_half_width: 0.22
+    # 聚类过滤
+    phase1_cluster_gap_tolerance: 0.12
+    phase1_min_cluster_points: 3
+    phase1_min_cluster_width: 0.06
+    phase1_max_cluster_width: 0.55
+    # 紧急停障窗口（更近更窄）
+    phase1_emergency_min_x: 0.08
+    phase1_emergency_max_x: 0.45
+    phase1_emergency_half_width: 0.12
+    phase1_emergency_min_points: 2
+    # 避障动作
     avoid_linear_speed: 0.1
     avoid_angular_speed: 0.8
     avoid_min_duration_sec: 0.7
     avoid_clear_hold_sec: 0.25
     avoid_min_turn_angle_deg: 18.0
+    phase1_avoid_startup_grace_sec: 1.5
+    # 激光扫描配置
+    scan_angle_deg: 45.0
     safe_distance: 0.5
     clear_distance: 0.65
-    scan_angle_deg: 45.0
-    phase1_window_min_x: 0.18
-    phase1_window_max_x: 0.85
-    phase1_window_half_width: 0.22
-    phase1_cluster_gap_tolerance: 0.12
-    phase1_min_cluster_points: 3
-    phase1_min_cluster_width: 0.06
-    phase1_max_cluster_width: 0.55
-    phase1_emergency_min_x: 0.08
-    phase1_emergency_max_x: 0.45
-    phase1_emergency_half_width: 0.12
-    phase1_emergency_min_points: 2
     min_valid_range: 0.15
-    recovery_linear_speed: 0.12
-    recovery_turn_linear_speed: 0.08
-    recovery_angular_speed: 0.75
+
+    # ── 避障恢复（反舵+回正） ──────────────────────────
     counter_steer_linear_speed: 0.10
     counter_steer_angular_speed: 0.95
     counter_steer_duration_scale: 1.35
     counter_steer_min_duration_sec: 0.45
     counter_steer_max_duration_sec: 1.20
+    recovery_linear_speed: 0.12
+    recovery_turn_linear_speed: 0.08
+    recovery_angular_speed: 0.75
     recovery_heading_kp: 2.4
     recovery_max_angular_speed: 1.1
     recovery_min_angular_speed: 0.5
@@ -51,71 +71,98 @@ competition_controller:
     heading_tolerance_deg: 6.0
     recovery_timeout: 2.5
     recovery_duration_scale: 0.9
-    stage2_cmd_timeout: 0.5
-    transition_stop_duration: 0.0
-    phase2_obstacle_override: false
-    phase2_emergency_stop_distance: 0.22
-    phase3_external_control: true
-    phase3_emergency_stop_distance: 0.22
-    # 后退功能配置
+
+    # ── 后退功能 ──────────────────────────────────────
     enable_backing: true
-    back_target_x: 2.0
-    back_linear_speed: -0.15
-    back_angular_kp: 1.8
-    back_position_tolerance: 0.15
-    back_path_sample_distance: 0.20
-    back_timeout_sec: 10.0
-    back_align_yaw_deg: 90.0
+    back_target_x: 2.0              # map坐标x阈值
+    back_linear_speed: -0.15        # 倒车速度
+    back_angular_kp: 1.8            # 后退航向修正增益
+    back_position_tolerance: 0.15   # 路点到达容差
+    back_path_sample_distance: 0.20 # 路径采样间隔
+    back_timeout_sec: 10.0          # 后退超时
+    back_align_yaw_deg: 90.0        # 对齐目标航向
     back_align_tolerance_deg: 5.0
-    back_align_timeout_sec: 10.0  # 增加到10s，90°原地转约需2-3s
-    # 通道导航配置（目标点为 map 坐标，运行时通过 TF 读取当前位置）
-    map_topic: /map
-    corridor_path_topic: /stage1_corridor_path
+    back_align_timeout_sec: 10.0
+
+    # ── 通道导航（区域进入） ──────────────────────────
     enable_corridor_navigation: true
-    # 中线途经点 + 终点；先贴 x=2.50 再收 y，避免单点 LOS 中段漂
+    corridor_path_topic: /stage1_corridor_path
+    # 中线途经点 + 终点（map坐标系）
     corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.16,"description":"corridor_mid_1"},{"x":2.50,"y":2.20,"speed":0.14,"description":"corridor_mid_2"},{"x":2.50,"y":2.90,"speed":0.10,"yaw_deg":90.0,"description":"corridor_goal"}]'
     corridor_waypoint_tolerance: 0.22
-    corridor_goal_tolerance: 0.12
+    corridor_goal_tolerance: 0.35
     corridor_goal_yaw_deg: 90.0
-    # Stage2 入口还会再对齐，Stage1 不因 4° 卡死
-    corridor_goal_yaw_tolerance_deg: 10.0
-    # 中线 Stanley + 近场 settle_xy / align_yaw
-    corridor_linear_speed: 0.16
+    corridor_goal_yaw_tolerance_deg: 30.0
+    # 区域进入判据（宽松）
+    corridor_entry_region_radius_m: 0.20
+    corridor_entry_yaw_tolerance_deg: 30.0
+    corridor_require_yaw_for_release: false
+    corridor_timeout_sec: 45.0
+    corridor_log_period_sec: 0.5
+
+    # ── 通道导航控制参数 ──────────────────────────────
+    corridor_path_follow_mode: pure_pursuit  # pure_pursuit | stanley
+    corridor_linear_speed: 0.18
     turn_linear_speed: 0.05
     turn_min_angular_speed: 0.20
     turn_angular_speed: 0.8
     max_angular_speed: 0.8
-    corridor_timeout_sec: 45.0
-    corridor_rho_kp: 0.85
-    corridor_alpha_kp: 2.0
-    corridor_beta_kp: 0.80
-    corridor_creep_speed: 0.04
-    corridor_beta_blend_distance: 0.70
-    corridor_reverse_enabled: false
-    # 近场 settle：先到点，再 align_yaw 原地拧到 90°
-    corridor_capture_distance: 0.22
-    corridor_capture_exit_distance: 0.35
-    corridor_capture_speed: 0.05
-    corridor_brake_distance: 0.45
-    corridor_brake_kp: 0.28
-    # map_x>阈值时盲开/通道都向左旋回；通道内用 body/中线横向回正
-    corridor_left_recover_x: 3.50
-    corridor_left_recover_angular: 0.70
-    corridor_left_recover_linear: 0.06
-    corridor_lateral_kp: 1.8
-    corridor_x_tolerance: 0.08
-    corridor_heading_kp: 1.0
-    corridor_stanley_k: 1.2
-    corridor_align_linear_speed: 0.0
-    phase1_avoid_startup_grace_sec: 1.5
-    # 旧 PP 参数保留兼容，不再作为主控制
+    corridor_creep_speed: 0.06
+    corridor_min_cruise_speed: 0.10
+    corridor_max_turn_linear_speed: 0.08
+    # Pure Pursuit
     pure_pursuit_lookahead_m: 0.45
     pure_pursuit_turn_kp: 1.8
     pure_pursuit_heading_stop_deg: 70.0
+    corridor_pp_min_lookahead_m: 0.30
+    corridor_pp_speed_scale: 1.0
+    # 控制增益
+    corridor_rho_kp: 0.85
+    corridor_alpha_kp: 2.0
+    corridor_beta_kp: 0.80
+    corridor_heading_kp: 1.0
+    corridor_stanley_k: 1.2
+    corridor_lateral_kp: 1.8
+    corridor_x_tolerance: 0.25
+    # 近场收敛
+    corridor_brake_distance: 0.45
+    corridor_brake_kp: 0.28
+    corridor_capture_distance: 0.22
+    corridor_capture_exit_distance: 0.35
+    corridor_capture_speed: 0.05
+    corridor_align_linear_speed: 0.0
+    corridor_beta_blend_distance: 0.70
     corridor_near_distance: 0.45
-    use_corridor_planner: false
+
+    # ── 通道地图规划（A*） ────────────────────────────
+    use_corridor_planner: true
     planner_downsample: 4
     planner_occupied_threshold: 50
     planner_unknown_is_occupied: true
     planner_obstacle_inflation_m: 0.14
-    planner_replan_period_sec: 0.5
+    planner_replan_period_sec: 2.5
+    corridor_replan_min_progress_m: 0.35
+    corridor_replan_offpath_m: 0.28
+
+    # ── 倒车后重定向（可选） ──────────────────────────
+    corridor_entry_reorient_enabled: false
+    corridor_entry_reorient_angle_deg: 50.0
+    corridor_entry_reorient_done_deg: 25.0
+    corridor_entry_reorient_timeout_sec: 4.0
+    corridor_centerline_reorient_deg: 55.0
+    corridor_avoid_while_reorient: false
+    corridor_force_reorient_enabled: false
+    corridor_reverse_enabled: false
+
+    # ── 左侧恢复（防右墙） ────────────────────────────
+    corridor_left_recover_x: 3.50
+    corridor_left_recover_angular: 0.70
+    corridor_left_recover_linear: 0.06
+
+    # ── Phase切换参数 ─────────────────────────────────
+    transition_stop_duration: 0.0
+    stage2_cmd_timeout: 0.5
+    phase2_obstacle_override: false
+    phase2_emergency_stop_distance: 0.22
+    phase3_external_control: true
+    phase3_emergency_stop_distance: 0.22

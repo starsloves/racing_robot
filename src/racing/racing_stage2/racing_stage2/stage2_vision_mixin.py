@@ -40,35 +40,60 @@ class Stage2VisionMixin:
         self.declare_parameter('vision_conf_thres', 0.25)
         self.declare_parameter('vision_iou_thres', 0.45)
         self.declare_parameter('vision_crop_ratio', 0.4)
-        self.declare_parameter('vision_offset_kp', 1.2)
-        self.declare_parameter('vision_max_angular', 0.6)
+        self.declare_parameter('vision_crop_side_ratio', 0.20)  # 左右各裁比例，保留中间 60%
+        self.declare_parameter('vision_offset_kp', 0.4)
+        self.declare_parameter('vision_max_angular', 0.35)
         self.declare_parameter('vision_http_port', 8082)
         # mask 质心纠偏 / 中心竖带到位
-        self.declare_parameter('vision_center_band', 0.12)
-        self.declare_parameter('vision_center_occ_thresh', 0.40)
-        self.declare_parameter('vision_centroid_bottom_ratio', 0.60)
+        self.declare_parameter('vision_center_band', 0.18)
+        self.declare_parameter('vision_center_occ_thresh', 0.45)
+        self.declare_parameter('vision_centroid_bottom_ratio', 0.70)
+        self.declare_parameter('vision_center_hold_sec', 0.20)  # 兼容旧：居中持续后可降权
+        # 多行中线跟随（来自 seg_line_follower）
+        self.declare_parameter('vision_centerline_mode_enabled', True)
+        self.declare_parameter('vision_sample_rows', 9)
+        self.declare_parameter('vision_lookahead_ratio', 0.62)
+        self.declare_parameter('vision_min_mask_pixels_per_row', 12)
+        self.declare_parameter('vision_min_valid_rows', 4)
+        self.declare_parameter('vision_mask_threshold', 0.50)
+        self.declare_parameter('vision_error_filter_alpha', 0.35)
+        self.declare_parameter('vision_angular_kp', 1.25)
+        self.declare_parameter('vision_angular_kd', 0.20)
+        self.declare_parameter('vision_curvature_kp', 0.45)
+        self.declare_parameter('vision_deadband', 0.035)
+        self.declare_parameter('vision_primary_control', True)  # 视觉主 / IMU 兜底
+        self.declare_parameter('vision_budget_disable_enabled', False)  # 默认不因预算永久闭嘴
+        self.declare_parameter('vision_min_confidence', 0.30)
+        self.declare_parameter('vision_primary_max_head_err_deg', 30.0)
         
         # 融合策略参数
-        self.declare_parameter('imu_heading_deadzone_deg', 0.3)
+        self.declare_parameter('imu_heading_deadzone_deg', 1.0)
         self.declare_parameter('imu_max_yaw_rate_deg_s', 600.0)
         self.declare_parameter('vision_timeout_sec', 0.5)
-        self.declare_parameter('vision_offset_max_sec', 1.0)  # 单段视觉横向纠偏最长持续时间
-        self.declare_parameter('fusion_weight_imu', 0.3)
-        self.declare_parameter('fusion_weight_vision', 0.7)
+        # 旧预算参数保留；默认不启用永久关闭
+        self.declare_parameter('vision_offset_max_sec', 3.0)
+        self.declare_parameter('fusion_weight_imu', 0.25)
+        self.declare_parameter('fusion_weight_vision', 0.75)
 
-        # 视觉纵向定长/修正参数
+        # 视觉纵向定长/修正参数（odom 主，视觉辅助）
         self.declare_parameter('vision_length_correction_enabled', True)
-        self.declare_parameter('vision_length_min_progress_ratio', 0.45)
-        self.declare_parameter('vision_length_min_progress_m', 0.12)
-        self.declare_parameter('vision_length_stop_remaining_m', 0.28)
-        self.declare_parameter('vision_length_confirm_frames', 3)
-        self.declare_parameter('vision_length_max_shorten_ratio', 0.45)
-        self.declare_parameter('vision_length_max_extend_ratio', 0.25)
-        self.declare_parameter('vision_length_max_extend_m', 0.35)
+        self.declare_parameter('vision_length_min_progress_ratio', 0.55)
+        self.declare_parameter('vision_length_min_progress_m', 0.18)
+        self.declare_parameter('vision_length_stop_remaining_m', 0.22)
+        self.declare_parameter('vision_length_confirm_frames', 4)
+        self.declare_parameter('vision_length_max_shorten_ratio', 0.25)
+        self.declare_parameter('vision_length_max_extend_ratio', 0.12)
+        self.declare_parameter('vision_length_max_extend_m', 0.18)
         self.declare_parameter('vision_range_near_m', 0.15)
         self.declare_parameter('vision_range_far_m', 2.50)
         self.declare_parameter('vision_range_center_band', 0.30)
         self.declare_parameter('vision_range_occ_thresh', 0.12)
+
+        # 拐弯视觉辅助：仅在角度接近目标时，中心竖带连续充满可提前结束
+        self.declare_parameter('vision_turn_assist_enabled', True)
+        self.declare_parameter('vision_turn_assist_hold_sec', 0.50)
+        self.declare_parameter('vision_turn_assist_min_progress_ratio', 0.70)
+        self.declare_parameter('vision_turn_assist_angle_window_deg', 18.0)
         
         # 读取参数
         self._vision_enabled = bool(self.get_parameter('vision_offset_correction_enabled').value)
@@ -78,6 +103,11 @@ class Stage2VisionMixin:
         self._vision_length_hit_count = 0
         self._vision_length_last_log_t = 0.0
         self._vision_length_last_target = None
+        self._vision_center_hold_elapsed = 0.0
+        self._vision_center_hold_last_t = None
+        self._vision_center_hold_latched = False
+        self._vision_turn_center_hold = 0.0
+        self._vision_turn_center_last_t = None
 
         # IMU 健康检测状态（无论 vision 是否启用都需初始化）
         self._last_imu_yaw = None
@@ -98,6 +128,11 @@ class Stage2VisionMixin:
             self._vision_corr_elapsed = 0.0
             self._vision_corr_last_t = None
             self._vision_corr_budget_exhausted = False
+            self._vision_center_hold_elapsed = 0.0
+            self._vision_center_hold_last_t = None
+            self._vision_center_hold_latched = False
+            self._vision_turn_center_hold = 0.0
+            self._vision_turn_center_last_t = None
             self.get_logger().info(
                 '[视觉] 模块已禁用（offset/length correction 均关闭）'
             )
@@ -107,6 +142,7 @@ class Stage2VisionMixin:
         conf = float(self.get_parameter('vision_conf_thres').value)
         iou = float(self.get_parameter('vision_iou_thres').value)
         crop = float(self.get_parameter('vision_crop_ratio').value)
+        crop_side = float(self.get_parameter('vision_crop_side_ratio').value)
         http_port = int(self.get_parameter('vision_http_port').value)
         
         self._vision_offset_kp = float(self.get_parameter('vision_offset_kp').value)
@@ -116,14 +152,21 @@ class Stage2VisionMixin:
         self._offset_history = []
         self._offset_filter_size = 5  # 取最近 5 帧平均
 
-        # 视觉横向纠偏时长限制（防止持续纠偏过冲）
+        # 视觉横向纠偏预算（到时视觉停，IMU 继续）
         self._vision_offset_max_sec = float(self.get_parameter('vision_offset_max_sec').value)
         self._vision_corr_elapsed = 0.0
         self._vision_corr_last_t = None
         self._vision_corr_budget_exhausted = False
+        self._vision_center_hold_elapsed = 0.0
+        self._vision_center_hold_last_t = None
+        self._vision_center_hold_latched = False
+        self._vision_turn_center_hold = 0.0
+        self._vision_turn_center_last_t = None
         
         # 创建视觉节点（自动启动 HTTP 服务，保存图像到 /tmp/stage2_vision.jpg）
-        self._vision_node = VisionLaneCentering(self, model_path, conf, iou, crop, http_port)
+        self._vision_node = VisionLaneCentering(
+            self, model_path, conf, iou, crop, http_port, crop_side_ratio=crop_side
+        )
         if hasattr(self._vision_node, 'configure_range_estimate'):
             self._vision_node.configure_range_estimate(
                 near_m=float(self.get_parameter('vision_range_near_m').value),
@@ -138,22 +181,57 @@ class Stage2VisionMixin:
                 occ_thresh=float(self.get_parameter('vision_center_occ_thresh').value),
                 centroid_bottom_ratio=float(self.get_parameter('vision_centroid_bottom_ratio').value),
             )
+        if hasattr(self._vision_node, 'configure_centerline_follow'):
+            self._vision_node.configure_centerline_follow(
+                sample_rows=int(self.get_parameter('vision_sample_rows').value),
+                lookahead_ratio=float(self.get_parameter('vision_lookahead_ratio').value),
+                min_mask_pixels_per_row=int(self.get_parameter('vision_min_mask_pixels_per_row').value),
+                min_valid_rows=int(self.get_parameter('vision_min_valid_rows').value),
+                mask_threshold=float(self.get_parameter('vision_mask_threshold').value),
+                offset_filter_alpha=float(self.get_parameter('vision_error_filter_alpha').value),
+                enabled=bool(self.get_parameter('vision_centerline_mode_enabled').value),
+            )
+
+        self._vision_angular_kp = float(self.get_parameter('vision_angular_kp').value)
+        self._vision_angular_kd = float(self.get_parameter('vision_angular_kd').value)
+        self._vision_curvature_kp = float(self.get_parameter('vision_curvature_kp').value)
+        self._vision_deadband = float(self.get_parameter('vision_deadband').value)
+        self._vision_primary_control = bool(self.get_parameter('vision_primary_control').value)
+        self._vision_budget_disable_enabled = bool(self.get_parameter('vision_budget_disable_enabled').value)
+        self._vision_min_confidence = float(self.get_parameter('vision_min_confidence').value)
+        self._vision_primary_max_head_err_deg = float(
+            self.get_parameter('vision_primary_max_head_err_deg').value
+        )
+        # 防御：避免 conf/rows 门限把视觉永久打死
+        self._vision_min_confidence = max(0.0, min(1.0, self._vision_min_confidence))
+        self._vision_primary_max_head_err_deg = max(5.0, self._vision_primary_max_head_err_deg)
+        self._vision_prev_error = 0.0
+        self._vision_prev_error_t = None
+        self._vision_last_detail_log_t = 0.0
         
         self.get_logger().info(
-            f'[视觉] 模块已启用 kp={self._vision_offset_kp:.2f} '
-            f'max_ω={self._vision_max_angular:.2f} rad/s '
-            f'max_t={self._vision_offset_max_sec:.2f}s '
-            f'length_corr={self._vision_length_enabled}'
+            f'[视觉] 中线主控启用 kp={self._vision_angular_kp:.2f} kd={self._vision_angular_kd:.2f} '
+            f'kc={self._vision_curvature_kp:.2f} max_ω={self._vision_max_angular:.2f} '
+            f'primary={self._vision_primary_control} budget_disable={self._vision_budget_disable_enabled} '
+            f'crop=B{float(self.get_parameter("vision_crop_ratio").value):.0%}'
+            f'+S{float(self.get_parameter("vision_crop_side_ratio").value):.0%} '
+            f'length_corr={self._vision_length_enabled} '
+            f'turn_assist={bool(self.get_parameter("vision_turn_assist_enabled").value)}'
         )
         self.get_logger().info(
             f'[视觉] HTTP 可视化: http://100.114.34.86:{http_port}/vision_latest.jpg (30 FPS)'
         )
     
     def _reset_vision_offset_time_state(self) -> None:
-        """新 move 段开始时重置视觉横向纠偏计时。"""
+        """新 move/turn 段开始时重置视觉横向纠偏计时。"""
         self._vision_corr_elapsed = 0.0
         self._vision_corr_last_t = None
         self._vision_corr_budget_exhausted = False
+        self._vision_center_hold_elapsed = 0.0
+        self._vision_center_hold_last_t = None
+        self._vision_center_hold_latched = False
+        self._vision_turn_center_hold = 0.0
+        self._vision_turn_center_last_t = None
         if hasattr(self, '_offset_history'):
             self._offset_history = []
 
@@ -195,49 +273,157 @@ class Stage2VisionMixin:
             if not self._vision_corr_budget_exhausted:
                 self._vision_corr_budget_exhausted = True
                 self.get_logger().info(
-                    f'[视觉] 横向纠偏达上限 {self._vision_offset_max_sec:.2f}s，'
-                    f'本段停用视觉横向修正（elapsed={self._vision_corr_elapsed:.2f}s）'
+                    f'[视觉] 横向预算用尽 {self._vision_offset_max_sec:.2f}s，'
+                    f'本段视觉ω=0，回退 IMU（elapsed={self._vision_corr_elapsed:.2f}s）'
                 )
                 if hasattr(self, '_log_session'):
                     self._log_session(
                         'VIS_TIME_LIMIT',
                         f'elapsed={self._vision_corr_elapsed:.2f}s '
-                        f'max={self._vision_offset_max_sec:.2f}s | 本段视觉横向纠偏关闭',
+                        f'max={self._vision_offset_max_sec:.2f}s | 视觉横向停，IMU 兜底',
                     )
             self._vision_corr_last_t = None
             return False
         return True
 
+    def _update_center_hold(self, centered: bool) -> bool:
+        """中心竖带持续充满达到 hold_sec 后锁存，停止视觉横向纠偏。"""
+        hold_sec = max(0.0, float(self.get_parameter('vision_center_hold_sec').value))
+        now = time.time()
+        if self._vision_center_hold_latched:
+            return True
+        if hold_sec <= 0.0:
+            if centered:
+                self._vision_center_hold_latched = True
+                return True
+            return False
+        if not centered:
+            self._vision_center_hold_elapsed = 0.0
+            self._vision_center_hold_last_t = None
+            return False
+        if self._vision_center_hold_last_t is None:
+            self._vision_center_hold_last_t = now
+        else:
+            dt = max(0.0, now - self._vision_center_hold_last_t)
+            if dt > 0.2:
+                dt = 0.0
+            self._vision_center_hold_elapsed += dt
+            self._vision_center_hold_last_t = now
+        if self._vision_center_hold_elapsed >= hold_sec:
+            self._vision_center_hold_latched = True
+            if hasattr(self, '_log_session'):
+                self._log_session(
+                    'VIS_CENTER_HOLD',
+                    f'centered hold {self._vision_center_hold_elapsed:.2f}s >= {hold_sec:.2f}s | 视觉横向停',
+                )
+            return True
+        return False
+
+    def _get_vision_center_status(self):
+        """读取中心竖带状态，失败时返回 (False, 0.0, False)。"""
+        if self._vision_node is None or not hasattr(self._vision_node, 'get_latest_center_status'):
+            return False, 0.0, False
+        centered, center_ratio, _ts, valid = self._vision_node.get_latest_center_status()
+        if not valid:
+            return False, float(center_ratio or 0.0), False
+        return bool(centered), float(center_ratio or 0.0), True
+
+    def vision_turn_assist_ready(self, progress_ratio: float, abs_err_deg: float) -> bool:
+        """
+        拐弯视觉辅助：仅当
+          1) 已转完名义角的 min_progress_ratio
+          2) 剩余角误差在 angle_window 内
+          3) 中心竖带连续充满 hold_sec
+        才允许提前结束转弯。否则返回 False，继续走 IMU 目标角。
+        """
+        if not bool(self.get_parameter('vision_turn_assist_enabled').value):
+            return False
+        if self._vision_node is None:
+            return False
+        min_prog = float(self.get_parameter('vision_turn_assist_min_progress_ratio').value)
+        ang_win = float(self.get_parameter('vision_turn_assist_angle_window_deg').value)
+        hold_sec = max(0.05, float(self.get_parameter('vision_turn_assist_hold_sec').value))
+        if progress_ratio < min_prog or abs_err_deg > ang_win:
+            self._vision_turn_center_hold = 0.0
+            self._vision_turn_center_last_t = None
+            return False
+
+        centered, center_ratio, valid = self._get_vision_center_status()
+        now = time.time()
+        if not (valid and centered):
+            self._vision_turn_center_hold = 0.0
+            self._vision_turn_center_last_t = None
+            return False
+        if self._vision_turn_center_last_t is None:
+            self._vision_turn_center_last_t = now
+        else:
+            dt = max(0.0, now - self._vision_turn_center_last_t)
+            if dt > 0.2:
+                dt = 0.0
+            self._vision_turn_center_hold += dt
+            self._vision_turn_center_last_t = now
+        if self._vision_turn_center_hold >= hold_sec:
+            if hasattr(self, '_log_session'):
+                self._log_session(
+                    'TURN_VIS_ASSIST',
+                    f'ready hold={self._vision_turn_center_hold:.2f}s '
+                    f'prog={progress_ratio:.2f} err={abs_err_deg:.1f}° ctr={center_ratio:.2f}',
+                )
+            return True
+        return False
+
     def _vision_offset_to_angular(self, offset: float) -> float:
+        """兼容旧接口：把归一化横向误差转角速度。"""
+        return self._vision_line_to_angular(error=offset, curve=0.0)
+
+    def _get_vision_line_status(self):
+        if self._vision_node is None:
+            return {
+                'error': 0.0, 'curve': 0.0, 'valid': False, 'confidence': 0.0,
+                'remaining_m': None, 'centered': False, 'center_ratio': 0.0,
+                'valid_rows': 0, 'timestamp': 0.0, 'age': 999.0,
+            }
+        if hasattr(self._vision_node, 'get_latest_line_status'):
+            return self._vision_node.get_latest_line_status()
+        offset, ts, valid = self._vision_node.get_latest_offset()
+        age = time.time() - ts if ts > 0 else 999.0
+        return {
+            'error': float(offset) if valid else 0.0,
+            'curve': 0.0,
+            'valid': bool(valid),
+            'confidence': 1.0 if valid else 0.0,
+            'remaining_m': None,
+            'centered': abs(float(offset)) < 0.08 if valid else False,
+            'center_ratio': max(0.0, 1.0 - abs(float(offset))) if valid else 0.0,
+            'valid_rows': 0,
+            'timestamp': float(ts),
+            'age': float(age),
+        }
+
+    def _vision_line_to_angular(self, error: float, curve: float = 0.0) -> float:
         """
-        将视觉 offset 转换为角速度（带滑动平均滤波）。
-        
-        offset: [-1.0, +1.0]（mask 质心相对画面中心；中心竖带到位时为 0）
-            -1.0 = 赛道质心在左侧 → 往左打（+ω，ROS 逆时针）
-            +1.0 = 赛道质心在右侧 → 往右打（-ω，ROS 顺时针）
-            0.0  = 中心竖带已被 mask 占住 / 已居中 → 不纠
-        
-        角速度方向（ROS REP-103）：
-            正值 = 左转（逆时针）
-            负值 = 右转（顺时针）
+        多行中线 PD + 曲率：
+            error/curve 定义：负=赛道中心偏左，正=偏右
+            控制：ω = -(Kp*e + Kd*ė + Kc*curve)
+            正ω=左转，负ω=右转
         """
-        # 滑动平均滤波（防止单帧跳变）
-        self._offset_history.append(offset)
-        if len(self._offset_history) > self._offset_filter_size:
-            self._offset_history.pop(0)
-        
-        # 使用滤波后的 offset
-        filtered_offset = sum(self._offset_history) / len(self._offset_history)
-        
-        # 死区：offset < 0.02（2% 图像宽度）时不修正
-        if abs(filtered_offset) < 0.02:
-            return 0.0
-        
-        # 标准图像纠偏：目标偏右(offset>0) → 车偏左 → 右转(ω<0)
-        # angular = -kp * offset
-        angular = -self._vision_offset_kp * filtered_offset
+        kp = float(getattr(self, '_vision_angular_kp', self._vision_offset_kp))
+        kd = float(getattr(self, '_vision_angular_kd', 0.0))
+        kc = float(getattr(self, '_vision_curvature_kp', 0.0))
+        deadband = float(getattr(self, '_vision_deadband', 0.0))
+        e = float(error)
+        if abs(e) < deadband:
+            e = 0.0
+        now = time.time()
+        deriv = 0.0
+        if self._vision_prev_error_t is not None:
+            dt = max(1e-3, now - self._vision_prev_error_t)
+            deriv = (e - self._vision_prev_error) / dt
+        self._vision_prev_error = e
+        self._vision_prev_error_t = now
+        angular = -(kp * e + kd * deriv + kc * float(curve))
         return self.clamp(angular, self._vision_max_angular)
-    
+
     def _check_imu_health(self) -> bool:
         """
         检测 IMU 是否正常（检测异常跳变）。
@@ -291,151 +477,162 @@ class Stage2VisionMixin:
     
     def _compute_move_lateral_angular_with_vision(self) -> float:
         """
-直行段横向修正（IMU + 视觉融合：各 30%/70% 或自动降级）。
-         
-         融合策略：
-             - 正常：IMU 30% + 视觉 70%（权重由 yaml 参数控制）
-             - 视觉 ω≈0（死区内）：自动切 IMU 100%
-             - 视觉失效：IMU 100%
-             - IMU 异常：视觉 100%
-             - 全失效：保持直行（ω=0）
-             - 转弯段：禁止所有纠偏，返回 0.0
-        
-        返回：
-            angular: float, 融合后的角速度 (rad/s)
+        move/短边横向控制：
+          1) 视觉中线主（多行前瞻 PD + 曲率）
+          2) IMU 段航向兜底
+          3) 默认不因短预算永久闭嘴
         """
-        # === 0. 转弯段禁止所有纠偏 ===
-        if self.current_segment is not None and self.current_segment.get('type') == 'turn':
-            return 0.0
-
-        # === 1. 获取视觉输出 ===
-        vision_angular = 0.0
+        # === 1. 视觉中线 ===
         vision_available = False
-        vision_offset = 0.0
-        vision_age = float('inf')
-        
-        if self._vision_enabled and self._vision_node is not None:
-            offset, timestamp, valid = self._vision_node.get_latest_offset()
-            vision_age = time.time() - timestamp if timestamp > 0 else float('inf')
-            vision_timeout = float(self.get_parameter('vision_timeout_sec').value)
+        vision_angular = 0.0
+        vision_error = 0.0
+        vision_curve = 0.0
+        vision_conf = 0.0
+        vision_rows = 0
+        vision_age = 999.0
+        vision_centered = False
+        vision_budget_exhausted = False
 
-            if bool(getattr(self, '_vision_corr_budget_exhausted', False)):
-                # 本段视觉横向纠偏时长已用尽
+        line = self._get_vision_line_status()
+        vision_timeout = float(self.get_parameter('vision_timeout_sec').value)
+        vision_age = float(line.get('age', 999.0))
+        min_conf = float(getattr(self, '_vision_min_confidence', 0.35))
+        min_rows = int(self.get_parameter('vision_min_valid_rows').value) if self.has_parameter('vision_min_valid_rows') else 4
+        if bool(line.get('valid', False)) and vision_age < vision_timeout:
+            vision_error = float(line.get('error', 0.0))
+            vision_curve = float(line.get('curve', 0.0))
+            vision_conf = float(line.get('confidence', 0.0))
+            vision_rows = int(line.get('valid_rows', 0))
+            vision_centered = bool(line.get('centered', False))
+            quality_ok = (vision_conf >= min_conf) and (vision_rows >= max(2, min_rows // 2))
+            candidate = self._vision_line_to_angular(vision_error, vision_curve)
+            # 居中时视觉ω=0，但仍视为可用（不掉到 LOST）
+            if quality_ok and (vision_centered or abs(candidate) <= 1e-6):
+                vision_available = True
+                vision_angular = 0.0
+                if hasattr(self, '_vision_offset_time_allows'):
+                    self._vision_offset_time_allows(False)
+            elif quality_ok:
+                budget_disable = bool(getattr(self, '_vision_budget_disable_enabled', False))
+                if budget_disable and hasattr(self, '_vision_offset_time_allows'):
+                    if self._vision_offset_time_allows(True):
+                        vision_available = True
+                        vision_angular = candidate
+                    else:
+                        vision_available = False
+                        vision_angular = 0.0
+                        vision_budget_exhausted = True
+                else:
+                    # 默认：质量合格就持续主控
+                    vision_available = True
+                    vision_angular = candidate
+                    if hasattr(self, '_vision_offset_time_allows'):
+                        self._vision_offset_time_allows(False)
+            else:
                 vision_available = False
                 vision_angular = 0.0
-                if valid and vision_age < vision_timeout:
-                    vision_offset = offset
-            elif valid and vision_age < vision_timeout:
-                # 先算角速度，用于判断是否处于“有效纠偏中”（过死区）
-                candidate_angular = self._vision_offset_to_angular(offset)
-                vision_active = abs(candidate_angular) > 1e-6
-                if self._vision_offset_time_allows(vision_active):
-                    vision_available = True
-                    vision_offset = offset
-                    vision_angular = candidate_angular
-                else:
-                    # 刚达上限：本段停用视觉横向纠偏
-                    vision_available = False
-                    vision_offset = offset
-                    vision_angular = 0.0
-            else:
-                # 视觉无效时停止累计纠偏时间
+                if hasattr(self, '_vision_offset_time_allows'):
+                    self._vision_offset_time_allows(False)
+        else:
+            if hasattr(self, '_vision_offset_time_allows'):
                 self._vision_offset_time_allows(False)
-        
-        # === 2. 计算 IMU 输出 ===
+
+        # === 2. IMU 段航向 ===
         imu_angular = 0.0
         heading_error = 0.0
-        
         if self.current_position is not None and self.segment_heading is not None:
             nav_yaw = self.navigation_yaw()
             if nav_yaw is not None:
                 heading_error = self.angle_error(self.segment_heading, nav_yaw)
-                # 死区从 1.0° 缩小到 0.3°（更敏感）
                 deadzone = math.radians(float(self.get_parameter('imu_heading_deadzone_deg').value))
                 if abs(heading_error) >= deadzone:
                     imu_angular = self.clamp(self.heading_kp * heading_error, self.max_angular_speed)
-        
-        # === 3. IMU 健康检测 ===
+
         imu_healthy = self._check_imu_health()
-        
-        # === 3b. 按纠偏开关过滤 ===
         fusion_enabled = bool(self.get_parameter('fusion_mode_enabled').value)
+        imu_corr_enabled = bool(self.get_parameter('imu_heading_correction_enabled').value)
+        vis_corr_enabled = bool(self.get_parameter('vision_offset_correction_enabled').value)
+        primary = bool(getattr(self, '_vision_primary_control', True))
 
         if not fusion_enabled:
-            # 总开关关闭：不启动任何纠偏
             imu_angular = 0.0
             vision_angular = 0.0
             weight_vision = 0.0
             weight_imu = 0.0
-            mode = "FUSION_DISABLED"
+            mode = 'FUSION_DISABLED'
         else:
-            # 总开关开启，再按子开关过滤
-            imu_corr_enabled = bool(self.get_parameter('imu_heading_correction_enabled').value)
-            vis_corr_enabled = bool(self.get_parameter('vision_offset_correction_enabled').value)
-
             if not imu_corr_enabled:
                 imu_angular = 0.0
             if not vis_corr_enabled:
                 vision_angular = 0.0
+                vision_available = False
 
-            # === 4. 融合策略 ===
-            if vision_available and imu_healthy and vis_corr_enabled and imu_corr_enabled:
-                # 读权重
+            if primary and vision_available and vis_corr_enabled:
+                # 视觉主：有效时几乎全视觉；仅在视觉接近0时混一点 IMU 稳直
+                head_abs_deg = abs(math.degrees(heading_error))
+                max_head = float(getattr(self, '_vision_primary_max_head_err_deg', 35.0))
+                if abs(vision_angular) < 1e-4 and imu_healthy and imu_corr_enabled:
+                    weight_vision = 0.0
+                    weight_imu = 1.0
+                    mode = 'IMU_ONLY(VIS_CENTER)' if vision_centered else 'IMU_ONLY(VIS_ZERO)'
+                elif head_abs_deg > max_head and imu_healthy and imu_corr_enabled:
+                    # 车头偏太多时不要死跟视觉，先用 IMU 拉回段航向
+                    # 视觉仍保留弱权重，避免完全丢中线
+                    blend = min(1.0, (head_abs_deg - max_head) / max(max_head, 1.0))
+                    weight_imu = 0.55 + 0.35 * blend
+                    weight_vision = 1.0 - weight_imu
+                    mode = 'VIS_BLEND(HEAD_ERR)'
+                else:
+                    weight_vision = 1.0
+                    weight_imu = 0.0
+                    mode = 'VIS_PRIMARY'
+            elif vision_available and imu_healthy and vis_corr_enabled and imu_corr_enabled:
                 weight_imu = float(self.get_parameter('fusion_weight_imu').value)
                 weight_vision = float(self.get_parameter('fusion_weight_vision').value)
-                # 视觉 ω≈0 时自动切 IMU 100%
-                if abs(vision_angular) < 1e-6:
-                    weight_imu = 1.0
-                    weight_vision = 0.0
-                    mode = "IMU_ONLY(VIS_ZERO)"
-                else:
-                    mode = "FUSION"
-            elif vision_available and (not imu_healthy or not imu_corr_enabled) and vis_corr_enabled:
+                mode = 'FUSION'
+            elif vision_available and vis_corr_enabled:
                 weight_vision = 1.0
                 weight_imu = 0.0
-                mode = "VIS_ONLY" if not imu_healthy else "VIS_ONLY(IMU_DISABLED)"
-            elif imu_healthy and imu_corr_enabled and (not vision_available or not vis_corr_enabled):
+                mode = 'VIS_ONLY' if not imu_healthy else 'VIS_ONLY(IMU_DISABLED)'
+            elif imu_healthy and imu_corr_enabled:
                 weight_vision = 0.0
                 weight_imu = 1.0
-                mode = "IMU_ONLY" if not vision_available else "IMU_ONLY(VIS_DISABLED)"
+                if vision_budget_exhausted:
+                    mode = 'IMU_ONLY(VIS_BUDGET)'
+                elif not vision_available:
+                    mode = 'IMU_ONLY(VIS_LOST)'
+                else:
+                    mode = 'IMU_ONLY'
             else:
                 weight_vision = 0.0
                 weight_imu = 0.0
-                mode = "LOST"
-        
+                mode = 'LOST'
+
         angular_fused = weight_imu * imu_angular + weight_vision * vision_angular
-        
-        # === 5. 日志记录（状态变化 + 1Hz 采样）===
-        # 5.1 状态变化日志
+
+        # 日志：状态变化 + 2Hz 细节
         if self._last_fusion_mode != mode:
             self._last_fusion_mode = mode
             self._log_session(
                 'FUSION_STATE',
-                f'{mode} | vis_valid={vision_available} imu_healthy={imu_healthy} | '
-                f'vis_age={vision_age:.2f}s'
+                f'{mode} | vis_valid={vision_available} imu_healthy={imu_healthy} '
+                f'age={vision_age:.2f}s e={vision_error:+.3f} curve={vision_curve:+.3f} '
+                f'rows={vision_rows} conf={vision_conf:.2f}'
             )
-        
-        # 5.2 定期采样日志（1Hz）
-        current_time = time.time()
-        if current_time - self._last_fusion_log_time >= 1.0:
-            self._last_fusion_log_time = current_time
-            offset_vis_str = f'{vision_offset:+.3f}' if vision_available else 'N/A'
-            elapsed = float(getattr(self, '_vision_corr_elapsed', 0.0))
-            max_t = float(getattr(self, '_vision_offset_max_sec', 0.0))
-            exhausted = bool(getattr(self, '_vision_corr_budget_exhausted', False))
+        now = time.time()
+        if now - float(getattr(self, '_vision_last_detail_log_t', 0.0)) >= 0.5:
+            self._vision_last_detail_log_t = now
             self._log_session(
-                'FUSION',
-                f'{mode} | imu_ω={imu_angular:+.3f} vis_ω={vision_angular:+.3f} | '
-                f'w=({weight_imu:.2f}/{weight_vision:.2f}) | '
-                f'fused_ω={angular_fused:+.3f} | '
-                f'err_imu={math.degrees(heading_error):+.1f}° '
-                f'offset_vis={offset_vis_str} '
-                f'vis_t={elapsed:.2f}/{max_t:.2f}s'
-                f'{" EXHAUSTED" if exhausted else ""}'
+                'VISION_CTRL',
+                f'{mode} e={vision_error:+.3f} curve={vision_curve:+.3f} rows={vision_rows} '
+                f'conf={vision_conf:.2f} age={vision_age:.2f}s '
+                f'vis_w={vision_angular:+.3f} imu_w={imu_angular:+.3f} '
+                f'head_err={math.degrees(heading_error):+.1f}deg fused={angular_fused:+.3f} '
+                f'wv={weight_vision:.2f} wi={weight_imu:.2f} '
+                f'seg={(self.current_segment or {}).get("type","?")}/{(self.current_segment or {}).get("description","?")}'
             )
-        
-        return angular_fused
-    
+        return float(angular_fused)
+
     def _get_vision_angular_for_avoider(self):
         """
         供 avoider 调用的视觉修正回调（用于 leg2 段）。
@@ -502,20 +699,25 @@ class Stage2VisionMixin:
             self._vision_length_hit_count = 0
             return nominal, remaining_m, free_ratio, True, 'warmup'
 
-        # 视觉估计“当前已走 + 前方剩余”≈ 真实段长
+        # odom 名义长度为主，视觉只做小范围修正
         vision_total = progress + max(0.0, remaining_m)
         max_shorten_ratio = float(self.get_parameter('vision_length_max_shorten_ratio').value)
         max_extend_ratio = float(self.get_parameter('vision_length_max_extend_ratio').value)
         max_extend_m = float(self.get_parameter('vision_length_max_extend_m').value)
 
-        min_target = max(progress, nominal * (1.0 - max(0.0, min(0.9, max_shorten_ratio))))
+        min_target = max(progress, nominal * (1.0 - max(0.0, min(0.5, max_shorten_ratio))))
         max_target = nominal + min(
             max(0.0, max_extend_m),
             nominal * max(0.0, max_extend_ratio),
         )
-        adjusted = max(min_target, min(max_target, vision_total))
+        # 视觉只在“更短/略长”方向轻推，避免远距 mask 把段拉长
+        adjusted = nominal
+        if vision_total < nominal:
+            adjusted = max(min_target, vision_total)
+        elif vision_total > nominal:
+            # 仅允许很小延长
+            adjusted = min(max_target, 0.7 * nominal + 0.3 * vision_total)
 
-        # 若前方几乎到头，允许更积极地提前结束（仍受 min_target 保护）
         stop_remaining = float(self.get_parameter('vision_length_stop_remaining_m').value)
         if remaining_m <= stop_remaining:
             adjusted = max(min_target, min(adjusted, progress + max(0.0, remaining_m)))

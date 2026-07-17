@@ -23,7 +23,7 @@ competition_controller.py（Stage1 主控）
   ├── phase=2 ──── Stage2: 矩形赛道惯性导航
   │                │ 官方包：racing_stage2
   │                ├── Stage2InertialNavigator — 轮速惯导 + field_track
-  │                ├── Stage2VisionMixin — 视觉车道居中
+  │                ├── Stage2VisionMixin — 视觉中线跟随
   │                └── AvoidController — 独立避障模块
   │
   └── phase=3 ──── Stage3: 返程导航
@@ -135,15 +135,15 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 **后端**：WeChat CV（OpenCV contrib）
 **流程**：车到通道特定位置 → 扫描二维码 → 解析方向指令 → 发布到 `qr_scan_result` → competition_controller 设置 phase=2
 
-### 2.5 通道导航（map 中线）
+### 2.5 通道导航（map 自由空间区域进入）
 
 - 位姿：`TF map <- base_footprint`（xy）+ IMU yaw
-- 路点：中线途经点 + 终点，默认 `x=2.50` → `(2.50,3.10)@90°`
-- 控制：
-  1. `centerline`：LOS + Stanley 贴中线（横向 body/`line_target_y`，`map_x_err` 符号已修正为偏左右转）
-  2. `settle_xy`：近场只收位置，不抢终航向
-  3. `align_yaw`：位置到位后原地转到 `corridor_goal_yaw`
-- 放行：`ρ` + `|xerr|` + `|yaw_err|` 同时满足，或超时策略放行 Stage2
+- 目标：入口区域中心（默认 corridor 终点附近），**不要求精准到点 / 精准 90°**
+- 规划：默认 `use_corridor_planner=true`，占用膨胀 + A* 规划自由空间路径；失败回退直线
+- 跟踪：Pure Pursuit 跟踪规划路径（可斜穿）；`left_recover` 仅在 map_x 过大时介入
+- 放行：进入入口区域半径（默认 `0.35m`）即切 Stage2；默认不强制航向，可选 `corridor_require_yaw_for_release`
+- 超时：`corridor_timeout_sec` 到时策略放行 Stage2
+- 日志：`~/dev_ws/log/competition_stage1/latest.log` 输出 plan refresh / region_entry 细节
 
 ### 2.6 阶段切换
 
@@ -166,8 +166,8 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 | **避障** | `avoid_controller.py` | 独立 6 态闭环避障控制器 |
 | **避障几何** | `avoid_geometry.py` | 绕行路径规划（转向角 + 两脚距离） |
 | **雷达处理** | `scan_processor.py` | 前方/侧方障碍检测 |
-| **视觉修正** | `stage2_vision_mixin.py` | Vision + IMU 融合 mixin |
-| **视觉检测** | `vision_lane_centering.py` | BPU YOLOv8-Seg 赛道分割 |
+| **视觉修正** | `stage2_vision_mixin.py` | 视觉中线主 + IMU 兜底 mixin |
+| **视觉检测** | `vision_lane_centering.py` | BPU YOLOv8-Seg + 多行中线/前瞻/曲率 |
 | **SEG跟线实验** | `racing_stage2_seg_follow` | 独立包，启动底盘+相机，网页只显示裁剪ROI，用左右赛道边线中点跟线，默认低速发布 `/cmd_vel` |
 | **日志** | `session_file_log.py` | 文件会话日志 |
 | **CSV 记录** | `data_recorder.py` | 遥测 CSV 记录 |
@@ -184,8 +184,8 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 | `ring_linear_speed` | 0.32 m/s | 环形赛道直行速度（当前降速纯惯导） |
 | `corridor_linear_speed` | 0.14 m/s | 通道段直行速度 |
 | `turn_linear_speed` | 0.07 m/s | 转弯时前向速度 |
-| `turn_angular_speed` | 0.65 rad/s | 被 test.yaml 覆盖为 0.80 |
-| `turn_kp` | 1.8 | 被 test.yaml 覆盖为 2.0 |
+| `steering_angle_deg` | ±15° | field_track 每个弯段固定舵角 |
+| `duration_sec` | 6.0 s | field_track 每个弯段保持时间 |
 | `heading_kp` | 1.0 | 直行航向保持比例增益 |
 | `distance_tolerance` | 0.04 m | 直行到位判据 |
 | `heading_tolerance_deg` | 3.5° | 被 test.yaml 覆盖 |
@@ -205,11 +205,6 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 | `navigation_pose_source` | wheel | 位姿源 = 轮速 `/odom` |
 | `wheel_odom_topic` | `/odom` | 轮速里程计话题 |
 | `heading_tolerance_deg` | 3.0° | 转向航向容差（提前停让惯性自然冲到）|
-| `turn_angular_speed` | 0.80 rad/s | 转弯角速度 |
-| `turn_min_angular_speed` | 0.30 rad/s | 最小角速度 |
-| `turn_kp` | 2.0 | 转弯 P 增益 |
-| `turn_slowdown_threshold_deg` | 10.0° | 转弯减速阈值 |
-| `turn_min_speed_ratio` | 0.5 | 转弯末端最小角速度比例 |
 | `imu_heading_deadzone_deg` | 0.3° | IMU 航向死区 |
 | `move_accel_ramp_sec` | 0.5 s | 转弯后加速渐变时长 |
 
@@ -312,31 +307,39 @@ idle → turn_away(转α, 30°) → leg1(直行0.22m) → turn_back(转β, 40°)
 | 侧边误触发 | `side_detour_threshold_m` | ↓ |
 | 避障频繁触发 | `detour_cooldown_sec` | ↑ |
 
-### 3.5 视觉车道居中（mixin）
+### 3.5 视觉中线跟随 + 圆弧过角
 
-**文件**：`direct_inertial_tester_vision.py` — `DirectInertialTesterVisionMixin`
+**文件**：
+- `stage2_vision_mixin.py` — `Stage2VisionMixin`
+- `vision_lane_centering.py` — BPU Seg + 多行中线
+- `field_track_*.yaml` — `move`/`arc` 段序（已去掉角落 pause 原地拧）
 
-作为 mixin 混入 `DirectInertialTester`（多重继承），通过 `fusion_mode_enabled` 开关控制：
+#### 视觉算法（正式主策略）
+1. ROI：下方 `vision_crop_ratio` + 左右裁 `vision_crop_side_ratio`
+2. BPU YOLOv8-Seg → 赛道 mask
+3. 多行采样中点拟合中心线，无效行剔除
+4. 前瞻点误差 `e` + 近远场曲率 `curve`
+5. 控制：`ω = -(Kp*e + Kd*ė + Kc*curve)`，`v` 随误差/曲率降速（move 段）
+6. 丢线：IMU 段航向兜底；默认**不因短预算永久闭嘴**
 
 | 模式 | 策略 | 说明 |
 |---|---|---|
-| `FUSION` | IMU 30% + Vision 70% | 正常行驶 |
-| `IMU_ONLY(VIS_ZERO)` | IMU 100% | 视觉 offset 在死区内 |
-| `VIS_ONLY` | Vision 100% | IMU 异常跳变 |
-| `IMU_ONLY` | IMU 100% | 视觉检测失效/超时 |
-| `LOST` | ω=0 | 全失效，保持直行 |
+| `VIS_PRIMARY` | 视觉 100% | 中线有效（主模式） |
+| `IMU_ONLY(VIS_CENTER/ZERO)` | IMU 100% | 已居中或视觉ω≈0 |
+| `IMU_ONLY(VIS_LOST)` | IMU 100% | 视觉失效/超时 |
+| `FUSION` | 可配权重 | `vision_primary_control=false` 时 |
+| `LOST` | ω=0 | 视觉与 IMU 都不可用 |
 
-**后端**：`vision_lane_centering.py` — BPU YOLOv8-Seg → 赛道概率图二值化 → 水平中线偏差 → PID
+#### 段模型
+- `move`：视觉中线主，轮速里程判段完成
+- `arc`：定时舵角段，仅使用 YAML 的 `steering_angle_deg` 和 `duration_sec`；生产直连底盘将舵角值原样下发，固定舵角保持到计时完成，然后发送 `0°` 回正，不使用车体角速度、半径或弧长判定
+- 短边 `rect_side_*` 保留为短 `move`
+- 入口 `rect_enter_align` 与四个角位均为 `±15° / 6.0s`；弧段结束立即回正，线速度保持 `turn_linear_speed`
 
-| 项目 | 内容 |
-|---|---|
-| 模型 | `models/bset.bin`（地平线 bayes-e BPU 量化） |
-| 输入 | 1×640×640 uint8 |
-| 输出 | 检测头 + 1×160×160 赛道概率图 |
-| 后处理 | 下方 `vision_crop_ratio` ROI（默认 40%）→ mask 近场质心偏差 → `ω=-kp*offset` |
-| 到位判据 | 中心竖带 mask 占比 ≥ `vision_center_occ_thresh` 时 offset=0 停纠 |
-| 滑动平均 | 最近 5 帧均值（防止单帧跳变） |
-| 可视化 | HTTP `/` 与 `/stream.mjpg` 仅显示下方 ROI + 中心竖带 |
+#### 日志排查
+- Stage2 会话日志：`~/dev_ws/log/competition_stage2/latest.log`
+- 关键 tag：`SEGMENT` / `PLAN` / `VISION_CTRL` / `FUSION_STATE` / `ARC_SETUP` / `ARC_TIMER` / `ARC_COMPLETE` / `TELEM`
+- 视觉预览：HTTP `:8082` + `/vision_debug`
 
 ### 3.6 调参速查
 
@@ -515,3 +518,8 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
 | 8 | odom 轮速滑移误差累积 | Stage2 | 短段（0.40m）影响大，长段（2.90m）可控；`distance_tolerance` 权衡 |
 | 9 | 赛道 rect_side 0.40m 过短，避障空间不足 | Stage2 | 考虑加长侧边或进赛道前预判 |
 | 10 | 视觉模型路径 `bset.bin` 硬编码 | Stage2 Vision | `vision_model_path` 参数可覆盖，但默认路径依赖文件存在 |
+
+## 2026-07-17 场测修复要点
+- Stage1：A* 条件重规划 + 占用栅格缓存；区域半径约 0.40m；不要求 90° 精对准。
+- Stage2：角落 `arc` 以航向进度结束；短边保留；视觉中线主控带 conf/rows 质量门，弯中不抢舵。
+- 排查日志：`~/dev_ws/log/competition_stage1/latest.log`、`~/dev_ws/log/competition_stage2/latest.log`。
