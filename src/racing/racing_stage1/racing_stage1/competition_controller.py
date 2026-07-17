@@ -1208,6 +1208,10 @@ class CompetitionController(Node):
         return nearest_obstacle
 
     def handle_phase1_lidar(self, scan_msg):
+        # 后退阶段完全不处理激光避障，由后退逻辑全权控制
+        if self.phase1_motion_state == 'backing':
+            return
+
         # 启动宽限期：避免上电瞬间噪声/侧墙误触发
         if hasattr(self, '_node_start_time') and self.phase1_motion_state in ('forward', 'corridor'):
             grace = (self.get_clock().now() - self._node_start_time).nanoseconds / 1e9
@@ -1348,7 +1352,8 @@ class CompetitionController(Node):
         if self.phase != 1:
             return
 
-        if self.phase1_motion_state != 'forward':
+        # 允许在前进、避障等状态下接收二维码(避免因临时避障错过扫码)
+        if self.phase1_motion_state not in ('forward', 'avoiding', 'countersteering', 'recovering'):
             return
 
         task = msg.data.strip()
@@ -1516,12 +1521,20 @@ class CompetitionController(Node):
                 self.start_corridor_navigation(f'qr task={self.qr_task}, backing timeout')
                 return
         
-        current_x = self.current_odom.pose.pose.position.x
-        current_y = self.current_odom.pose.pose.position.y
+        # 路径跟踪用 odom（与 path_record 同系）；结束判定用 map（与 back_target_x 同系）
+        odom_x = float(self.current_odom.pose.pose.position.x)
+        odom_y = float(self.current_odom.pose.pose.position.y)
+        map_xy = self.get_map_position()
+        map_x = float(map_xy[0]) if map_xy is not None else None
+        map_y = float(map_xy[1]) if map_xy is not None else None
         
-        # 检查是否到达目标 x 位置（map 坐标系）
-        if current_x <= self.back_target_x:
-            self.log.segment(f'backing done at map_x={current_x:.2f}m, starting corridor navigation')
+        # back_target_x 是 map 坐标；禁止再用 odom_x 比较
+        if map_x is not None and map_x <= self.back_target_x:
+            self.log.segment(
+                f'backing done at map_x={map_x:.2f}m '
+                f'(target={self.back_target_x:.2f}m, odom_x={odom_x:.2f}m), '
+                f'starting corridor navigation'
+            )
             self.start_corridor_navigation(f'qr task={self.qr_task}, backing complete')
             return
         
@@ -1535,12 +1548,14 @@ class CompetitionController(Node):
         target_x, target_y, target_yaw = self.path_record[self.backing_path_index]
         
         # 检查是否接近当前路点，若是则移动到上一个路点（倒序）
-        dist_to_target = math.hypot(current_x - target_x, current_y - target_y)
+        dist_to_target = math.hypot(odom_x - target_x, odom_y - target_y)
         if dist_to_target < self.back_position_tolerance:
             self.backing_path_index -= 1
             self.log.progress(
                 f'backing wp_index={self.backing_path_index}, '
-                f'pos=({current_x:.2f}, {current_y:.2f}), '
+                f'odom=({odom_x:.2f}, {odom_y:.2f}), '
+                f'map=({map_x if map_x is not None else float("nan"):.2f}, '
+                f'{map_y if map_y is not None else float("nan"):.2f}), '
                 f'target_yaw={math.degrees(target_yaw):.1f}°'
             )
             if self.backing_path_index < 0:
@@ -1561,7 +1576,8 @@ class CompetitionController(Node):
         
         self.log.progress(
             f'backing: wp={self.backing_path_index}, '
-            f'current_x={current_x:.2f}m, '
+            f'map_x={map_x if map_x is not None else float("nan"):.2f}m, '
+            f'odom_x={odom_x:.2f}m, '
             f'dist={dist_to_target:.2f}m, '
             f'target_yaw={math.degrees(target_yaw):.1f}°, '
             f'yaw_error={math.degrees(heading_error):.1f}°'
