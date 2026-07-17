@@ -1,0 +1,278 @@
+# ================================================================================
+# Stage3 回P点导航配置 (stage3_return_navigator)
+# ================================================================================
+# 功能模块：
+#   1. A* 全局路径规划（避开地图禁区）
+#   2. Pure Pursuit 路径跟踪
+#   3. 激光聚类避障（4状态：forward → avoiding → countersteering → recovering）
+#   4. P 点视觉检测与伺服接近（可选）
+#   5. 矩形区域到达判定
+# ================================================================================
+
+stage3_return_navigator:
+  ros__parameters:
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 话题配置 (Topic Configuration)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 赛程阶段订阅话题（监听 Phase 切换）
+    phase_topic: competition_phase
+
+    # 里程计话题（位姿定位，map 坐标系通过 TF 查询）
+    odom_topic: /odom_combined
+
+    # 激光雷达扫描话题（激光避障）
+    scan_topic: /scan
+
+    # 速度指令输出话题（发送到底盘）
+    cmd_topic: /cmd_vel
+
+    # 状态发布话题（完成信号：'complete'）
+    state_topic: stage3_state
+
+    # 反馈话题（状态反馈给 Stage1）
+    feedback_topic: competition_feedback
+
+    # 地图话题（栅格地图，用于 A* 规划）
+    map_topic: /map
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 控制频率 (Control Rate)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 主控制循环频率 (Hz)
+    control_rate_hz: 20.0
+
+    # 启动延迟 (s) — Phase3 进入后等待此时长确保位姿就绪
+    start_delay_sec: 0.5
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 路点与目标区域 (Waypoints and Goal Region)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # --- 路径规划起终点 (map 全局坐标系) ---
+    # Stage2 结束位置约 (2.80, 3.25)
+    # P 点目标区域: x ∈ [0.1, 0.3], y ∈ [0.1, 0.2]
+    # 路径：起点 → P 点名义中心 (0.20, 0.15)
+
+    # 途经路点列表（JSON 格式）
+    # [{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
+    return_waypoints_json: '[{"x":0.20,"y":0.15,"speed":0.15,"description":"P_region_center"}]'
+
+    # 路点容差 (m) — 距离途经点 < 此值时推进到下一路点
+    waypoint_tolerance: 0.18
+
+    # --- P 点矩形目标区域 (map 坐标系) ---
+    # 矩形区域 X 最小值 (m)
+    goal_box_x_min: 0.1
+
+    # 矩形区域 X 最大值 (m)
+    goal_box_x_max: 0.3
+
+    # 矩形区域 Y 最小值 (m)
+    goal_box_y_min: 0.1
+
+    # 矩形区域 Y 最大值 (m)
+    goal_box_y_max: 0.2
+
+    # 路径超时 (s) — 超过此时长未到达则任务失败
+    path_timeout_sec: 60.0
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Pure Pursuit 路径跟踪 (Pure Pursuit Path Following)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 巡航线速度 (m/s) — 路径跟踪时的前进速度
+    pursuit_linear_speed: 0.18
+
+    # 前视距离 (m) — 追踪路径上前方此距离的点
+    pursuit_lookahead_m: 0.45
+
+    # 航向差停止阈值 (°) — 航向误差 > 此值时停止纯追踪
+    pursuit_heading_stop_deg: 70.0
+
+    # 转向增益 — 曲率 → 角速度增益
+    pursuit_turn_kp: 1.2
+
+    # 转弯线速度 (m/s) — 大角度转向时的前进速度
+    pursuit_turn_linear_speed: 0.08
+
+    # 全局最大角速度 (rad/s)
+    max_angular_speed: 0.8
+
+    # 最小角速度 (rad/s) — 防止转速过低
+    min_angular_speed: 0.20
+
+    # ────────────────────────────────────────────────────────────────────────
+    # P 点视觉检测与伺服接近 (P-Mark Visual Detection and Servo Approach)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # --- P 点视觉模型配置 ---
+    # 视觉模型路径（FastDeploy .bin 格式）
+    p_model_path: /home/sunrise/dev_ws/src/racing/racing_stage3/models/best_p.bin
+
+    # 置信度阈值 — 检测置信度 < 此值的 bbox 被过滤
+    p_conf_thres: 0.25
+
+    # IoU 阈值 — NMS 去重时的 IoU 阈值
+    p_iou_thres: 0.45
+
+    # 图像裁剪比例 — 保留图像下方此比例（0.4 = 下方 40%）
+    p_crop_ratio: 0.4
+
+    # --- P 点视觉伺服参数 ---
+    # 触发视觉接近的置信度阈值 — 检测置信度 > 此值触发视觉接近模式
+    p_approach_conf_threshold: 0.5
+
+    # 连续检测次数阈值 — 连续检测到 P 点此帧数后触发接近（抗抖动）
+    p_approach_consecutive_hits: 3
+
+    # 完成条件 bbox 填充比例 — bbox 宽度占画面比例 > 此值判定到达
+    p_complete_bbox_fill_ratio: 0.5
+
+    # 接近线速度 (m/s) — 视觉伺服接近时的前进速度
+    p_approach_linear_speed: 0.06
+
+    # 接近角速度增益 — bbox 中心 offset → 角速度增益
+    p_approach_angular_kp: 0.8
+
+    # Stage3 专用 Web 端口 — HTTP 实时预览端口（避免与 Stage2 冲突）
+    p_web_port: 8083
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 激光聚类避障 (Lidar Clustering Obstacle Avoidance - 4-State)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # --- 避障动作参数 ---
+    # 避障线速度 (m/s) — 避障期间前进速度
+    avoid_linear_speed: 0.10
+
+    # 避障角速度 (rad/s) — 转向速度（根据障碍物方向选择±）
+    avoid_angular_speed: 0.80
+
+    # 避障最小持续时间 (s)
+    avoid_min_duration_sec: 0.70
+
+    # 障碍清除保持时间 (s) — 障碍清除后需保持此时长才切换状态
+    avoid_clear_hold_sec: 0.25
+
+    # 避障最小转向角度 (°) — 相对初始航向至少转过此角度
+    avoid_min_turn_angle_deg: 18.0
+
+    # 安全距离 (m) — 障碍物距离 < 此值触发避障
+    avoid_safe_distance: 0.50
+
+    # 清除距离 (m) — 障碍物距离 > 此值视为清除
+    avoid_clear_distance: 0.65
+
+    # 紧急停车距离 (m) — 障碍物距离 < 此值立即停车
+    emergency_stop_distance: 0.08
+
+    # --- 反舵阶段 (Counter Steering) ---
+    # 反舵线速度 (m/s)
+    counter_steer_linear_speed: 0.10
+
+    # 反舵角速度 (rad/s)
+    counter_steer_angular_speed: 0.95
+
+    # 反舵持续时间缩放系数 — 反舵时长 = 避障时长 × 此系数
+    counter_steer_duration_scale: 1.35
+
+    # 反舵最小持续时间 (s)
+    counter_steer_min_duration_sec: 0.45
+
+    # 反舵最大持续时间 (s)
+    counter_steer_max_duration_sec: 1.20
+
+    # --- 恢复阶段 (Recovery) ---
+    # 恢复线速度 (m/s) — 直行恢复速度
+    recovery_linear_speed: 0.12
+
+    # 恢复转弯线速度 (m/s) — 转弯修正时的前进速度
+    recovery_turn_linear_speed: 0.08
+
+    # 恢复角速度 (rad/s) — 基于时间的恢复转向速度
+    recovery_angular_speed: 0.75
+
+    # 恢复航向比例增益 — 航向误差 → 角速度修正增益
+    recovery_heading_kp: 2.4
+
+    # 恢复最大角速度 (rad/s)
+    recovery_max_angular_speed: 1.1
+
+    # 恢复最小角速度 (rad/s)
+    recovery_min_angular_speed: 0.5
+
+    # 原地转向角度阈值 (°) — 航向误差 < 此值时边走边转，否则原地转
+    recovery_in_place_angle_deg: 8.0
+
+    # 恢复超时 (s) — 恢复阶段最长时间
+    recovery_timeout: 2.5
+
+    # 恢复持续时间缩放 — 基于避障时长估算恢复时长
+    recovery_duration_scale: 0.9
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 激光聚类窗口 (Lidar Clustering Window)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 窗口最小 X 距离 (m) — 距车体前端的近界
+    window_min_x: 0.18
+
+    # 窗口最大 X 距离 (m) — 距车体前端的远界
+    window_max_x: 0.85
+
+    # 窗口半宽 (m) — Y 方向±半宽，形成矩形检测区域
+    window_half_width: 0.22
+
+    # 聚类间隙容差 (m) — 点云间距 < 此值视为同一障碍物
+    cluster_gap_tolerance: 0.12
+
+    # 最小聚类点数 — 点数 < 此值的聚类被过滤
+    min_cluster_points: 3
+
+    # 最小聚类宽度 (m) — 宽度 < 此值的聚类被过滤（噪声）
+    min_cluster_width: 0.06
+
+    # 最大聚类宽度 (m) — 宽度 > 此值的聚类被过滤（墙体）
+    max_cluster_width: 0.40
+
+    # 最小有效量程 (m) — 激光点距离 < 此值视为无效
+    min_valid_range: 0.15
+
+    # ────────────────────────────────────────────────────────────────────────
+    # A* 全局路径规划 (A* Global Path Planner)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 启用全局规划器 — true: 使用 A* 避开地图禁区
+    use_global_planner: true
+
+    # 全局坐标系名称
+    global_frame_id: map
+
+    # --- 栅格参数 (Grid Parameters) ---
+    # 地图降采样倍率 — 每 N×N 个栅格合并为 1 个
+    planner_downsample: 4
+
+    # 占据阈值 (0-100) — 栅格值 ≥ 此阈值视为障碍物
+    planner_occupied_threshold: 50
+
+    # 未知区域视为占据 — false: Stage3 地图已建好，未知区域可通行
+    planner_unknown_is_occupied: false
+
+    # 静态障碍物膨胀半径 (m)
+    planner_obstacle_inflation_m: 0.14
+
+    # --- 动态障碍物参数 (Dynamic Obstacle Injection) ---
+    # 动态障碍物框大小 (m) — 激光检测到的障碍物映射为此大小的方框
+    planner_dynamic_obstacle_box_size_m: 0.25
+
+    # 动态障碍物膨胀半径 (m)
+    planner_dynamic_obstacle_inflation_m: 0.04
+
+    # 动态障碍物检测范围 (m) — 激光点距离 < 此值才注入动态障碍
+    planner_dynamic_obstacle_range_m: 0.7
+
+    # 重规划周期 (s) — 每隔此时间重规划一次路径
+    planner_replan_period_sec: 0.50

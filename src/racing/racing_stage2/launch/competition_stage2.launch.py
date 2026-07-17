@@ -14,8 +14,8 @@ def generate_launch_description():
     bringup_dir = get_package_share_directory('origincar_bringup')
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
 
-    inertial_config = os.path.join(stage2_dir, 'config', 'inertial_stage2.yaml')
-    avoid_controller_config = os.path.join(stage2_dir, 'config', 'avoid_controller.yaml')
+    # 使用统一配置文件
+    stage2_config = os.path.join(stage2_dir, 'config', 'stage2_controller.yaml')
     obstacle_marker_config = os.path.join(stage2_dir, 'config', 'obstacle_circle_markers.yaml')
 
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='false')
@@ -123,16 +123,11 @@ def generate_launch_description():
         executable='stage2_inertial_navigator',
         name='stage2_inertial_navigator',
         parameters=[
-            inertial_config,
-            avoid_controller_config,
+            stage2_config,  # 统一配置文件（包含原 inertial + avoid 参数）
             {
                 'imu_topic': LaunchConfiguration('imu_topic'),
                 'test_direction': LaunchConfiguration('test_direction'),
                 'use_test_direction_fallback': LaunchConfiguration('enable_test_publisher'),
-                'test_feedback_prefix': '第二阶段',
-                'use_corridor_path': False,
-                'pre_loop_plan_json': '[]',
-                'post_corridor_path_plan_json': '[]',
             },
         ],
         output='screen',

@@ -330,46 +330,144 @@ class Stage2VisionMixin:
 
     def vision_turn_assist_ready(self, progress_ratio: float, abs_err_deg: float) -> bool:
         """
-        拐弯视觉辅助：仅当
-          1) 已转完名义角的 min_progress_ratio
-          2) 剩余角误差在 angle_window 内
-          3) 中心竖带连续充满 hold_sec
-        才允许提前结束转弯。否则返回 False，继续走 IMU 目标角。
+        拐弯视觉辅助（方案2严格版 + 入口对齐特殊处理）：
+
+        入口对齐段特殊处理：
+        - 近处黄线很多，不能只看近处
+        - 要看远处绿色区域是否居中
+        - 放宽对齐精度要求（只要进入通道即可）
+
+        普通转弯段：严格检测"转弯完成+正对直道"特征
+          1) 已转完名义角的 min_progress_ratio（如80%）
+          2) 剩余角误差在 angle_window 内（如<10°）
+          3) 视觉检测到完整直道特征：
+             - 中心竖带充满（前方有赛道）
+             - 左右两侧均有赛道（mask 分布均匀）
+             - 前视点居中（横向偏移小）
+             - 有效检测行数足够（视野清晰）
+          4) 连续稳定 hold_sec 秒
         """
         if not bool(self.get_parameter('vision_turn_assist_enabled').value):
             return False
         if self._vision_node is None:
             return False
+
+        # 基本条件：转够了+角度接近
         min_prog = float(self.get_parameter('vision_turn_assist_min_progress_ratio').value)
         ang_win = float(self.get_parameter('vision_turn_assist_angle_window_deg').value)
         hold_sec = max(0.05, float(self.get_parameter('vision_turn_assist_hold_sec').value))
+
+        # 判断是否是入口对齐段
+        is_enter_align = False
+        if hasattr(self, 'current_segment') and self.current_segment:
+            seg_desc = str(self.current_segment.get('description', ''))
+            is_enter_align = 'enter_align' in seg_desc.lower()
+
+        # 入口对齐段：放宽进度和角度要求
+        if is_enter_align:
+            min_prog = 0.50  # 只要转过一半就开始检测
+            ang_win = 20.0   # 角度窗口放宽到20°
+
         if progress_ratio < min_prog or abs_err_deg > ang_win:
             self._vision_turn_center_hold = 0.0
             self._vision_turn_center_last_t = None
             return False
 
-        centered, center_ratio, valid = self._get_vision_center_status()
-        now = time.time()
-        if not (valid and centered):
+        # 获取完整视觉状态
+        line_status = self._get_vision_line_status()
+        if not line_status['valid']:
             self._vision_turn_center_hold = 0.0
             self._vision_turn_center_last_t = None
             return False
+
+        # 入口对齐段：特殊判据（只看远处，放宽要求）
+        if is_enter_align:
+            # 判据1：远处要有检测（说明看到绿色区域了）
+            valid_rows = int(line_status.get('valid_rows', 0))
+            if valid_rows < 4:  # 至少4行
+                self._vision_turn_center_hold = 0.0
+                self._vision_turn_center_last_t = None
+                return False
+
+            # 判据2：远处中线大致居中即可（放宽到30%偏移）
+            error = float(line_status.get('error', 0.0))
+            if abs(error) > 0.30:  # 放宽很多
+                self._vision_turn_center_hold = 0.0
+                self._vision_turn_center_last_t = None
+                return False
+
+            # 判据3：置信度不要求太高（因为近处干扰大）
+            confidence = float(line_status.get('confidence', 0.0))
+            if confidence < 0.35:  # 降低要求
+                self._vision_turn_center_hold = 0.0
+                self._vision_turn_center_last_t = None
+                return False
+
+            # 入口对齐段：缩短持续时间要求（0.2秒即可）
+            hold_sec = 0.20
+
+        else:
+            # 普通转弯段：严格判据（和之前一样）
+            # 严格判据1：中心竖带必须充满
+            centered = bool(line_status.get('centered', False))
+            center_ratio = float(line_status.get('center_ratio', 0.0))
+            if not centered or center_ratio < 0.60:
+                self._vision_turn_center_hold = 0.0
+                self._vision_turn_center_last_t = None
+                return False
+
+            # 严格判据2：前视点必须居中
+            error = float(line_status.get('error', 0.0))
+            if abs(error) > 0.15:
+                self._vision_turn_center_hold = 0.0
+                self._vision_turn_center_last_t = None
+                return False
+
+            # 严格判据3：有效行数足够
+            valid_rows = int(line_status.get('valid_rows', 0))
+            min_rows_for_turn = max(5, int(self.get_parameter('vision_min_valid_rows').value) if self.has_parameter('vision_min_valid_rows') else 5)
+            if valid_rows < min_rows_for_turn:
+                self._vision_turn_center_hold = 0.0
+                self._vision_turn_center_last_t = None
+                return False
+
+            # 严格判据4：置信度足够高
+            confidence = float(line_status.get('confidence', 0.0))
+            if confidence < 0.50:
+                self._vision_turn_center_hold = 0.0
+                self._vision_turn_center_last_t = None
+                return False
+
+            # 严格判据5：边界安全
+            boundary_safe = bool(line_status.get('boundary_safe', True))
+            if not boundary_safe:
+                self._vision_turn_center_hold = 0.0
+                self._vision_turn_center_last_t = None
+                return False
+
+        # 所有条件满足，累计持续时间
+        now = time.time()
         if self._vision_turn_center_last_t is None:
             self._vision_turn_center_last_t = now
         else:
             dt = max(0.0, now - self._vision_turn_center_last_t)
-            if dt > 0.2:
+            if dt > 0.2:  # 防止异常长时间间隔
                 dt = 0.0
             self._vision_turn_center_hold += dt
             self._vision_turn_center_last_t = now
+
+        # 连续满足足够时长才算完成
         if self._vision_turn_center_hold >= hold_sec:
             if hasattr(self, '_log_session'):
+                seg_type = '入口对齐' if is_enter_align else '普通转弯'
                 self._log_session(
                     'TURN_VIS_ASSIST',
-                    f'ready hold={self._vision_turn_center_hold:.2f}s '
-                    f'prog={progress_ratio:.2f} err={abs_err_deg:.1f}° ctr={center_ratio:.2f}',
+                    f'✓ {seg_type}完成 hold={self._vision_turn_center_hold:.2f}s '
+                    f'prog={progress_ratio:.2f} err={abs_err_deg:.1f}° '
+                    f'offset={error:+.3f} rows={valid_rows} conf={confidence:.2f}',
                 )
             return True
+
         return False
 
     def _vision_offset_to_angular(self, offset: float) -> float:
@@ -498,6 +596,11 @@ class Stage2VisionMixin:
         vision_age = float(line.get('age', 999.0))
         min_conf = float(getattr(self, '_vision_min_confidence', 0.35))
         min_rows = int(self.get_parameter('vision_min_valid_rows').value) if self.has_parameter('vision_min_valid_rows') else 4
+
+        # 边界安全状态
+        boundary_safe = bool(line.get('boundary_safe', True))
+        safety_weight = float(line.get('safety_weight', 1.0))
+
         if bool(line.get('valid', False)) and vision_age < vision_timeout:
             vision_error = float(line.get('error', 0.0))
             vision_curve = float(line.get('curve', 0.0))
@@ -571,7 +674,13 @@ class Stage2VisionMixin:
                 # 视觉主：有效时几乎全视觉；仅在视觉接近0时混一点 IMU 稳直
                 head_abs_deg = abs(math.degrees(heading_error))
                 max_head = float(getattr(self, '_vision_primary_max_head_err_deg', 35.0))
-                if abs(vision_angular) < 1e-4 and imu_healthy and imu_corr_enabled:
+
+                # 边界保护：接近边界时强制降低视觉权重
+                if not boundary_safe:
+                    weight_vision = min(0.75, safety_weight)  # 上限75%
+                    weight_imu = 1.0 - weight_vision
+                    mode = f'BOUNDARY_PROTECT(w={safety_weight:.2f})'
+                elif abs(vision_angular) < 1e-4 and imu_healthy and imu_corr_enabled:
                     weight_vision = 0.0
                     weight_imu = 1.0
                     mode = 'IMU_ONLY(VIS_CENTER)' if vision_centered else 'IMU_ONLY(VIS_ZERO)'

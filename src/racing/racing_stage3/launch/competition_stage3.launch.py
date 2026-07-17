@@ -13,7 +13,9 @@ def generate_launch_description():
     stage3_dir = get_package_share_directory('racing_stage3')
     bringup_dir = get_package_share_directory('origincar_bringup')
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
-    return_config = os.path.join(stage3_dir, 'config', 'return_stage3.yaml')
+
+    # 使用统一配置文件
+    stage3_config = os.path.join(stage3_dir, 'config', 'stage3_controller.yaml')
     support_launch_path = os.path.join(stage3_dir, 'launch', 'competition_support.launch.py')
 
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='false')
@@ -105,13 +107,15 @@ def generate_launch_description():
         package='racing_stage3',
         executable='stage3_return_navigator',
         name='stage3_return_navigator',
-        parameters=[return_config, {
-            'test_direction': LaunchConfiguration('test_direction'),
-            'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
-            'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
-            'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
-            'use_global_planner': False,
-        }],
+        parameters=[
+            stage3_config,  # 统一配置文件
+            {
+                'test_direction': LaunchConfiguration('test_direction'),
+                'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
+                'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
+                'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
+            }
+        ],
         output='screen',
     )
 

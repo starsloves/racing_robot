@@ -11,9 +11,9 @@ segments:
     duration_sec: 6.0
     description: rect_enter_align
 
-  # 底边：向左直行0.70m
+  # 底边右侧：向左直行0.90m
   - type: move
-    distance_m: 0.70
+    distance_m: 0.90
     description: rect_first_leg
 
   # 左下拐角：右打舵15°，保持6秒，结束回正
@@ -22,34 +22,34 @@ segments:
     duration_sec: 6.0
     description: rect_corner_1
 
-  # 左边：向上直行0.35m
+  # 右边向上：直行0.30m
   - type: move
-    distance_m: 0.35
+    distance_m: 0.30
     description: rect_side_1
-
-  # 左上拐角：右打舵15°，保持6秒，结束回正
-  - type: arc
-    steering_angle_deg: -15.0
-    duration_sec: 6.0
-    description: rect_corner_2
-
-  # 顶边：向右直行2.80m
-  - type: move
-    distance_m: 2.80
-    description: rect_top
 
   # 右上拐角：右打舵15°，保持6秒，结束回正
   - type: arc
     steering_angle_deg: -15.0
     duration_sec: 6.0
+    description: rect_corner_2
+
+  # 顶边向左：直行2.80m
+  - type: move
+    distance_m: 2.80
+    description: rect_top
+
+  # 左上拐角：右打舵15°，保持6秒，结束回正
+  - type: arc
+    steering_angle_deg: -15.0
+    duration_sec: 6.0
     description: rect_corner_3
 
-  # 右边：向下直行0.35m
+  # 左边向下：直行0.30m
   - type: move
-    distance_m: 0.35
+    distance_m: 0.30
     description: rect_side_2
 
-  # 右下拐角：右打舵15°，保持6秒，结束回正
+  # 左下拐角：右打舵15°，保持6秒，结束回正
   - type: arc
     steering_angle_deg: -15.0
     duration_sec: 6.0

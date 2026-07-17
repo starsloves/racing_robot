@@ -1,168 +1,472 @@
-# Stage1 竞赛控制器参数配置
-# 功能模块：盲开、激光避障、二维码识别、路径后退、地图通道导航
+# ================================================================================
+# Stage1 竞赛控制器配置 (competition_controller)
+# ================================================================================
+# 功能模块：
+#   1. 盲开前进（blind forward）
+#   2. 激光聚类避障（4状态：forward → avoiding → countersteering → recovering）
+#   3. 二维码识别触发后退
+#   4. 路径记录与后退（backing along recorded path）
+#   5. 地图自由空间区域进入（corridor navigation with A* planning）
+# ================================================================================
+
 competition_controller:
   ros__parameters:
-    # ── 话题配置 ──────────────────────────────────────
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 话题配置 (Topic Configuration)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 输出控制指令话题（发送到底盘）
     output_cmd_topic: /cmd_vel
+
+    # Stage2 控制指令话题（Phase2 时订阅并转发）
     stage2_cmd_topic: /stage2_cmd_vel
+
+    # 激光雷达扫描话题（用于避障）
     scan_topic: /scan
+
+    # IMU 九轴数据话题（用于航向控制）
     imu_topic: /imu/data
+
+    # 里程计话题（EKF 融合后的位姿，用于路径记录和后退）
     odom_topic: /odom_combined
+
+    # 地图话题（栅格地图，用于 A* 规划）
     map_topic: /map
+
+    # 二维码识别结果话题（触发后退与通道导航）
     qr_result_topic: qr_scan_result
+
+    # 赛程阶段发布话题（Phase1/2/3 切换通知）
     phase_topic: competition_phase
+
+    # 扫码任务发布话题（二维码内容）
     task_topic: competition_qr_task
+
+    # Stage2 状态订阅话题（监听 Stage2 完成信号）
     stage2_state_topic: stage2_state
+
+    # Stage3 状态订阅话题（监听 Stage3 完成信号）
     stage3_state_topic: stage3_state
 
-    # ── 坐标系配置 ────────────────────────────────────
+    # ────────────────────────────────────────────────────────────────────────
+    # 坐标系配置 (Frame IDs)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 全局地图坐标系（A* 规划与位姿查询）
     map_frame: map
+
+    # 机器人底盘坐标系（TF 变换目标）
     base_frame: base_footprint
+
+    # 里程计坐标系（odom_combined 对应的 TF 坐标系）
     odom_frame: odom_combined
 
-    # ── 控制频率 ──────────────────────────────────────
+    # ────────────────────────────────────────────────────────────────────────
+    # 控制频率 (Control Rate)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 主控制循环频率 (Hz)
     control_rate_hz: 20.0
 
-    # ── 盲开速度 ──────────────────────────────────────
-    blind_linear_speed: 0.2
+    # ────────────────────────────────────────────────────────────────────────
+    # 盲开速度 (Blind Forward Speed)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 盲开线速度 (m/s) — Phase1 初始前进速度
+    blind_linear_speed: 0.45
+
+    # 盲开角速度 (rad/s) — 通常为 0（直行）
     blind_angular_speed: 0.0
 
-    # ── 激光避障参数 ──────────────────────────────────
-    # 避障窗口：前方检测区域
+    # ────────────────────────────────────────────────────────────────────────
+    # 激光避障参数 (Lidar Obstacle Avoidance)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # --- 前方检测窗口 (Forward Detection Window) ---
+    # 前方窗口最小 X 距离 (m) — 距车体前端的近界
     phase1_window_min_x: 0.18
+
+    # 前方窗口最大 X 距离 (m) — 距车体前端的远界
     phase1_window_max_x: 0.85
+
+    # 前方窗口半宽 (m) — Y 方向±半宽，形成矩形检测区域
     phase1_window_half_width: 0.22
-    # 聚类过滤
+
+    # --- 聚类过滤参数 (Clustering Filter) ---
+    # 聚类间隙容差 (m) — 点云间距小于此值视为同一障碍物
     phase1_cluster_gap_tolerance: 0.12
+
+    # 最小聚类点数 — 点数少于此值的聚类被过滤
     phase1_min_cluster_points: 3
+
+    # 最小聚类宽度 (m) — 宽度小于此值的聚类被过滤（噪声）
     phase1_min_cluster_width: 0.06
+
+    # 最大聚类宽度 (m) — 宽度大于此值的聚类被过滤（墙体）
     phase1_max_cluster_width: 0.55
-    # 紧急停障窗口（更近更窄）
+
+    # --- 紧急停障窗口 (Emergency Stop Window) ---
+    # 紧急窗口最小 X 距离 (m) — 更近的检测窗口
     phase1_emergency_min_x: 0.08
+
+    # 紧急窗口最大 X 距离 (m)
     phase1_emergency_max_x: 0.45
+
+    # 紧急窗口半宽 (m) — 更窄的检测区域
     phase1_emergency_half_width: 0.12
+
+    # 紧急窗口最小点数
     phase1_emergency_min_points: 2
-    # 避障动作
+
+    # --- 避障动作参数 (Avoidance Action) ---
+    # 避障线速度 (m/s) — 避障期间前进速度
     avoid_linear_speed: 0.1
+
+    # 避障角速度 (rad/s) — 转向速度（根据障碍物方向选择±）
     avoid_angular_speed: 0.8
+
+    # 避障最小持续时间 (s) — 避障至少持续时长
     avoid_min_duration_sec: 0.7
+
+    # 障碍清除保持时间 (s) — 障碍清除后需保持此时长才切换状态
     avoid_clear_hold_sec: 0.25
+
+    # 避障最小转向角度 (°) — 相对初始航向至少转过此角度
     avoid_min_turn_angle_deg: 18.0
+
+    # 启动宽限期 (s) — 节点启动后此时间内不触发避障（避免噪声误触发）
     phase1_avoid_startup_grace_sec: 1.5
-    # 激光扫描配置
+
+    # --- 激光扫描配置 (Lidar Scan Config) ---
+    # 扫描角度范围 (°) — ±此角度内的激光点参与检测
     scan_angle_deg: 45.0
+
+    # 安全距离 (m) — 障碍物距离小于此值触发避障
     safe_distance: 0.5
+
+    # 清除距离 (m) — 障碍物距离大于此值视为清除
     clear_distance: 0.65
+
+    # 最小有效量程 (m) — 激光点距离小于此值视为无效
     min_valid_range: 0.15
 
-    # ── 避障恢复（反舵+回正） ──────────────────────────
+    # ────────────────────────────────────────────────────────────────────────
+    # 避障恢复 (Avoidance Recovery)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # --- 反舵阶段 (Counter Steering) ---
+    # 反舵线速度 (m/s)
     counter_steer_linear_speed: 0.10
+
+    # 反舵角速度 (rad/s) — 反向转向速度
     counter_steer_angular_speed: 0.95
+
+    # 反舵持续时间缩放系数 — 反舵时长 = 避障时长 × 此系数
     counter_steer_duration_scale: 1.35
+
+    # 反舵最小持续时间 (s)
     counter_steer_min_duration_sec: 0.45
+
+    # 反舵最大持续时间 (s)
     counter_steer_max_duration_sec: 1.20
+
+    # --- 恢复阶段 (Recovery) ---
+    # 恢复线速度 (m/s) — 直行恢复速度
     recovery_linear_speed: 0.12
+
+    # 恢复转弯线速度 (m/s) — 转弯修正时的前进速度
     recovery_turn_linear_speed: 0.08
+
+    # 恢复角速度 (rad/s) — 基于时间的恢复转向速度
     recovery_angular_speed: 0.75
+
+    # 恢复航向比例增益 — 航向误差 → 角速度修正增益
     recovery_heading_kp: 2.4
+
+    # 恢复最大角速度 (rad/s)
     recovery_max_angular_speed: 1.1
+
+    # 恢复最小角速度 (rad/s) — 防止微小误差时转速过低
     recovery_min_angular_speed: 0.5
+
+    # 原地转向角度阈值 (°) — 航向误差小于此值时边走边转，否则原地转
     recovery_in_place_angle_deg: 8.0
+
+    # 航向容差 (°) — 航向误差小于此值视为到位
     heading_tolerance_deg: 6.0
+
+    # 恢复超时 (s) — 恢复阶段最长时间
     recovery_timeout: 2.5
+
+    # 恢复持续时间缩放 — 基于避障时长估算恢复时长
     recovery_duration_scale: 0.9
 
-    # ── 后退功能 ──────────────────────────────────────
+    # ────────────────────────────────────────────────────────────────────────
+    # 后退功能 (Backing Along Recorded Path)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 启用后退功能 — true: 扫码后沿轨迹后退, false: 直接通道导航
     enable_backing: true
-    back_target_x: 2.0              # map坐标x阈值
-    back_linear_speed: -0.15        # 倒车速度
-    back_angular_kp: 1.8            # 后退航向修正增益
-    back_position_tolerance: 0.15   # 路点到达容差
-    back_path_sample_distance: 0.20 # 路径采样间隔
-    back_timeout_sec: 10.0          # 后退超时
-    back_align_yaw_deg: 90.0        # 对齐目标航向
+
+    # 后退目标 X (m, map 坐标系) — 后退到 map_x ≤ 此值时停止
+    back_target_x: 2.0
+
+    # 后退线速度 (m/s) — 负值表示倒车
+    back_linear_speed: -0.35
+
+    # 后退航向修正增益 — 航向误差 → 角速度增益
+    back_angular_kp: 1.8
+
+    # 路点到达容差 (m) — 距离当前目标路点小于此值时推进到下一路点
+    back_position_tolerance: 0.15
+
+    # 路径采样间隔 (m) — 前进时每隔此距离记录一个路点
+    back_path_sample_distance: 0.05
+
+    # 后退超时 (s) — 后退超过此时长则跳过后退，直接通道导航
+    back_timeout_sec: 10.0
+
+    # 对齐目标航向 (°) — 后退完成后对齐到此航向（通常 90°）
+    back_align_yaw_deg: 90.0
+
+    # 对齐航向容差 (°)
     back_align_tolerance_deg: 5.0
+
+    # 对齐超时 (s) — 航向对齐超过此时长则跳过，进入通道导航
     back_align_timeout_sec: 10.0
 
-    # ── 通道导航（区域进入） ──────────────────────────
+    # ────────────────────────────────────────────────────────────────────────
+    # 通道导航 (Corridor Navigation - Region Entry)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 启用通道导航 — false: 后退完成直接切 Stage2
     enable_corridor_navigation: true
+
+    # 通道路径发布话题（用于 RViz2 可视化）
     corridor_path_topic: /stage1_corridor_path
-    # 中线途经点 + 终点（map坐标系）
-    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.16,"description":"corridor_mid_1"},{"x":2.50,"y":2.20,"speed":0.14,"description":"corridor_mid_2"},{"x":2.50,"y":2.90,"speed":0.10,"yaw_deg":90.0,"description":"corridor_goal"}]'
-    corridor_waypoint_tolerance: 0.22
-    corridor_goal_tolerance: 0.35
+
+    # --- 通道路点 (Waypoints in map frame) ---
+    # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
+    # 先贴 x=2.50 再收 y，避免单点 LOS 中段漂移
+    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.20,"speed":0.18,"description":"corridor_mid_2"},{"x":2.50,"y":3.30,"speed":0.16,"yaw_deg":90.0,"description":"corridor_goal"}]'
+
+    # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
+    corridor_waypoint_tolerance: 0.25
+
+    # 终点容差 (m) — 距离终点小于此值时判定到达
+    # X方向±10cm，Y方向±5cm，欧氏距离约12cm
+    corridor_goal_tolerance: 0.12
+
+    # 终点目标航向 (°, map 坐标系) — 通道出口期望航向
     corridor_goal_yaw_deg: 90.0
-    corridor_goal_yaw_tolerance_deg: 30.0
-    # 区域进入判据（宽松）
-    corridor_entry_region_radius_m: 0.20
-    corridor_entry_yaw_tolerance_deg: 30.0
+
+    # 终点航向容差 (°) — 航向误差小于此值判定航向到位
+    # Stage2 入口会再对齐，此处控制在 15° 保证精度
+    corridor_goal_yaw_tolerance_deg: 15.0
+
+    # --- 区域进入判据 (Region Entry Criteria) ---
+    # 进入区域判定半径 (m) — 距离终点 ≤ 此半径时判定进入区域
+    corridor_entry_region_radius_m: 0.10
+
+    # 进入区域航向容差 (°) — 进入区域时航向误差容差
+    corridor_entry_yaw_tolerance_deg: 15.0
+
+    # 是否要求航向满足才放行 — false: 只要进入区域即可切 Stage2
     corridor_require_yaw_for_release: false
+
+    # 通道导航超时 (s) — 超时后强制切 Stage2
     corridor_timeout_sec: 45.0
+
+    # 日志输出周期 (s) — 每隔此时间打印一次导航状态
     corridor_log_period_sec: 0.5
 
-    # ── 通道导航控制参数 ──────────────────────────────
-    corridor_path_follow_mode: pure_pursuit  # pure_pursuit | stanley
-    corridor_linear_speed: 0.18
-    turn_linear_speed: 0.05
-    turn_min_angular_speed: 0.20
-    turn_angular_speed: 0.8
-    max_angular_speed: 0.8
-    corridor_creep_speed: 0.06
-    corridor_min_cruise_speed: 0.10
-    corridor_max_turn_linear_speed: 0.08
-    # Pure Pursuit
-    pure_pursuit_lookahead_m: 0.45
-    pure_pursuit_turn_kp: 1.8
+    # ────────────────────────────────────────────────────────────────────────
+    # 通道导航控制参数 (Corridor Control)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # --- 路径跟踪模式 (Path Following Mode) ---
+    # pure_pursuit: 纯追踪, stanley: Stanley 控制器
+    corridor_path_follow_mode: pure_pursuit
+
+    # --- 速度参数 (Speed Control) ---
+    # 通道巡航速度 (m/s)
+    corridor_linear_speed: 0.20
+
+    # 转弯线速度 (m/s) — 大角度转向时的前进速度
+    turn_linear_speed: 0.12
+
+    # 转弯最小角速度 (rad/s) — 防止转速过低
+    turn_min_angular_speed: 0.15
+
+    # 转弯角速度上限 (rad/s)
+    turn_angular_speed: 0.55
+
+    # 全局最大角速度 (rad/s)
+    max_angular_speed: 0.60
+
+    # 蠕行速度 (m/s) — 近场收敛时的最低速度
+    corridor_creep_speed: 0.08
+
+    # 最低巡航速度 (m/s) — 通道中的最低前进速度
+    corridor_min_cruise_speed: 0.15
+
+    # 转弯时最大线速度 (m/s) — 大角速度时限制线速度
+    corridor_max_turn_linear_speed: 0.22
+
+    # --- Pure Pursuit 参数 ---
+    # 前视距离 (m) — 追踪路径上前方此距离的点
+    pure_pursuit_lookahead_m: 0.35
+
+    # 转向增益 — 曲率 → 角速度增益
+    pure_pursuit_turn_kp: 1.5
+
+    # 航向差停止阈值 (°) — 航向误差大于此值时停止纯追踪
     pure_pursuit_heading_stop_deg: 70.0
-    corridor_pp_min_lookahead_m: 0.30
+
+    # 最小前视距离 (m) — 防止前视距离过小
+    corridor_pp_min_lookahead_m: 0.25
+
+    # 速度缩放系数 — 线速度 = 巡航速度 × 此系数
     corridor_pp_speed_scale: 1.0
-    # 控制增益
+
+    # --- 控制增益 (Control Gains) ---
+    # 距离误差 → 线速度增益
     corridor_rho_kp: 0.85
+
+    # 航向误差 → 角速度增益（LOS 方向）
     corridor_alpha_kp: 2.0
+
+    # 目标航向 → 角速度增益（融合终点航向）
     corridor_beta_kp: 0.80
+
+    # 航向修正增益 — IMU 航向误差 → 角速度
     corridor_heading_kp: 1.0
+
+    # Stanley 横向误差增益
     corridor_stanley_k: 1.2
+
+    # 横向偏差修正增益
     corridor_lateral_kp: 1.8
+
+    # X 坐标到位容差 (m) — map_x 误差小于此值视为 X 到位
     corridor_x_tolerance: 0.25
-    # 近场收敛
-    corridor_brake_distance: 0.45
-    corridor_brake_kp: 0.28
-    corridor_capture_distance: 0.22
-    corridor_capture_exit_distance: 0.35
-    corridor_capture_speed: 0.05
+
+    # --- 近场收敛 (Near-Field Convergence) ---
+    # 制动距离 (m) — 距离终点小于此值时开始减速
+    corridor_brake_distance: 0.60
+
+    # 制动增益 — 距离 → 线速度衰减系数
+    corridor_brake_kp: 0.35
+
+    # 捕获距离 (m) — 进入近场控制的距离
+    corridor_capture_distance: 0.28
+
+    # 捕获退出距离 (m) — 退出近场控制的距离
+    corridor_capture_exit_distance: 0.45
+
+    # 捕获速度 (m/s) — 近场控制时的线速度
+    corridor_capture_speed: 0.10
+
+    # 对齐线速度 (m/s) — 航向对齐时的线速度（0 = 原地转）
     corridor_align_linear_speed: 0.0
+
+    # Beta 混合距离 (m) — 距离终点小于此值时融合目标航向
     corridor_beta_blend_distance: 0.70
+
+    # 近场距离阈值 (m)
     corridor_near_distance: 0.45
 
-    # ── 通道地图规划（A*） ────────────────────────────
-    use_corridor_planner: true
-    planner_downsample: 4
-    planner_occupied_threshold: 50
-    planner_unknown_is_occupied: true
-    planner_obstacle_inflation_m: 0.14
-    planner_replan_period_sec: 2.5
-    corridor_replan_min_progress_m: 0.35
-    corridor_replan_offpath_m: 0.28
+    # ────────────────────────────────────────────────────────────────────────
+    # 通道地图规划 (Corridor A* Path Planning)
+    # ────────────────────────────────────────────────────────────────────────
 
-    # ── 倒车后重定向（可选） ──────────────────────────
+    # 启用栅格规划器 — true: A* 避开障碍物, false: 直线连接路点
+    use_corridor_planner: true
+
+    # --- 栅格参数 (Grid Parameters) ---
+    # 地图降采样倍率 — 每 N×N 个栅格合并为 1 个（降低计算量）
+    planner_downsample: 4
+
+    # 占据阈值 (0-100) — 栅格值 ≥ 此阈值视为障碍物
+    planner_occupied_threshold: 50
+
+    # 未知区域视为占据 — true: 未知区域不可通行
+    planner_unknown_is_occupied: true
+
+    # 障碍物膨胀半径 (m) — 障碍物向外膨胀此距离（安全余量）
+    planner_obstacle_inflation_m: 0.14
+
+    # --- 重规划触发条件 (Replanning Triggers) ---
+    # 重规划周期 (s) — 最长间隔此时间重规划一次
+    planner_replan_period_sec: 2.0
+
+    # 重规划最小进度 (m) — 移动距离 ≥ 此值 + 超过周期时才重规划
+    corridor_replan_min_progress_m: 0.30
+
+    # 偏航重规划阈值 (m) — 偏离路径距离 ≥ 此值时立即重规划
+    corridor_replan_offpath_m: 0.20
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 倒车后重定向 (Post-Backing Reorientation, 可选)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 启用入口重定向 — true: 倒车后航向误差大时原地拧正
     corridor_entry_reorient_enabled: false
+
+    # 触发重定向角度阈值 (°) — 航向误差 ≥ 此值时触发重定向
     corridor_entry_reorient_angle_deg: 50.0
+
+    # 重定向完成角度 (°) — 航向误差 ≤ 此值时重定向完成
     corridor_entry_reorient_done_deg: 25.0
+
+    # 重定向超时 (s)
     corridor_entry_reorient_timeout_sec: 4.0
+
+    # 中线重定向角度阈值 (°) — 偏离中线航向 ≥ 此值时触发重定向
     corridor_centerline_reorient_deg: 55.0
+
+    # 重定向时允许避障 — false: 重定向期间禁用避障（防止侧墙干扰）
     corridor_avoid_while_reorient: false
+
+    # 强制重定向 — true: 每次进入通道都重定向
     corridor_force_reorient_enabled: false
+
+    # 允许倒车模式 — true: 允许倒车回正（当前未使用）
     corridor_reverse_enabled: false
 
-    # ── 左侧恢复（防右墙） ────────────────────────────
-    corridor_left_recover_x: 3.50
-    corridor_left_recover_angular: 0.70
-    corridor_left_recover_linear: 0.06
+    # ────────────────────────────────────────────────────────────────────────
+    # 左侧恢复 (Left Recovery - Anti Right-Wall Drift)
+    # ────────────────────────────────────────────────────────────────────────
 
-    # ── Phase切换参数 ─────────────────────────────────
-    transition_stop_duration: 0.0
+    # 触发 X 阈值 (m, map 坐标系) — map_x > 此值时向左旋回（防止贴右墙）
+    # 设置为很大的值，实际上禁用走廊导航期间的左侧恢复
+    corridor_left_recover_x: 99.0
+
+    # 左旋角速度 (rad/s) — 向左旋回的角速度
+    corridor_left_recover_angular: 0.70
+
+    # 左旋线速度 (m/s) — 向左旋回时的前进速度
+    corridor_left_recover_linear: 0.15
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Phase 切换参数 (Phase Transition)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 切换停车时长 (s) — Phase 切换后停车等待此时长
+    transition_stop_duration: 0.05
+
+    # Stage2 指令超时 (s) — Phase2 时，超过此时长未收到 Stage2 指令则停车
     stage2_cmd_timeout: 0.5
+
+    # Phase2 障碍覆盖 — true: Phase2 时仍响应 Phase1 避障
     phase2_obstacle_override: false
+
+    # Phase2 紧急停车距离 (m) — Phase2 时障碍物距离 ≤ 此值立即停车
     phase2_emergency_stop_distance: 0.22
+
+    # Phase3 外部控制 — true: Phase3 由 Stage3 节点控制，Stage1 不发指令
     phase3_external_control: true
+
+    # Phase3 紧急停车距离 (m)
     phase3_emergency_stop_distance: 0.22

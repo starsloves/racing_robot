@@ -84,6 +84,12 @@ class VisionLaneCentering:
         self._filtered_error = 0.0
         self._has_filtered_error = False
         self._centerline_mode = True  # True=多行中线；False=旧质心兼容
+
+        # 边界安全检测
+        self._latest_boundary_safe = True
+        self._latest_safety_weight = 1.0
+        self._boundary_safety_margin = 0.15  # 边界安全裕度（归一化宽度比例）
+        self._boundary_coverage_thresh = 0.20  # 侧边最小mask覆盖率
         
         # 可视化缓存（供 HTTP 服务）
         self._combined_frame = None
@@ -245,37 +251,58 @@ class VisionLaneCentering:
                 'valid_rows': int(self._latest_valid_rows) if valid else 0,
                 'timestamp': float(self._latest_timestamp),
                 'age': float(age),
+                'boundary_safe': bool(getattr(self, '_latest_boundary_safe', True)),
+                'safety_weight': float(getattr(self, '_latest_safety_weight', 1.0)),
             }
 
     def _extract_centerline_from_mask(self, mask):
-        """多行采样 mask 中心线。
+        """多行采样 mask 中心线（优化版：偏向远处，同时提取边界）。
 
         返回:
-            samples: list[(x, y)] 从近到远
+            samples: list[(x, y)] 从近到远的中心点
             error: 归一化横向误差 [-1,1]，负=偏左，正=偏右
             curve: 近远场中点差估计曲率
             confidence: 0~1
             target_xy: 前瞻点
+            left_boundary: list[(x, y)] 左边界点
+            right_boundary: list[(x, y)] 右边界点
         """
         if mask is None or mask.size == 0:
             return [], None, 0.0, 0.0, None
         h, w = mask.shape[:2]
         if h < 8 or w < 8:
             return [], None, 0.0, 0.0, None
-        rows = np.linspace(int(h * 0.90), int(h * 0.25), self._sample_rows).astype(int)
-        samples = []
+
+        # 采样范围优化：更偏向远处（减少近处干扰）
+        # 原始：0.90(近) → 0.25(远)
+        # 优化：0.70(近) → 0.15(远) — 更多权重在远处
+        rows = np.linspace(int(h * 0.70), int(h * 0.15), self._sample_rows).astype(int)
+
+        samples = []  # 中心线
+        left_edges = []  # 左边界
+        right_edges = []  # 右边界
+
         for y in rows:
             y0 = max(0, y - 1)
             y1 = min(h, y + 2)
             xs = np.where(mask[y0:y1, :] > 0)[1]
             if xs.size < self._min_mask_pixels_per_row:
                 continue
+
+            # 中心点
             cx = float(xs.mean())
             samples.append((cx, float(y)))
-        # 至少 3 行即可给出弱中线；正式阈值由上层 conf/rows 再过滤
+
+            # 左右边界
+            left_edge = float(xs.min())
+            right_edge = float(xs.max())
+            left_edges.append((left_edge, float(y)))
+            right_edges.append((right_edge, float(y)))
+
+        # 至少 3 行即可给出弱中线
         min_rows = max(3, min(self._min_valid_rows, self._sample_rows))
         if len(samples) < min_rows and len(samples) < 3:
-            return samples, None, 0.0, 0.0, None
+            return [], None, 0.0, 0.0, None
         if len(samples) < self._min_valid_rows:
             # 弱有效：仍返回 error，但 confidence 打折
             pass
@@ -291,10 +318,31 @@ class VisionLaneCentering:
         near = samples[0][0]
         far = samples[-1][0]
         curve = float(np.clip((far - near) / max(mid_x, 1.0), -1.0, 1.0))
+
+        # 置信度：综合考虑行数覆盖率 + 边界一致性
         coverage = float(len(samples)) / float(max(self._sample_rows, 1))
-        confidence = min(1.0, coverage)
+
+        # 边界一致性：左右边界是否平行（标准差小说明是直道）
+        boundary_consistency = 1.0
+        if len(left_edges) >= 3:
+            left_xs = [p[0] for p in left_edges]
+            right_xs = [p[0] for p in right_edges]
+            left_std = float(np.std(left_xs))
+            right_std = float(np.std(right_xs))
+            # 标准差小（<10像素）说明边界平直
+            boundary_consistency = max(0.0, 1.0 - (left_std + right_std) / (w * 0.05))
+
+        confidence = min(1.0, coverage * 0.7 + boundary_consistency * 0.3)
         if len(samples) < self._min_valid_rows:
             confidence *= 0.55
+
+        # 存储边界信息供外部使用
+        if not hasattr(self, '_latest_left_boundary'):
+            self._latest_left_boundary = []
+            self._latest_right_boundary = []
+        self._latest_left_boundary = left_edges
+        self._latest_right_boundary = right_edges
+
         return samples, raw_error, curve, confidence, target
 
     def _estimate_offset_from_mask(self, mask, fallback_cx=None, fallback_cy=None):
@@ -402,7 +450,58 @@ class VisionLaneCentering:
         free_ratio = float(np.clip(free_ratio, 0.0, 1.0))
         remaining = self._range_near_m + free_ratio * (self._range_far_m - self._range_near_m)
         return float(remaining), free_ratio
-    
+
+    def _check_lane_boundary_safety(self, mask, error):
+        """
+        检测车辆是否接近mask边界，触发保护性控制。
+
+        Args:
+            mask: 赛道分割mask (H, W)
+            error: 横向误差 [-1, 1]，负=偏左，正=偏右
+
+        Returns:
+            (boundary_safe: bool, safety_weight: float)
+            - boundary_safe: True=安全, False=接近边界
+            - safety_weight: 视觉权重系数 [0.3, 1.0]，越危险越小
+        """
+        if mask is None or mask.size == 0:
+            return True, 1.0  # 无mask，假设安全（由上层处理失效）
+
+        h, w = mask.shape[:2]
+        if h < 8 or w < 8:
+            return True, 1.0
+
+        # 检查左右两侧mask覆盖情况（侧边安全裕度区域）
+        margin_px = max(1, int(w * self._boundary_safety_margin))
+
+        left_region = mask[:, :margin_px]
+        right_region = mask[:, -margin_px:]
+
+        left_coverage = float(left_region.mean()) if left_region.size > 0 else 0.0
+        right_coverage = float(right_region.mean()) if right_region.size > 0 else 0.0
+
+        thresh = self._boundary_coverage_thresh
+
+        # 如果车辆往某侧偏移，但该侧mask稀疏→危险
+        # 误差阈值：0.25（中等偏离），0.40（严重偏离）
+        if error < -0.25 and left_coverage < thresh:  # 左偏且左侧无路
+            if error < -0.40:  # 严重左偏
+                return False, 0.30  # 视觉权重降至30%，IMU主导
+            else:
+                return False, 0.55  # 中等左偏，混合控制
+
+        if error > 0.25 and right_coverage < thresh:  # 右偏且右侧无路
+            if error > 0.40:  # 严重右偏
+                return False, 0.30
+            else:
+                return False, 0.55
+
+        # 双侧都无路（窄通道末端）→极度危险
+        if left_coverage < thresh and right_coverage < thresh:
+            return False, 0.20  # 几乎完全IMU接管
+
+        return True, 1.0  # 安全
+
     def _start_http_server(self):
         """启动 HTTP 静态文件服务器（后台线程，多线程处理请求）"""
         parent_self = self  # 闭包引用
@@ -676,6 +775,8 @@ setInterval(health, 500); health();
             best_curve = 0.0
             best_confidence = 0.0
             best_valid_rows = 0
+            best_boundary_safe = True
+            best_safety_weight = 1.0
             detection_valid = False
             
             if len(bboxes) > 0:
@@ -827,16 +928,21 @@ setInterval(health, 500); health();
                     cv2.line(frame_after, (mid, h_crop - 1), (cx, cy), (255, 0, 0), 2)
 
                     rem_m, free_ratio = self._estimate_remaining_from_mask(mf)
+
+                    # 边界安全检测
+                    boundary_safe, safety_weight = self._check_lane_boundary_safety(mf, offset)
+
                     rem_txt = f'{rem_m:.2f}m' if rem_m is not None else 'N/A'
                     state_txt = 'CENTERED' if centered else f'e={offset:+.2f} c={curve:+.2f}'
+                    safe_txt = f'SAFE' if boundary_safe else f'DANGER(w={safety_weight:.1f})'
                     cv2.putText(
                         frame_after,
-                        f'conf={scores[i]:.2f} {state_txt} rows={valid_rows} rem={rem_txt}',
+                        f'conf={scores[i]:.2f} {state_txt} rows={valid_rows} rem={rem_txt} {safe_txt}',
                         (int(x1), max(20, int(y1) - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2,
                     )
 
-                    # 取第一个检测的中线误差 + 纵向剩余
+                    # 取第一个检测的中线误差 + 纵向剩余 + 边界安全
                     if not detection_valid:
                         best_offset = float(offset)
                         best_box = box  # 保存用于日志
@@ -849,6 +955,8 @@ setInterval(health, 500); health();
                         best_curve = float(curve)
                         best_confidence = float(confidence)
                         best_valid_rows = int(valid_rows)
+                        best_boundary_safe = bool(boundary_safe)
+                        best_safety_weight = float(safety_weight)
                         detection_valid = True
             
             # 6. 更新共享变量 + 状态变化日志
@@ -862,29 +970,32 @@ setInterval(health, 500); health();
                     self._latest_curve = float(best_curve)
                     self._latest_confidence = float(best_confidence)
                     self._latest_valid_rows = int(best_valid_rows)
+                    self._latest_boundary_safe = bool(best_boundary_safe)
+                    self._latest_safety_weight = float(best_safety_weight)
                     if best_remaining_m is not None:
                         self._latest_remaining_m = float(best_remaining_m)
                         self._latest_free_ratio = float(best_free_ratio)
                         self._range_valid = True
                     else:
                         self._range_valid = False
-                    
+
                     # 状态变化日志：从失效→恢复
                     if self._last_valid_state is False:
                         rem_txt = (
                             f'{best_remaining_m:.2f}m'
                             if best_remaining_m is not None else 'N/A'
                         )
+                        safe_status = 'SAFE' if best_boundary_safe else f'WARN(w={best_safety_weight:.2f})'
                         if best_box is not None:
                             self._node.get_logger().info(
-                                f'[VISION] 推理成功 e={best_offset:+.3f} curve={best_curve:+.3f} rows={best_valid_rows} rem={rem_txt} | '
+                                f'[VISION] 推理成功 e={best_offset:+.3f} curve={best_curve:+.3f} rows={best_valid_rows} rem={rem_txt} {safe_status} | '
                                 f'bbox=({int(best_box[0])},{int(best_box[1])})→'
                                 f'({int(best_box[2])},{int(best_box[3])}) '
                                 f'conf={best_score:.2f}'
                             )
                         else:
                             self._node.get_logger().info(
-                                f'[VISION] 推理成功 e={best_offset:+.3f} curve={best_curve:+.3f} rows={best_valid_rows} rem={rem_txt}'
+                                f'[VISION] 推理成功 e={best_offset:+.3f} curve={best_curve:+.3f} rows={best_valid_rows} rem={rem_txt} {safe_status}'
                             )
                     self._last_valid_state = True
                 else:
@@ -895,6 +1006,8 @@ setInterval(health, 500); health();
                     self._latest_curve = 0.0
                     self._latest_confidence = 0.0
                     self._latest_valid_rows = 0
+                    self._latest_boundary_safe = True
+                    self._latest_safety_weight = 1.0
                     self._has_filtered_error = False
                     
                     # 状态变化日志：从有效→失效

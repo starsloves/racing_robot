@@ -168,7 +168,7 @@ def generate_launch_description():
         executable='competition_controller',
         name='competition_controller',
         parameters=[
-            os.path.join(stage1_config_dir, 'stage1_controller.yaml'),
+            os.path.join(stage1_config_dir, 'stage1_controller.yaml'),  # 统一配置文件
             {
                 'stage2_cmd_topic': LaunchConfiguration('stage2_cmd_topic'),
                 'imu_topic': LaunchConfiguration('imu_topic'),
