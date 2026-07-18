@@ -159,7 +159,7 @@ class GlobalPathPlanner:
             self.last_plan_at = now_sec
             return []
 
-        # ?        world_points = [start_position]
+        world_points = [start_position]
         for cell_x, cell_y in cell_path[1:-1]:
             world_points.append(
                 self._planner_cell_to_world(cell_x, cell_y, resolution, origin_x, origin_y)

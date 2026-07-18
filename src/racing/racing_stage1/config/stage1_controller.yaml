@@ -249,14 +249,14 @@ competition_controller:
     # --- 通道路点 (Waypoints in map frame) ---
     # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
     # 先贴 x=2.50 再收 y，避免单点 LOS 中段漂移
-    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.00,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.40,"y":2.70,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
 
     # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
     corridor_waypoint_tolerance: 0.25
 
     # 终点容差 (m) — 距离终点小于此值时判定到达
     # X方向±10cm，Y方向±5cm，欧氏距离约12cm
-    corridor_goal_tolerance: 0.12
+    corridor_goal_tolerance: 0.15
 
     # 终点目标航向 (°, map 坐标系) — 通道出口期望航向
     corridor_goal_yaw_deg: 90.0
@@ -274,6 +274,10 @@ competition_controller:
 
     # 是否要求航向满足才放行 — false: 只要进入区域即可切 Stage2
     corridor_require_yaw_for_release: false
+
+    # 通道导航接近目标时禁用避障距离 (m) — 距离终点 ≤ 此值时不再触发避障
+    # 防止交接时避障导致超出 Stage2 入口范围
+    corridor_disable_avoidance_distance_m: 0.50
 
     # 通道导航超时 (s) — 超时后强制切 Stage2
     corridor_timeout_sec: 45.0

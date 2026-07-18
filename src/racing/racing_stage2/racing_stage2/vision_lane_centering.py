@@ -90,6 +90,43 @@ class VisionLaneCentering:
         self._latest_safety_weight = 1.0
         self._boundary_safety_margin = 0.15  # 边界安全裕度（归一化宽度比例）
         self._boundary_coverage_thresh = 0.20  # 侧边最小mask覆盖率
+
+        # 转弯边界线检测
+        self._boundary_ahead = False  # 前方是否检测到转弯边界线
+        self._boundary_angle_deg = 0.0  # 边界线角度（相对于前进方向）
+        self._boundary_distance_ratio = 0.0  # 边界线距离比例（0=远，1=近）
+        self._boundary_far_ratio = 0.0
+        self._boundary_mid_ratio = 0.0
+        self._boundary_near_ratio = 0.0
+        self._boundary_coverage_std = 0.0
+        self._boundary_top_y_ratio = 0.0
+        self._front_score = 0.0
+        self._straight_score = 0.0
+        self._left_ratio = 0.0
+        self._right_ratio = 0.0
+        self._near_error = 0.0
+        self._far_error = 0.0
+        self._path_bend = 0.0  # far_cx - near_cx 归一化，航向趋势
+        # 边界贴边：0=贴着图像边缘，越大越离开边缘（越居中）
+        self._left_margin = 0.0   # 左边界距画面左缘 / (w/2) 诊断
+        self._right_margin = 0.0
+        self._lane_clear = False  # 赛道中心≈画面中心 → 道中央
+        self._lane_center_off = 0.0  # (lane_cx-mid)/half，+右
+        self._rel_left = 0.0
+        self._rel_right = 0.0
+        self._center_fill = 0.0  # 中心±10%竖带 mask 占比
+        self._center_fill_5 = 0.0  # 中心±5%竖带（纠偏回正）
+        self._apex_has_mask = True  # 最高点（最远端中线）是否有黄/SEG
+        self._apex_error = 0.0  # 最高点横向：+右 -左
+        self._apex_fill = 0.0  # 最高点附近小窗 mask 占比
+        # 用户核心判据：顶点处中心线左右占比
+        self._apex_left5_fill = 0.0  # 顶点中心线左5%占比
+        self._apex_right5_fill = 0.0  # 顶点中心线右5%占比
+        self._apex_left10_fill = 0.0  # 顶点中心线左10%占比
+        self._apex_right10_fill = 0.0  # 顶点中心线右10%占比
+        self._apex_center10_fill = 0.0  # 顶点中心线±10%占比
+        self._edge_angle_deg = 90.0
+        self._perp_score = 0.0
         
         # 可视化缓存（供 HTTP 服务）
         self._combined_frame = None
@@ -253,6 +290,41 @@ class VisionLaneCentering:
                 'age': float(age),
                 'boundary_safe': bool(getattr(self, '_latest_boundary_safe', True)),
                 'safety_weight': float(getattr(self, '_latest_safety_weight', 1.0)),
+                # 转弯边界线检测
+                'boundary_ahead': bool(getattr(self, '_boundary_ahead', False)),
+                'boundary_angle_deg': float(getattr(self, '_boundary_angle_deg', 0.0)),
+                'boundary_distance_ratio': float(getattr(self, '_boundary_distance_ratio', 0.0)),
+                'boundary_far_ratio': float(getattr(self, '_boundary_far_ratio', 0.0)),
+                'boundary_mid_ratio': float(getattr(self, '_boundary_mid_ratio', 0.0)),
+                'boundary_near_ratio': float(getattr(self, '_boundary_near_ratio', 0.0)),
+                'boundary_coverage_std': float(getattr(self, '_boundary_coverage_std', 0.0)),
+                'boundary_top_y_ratio': float(getattr(self, '_boundary_top_y_ratio', 0.0)),
+                'front_score': float(getattr(self, '_front_score', 0.0)),
+                'straight_score': float(getattr(self, '_straight_score', 0.0)),
+                'left_ratio': float(getattr(self, '_left_ratio', 0.0)),
+                'right_ratio': float(getattr(self, '_right_ratio', 0.0)),
+                'near_error': float(getattr(self, '_near_error', 0.0)),
+                'far_error': float(getattr(self, '_far_error', 0.0)),
+                'path_bend': float(getattr(self, '_path_bend', 0.0)),
+                'left_margin': float(getattr(self, '_left_margin', 0.0)),
+                'right_margin': float(getattr(self, '_right_margin', 0.0)),
+                'lane_clear': bool(getattr(self, '_lane_clear', False)),
+                'lane_center_off': float(getattr(self, '_lane_center_off', 0.0)),
+                'rel_left': float(getattr(self, '_rel_left', 0.0)),
+                'rel_right': float(getattr(self, '_rel_right', 0.0)),
+                'center_fill': float(getattr(self, '_center_fill', 0.0)),
+                'center_fill_5': float(getattr(self, '_center_fill_5', 0.0)),
+                'apex_has_mask': bool(getattr(self, '_apex_has_mask', True)),
+                'apex_error': float(getattr(self, '_apex_error', 0.0)),
+                'apex_fill': float(getattr(self, '_apex_fill', 0.0)),
+                'edge_angle_deg': float(getattr(self, '_edge_angle_deg', 90.0)),
+                'perp_score': float(getattr(self, '_perp_score', 0.0)),
+                # 用户核心判据：顶点处中心线左右占比
+                'apex_left5_fill': float(getattr(self, '_apex_left5_fill', 0.0)),
+                'apex_right5_fill': float(getattr(self, '_apex_right5_fill', 0.0)),
+                'apex_left10_fill': float(getattr(self, '_apex_left10_fill', 0.0)),
+                'apex_right10_fill': float(getattr(self, '_apex_right10_fill', 0.0)),
+                'apex_center10_fill': float(getattr(self, '_apex_center10_fill', 0.0)),
                 # Pure Pursuit 路径信息
                 'path_samples': getattr(self, '_latest_path_samples', []),  # [(x_m, y_m), ...]
                 'lookahead_point': getattr(self, '_latest_lookahead_point', None),  # (x_m, y_m)
@@ -320,6 +392,142 @@ class VisionLaneCentering:
         near = samples[0][0]
         far = samples[-1][0]
         curve = float(np.clip((far - near) / max(mid_x, 1.0), -1.0, 1.0))
+        # 近场/远场横向误差 + 路径弯曲（航向主量）
+        # 负=中线在左（车偏右），正=中线在右（车偏左）——与 raw_error 同号约定
+        near_error = float(np.clip((near - mid_x) / max(mid_x, 1.0), -1.0, 1.0))
+        far_error = float(np.clip((far - mid_x) / max(mid_x, 1.0), -1.0, 1.0))
+        # 取中段一点增强稳定
+        mid_s = samples[len(samples) // 2][0]
+        mid_error = float(np.clip((mid_s - mid_x) / max(mid_x, 1.0), -1.0, 1.0))
+        path_bend = float(np.clip((far - near) / max(mid_x, 1.0), -1.0, 1.0))  # 同 curve
+        self._near_error = near_error
+        self._far_error = far_error
+        self._path_bend = path_bend
+        # 航向误差：远场权重大 → 弯前更早打方向
+        raw_error = float(np.clip(0.35 * near_error + 0.25 * mid_error + 0.40 * far_error, -1.0, 1.0))
+        # 用户规则：画面中心左右各 10% 竖带占满 mask → 可判居中可直行
+        band = max(1, int(round(w * 0.10)))  # 半宽 10%
+        band5 = max(1, int(round(w * 0.05)))  # 半宽 5%（纠偏回正）
+        x0 = max(0, int(mid_x) - band)
+        x1 = min(w, int(mid_x) + band)
+        x0_5 = max(0, int(mid_x) - band5)
+        x1_5 = min(w, int(mid_x) + band5)
+        # 用近场 40% 高度，避免远处对面赛道
+        y0 = int(h * 0.45)
+        center_band = mask[y0:, x0:x1] if mask.ndim >= 2 else None
+        center_band5 = mask[y0:, x0_5:x1_5] if mask.ndim >= 2 else None
+        if center_band is not None and center_band.size > 0:
+            if center_band.dtype == np.uint8 and center_band.max() > 1:
+                fill = float((center_band > 127).mean())
+            else:
+                fill = float((center_band > 0.5).mean())
+        else:
+            fill = 0.0
+        if center_band5 is not None and center_band5.size > 0:
+            if center_band5.dtype == np.uint8 and center_band5.max() > 1:
+                fill5 = float((center_band5 > 127).mean())
+            else:
+                fill5 = float((center_band5 > 0.5).mean())
+        else:
+            fill5 = 0.0
+        self._center_fill = float(np.clip(fill, 0.0, 1.0))
+        self._center_fill_5 = float(np.clip(fill5, 0.0, 1.0))
+        # 最高点（最远端中线）：有没有黄/SEG，偏哪边
+        # samples 近→远，最远点 = samples[-1]
+        far_x, far_y = samples[-1]
+        self._apex_error = float(np.clip((far_x - mid_x) / max(mid_x, 1.0), -1.0, 1.0))
+        ay = int(max(0, min(h - 1, far_y)))
+        ax = int(max(0, min(w - 1, far_x)))
+        # 远端小窗：高 8% 图像、宽 ±8% 中心线附近
+        hy = max(2, int(round(h * 0.04)))
+        hx = max(2, int(round(w * 0.08)))
+        y_a0 = max(0, ay - hy)
+        y_a1 = min(h, ay + hy + 1)
+        x_a0 = max(0, ax - hx)
+        x_a1 = min(w, ax + hx + 1)
+        apex_win = mask[y_a0:y_a1, x_a0:x_a1] if mask.ndim >= 2 else None
+        if apex_win is not None and apex_win.size > 0:
+            if apex_win.dtype == np.uint8 and apex_win.max() > 1:
+                apex_fill = float((apex_win > 127).mean())
+            else:
+                apex_fill = float((apex_win > 0.5).mean())
+        else:
+            apex_fill = 0.0
+        # 远端行本身是否有 mask（整行）
+        far_row = mask[max(0, ay - 1):min(h, ay + 2), :] if mask.ndim >= 2 else None
+        if far_row is not None and far_row.size > 0:
+            if far_row.dtype == np.uint8 and far_row.max() > 1:
+                far_row_fill = float((far_row > 127).mean())
+            else:
+                far_row_fill = float((far_row > 0.5).mean())
+        else:
+            far_row_fill = 0.0
+        self._apex_fill = float(np.clip(max(apex_fill, far_row_fill * 0.6), 0.0, 1.0))
+        # 无黄：小窗几乎空 且 远端行覆盖很低
+        self._apex_has_mask = bool(self._apex_fill >= 0.12 or far_row_fill >= 0.08)
+
+        # 用户核心判据：顶点处中心线左右各5%和10%的mask占比
+        # 纠偏完成：顶点中心线左右各5%有SEG
+        # 转弯完成：顶点中心线±10%有SEG
+        band5_apex = max(1, int(round(w * 0.05)))
+        band10_apex = max(1, int(round(w * 0.10)))
+        apex_left5_x0 = max(0, ax - band5_apex)
+        apex_left5_x1 = ax
+        apex_right5_x0 = ax
+        apex_right5_x1 = min(w, ax + band5_apex)
+        apex_left10_x0 = max(0, ax - band10_apex)
+        apex_left10_x1 = ax
+        apex_right10_x0 = ax
+        apex_right10_x1 = min(w, ax + band10_apex)
+
+        # 顶点附近小窗（垂直方向±2行）
+        apex_row_win = mask[y_a0:y_a1, :]
+
+        apex_left5_fill = 0.0
+        apex_right5_fill = 0.0
+        apex_left10_fill = 0.0
+        apex_right10_fill = 0.0
+        apex_center10_fill = 0.0
+
+        if apex_row_win is not None and apex_row_win.size > 0:
+            if apex_row_win.dtype == np.uint8 and apex_row_win.max() > 1:
+                thresh = 127
+            else:
+                thresh = 0.5
+
+            # 左5%
+            left5_win = apex_row_win[:, apex_left5_x0:apex_left5_x1]
+            if left5_win.size > 0:
+                apex_left5_fill = float((left5_win > thresh).mean())
+
+            # 右5%
+            right5_win = apex_row_win[:, apex_right5_x0:apex_right5_x1]
+            if right5_win.size > 0:
+                apex_right5_fill = float((right5_win > thresh).mean())
+
+            # 左10%
+            left10_win = apex_row_win[:, apex_left10_x0:apex_left10_x1]
+            if left10_win.size > 0:
+                apex_left10_fill = float((left10_win > thresh).mean())
+
+            # 右10%
+            right10_win = apex_row_win[:, apex_right10_x0:apex_right10_x1]
+            if right10_win.size > 0:
+                apex_right10_fill = float((right10_win > thresh).mean())
+
+            # 中心±10%
+            center10_win = apex_row_win[:, apex_left10_x0:apex_right10_x1]
+            if center10_win.size > 0:
+                apex_center10_fill = float((center10_win > thresh).mean())
+
+        self._apex_left5_fill = float(np.clip(apex_left5_fill, 0.0, 1.0))
+        self._apex_right5_fill = float(np.clip(apex_right5_fill, 0.0, 1.0))
+        self._apex_left10_fill = float(np.clip(apex_left10_fill, 0.0, 1.0))
+        self._apex_right10_fill = float(np.clip(apex_right10_fill, 0.0, 1.0))
+        self._apex_center10_fill = float(np.clip(apex_center10_fill, 0.0, 1.0))
+        # 中心带足够满 → 强制 lane_clear（用户指定）
+        if self._center_fill >= 0.55:
+            self._lane_clear = True
 
         # 置信度：综合考虑行数覆盖率 + 边界一致性
         coverage = float(len(samples)) / float(max(self._sample_rows, 1))
@@ -342,6 +550,44 @@ class VisionLaneCentering:
             self._latest_right_boundary = []
         self._latest_left_boundary = left_edges
         self._latest_right_boundary = right_edges
+        # 近场左右边界：用最近若干行
+        # 关键改用「赛道中心相对画面中心」判居中，而不是「是否离开画面左右缘」。
+        # 裁切 FOV 下，居中时 mask 也可能贴画面边，旧 margin 会永远 clr=0。
+        n_edge = max(1, min(3, len(left_edges)))
+        if left_edges and right_edges:
+            l_near = float(sum(p[0] for p in left_edges[:n_edge]) / n_edge)
+            r_near = float(sum(p[0] for p in right_edges[:n_edge]) / n_edge)
+            half = max(mid_x, 1.0)
+            lane_cx = 0.5 * (l_near + r_near)
+            lane_half_w = 0.5 * max(1.0, r_near - l_near)
+            # 归一化：0=画面中心，+1=右半幅
+            center_off = float(np.clip((lane_cx - mid_x) / half, -1.5, 1.5))
+            # margin：边界到画面边的归一化距离（仅诊断）
+            self._left_margin = float(np.clip(l_near / half, 0.0, 2.0))
+            self._right_margin = float(np.clip((float(w) - 1.0 - r_near) / half, 0.0, 2.0))
+            # 相对裕度：边界到画面中心的内侧空间 / 半宽（更稳）
+            # 左边界在 mid 左侧越远，左相对裕度越大
+            rel_l = float(np.clip((mid_x - l_near) / half, 0.0, 2.0))
+            rel_r = float(np.clip((r_near - mid_x) / half, 0.0, 2.0))
+            # 居中：赛道中心靠近画面中心 + 左右都有一定宽度
+            width_ok = (r_near - l_near) > 0.18 * float(w)
+            self._lane_clear = bool(
+                width_ok
+                and abs(center_off) < 0.18
+                and rel_l > 0.08
+                and rel_r > 0.08
+            )
+            # 覆盖 near_error 用赛道中心（比 mask 质心更稳）
+            self._lane_center_off = center_off
+            self._rel_left = rel_l
+            self._rel_right = rel_r
+        else:
+            self._left_margin = 0.0
+            self._right_margin = 0.0
+            self._lane_clear = False
+            self._lane_center_off = 0.0
+            self._rel_left = 0.0
+            self._rel_right = 0.0
 
         # ═══ 像素坐标 → 世界坐标转换 ═══
         # 相机模型简化假设：
@@ -531,6 +777,167 @@ class VisionLaneCentering:
             return False, 0.20  # 几乎完全IMU接管
 
         return True, 1.0  # 安全
+
+    def _detect_boundary_ahead(self, mask):
+        """
+        前边界 / 直道几何（可通行 mask 的远端截断）。
+
+        返回字段:
+          boundary_ahead: 前方有横截边界（准备转弯）
+          front_score / straight_score: 0~1 连续分数
+          far/mid/near_ratio, left/right_ratio, coverage_std, top_y_ratio
+        注意: 左右侧空不作转向方向，方向由扫码环向决定。
+        """
+        empty = {
+            'boundary_ahead': False,
+            'distance_ratio': 0.0,
+            'far_ratio': 0.0,
+            'mid_ratio': 0.0,
+            'near_ratio': 0.0,
+            'coverage_std': 0.0,
+            'top_y_ratio': 0.0,
+            'front_score': 0.0,
+            'straight_score': 0.0,
+            'left_ratio': 0.0,
+            'right_ratio': 0.0,
+            'edge_angle_deg': 90.0,
+            'perp_score': 0.0,
+        }
+        if mask is None or mask.size == 0:
+            return empty
+
+        h, w = mask.shape[:2]
+        if h < 20 or w < 20:
+            return empty
+
+        if mask.dtype == np.uint8 and mask.max() > 1:
+            mask_norm = (mask > 127).astype(np.float32)
+        else:
+            mask_norm = (mask > 0.5).astype(np.float32)
+
+        third = h // 3
+        far_region = mask_norm[0:third, :]
+        mid_region = mask_norm[third:2 * third, :]
+        near_region = mask_norm[2 * third:, :]
+
+        far_ratio = float(far_region.mean()) if far_region.size > 0 else 0.0
+        mid_ratio = float(mid_region.mean()) if mid_region.size > 0 else 0.0
+        near_ratio = float(near_region.mean()) if near_region.size > 0 else 0.0
+        left_ratio = float(mask_norm[:, : max(1, w // 3)].mean())
+        right_ratio = float(mask_norm[:, (2 * w) // 3 :].mean())
+
+        row_has_mask = (mask_norm.sum(axis=1) > w * 0.08)
+        top_rows = np.where(row_has_mask)[0]
+        if len(top_rows) == 0:
+            out = dict(empty)
+            out.update({
+                'far_ratio': far_ratio,
+                'mid_ratio': mid_ratio,
+                'near_ratio': near_ratio,
+                'left_ratio': left_ratio,
+                'right_ratio': right_ratio,
+                'front_score': 1.0 if near_ratio < 0.15 else 0.65,
+                'straight_score': 0.0,
+            })
+            return out
+
+        top_y = int(top_rows[0])
+        top_y_ratio = top_y / float(max(1, h - 1))
+        distance_ratio = top_y_ratio
+
+        top_region = mask_norm[max(0, top_y - 5):min(h, top_y + 12), :]
+        if top_region.size == 0:
+            coverage_std = 1.0
+        else:
+            col_coverage = top_region.mean(axis=0)
+            coverage_std = float(np.std(col_coverage))
+
+        gap = max(0.0, near_ratio - far_ratio)
+        front_score = 0.0
+        if near_ratio > 0.28:
+            front_score += max(0.0, 0.48 - far_ratio) / 0.48 * 0.40
+            front_score += min(1.0, gap / 0.45) * 0.35
+            front_score += min(1.0, max(0.0, top_y_ratio - 0.06) / 0.35) * 0.15
+            front_score += max(0.0, 0.38 - coverage_std) / 0.38 * 0.10
+        front_score = float(np.clip(front_score, 0.0, 1.0))
+
+        boundary_ahead = (
+            front_score >= 0.52
+            and far_ratio < 0.40
+            and near_ratio > 0.38
+            and gap >= 0.18
+        )
+        if (not boundary_ahead) and far_ratio < 0.22 and near_ratio > 0.48:
+            boundary_ahead = True
+            front_score = max(front_score, 0.70)
+
+        straight_score = 0.0
+        straight_score += min(1.0, near_ratio / 0.70) * 0.30
+        straight_score += min(1.0, mid_ratio / 0.65) * 0.30
+        straight_score += min(1.0, far_ratio / 0.55) * 0.30
+        if gap < 0.20 and far_ratio > 0.40:
+            straight_score += 0.10
+        if coverage_std < 0.25:
+            straight_score += 0.05
+        straight_score = float(np.clip(straight_score, 0.0, 1.0))
+        if boundary_ahead:
+            straight_score *= 0.45
+
+        # 前边界倾角：对截断带做列方向梯度，估计边相对水平的角度
+        # 0°=水平横边（正对车头），90°=竖边
+        edge_angle_deg = 90.0  # 默认当竖/未知
+        try:
+            band0 = max(0, top_y - 2)
+            band1 = min(h, top_y + 15)
+            band = mask_norm[band0:band1, :]
+            if band.size > 0 and band1 > band0 + 2:
+                # 每列最上有 mask 的 y
+                col_top = []
+                for c in range(0, w, max(1, w // 40)):
+                    col = mask_norm[:, c]
+                    ys = np.where(col > 0.5)[0]
+                    if len(ys):
+                        col_top.append((float(c), float(ys[0])))
+                if len(col_top) >= 4:
+                    xs = np.array([p[0] for p in col_top], dtype=np.float64)
+                    ys = np.array([p[1] for p in col_top], dtype=np.float64)
+                    # 拟合 y = a*x + b，斜率 a；水平边 a≈0 → angle_from_horizontal≈0
+                    a = float(np.polyfit(xs, ys, 1)[0])
+                    # 边相对水平的角度（度），0=横边，90=竖边
+                    edge_angle_deg = float(abs(np.degrees(np.arctan(a))))
+                    edge_angle_deg = min(90.0, edge_angle_deg)
+        except Exception:
+            edge_angle_deg = 90.0
+
+        # 相对车头前进方向：横边≈垂直于前进方向
+        # free-space 顶部常拟合出“假水平边”，角度只能在远端已空时加分
+        perp_score = float(np.clip((28.0 - edge_angle_deg) / 28.0, 0.0, 1.0))
+        # 只有 far 真截断时，才允许角度抬 front / ba
+        if edge_angle_deg <= 28.0 and near_ratio > 0.35 and far_ratio < 0.34:
+            front_score = max(front_score, 0.40 + 0.35 * perp_score)
+            if edge_angle_deg <= 20.0 and far_ratio < 0.28 and near_ratio > 0.42:
+                boundary_ahead = True
+                front_score = max(front_score, 0.68)
+        # far 还开着：禁止因角度误触发
+        if far_ratio >= 0.40:
+            boundary_ahead = False if not (near_ratio > 0.55 and far_ratio < 0.22) else boundary_ahead
+            # 不强行抬 front
+
+        return {
+            'boundary_ahead': bool(boundary_ahead),
+            'distance_ratio': float(distance_ratio),
+            'far_ratio': float(far_ratio),
+            'mid_ratio': float(mid_ratio),
+            'near_ratio': float(near_ratio),
+            'coverage_std': float(coverage_std),
+            'top_y_ratio': float(top_y_ratio),
+            'front_score': float(front_score),
+            'straight_score': float(straight_score),
+            'left_ratio': float(left_ratio),
+            'right_ratio': float(right_ratio),
+            'edge_angle_deg': float(edge_angle_deg),
+            'perp_score': float(perp_score),
+        }
 
     def _start_http_server(self):
         """启动 HTTP 静态文件服务器（后台线程，多线程处理请求）"""
@@ -810,6 +1217,17 @@ setInterval(health, 500); health();
             best_path_samples_m = []
             best_lookahead_point_m = None
             best_lateral_error_m = 0.0
+            boundary_ahead = False
+            boundary_dist = 0.0
+            boundary_diag = {
+                'boundary_ahead': False,
+                'distance_ratio': 0.0,
+                'far_ratio': 0.0,
+                'mid_ratio': 0.0,
+                'near_ratio': 0.0,
+                'coverage_std': 0.0,
+                'top_y_ratio': 0.0,
+            }
             detection_valid = False
             
             if len(bboxes) > 0:
@@ -902,7 +1320,13 @@ setInterval(health, 500); health();
                                 self._has_filtered_error = True
                             offset = float(np.clip(self._filtered_error, -1.0, 1.0))
                             center_ratio = max(0.0, 1.0 - abs(offset))
-                            centered = abs(offset) < 0.08 and abs(curve) < 0.20
+                            _lc = bool(getattr(self, '_lane_clear', False))
+                            _coff = float(getattr(self, '_lane_center_off', 0.0) or 0.0)
+                            centered = (
+                                (abs(offset) < 0.10 and abs(curve) < 0.25)
+                                or (_lc and abs(_coff) < 0.18)
+                                or (abs(_coff) < 0.12 and abs(curve) < 0.30)
+                            )
                             if target_xy is not None:
                                 cx_f, cy_f = float(target_xy[0]), float(target_xy[1])
                             else:
@@ -1017,7 +1441,7 @@ setInterval(health, 500); health();
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2,
                     )
 
-                    # 取第一个检测的中线误差 + 纵向剩余 + 边界安全 + 路径信息
+                    # 取第一个检测的中线误差 + 纵向剩余 + 边界安全 + 路径信息 + 边界线检测
                     if not detection_valid:
                         best_offset = float(offset)
                         best_box = box
@@ -1035,6 +1459,24 @@ setInterval(health, 500); health();
                         best_path_samples_m = path_samples_m
                         best_lookahead_point_m = lookahead_point_m
                         best_lateral_error_m = float(lateral_error_m)
+
+                        # 检测前方转弯边界（返回详细诊断）
+                        if mf is not None and mf.size > 0:
+                            binfo = self._detect_boundary_ahead(mf)
+                        else:
+                            binfo = {
+                                'boundary_ahead': False,
+                                'distance_ratio': 0.0,
+                                'far_ratio': 0.0,
+                                'mid_ratio': 0.0,
+                                'near_ratio': 0.0,
+                                'coverage_std': 0.0,
+                                'top_y_ratio': 0.0,
+                            }
+                        boundary_ahead = bool(binfo.get('boundary_ahead', False))
+                        boundary_dist = float(binfo.get('distance_ratio', 0.0))
+                        boundary_diag = binfo
+
                         detection_valid = True
             
             # 6. 更新共享变量 + 状态变化日志
@@ -1054,6 +1496,21 @@ setInterval(health, 500); health();
                     self._latest_path_samples = list(best_path_samples_m or [])
                     self._latest_lookahead_point = best_lookahead_point_m
                     self._latest_lateral_error_m = float(best_lateral_error_m or 0.0)
+                    # 边界线检测
+                    self._boundary_ahead = bool(boundary_ahead)
+                    self._boundary_distance_ratio = float(boundary_dist)
+                    diag = boundary_diag if isinstance(boundary_diag, dict) else {}
+                    self._boundary_far_ratio = float(diag.get('far_ratio', 0.0))
+                    self._boundary_mid_ratio = float(diag.get('mid_ratio', 0.0))
+                    self._boundary_near_ratio = float(diag.get('near_ratio', 0.0))
+                    self._boundary_coverage_std = float(diag.get('coverage_std', 0.0))
+                    self._boundary_top_y_ratio = float(diag.get('top_y_ratio', 0.0))
+                    self._front_score = float(diag.get('front_score', 0.0))
+                    self._straight_score = float(diag.get('straight_score', 0.0))
+                    self._left_ratio = float(diag.get('left_ratio', 0.0))
+                    self._right_ratio = float(diag.get('right_ratio', 0.0))
+                    self._edge_angle_deg = float(diag.get('edge_angle_deg', 90.0))
+                    self._perp_score = float(diag.get('perp_score', 0.0))
                     if best_remaining_m is not None:
                         self._latest_remaining_m = float(best_remaining_m)
                         self._latest_free_ratio = float(best_free_ratio)
@@ -1093,6 +1550,33 @@ setInterval(health, 500); health();
                     self._latest_path_samples = []
                     self._latest_lookahead_point = None
                     self._latest_lateral_error_m = 0.0
+                    self._boundary_ahead = False
+                    self._boundary_distance_ratio = 0.0
+                    self._boundary_far_ratio = 0.0
+                    self._boundary_mid_ratio = 0.0
+                    self._boundary_near_ratio = 0.0
+                    self._boundary_coverage_std = 0.0
+                    self._boundary_top_y_ratio = 0.0
+                    self._front_score = 0.0
+                    self._straight_score = 0.0
+                    self._left_ratio = 0.0
+                    self._right_ratio = 0.0
+                    self._near_error = 0.0
+                    self._far_error = 0.0
+                    self._path_bend = 0.0
+                    self._left_margin = 0.0
+                    self._right_margin = 0.0
+                    self._lane_clear = False
+                    self._lane_center_off = 0.0
+                    self._rel_left = 0.0
+                    self._rel_right = 0.0
+                    self._center_fill = 0.0
+                    self._center_fill_5 = 0.0
+                    self._apex_has_mask = False
+                    self._apex_error = 0.0
+                    self._apex_fill = 0.0
+                    self._edge_angle_deg = 90.0
+                    self._perp_score = 0.0
                     self._has_filtered_error = False
                     
                     # 状态变化日志：从有效→失效

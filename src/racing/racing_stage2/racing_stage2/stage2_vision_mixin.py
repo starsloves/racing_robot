@@ -42,7 +42,7 @@ class Stage2VisionMixin:
         self.declare_parameter('vision_crop_ratio', 0.4)
         self.declare_parameter('vision_crop_side_ratio', 0.20)  # 左右各裁比例，保留中间 60%
         self.declare_parameter('vision_offset_kp', 0.4)
-        self.declare_parameter('vision_max_angular', 0.35)
+        self.declare_parameter('vision_max_angular', 0.80)
         self.declare_parameter('vision_http_port', 8082)
         # mask 质心纠偏 / 中心竖带到位
         self.declare_parameter('vision_center_band', 0.18)
@@ -60,15 +60,39 @@ class Stage2VisionMixin:
 
         # 纯 SEG 主控（替换 Stage2 段式惯导链路）
         self.declare_parameter('vision_pure_mode_enabled', True)
-        self.declare_parameter('vision_cruise_speed', 0.22)
-        self.declare_parameter('vision_corner_speed', 0.12)
-        self.declare_parameter('vision_min_speed', 0.06)
+        self.declare_parameter('vision_cruise_speed', 0.34)
+        self.declare_parameter('vision_corner_speed', 0.30)
+        self.declare_parameter('vision_min_speed', 0.12)
         self.declare_parameter('vision_search_angular', 0.28)
         self.declare_parameter('vision_lost_timeout_sec', 0.40)
         self.declare_parameter('vision_mission_distance_scale', 1.00)
         self.declare_parameter('vision_mission_timeout_sec', 90.0)
+        # 纯SEG结束：路径里程 + 回到通道口区域 (map x≈2.5)
+        self.declare_parameter('vision_finish_min_path_m', 5.0)
+        self.declare_parameter('vision_finish_x_m', 2.50)
+        self.declare_parameter('vision_finish_x_tol_m', 0.35)
+        self.declare_parameter('vision_finish_y_min_m', 1.60)
+        self.declare_parameter('vision_finish_y_max_m', 3.20)
+        self.declare_parameter('vision_finish_require_x_rise', True)
         self.declare_parameter('vision_curve_speed_thresh', 0.22)
         self.declare_parameter('vision_error_speed_thresh', 0.30)
+        # 混合弯道：环向前馈 + 视觉修正
+        self.declare_parameter('vision_turn_bias_enabled', True)
+        self.declare_parameter('vision_turn_bias_angular', 0.55)      # 弯道前馈角速度
+        self.declare_parameter('vision_turn_bias_enter_rem_m', 1.05)  # rem 低于此开始掺入前馈
+        self.declare_parameter('vision_turn_bias_full_rem_m', 0.70)   # rem 低于此全量前馈
+        self.declare_parameter('vision_turn_slowdown_err', 0.12)      # |e| 小于此开始减速转
+        self.declare_parameter('vision_turn_min_omega_ratio', 0.45)   # 弯道末端最小角速度比例
+        self.declare_parameter('vision_overshoot_reverse_gain', 0.65) # 过冲反向增益
+        self.declare_parameter('vision_exit_accel_ramp_sec', 0.45)    # 出弯加速斜坡
+        # 入口/弯道转角主控（不依赖不可靠 rem）
+        self.declare_parameter('vision_entry_yaw_full_deg', 82.0)     # 入口目标转角
+        self.declare_parameter('vision_entry_yaw_taper_deg', 40.0)    # 开始衰减前馈
+        self.declare_parameter('vision_entry_yaw_exit_deg', 70.0)     # 允许切 EXIT_ALIGN
+        self.declare_parameter('vision_corner_yaw_full_deg', 78.0)    # 普通弯目标转角
+        self.declare_parameter('vision_corner_yaw_taper_deg', 45.0)   # 普通弯衰减
+        self.declare_parameter('vision_entry_max_angular', 0.80)      # 入口角速度上限
+        self.declare_parameter('vision_entry_min_speed', 0.08)        # 入口最低速
 
         # Pure Pursuit 路径跟踪控制（基于引导线的几何跟踪）
         self.declare_parameter('vision_use_pure_pursuit', True)
@@ -114,6 +138,11 @@ class Stage2VisionMixin:
         self.declare_parameter('vision_turn_assist_enabled', True)
         self.declare_parameter('vision_turn_assist_hold_sec', 0.50)
         self.declare_parameter('vision_turn_assist_min_progress_ratio', 0.70)
+        # 转弯最短硬打时间 + 最小转角（第1弯 vs 后续弯）
+        self.declare_parameter('vision_first_ring_turn_min_hold_sec', 0.50)
+        self.declare_parameter('vision_ring_turn_min_hold_sec', 0.30)
+        self.declare_parameter('vision_first_ring_turn_min_yaw_deg', 45.0)
+        self.declare_parameter('vision_ring_turn_min_yaw_deg', 32.0)
         self.declare_parameter('vision_turn_assist_angle_window_deg', 18.0)
         
         # 读取参数
@@ -252,13 +281,60 @@ class Stage2VisionMixin:
         self._vision_lost_timeout_sec = float(self.get_parameter('vision_lost_timeout_sec').value)
         self._vision_mission_distance_scale = float(self.get_parameter('vision_mission_distance_scale').value)
         self._vision_mission_timeout_sec = float(self.get_parameter('vision_mission_timeout_sec').value)
+        self._vision_finish_min_path_m = float(self.get_parameter('vision_finish_min_path_m').value)
+        self._vision_finish_x_m = float(self.get_parameter('vision_finish_x_m').value)
+        self._vision_finish_x_tol_m = float(self.get_parameter('vision_finish_x_tol_m').value)
+        self._vision_finish_y_min_m = float(self.get_parameter('vision_finish_y_min_m').value)
+        self._vision_finish_y_max_m = float(self.get_parameter('vision_finish_y_max_m').value)
+        self._vision_finish_require_x_rise = bool(self.get_parameter('vision_finish_require_x_rise').value)
         self._vision_curve_speed_thresh = float(self.get_parameter('vision_curve_speed_thresh').value)
         self._vision_error_speed_thresh = float(self.get_parameter('vision_error_speed_thresh').value)
+        self._vision_turn_bias_enabled = bool(self.get_parameter('vision_turn_bias_enabled').value)
+        self._vision_turn_bias_angular = float(self.get_parameter('vision_turn_bias_angular').value)
+        self._vision_turn_bias_enter_rem_m = float(self.get_parameter('vision_turn_bias_enter_rem_m').value)
+        self._vision_turn_bias_full_rem_m = float(self.get_parameter('vision_turn_bias_full_rem_m').value)
+        self._vision_turn_slowdown_err = float(self.get_parameter('vision_turn_slowdown_err').value)
+        self._vision_turn_min_omega_ratio = float(self.get_parameter('vision_turn_min_omega_ratio').value)
+        self._vision_overshoot_reverse_gain = float(self.get_parameter('vision_overshoot_reverse_gain').value)
+        self._vision_exit_accel_ramp_sec = float(self.get_parameter('vision_exit_accel_ramp_sec').value)
+        self._vision_entry_yaw_full_deg = float(self.get_parameter('vision_entry_yaw_full_deg').value)
+        self._vision_entry_yaw_taper_deg = float(self.get_parameter('vision_entry_yaw_taper_deg').value)
+        self._vision_entry_yaw_exit_deg = float(self.get_parameter('vision_entry_yaw_exit_deg').value)
+        self._vision_corner_yaw_full_deg = float(self.get_parameter('vision_corner_yaw_full_deg').value)
+        self._vision_corner_yaw_taper_deg = float(self.get_parameter('vision_corner_yaw_taper_deg').value)
+        self._vision_entry_max_angular = float(self.get_parameter('vision_entry_max_angular').value)
+        self._vision_entry_min_speed = float(self.get_parameter('vision_entry_min_speed').value)
         self._vision_pure_last_valid_t = 0.0
         self._vision_pure_last_log_t = 0.0
         self._vision_pure_mode_name = 'PURE_SEG_IDLE'
         self._vision_last_error = 0.0
         self._vision_last_curve = 0.0
+        self._vision_filt_error = 0.0
+        self._vision_filt_curve = 0.0
+        self._vision_filt_angular = 0.0
+        self._vision_has_filt = False
+        self._vision_mode_hold = 'PURE_SEG_IDLE'
+        self._vision_mode_hold_t = 0.0
+        self._vision_lost_flip_t = 0.0
+        self._vision_search_sign = 0.0  # 0=未初始化，按 direction 设
+        self._vision_had_valid = False
+        self._vision_near_error = 0.0
+        self._vision_heading_err = 0.0
+        self._vision_exit_turn_t = 0.0
+        self._vision_in_turn_phase = False
+        self._vision_turn_ramp_v0 = 0.12
+        self._vision_force_bias_scale = 0.0
+        self._vision_entry_turn_done = False
+        self._vision_align_active = False
+        self._vision_front_hold = 0.0
+        self._vision_front_last_t = None
+        self._vision_straight_hold = 0.0
+        self._vision_straight_last_t = None
+        self._vision_turn_cooldown_until = 0.0
+        self._vision_last_turn_exit_t = 0.0
+        self._vision_soft_boundary = False
+        self._vision_last_overshoot = False
+        self._vision_scene = 'idle'
 
         # 纯视觉模式下强制：视觉主控 + 不因预算闭嘴
         if self._vision_pure_mode_enabled:
@@ -556,164 +632,1358 @@ class Stage2VisionMixin:
             'age': float(age),
         }
 
-    def _vision_line_to_angular(self, error: float, curve: float = 0.0, line_status: dict = None) -> float:
-        """
-        计算视觉角速度。
+    def _vision_is_ccw(self) -> bool:
+        d = str(getattr(self, 'direction', '') or '').lower()
+        return ('counter' in d or 'ccw' in d or '逆' in d)
 
-        纯 SEG 默认用「PD + 曲率前馈」（能提前转弯）。
-        Pure Pursuit 仅作横向几何补充；不能只靠 PP，否则居中时 curve 再大也 w=0。
-        """
-        pure = bool(getattr(self, '_vision_pure_mode_enabled', False))
-        use_pp = bool(getattr(self, '_vision_use_pure_pursuit', False))
+    def _vision_entry_turn_sign(self) -> float:
+        """入口第一弯：顺时针左(+1)，逆时针右(-1)。"""
+        return -1.0 if self._vision_is_ccw() else 1.0
 
-        # --- PD + 曲率（主）---
-        kp = float(getattr(self, '_vision_angular_kp', self._vision_offset_kp))
-        kd = float(getattr(self, '_vision_angular_kd', 0.0))
-        kc = float(getattr(self, '_vision_curvature_kp', 0.0))
-        deadband = float(getattr(self, '_vision_deadband', 0.0))
+    def _vision_ring_turn_sign(self) -> float:
+        """入环后固定环向：顺时针右(-1)，逆时针左(+1)。"""
+        return -self._vision_entry_turn_sign()
+
+    def _vision_active_turn_sign(self) -> float:
+        """当前该用的转向符号：入口未完用入口，否则用环内。"""
+        if bool(getattr(self, '_vision_entry_turn_done', False)):
+            return self._vision_ring_turn_sign()
+        return self._vision_entry_turn_sign()
+
+    def _vision_yaw_progress_deg(self, start_yaw, turn_sign: float) -> float:
+        """相对 start_yaw 沿 turn_sign 方向已转角度 (°，>=0)。"""
+        if start_yaw is None:
+            return 0.0
+        nav = self.navigation_yaw() if hasattr(self, 'navigation_yaw') else None
+        if nav is None or not hasattr(self, 'angle_error'):
+            return 0.0
+        dyaw = math.degrees(self.angle_error(nav, start_yaw))
+        return max(0.0, dyaw * float(turn_sign))
+
+    def _vision_default_search_sign(self) -> float:
+        """丢线搜索默认方向 = 当前阶段环向。"""
+        return self._vision_active_turn_sign()
+
+    def _vision_turn_bias_sign(self) -> float:
+        """兼容旧调用：等同 active turn sign，并刷新缓存。"""
+        s = self._vision_active_turn_sign()
+        self._turn_direction_cache = s
+        return s
+
+    def _vision_extract_scene(self, line: dict) -> dict:
+        """从 line_status 抽出场景量（前边界/直道/居中）。"""
+        error = float(line.get('error', 0.0) or 0.0)
+        curve = float(line.get('curve', 0.0) or 0.0)
+        conf = float(line.get('confidence', 0.0) or 0.0)
+        rows = int(line.get('valid_rows', 0) or 0)
+        ba = bool(line.get('boundary_ahead', False))
+        far_r = float(line.get('boundary_far_ratio', 0.0) or 0.0)
+        mid_r = float(line.get('boundary_mid_ratio', 0.0) or 0.0)
+        near_r = float(line.get('boundary_near_ratio', 0.0) or 0.0)
+        bd = float(line.get('boundary_distance_ratio', 0.0) or 0.0)
+        front = float(line.get('front_score', 0.0) or 0.0)
+        straight = float(line.get('straight_score', 0.0) or 0.0)
+        # 兼容：若视觉层还没出 score，用 ratio 估算
+        if front <= 1e-6 and straight <= 1e-6:
+            gap = max(0.0, near_r - far_r)
+            if near_r > 0.28:
+                front = min(1.0, max(0.0, 0.48 - far_r) / 0.48 * 0.4 + min(1.0, gap / 0.45) * 0.35)
+            straight = min(1.0, near_r / 0.7) * 0.3 + min(1.0, mid_r / 0.65) * 0.3 + min(1.0, far_r / 0.55) * 0.3
+            if ba:
+                front = max(front, 0.7)
+                straight *= 0.45
+        # 软前边界：分数够或硬 ba
+        front_trigger = ba or front >= 0.50 or (far_r < 0.32 and near_r > 0.45 and (near_r - far_r) >= 0.20)
+        # 直道恢复：远端打开 + 中线还行 + 分数够
+        straight_ready = (
+            (not ba)
+            and straight >= 0.55
+            and far_r >= 0.42
+            and near_r >= 0.45
+            and abs(error) < 0.18
+            and rows >= 5
+        )
+        lm = float(line.get('left_margin', 0.0) or 0.0)
+        rm = float(line.get('right_margin', 0.0) or 0.0)
+        coff = float(line.get('lane_center_off', 0.0) or 0.0)
+        rel_l = float(line.get('rel_left', 0.0) or 0.0)
+        rel_r = float(line.get('rel_right', 0.0) or 0.0)
+        cfill = float(line.get('center_fill', 0.0) or 0.0)
+        cfill5 = float(line.get('center_fill_5', 0.0) or 0.0)
+        edge_ang = float(line.get('edge_angle_deg', 90.0) or 90.0)
+        perp = float(line.get('perp_score', 0.0) or 0.0)
+        apex_has = bool(line.get('apex_has_mask', True))
+        apex_err = float(line.get('apex_error', 0.0) or 0.0)
+        apex_fill = float(line.get('apex_fill', 0.0) or 0.0)
+        bend = float(line.get('path_bend', curve) or 0.0)
+        lane_clear = bool(line.get('lane_clear', False))
+        # 用户：中心左右各 10% 竖带占满 → 居中
+        if cfill >= 0.55:
+            lane_clear = True
+        if not lane_clear and rows >= 3:
+            lane_clear = (abs(coff) < 0.18 and abs(error) < 0.22) or (abs(coff) < 0.14)
+        if not lane_clear and abs(error) < 0.12 and far_r >= 0.45 and rows >= 5:
+            lane_clear = True
+
+        centered = (
+            lane_clear
+            or cfill >= 0.55
+            or (abs(error) < 0.12 and rows >= 4)
+            or (abs(coff) < 0.14)
+        )
+        # 前边界两类（都要求远端截断，禁止“只有水平角”就当真弯）
+        # A) 弯边：ba / far 截断
+        # B) 真垂直前边：角度 + far 空
+        edge_perp = self._vision_is_perp_front_edge(edge_ang, far_r, near_r)
+        edge_is_front = bool(
+            edge_perp
+            or (ba and far_r < 0.34)
+            or (perp >= 0.60 and far_r < 0.34 and near_r > 0.40)
+        )
+        # 真转弯几何：必须以 far 截断为主；弯曲/角度只是辅助
+        has_bend = abs(bend) >= 0.40 or abs(curve) >= 0.45
+        turn_geometry = bool(
+            (ba and far_r < 0.36)
+            or edge_is_front
+            or (perp >= 0.60 and far_r < 0.34 and near_r > 0.40)
+            or (has_bend and far_r < 0.34 and near_r > 0.40)
+            or (front >= 0.62 and far_r < 0.32 and near_r > 0.40)
+        )
+        can_straight = (
+            (lane_clear or cfill >= 0.55 or abs(coff) < 0.16)
+            and far_r >= 0.40
+            and (not ba)
+            and (not edge_is_front)
+            and front < 0.55
+            and rows >= 3
+            and abs(error) < 0.28
+        )
+        stick = 0.0
+        if coff > 0.14 or error > 0.18:
+            stick = -1.0
+        elif coff < -0.14 or error < -0.18:
+            stick = 1.0
+
+        return {
+            'error': error,
+            'curve': curve,
+            'conf': conf,
+            'rows': rows,
+            'ba': ba,
+            'far': far_r,
+            'mid': mid_r,
+            'near': near_r,
+            'bd': bd,
+            'front': front,
+            'straight': straight,
+            'front_trigger': bool(front_trigger or edge_is_front),
+            'straight_ready': bool(straight_ready or can_straight),
+            'centered': bool(centered),
+            'lane_clear': bool(lane_clear),
+            'can_straight': bool(can_straight),
+            'left_margin': lm,
+            'right_margin': rm,
+            'lane_center_off': coff,
+            'rel_left': rel_l,
+            'rel_right': rel_r,
+            'center_fill': cfill,
+            'center_fill_5': cfill5,
+            'apex_has_mask': bool(apex_has),
+            'apex_error': float(apex_err),
+            'apex_fill': float(apex_fill),
+            'path_bend': float(bend),
+            'turn_geometry': bool(turn_geometry),
+            'edge_angle_deg': edge_ang,
+            'perp_score': perp,
+            'edge_is_front': bool(edge_is_front),
+            'stick': float(stick),
+        }
+
+    def _vision_heading_from_geometry(self, line: dict, scene: dict,
+                                      turn_sign: float = 0.0,
+                                      early_turn: float = 0.0) -> float:
+        """
+        标准航向 = 近场居中 + 远场拉直 + 路径弯曲。
+
+        SEG 给的是可通行区中线：
+          near_error: 脚底下偏不偏（贴边）
+          far_error / error: 前方中线偏哪（提前量）
+          path_bend/curve: 中线往哪拐
+
+        符号：e>0 中线偏右 → 车应右转 → ω<0
+        early_turn: 0~1，弯前提前掺入环向打角（用户：看到转角就要提前打）
+        """
+        e = float(line.get('error', scene.get('error', 0.0)) or 0.0)
+        e_near = float(line.get('near_error', e) or e)
+        e_far = float(line.get('far_error', e) or e)
+        bend = float(line.get('path_bend', line.get('curve', 0.0)) or 0.0)
+        curve = float(scene.get('curve', bend) or 0.0)
+
+        # 中央直行：lane_clear / can_straight → 几乎不打方向
+        lane_clear = bool(scene.get('lane_clear', line.get('lane_clear', False)))
+        can_straight = bool(scene.get('can_straight', False))
+        coff = float(scene.get('lane_center_off', line.get('lane_center_off', 0.0)) or 0.0)
+        if (can_straight or (lane_clear and early_turn < 0.20)) and early_turn < 0.30:
+            # 用户：中心±10%占满时可直行；若最远端中线没有SEG → 微微回正
+            e_far = float(line.get('far_error', e) or e)
+            far_r = float(scene.get('far', 1.0) or 1.0)
+            e_soft = coff if abs(coff) > 1e-6 else e
+            # 远端中线空/偏：用 far_error 轻微回正（不是打死）
+            if far_r < 0.40 or abs(e_far) > 0.18:
+                w = float(self.clamp(-0.35 * e_far, 0.10))
+            elif abs(e_soft) < 0.10:
+                w = 0.0
+            else:
+                w = float(self.clamp(-0.25 * e_soft, 0.06))
+            prev = float(getattr(self, '_vision_filt_angular', 0.0) or 0.0)
+            w = 0.80 * prev + 0.20 * w
+            self._vision_filt_angular = w
+            return float(self.clamp(w, 0.10))
+
+        # 偏离：用中心偏移小纠，硬顶很低（直道禁止大摆）
+        if early_turn < 0.35:
+            e_use = coff if abs(coff) > abs(e) * 0.5 else e
+            if abs(e_use) < 0.08:
+                e_use = 0.0
+            w = -0.40 * max(-0.45, min(0.45, e_use))
+            stick = float(scene.get('stick', 0.0) or 0.0)
+            if abs(stick) > 0.5:
+                w += stick * 0.06
+            max_w = 0.12
+            if abs(e_use) > 0.35:
+                max_w = 0.16
+            prev = float(getattr(self, '_vision_filt_angular', 0.0) or 0.0)
+            max_step = 0.035
+            if w > prev + max_step:
+                w = prev + max_step
+            elif w < prev - max_step:
+                w = prev - max_step
+            w = 0.70 * prev + 0.30 * float(self.clamp(w, max_w))
+            self._vision_filt_angular = w
+            return float(self.clamp(w, max_w))
+
+        # 死区
+        def dead(x, d=0.04):
+            return 0.0 if abs(x) < d else x
+
+        e_n = dead(e_near, 0.05)
+        e_f = dead(e_far, 0.04)
+        e_m = dead(e, 0.04)
+        bd = dead(bend, 0.06)
+
+        # 直道：近场稳住 + 远场提前
+        # 弯前 early_turn>0：加重远场/弯曲 + 环向前馈
+        k_near = 0.45 * (1.0 - 0.4 * early_turn)
+        k_far = 0.55 + 0.45 * early_turn
+        k_mid = 0.35
+        k_bend = 0.25 + 0.45 * early_turn
+
+        w_vis = -(k_near * e_n + k_mid * e_m + k_far * e_f) - k_bend * bd
+
+        # 提前转弯：轻量环向前馈（真 TURN 里再用强前馈）
+        if early_turn > 0.08 and abs(turn_sign) > 0.5:
+            bias_mag = min(0.22, float(getattr(self, '_vision_turn_bias_angular', 0.28)))
+            w_vis += turn_sign * bias_mag * (0.20 + 0.35 * early_turn)
+
+        # 限幅：弯前可稍大
+        max_w = 0.14 + 0.16 * max(0.0, min(1.0, early_turn))
+        if abs(e_f) > 0.45 or abs(e_m) > 0.50:
+            max_w = max(max_w, 0.20)
+        w = float(self.clamp(w_vis, max_w))
+
+        prev = float(getattr(self, '_vision_filt_angular', 0.0) or 0.0)
+        max_step = 0.05 + 0.06 * early_turn
+        if w > prev + max_step:
+            w = prev + max_step
+        elif w < prev - max_step:
+            w = prev - max_step
+        alpha = 0.45 if early_turn > 0.3 else 0.30
+        w = (1.0 - alpha) * prev + alpha * w
+        self._vision_filt_angular = w
+        return float(self.clamp(w, max_w))
+
+    def _vision_follow_angular(self, error: float, curve: float = 0.0) -> float:
+        """兼容旧接口：无 line 时退化为简单居中。"""
+        line = {
+            'error': float(error),
+            'near_error': float(error),
+            'far_error': float(error),
+            'path_bend': float(curve),
+            'curve': float(curve),
+        }
+        scene = {'error': float(error), 'curve': float(curve)}
+        return self._vision_heading_from_geometry(line, scene, turn_sign=0.0, early_turn=0.0)
+
+
+    def _vision_edge_to_vehicle_angle_deg(self, edge_ang_from_horizontal: float) -> float:
+        """
+        图像里边相对水平的角 edge_ang (0=横边, 90=竖边)
+        → 边相对车头前进方向的夹角 (0=平行前进, 90=正横在车前)。
+
+        横边(水平) ≈ 与车头夹角 90°；竖边 ≈ 0°/180°。
+        用户要求：70~110° 即接近正横 → 准备转弯。
+        """
+        ea = abs(float(edge_ang_from_horizontal))
+        ea = min(90.0, ea)
+        # 边方向相对车头：90 - ea
+        return 90.0 - ea
+
+    def _vision_is_perp_front_edge(self, edge_ang_from_horizontal: float,
+                                   far: float, near: float) -> bool:
+        """
+        真·垂直前边：边近水平 且 远端确实被截断。
+        注意：free-space mask 顶部经常拟合出“假水平边”，绝不能只靠角度。
+        """
+        veh = self._vision_edge_to_vehicle_angle_deg(edge_ang_from_horizontal)
+        # 70~110° ≈ 横在车前
+        if not (70.0 <= veh <= 110.0):
+            return False
+        # 必须远端空 + 近场还有路，否则是直道噪声
+        if far >= 0.38:
+            return False
+        if near < 0.30:
+            return False
+        return True
+
+    def _vision_early_turn_score(self, scene: dict, line: dict, turn_sign: float) -> float:
+        """
+        弯前评分：必须以远端截断为主，角度只是加分，不能单独拉高到进弯。
+        """
+        far = float(scene.get('far', 0.0))
+        near = float(scene.get('near', 0.0))
+        front = float(scene.get('front', 0.0))
+        ba = bool(scene.get('ba', False))
+        e_far = float(line.get('far_error', line.get('error', 0.0)) or 0.0)
+        bend = float(line.get('path_bend', line.get('curve', 0.0)) or 0.0)
+        lane_clear = bool(scene.get('lane_clear', line.get('lane_clear', False)))
+        cfill = float(scene.get('center_fill', line.get('center_fill', 0.0)) or 0.0)
+        edge_ang = float(scene.get('edge_angle_deg', line.get('edge_angle_deg', 90.0)) or 90.0)
+        veh_ang = self._vision_edge_to_vehicle_angle_deg(edge_ang)
+        edge_is_front = bool(scene.get('edge_is_front', False)) or self._vision_is_perp_front_edge(
+            edge_ang, far, near
+        )
+
+        # 远端通 → 强制当直道，early 压掉
+        if far >= 0.48 and not ba and front < 0.60:
+            return 0.0
+        if (lane_clear or cfill >= 0.55) and far >= 0.42 and not ba and not edge_is_front:
+            return 0.0
+
+        score = 0.0
+        # --- 条件1：远端截断 / ba（主证据）---
+        if ba:
+            score += 0.45
+        if far < 0.36:
+            score += (0.36 - far) / 0.36 * 0.40
+        if far < 0.28 and near > 0.45:
+            score += 0.18
+        score += min(1.0, max(0.0, front - 0.30) / 0.50) * 0.20
+
+        # --- 条件2：真垂直前边（已要求 far 截断）---
+        if edge_is_front:
+            score += 0.25 * (1.0 - abs(veh_ang - 90.0) / 25.0)
+        # 角度本身不再单独 +0.55（这是转晕根因）
+        score += min(1.0, abs(bend) / 0.70) * 0.06
+        score += min(1.0, abs(e_far) / 0.70) * 0.06
+        score = max(0.0, min(1.0, score))
+        # 远端还开着就强压
+        if far >= 0.45:
+            score *= 0.15
+        elif far >= 0.38:
+            score *= 0.45
+        return float(score)
+
+    def _vision_turn_bias_scale_from_yaw(self, yaw_prog_deg: float) -> float:
+        """
+        转角 → 前馈比例。这是防过冲的核心：
+          0~35°  全量
+          35~55° 线性降到 0.45
+          55~70° 线性降到 0.10
+          ≥70°   0（只靠视觉回中，禁止再硬拧）
+        """
+        yp = max(0.0, float(yaw_prog_deg))
+        if yp < 35.0:
+            return 1.0
+        if yp < 55.0:
+            return 1.0 - 0.55 * (yp - 35.0) / 20.0
+        if yp < 70.0:
+            return 0.45 - 0.35 * (yp - 55.0) / 15.0
+        return 0.0
+
+    def _vision_turn_angular(self, turn_sign: float, error: float, bias_scale: float,
+                             max_w: float = None, yaw_prog_deg: float = 0.0) -> float:
+        """
+        转弯：环向前馈(随转角衰减) + 弱视觉。
+        过冲定义：e 与 turn_sign 同号（弯内侧）→ 前馈立刻为 0。
+        """
+        # 转角衰减优先于外部 force_bias
+        yaw_scale = self._vision_turn_bias_scale_from_yaw(yaw_prog_deg)
+        bias_scale = max(0.0, min(1.0, float(bias_scale))) * yaw_scale
+
+        bias_mag = float(getattr(self, '_vision_turn_bias_angular', 0.28) or 0.28)
+        # 入口/弯中都不要用太大开环：0.28 足够，再高必过冲
+        bias_mag = min(bias_mag, 0.26)
+        bias_w = float(turn_sign) * bias_mag * bias_scale
+
         e = float(error)
-        # 横向死区只作用于 e；曲率项始终参与（弯道关键）
-        e_for_p = 0.0 if abs(e) < deadband else e
-        now = time.time()
-        deriv = 0.0
-        if self._vision_prev_error_t is not None:
-            dt = max(1e-3, now - self._vision_prev_error_t)
-            deriv = (e_for_p - self._vision_prev_error) / dt
-        self._vision_prev_error = e_for_p
-        self._vision_prev_error_t = now
-        # error/curve>0：中线偏右/远端更靠右 → 需要右转 → 负 ω
-        angular_pd = -(kp * e_for_p + kd * deriv + kc * float(curve))
+        # 视觉只做小修正；大 |e| 时往往是弯中 mask 不可靠，反而降权
+        e_use = e
+        if abs(e) > 0.55:
+            e_use = 0.55 * (1.0 if e > 0 else -1.0)
+        vis = -0.40 * e_use
 
-        angular_pp = 0.0
-        if use_pp:
-            x_m = None
-            y_m = None
-            if line_status is not None:
-                lookahead_point = line_status.get('lookahead_point')
-                if lookahead_point is not None and len(lookahead_point) >= 2:
-                    x_m = float(lookahead_point[0])
-                    y_m = float(lookahead_point[1])
-                elif line_status.get('lateral_error_m') is not None:
-                    x_m = float(line_status.get('lateral_error_m') or 0.0)
-                    y_m = float(getattr(self, '_vision_lookahead_distance_m', 0.35))
-            if x_m is None:
-                x_m = float(error) * 0.6
-                y_m = float(getattr(self, '_vision_lookahead_distance_m', 0.35))
-            y_m = max(0.08, float(y_m))
-            alpha = math.atan2(x_m, y_m)
-            speed = float(getattr(self, 'current_speed', 0.0) or 0.0)
-            if speed < 0.05:
-                speed = float(getattr(self, '_vision_cruise_speed', 0.18))
-            wheelbase = max(0.05, float(getattr(self, '_vision_wheelbase_m', 0.15)))
-            angular_pp = -(2.0 * speed * math.sin(alpha)) / wheelbase
-            angular_pp *= float(getattr(self, '_vision_pursuit_kp', 1.2))
+        # 过冲（弯内侧）：e 与 turn_sign 同号
+        if e * turn_sign > 0.12:
+            ov = min(1.0, abs(e) / 0.28)
+            bias_w = 0.0
+            vis = -0.55 * e_use  # 只回中
+        # 欠转且视觉指向同侧：可略加强，但不超过 bias
+        elif e * turn_sign < -0.25 and bias_scale > 0.3:
+            vis *= 0.5  # 路径还在外侧时别和前馈叠加过大
 
-        if pure:
-            # 纯SEG：PD+曲率主导；PP 仅补横向几何
-            angular = (0.70 * angular_pd + 0.30 * angular_pp) if use_pp else angular_pd
+        angular = bias_w + vis
+
+        # 转角已大：禁止强制最小 ω，允许回中反号
+        if yaw_prog_deg < 45.0 and bias_scale >= 0.40:
+            # 仅前半弯锁环向，避免反号
+            if (angular * turn_sign) < 0.0:
+                angular = 0.75 * bias_w + 0.25 * angular
+
+        if max_w is None:
+            max_w = float(getattr(self, '_vision_max_angular', 0.55))
+        # 转角越大 max_w 越低
+        if yaw_prog_deg >= 65.0:
+            max_w = min(max_w, 0.18)
+        elif yaw_prog_deg >= 50.0:
+            max_w = min(max_w, 0.28)
         else:
-            angular = angular_pp if use_pp else angular_pd
-        return float(self.clamp(angular, self._vision_max_angular))
+            max_w = min(max_w, 0.40)
+
+        angular = float(self.clamp(angular, max_w))
+        prev = float(getattr(self, '_vision_filt_angular', 0.0) or 0.0)
+        max_step = 0.10 if yaw_prog_deg < 50.0 else 0.06
+        if angular > prev + max_step:
+            angular = prev + max_step
+        elif angular < prev - max_step:
+            angular = prev - max_step
+        angular = 0.50 * prev + 0.50 * angular
+        self._vision_filt_angular = angular
+        return float(self.clamp(angular, max_w))
+
+    def _vision_align_angular(self, error: float) -> float:
+        """出弯回正：只居中，无环向前馈；比 FOLLOW 稍强但仍限幅。"""
+        e = float(error)
+        if abs(e) < 0.04:
+            e = 0.0
+        e_sat = max(-0.50, min(0.50, e))
+        w = -0.70 * e_sat
+        max_w = 0.18
+        prev = float(getattr(self, '_vision_filt_angular', 0.0) or 0.0)
+        max_step = 0.05
+        if w > prev + max_step:
+            w = prev + max_step
+        elif w < prev - max_step:
+            w = prev - max_step
+        angular = 0.65 * prev + 0.35 * float(self.clamp(w, max_w))
+        angular = float(self.clamp(angular, max_w))
+        self._vision_filt_angular = angular
+        return angular
 
     def _vision_search_direction(self) -> float:
-        """
-        丢线搜索方向：
-        1) 优先用丢线前最后有效 curve/error（弯道丢失时最关键）
-        2) 再按扫码方向（顺时针默认左搜）
-        """
-        last_curve = float(getattr(self, '_vision_last_curve', 0.0) or 0.0)
-        last_error = float(getattr(self, '_vision_last_error', 0.0) or 0.0)
-        if abs(last_curve) > 0.08:
-            # curve>0 远端偏右 → 右转搜索(-1)；curve<0 → 左转搜索(+1)
-            return -1.0 if last_curve > 0.0 else 1.0
-        if abs(last_error) > 0.05:
-            return -1.0 if last_error > 0.0 else 1.0
-        direction = str(getattr(self, 'direction', '') or '').lower()
-        if 'counter' in direction or 'ccw' in direction or '逆' in direction:
-            return -1.0
-        return 1.0
+        """丢线搜索：优先当前环向，长时间才允许翻向。"""
+        now = time.time()
+        last_valid = float(getattr(self, '_vision_pure_last_valid_t', 0.0) or 0.0)
+        lost_for = (now - last_valid) if last_valid > 0.0 else 999.0
+        ring = self._vision_active_turn_sign()
+        if abs(float(getattr(self, '_vision_search_sign', 0.0) or 0.0)) < 1e-6:
+            self._vision_search_sign = ring
+        # 弯中/入口丢线：死跟环向
+        mode = str(getattr(self, '_vision_pure_mode_name', '') or '')
+        if mode in ('PURE_SEG_ENTRY', 'PURE_SEG_TURN', 'PURE_SEG_ALIGN') and lost_for < 1.6:
+            return ring
+        if lost_for > 2.2:
+            lost_flip_t = float(getattr(self, '_vision_lost_flip_t', 0.0) or 0.0)
+            if lost_flip_t <= 0.0 or (now - lost_flip_t) > 1.8:
+                self._vision_search_sign = -float(self._vision_search_sign or ring)
+                self._vision_lost_flip_t = now
+            return float(self._vision_search_sign)
+        return float(self._vision_search_sign or ring)
 
-    def _vision_select_linear_speed(self, error: float, curve: float, rows: int = 9) -> float:
-        """根据横向误差/曲率/有效行数选择速度。"""
-        cruise = float(getattr(self, '_vision_cruise_speed', 0.18))
-        corner = float(getattr(self, '_vision_corner_speed', 0.10))
-        min_speed = float(getattr(self, '_vision_min_speed', 0.06))
-        e_th = float(getattr(self, '_vision_error_speed_thresh', 0.20))
-        c_th = float(getattr(self, '_vision_curve_speed_thresh', 0.15))
-        if rows <= 4 or abs(error) > e_th or abs(curve) > c_th:
-            return max(min_speed, corner)
-        if rows <= 6 or abs(curve) > c_th * 0.6:
-            return max(min_speed, 0.5 * (cruise + corner))
-        return max(min_speed, cruise)
+    def _hold_mode(self, candidate: str) -> str:
+        """短时模式保持，防抖。入口/转弯优先级高。"""
+        now = time.time()
+        hold = str(getattr(self, '_vision_mode_hold', 'PURE_SEG_IDLE') or 'PURE_SEG_IDLE')
+        hold_t = float(getattr(self, '_vision_mode_hold_t', 0.0) or 0.0)
+        if candidate == hold:
+            return hold
+        rank = {
+            'PURE_SEG_WAIT': 0,
+            'PURE_SEG_FOLLOW': 1,
+            'PURE_SEG_ALIGN': 2,
+            'PURE_SEG_TURN': 3,
+            'PURE_SEG_ENTRY': 4,
+            'PURE_SEG_SEARCH': 2,
+            'PURE_SEG_SEARCH_HARD': 2,
+            'PURE_SEG_LOST': 1,
+            'PURE_SEG_WEAK': 2,
+        }
+        # 高优先级立即切；同级/低级需短保持
+        if rank.get(candidate, 0) > rank.get(hold, 0):
+            self._vision_mode_hold = candidate
+            self._vision_mode_hold_t = now
+            return candidate
+        if (now - hold_t) < 0.18 and rank.get(hold, 0) >= rank.get(candidate, 0):
+            return hold
+        self._vision_mode_hold = candidate
+        self._vision_mode_hold_t = now
+        return candidate
+
+    def _vision_line_to_angular(self, error: float, curve: float = 0.0, line_status: dict = None) -> float:
+        """兼容旧混合链路：纯SEG下走 follow。"""
+        return self._vision_follow_angular(error, curve)
 
     def _compute_pure_vision_command(self):
         """
-        纯 SEG 主控：全程沿 mask 引导线行驶。
+        纯 SEG 边界驱动状态机（修正版）：
 
-        返回:
-            (linear, angular, mode, line_status)
+        ENTRY:
+          - 一进 S2 就按扫码入口方向转（顺左/逆右）
+          - 出口：入口有效转时 + 最小转角，再看直道几何
+          - 禁止：口子上假直道 / 盲等时间 提前结束入口
+
+        FOLLOW:
+          - 中线小纠偏；前边界触发 → TURN
+
+        TURN:
+          - 固定环向（顺右/逆左）；出弯看直道几何 + 最小转时
+          - 过冲：转过最小角后 e 才参与判过冲
+
+        方向永不由左右 mask 猜测。
         """
         line = self._get_vision_line_status()
         now = time.time()
-        timeout = float(getattr(self, '_vision_lost_timeout_sec', 0.80))
-        hard_lost_sec = max(timeout * 3.0, 1.8)
-        vision_timeout = float(self.get_parameter('vision_timeout_sec').value) if self.has_parameter('vision_timeout_sec') else 0.7
+        timeout = float(getattr(self, '_vision_lost_timeout_sec', 0.75))
+        hard_lost_sec = max(timeout * 2.2, 1.5)
+        vision_timeout = float(self.get_parameter('vision_timeout_sec').value) if self.has_parameter('vision_timeout_sec') else 0.5
         age = float(line.get('age', 999.0))
         valid = bool(line.get('valid', False)) and age < vision_timeout
         min_conf = float(getattr(self, '_vision_min_confidence', 0.22))
         min_rows = int(self.get_parameter('vision_min_valid_rows').value) if self.has_parameter('vision_min_valid_rows') else 2
         conf = float(line.get('confidence', 0.0))
         rows = int(line.get('valid_rows', 0))
-        error = float(line.get('error', 0.0))
-        curve = float(line.get('curve', 0.0))
+        # 必须先取 error，micro_ok 会用到
+        error = float(line.get('error', 0.0) or 0.0)
+        curve = float(line.get('curve', 0.0) or 0.0)
+
         quality_ok = valid and conf >= min_conf and rows >= max(2, min_rows)
         weak_ok = valid and rows >= 2 and conf >= max(0.12, min_conf * 0.5)
+        # 弯中 mask 常只剩近场几行：极弱也算“还有视野”
+        micro_ok = valid and (
+            (rows >= 1 and conf >= 0.10)
+            or (abs(error) > 0.05 and conf >= 0.15 and age < vision_timeout)
+        )
+        in_turn_like = bool(getattr(self, '_vision_in_turn_phase', False)) or (
+            not bool(getattr(self, '_vision_entry_turn_done', True))
+        )
+        any_ok = quality_ok or weak_ok or (micro_ok and in_turn_like)
 
-        if quality_ok or weak_ok:
+        scene = self._vision_extract_scene(line)
+        error = float(scene.get('error', error) or 0.0)
+        curve = float(scene.get('curve', curve) or 0.0)
+        cruise = float(getattr(self, '_vision_cruise_speed', 0.30))
+        corner = float(getattr(self, '_vision_corner_speed', 0.14))
+        vmin = float(getattr(self, '_vision_min_speed', 0.08))
+        entry_max_w = float(getattr(self, '_vision_entry_max_angular', 0.40) or 0.40)
+        max_w = float(getattr(self, '_vision_max_angular', 0.55))
+
+        start_t = float(getattr(self, '_vision_pure_start_t', 0.0) or 0.0)
+        t_run = (now - start_t) if start_t > 0 else 0.0
+        entry_done = bool(getattr(self, '_vision_entry_turn_done', False))
+        turn_sign = self._vision_active_turn_sign()
+        cooldown_ok = now >= float(getattr(self, '_vision_turn_cooldown_until', 0.0) or 0.0)
+
+        entry_progress = 0.0
+        start_pose = getattr(self, '_vision_pure_start_pose', None)
+        if start_pose is not None and self.current_position is not None:
+            entry_progress = math.hypot(
+                self.current_position[0] - start_pose[0],
+                self.current_position[1] - start_pose[1],
+            )
+
+        # 入口起点航向
+        if getattr(self, '_vision_entry_start_yaw', None) is None:
+            y0 = self.navigation_yaw() if hasattr(self, 'navigation_yaw') else None
+            if y0 is None:
+                y0 = getattr(self, 'current_yaw', None)
+            self._vision_entry_start_yaw = y0
+
+        # 入口“有效转时”：只有 quality/weak 帧才累加，盲等不算
+        entry_active_t = float(getattr(self, '_vision_entry_active_t', 0.0) or 0.0)
+        last_act = getattr(self, '_vision_entry_active_last_t', None)
+        if (not entry_done) and any_ok:
+            if last_act is None:
+                self._vision_entry_active_last_t = now
+            else:
+                dt = max(0.0, min(0.25, now - last_act))
+                entry_active_t += dt
+                self._vision_entry_active_t = entry_active_t
+                self._vision_entry_active_last_t = now
+        else:
+            self._vision_entry_active_last_t = None
+
+        # 直道积分：入口未完成时要求更严，且必须有有效帧
+        if any_ok and scene['straight_ready'] and (entry_done or entry_active_t >= 1.0):
+            last = getattr(self, '_vision_straight_last_t', None)
+            if last is None:
+                self._vision_straight_last_t = now
+            else:
+                dt = max(0.0, min(0.25, now - last))
+                self._vision_straight_hold = float(getattr(self, '_vision_straight_hold', 0.0)) + dt
+                self._vision_straight_last_t = now
+        else:
+            # 入口早期假直道直接清零
+            if not entry_done:
+                self._vision_straight_hold = 0.0
+            else:
+                self._vision_straight_hold = max(0.0, float(getattr(self, '_vision_straight_hold', 0.0)) - 0.05)
+            self._vision_straight_last_t = None
+        straight_hold = float(getattr(self, '_vision_straight_hold', 0.0))
+
+        # 前边界积分：只有“当前帧真的像前边界”才累加；否则快速清零
+        strong_front = any_ok and (
+            scene['ba']
+            or (scene['front'] >= 0.50 and scene['far'] < 0.38)
+            or (scene['front'] >= 0.58)
+            or (scene['far'] < 0.28 and scene['near'] > 0.50)
+            or bool(scene.get('edge_is_front'))
+        )
+        if strong_front:
+            last = getattr(self, '_vision_front_last_t', None)
+            if last is None:
+                self._vision_front_last_t = now
+            else:
+                dt = max(0.0, min(0.25, now - last))
+                self._vision_front_hold = float(getattr(self, '_vision_front_hold', 0.0)) + dt
+                self._vision_front_last_t = now
+        else:
+            # 直道上快速遗忘，防止出弯后 fh 残留再触发假转弯
+            self._vision_front_hold = max(0.0, float(getattr(self, '_vision_front_hold', 0.0)) - 0.25)
+            self._vision_front_last_t = None
+        front_hold = float(getattr(self, '_vision_front_hold', 0.0))
+
+        # 本弯有效转时
+        turn_active_t = float(getattr(self, '_vision_turn_active_t', 0.0) or 0.0)
+        if bool(getattr(self, '_vision_in_turn_phase', False)) and entry_done and any_ok:
+            last = getattr(self, '_vision_turn_active_last_t', None)
+            if last is None:
+                self._vision_turn_active_last_t = now
+            else:
+                dt = max(0.0, min(0.25, now - last))
+                turn_active_t += dt
+                self._vision_turn_active_t = turn_active_t
+                self._vision_turn_active_last_t = now
+        elif not bool(getattr(self, '_vision_in_turn_phase', False)):
+            self._vision_turn_active_t = 0.0
+            self._vision_turn_active_last_t = None
+            turn_active_t = 0.0
+        else:
+            self._vision_turn_active_last_t = None
+
+        phase = 'init'
+        candidate = 'PURE_SEG_FOLLOW'
+        linear = cruise
+        angular = 0.0
+        force_bias = 0.0
+        in_entry = False
+        yaw_prog = 0.0
+
+        # ========================= 有视觉 =========================
+        if any_ok:
             self._vision_pure_last_valid_t = now
+            self._vision_had_valid = True
             self._vision_last_error = error
             self._vision_last_curve = curve
-            angular = self._vision_line_to_angular(error, curve, line_status=line)
-            # 大曲率额外前馈，确保会提前打方向
-            if abs(curve) > 0.12:
-                boost = -float(getattr(self, '_vision_curvature_kp', 0.85)) * float(curve) * 0.55
-                angular = self.clamp(angular + boost, self._vision_max_angular)
-            linear = self._vision_select_linear_speed(error, curve, rows=rows)
-            if weak_ok and not quality_ok:
-                linear = max(self._vision_min_speed, linear * 0.70)
-                mode = 'PURE_SEG_WEAK'
-            elif not bool(line.get('boundary_safe', True)):
-                safety_w = float(line.get('safety_weight', 0.5))
-                linear = max(self._vision_min_speed, linear * max(0.35, min(1.0, safety_w)))
-                mode = 'PURE_SEG_BOUNDARY'
+
+            # ---------- ENTRY ----------
+            if not entry_done:
+                in_entry = True
+                turn_sign = self._vision_entry_turn_sign()
+                self._turn_direction_cache = turn_sign
+                self._vision_search_sign = turn_sign
+                self._vision_in_turn_phase = True
+                phase = 'entry'
+                candidate = 'PURE_SEG_ENTRY'
+
+                yaw_prog = self._vision_yaw_progress_deg(
+                    getattr(self, '_vision_entry_start_yaw', None), turn_sign
+                )
+
+                # 入口交接：舵机最大转向打死 + 足够线速度（至少弯速，约 0.30）
+                linear = max(vmin, corner * 1.0)  # 不慢爬
+                force_bias = 1.0
+                hard_w = float(max(entry_max_w, max_w))
+                angular = float(self.clamp(turn_sign * hard_w, hard_w))
+                self._vision_filt_angular = angular
+
+                # 入口结束：有效转时 + 最小转角（主），直道只是辅助
+                # 口子上 str 很高不能单独结束
+                # 入口目标 ~70°：转够角度后靠 e 居中退出，禁止开环拧到飞
+                # 丢线/弱帧禁止出入口（日志里 e=-0.7 rows=0 就出了 = 转晕源头）
+                min_active = 2.0
+                min_yaw = 58.0
+                good_yaw = 68.0
+                full_yaw = 78.0   # 到此强制结束前馈，进入 ALIGN
+
+                front_weak = scene['front'] < 0.48 and scene['far'] >= 0.35
+                geo_ok = (
+                    front_weak
+                    and abs(error) < 0.20
+                    and scene['straight'] >= 0.50
+                    and (scene['far'] >= 0.40 or scene['near'] >= 0.55)
+                )
+                cfill_now = float(scene.get('center_fill', 0.0) or 0.0)
+                entry_hold_ok = entry_active_t >= max(min_active, 0.50)
+                vision_solid = quality_ok and rows >= 3 and conf >= min_conf
+                exit_ok = (
+                    entry_hold_ok
+                    and yaw_prog >= min_yaw
+                    and vision_solid
+                    and abs(error) < 0.45
+                    and (
+                        (yaw_prog >= full_yaw and abs(error) < 0.35)
+                        or (yaw_prog >= good_yaw and abs(error) < 0.22)
+                        or (yaw_prog >= good_yaw and geo_ok)
+                        or (yaw_prog >= good_yaw and cfill_now >= 0.55 and abs(error) < 0.18)
+                    )
+                )
+                hard_ok = (
+                    (yaw_prog >= 88.0 and vision_solid)
+                    or (entry_active_t >= 7.0 and yaw_prog >= 70.0)
+                )
+
+                if exit_ok or hard_ok:
+                    self._vision_entry_turn_done = True
+                    self._turn_direction_cache = self._vision_ring_turn_sign()
+                    self._vision_search_sign = self._vision_ring_turn_sign()
+                    self._vision_in_turn_phase = False
+                    self._vision_align_active = True
+                    # 入口后必须回正到中心；禁止 cfill 假满立刻出 ALIGN 再假转弯
+                    self._vision_align_until = now + 0.80
+                    self._vision_turn_cooldown_until = now + 2.8
+                    self._vision_front_hold = 0.0
+                    self._vision_front_last_t = None
+                    self._vision_exit_turn_t = now
+                    self._vision_filt_angular = 0.0  # 清前馈残留
+                    phase = 'entry_done'
+                    candidate = 'PURE_SEG_ALIGN'
+                    force_bias = 0.0
+                    linear = max(vmin, corner * 0.90)
+                    angular = self._vision_align_angular(error)
+                    self._log_session(
+                        'PURE_SEG_ENTRY_DONE',
+                        f't={t_run:.1f}s act={entry_active_t:.1f}s yaw={yaw_prog:.1f} '
+                        f'prog={entry_progress:.2f} sh={straight_hold:.2f} str={scene["straight"]:.2f} '
+                        f'e={error:+.3f} hard={int(hard_ok)}'
+                    )
+
+            # ---------- 入环后 ----------
             else:
-                mode = 'PURE_SEG_FOLLOW'
+                turn_sign = self._vision_ring_turn_sign()
+                self._turn_direction_cache = turn_sign
+                yaw_prog = 0.0
+                if getattr(self, '_vision_corner_start_yaw', None) is not None:
+                    yaw_prog = self._vision_yaw_progress_deg(
+                        self._vision_corner_start_yaw, turn_sign
+                    )
+
+                early = self._vision_early_turn_score(scene, line, turn_sign)
+                apex_has = bool(scene.get('apex_has_mask', True))
+                apex_err = float(scene.get('apex_error', 0.0) or 0.0)
+                cfill5 = float(scene.get('center_fill_5', 0.0) or 0.0)
+                turn_geo = bool(scene.get('turn_geometry', False))
+                edge_front = bool(scene.get('edge_is_front', False))
+                cfill_now = float(scene.get('center_fill', 0.0) or 0.0)
+                far_now = float(scene.get('far', 1.0) or 1.0)
+                # 真转弯：远端必须空。禁止 far 还开着就 LOCK（日志转晕主因）
+                far_closed = far_now < 0.34
+                real_turn = far_closed and bool(
+                    turn_geo
+                    or edge_front
+                    or (scene['ba'] and far_now < 0.34)
+                    or (early >= 0.55 and far_now < 0.32)
+                    or (strong_front and far_now < 0.30 and front_hold >= 0.12)
+                )
+
+                def _begin_turn(reason: str, phase_name: str = 'turn_enter'):
+                    self._vision_in_turn_phase = True
+                    self._vision_align_active = False
+                    self._vision_align_until = 0.0
+                    y0 = self.navigation_yaw() if hasattr(self, 'navigation_yaw') else None
+                    self._vision_corner_start_yaw = y0
+                    self._vision_turn_active_t = 0.0
+                    self._vision_filt_angular = float(self.clamp(turn_sign * max_w, max_w))
+                    rn = int(getattr(self, "_vision_ring_turn_count", 0) or 0)
+                    h_sec = float(
+                        self.get_parameter('vision_first_ring_turn_min_hold_sec' if rn <= 0 else 'vision_ring_turn_min_hold_sec').value
+                    )
+                    # 增强日志：SEG位置+边缘信息（方案E）
+                    left_ratio = float(scene.get('left_ratio', 0.0) or 0.0)
+                    right_ratio = float(scene.get('right_ratio', 0.0) or 0.0)
+                    left_margin = float(scene.get('left_margin', 0.0) or 0.0)
+                    right_margin = float(scene.get('right_margin', 0.0) or 0.0)
+                    lane_coff = float(scene.get('lane_center_off', 0.0) or 0.0)
+                    near_err = float(scene.get('near_error', 0.0) or 0.0)
+                    far_err = float(scene.get('far_error', 0.0) or 0.0)
+                    edge_ang = float(scene.get('edge_angle_deg', 90.0) or 90.0)
+                    last_turn = getattr(self, '_vision_last_turn_sign', 0.0)
+                    # 过冲检测标志：上次转向与当前误差方向不一致
+                    possible_overshoot = False
+                    if abs(last_turn) > 0.1:
+                        if (last_turn < 0 and error > 0.30) or (last_turn > 0 and error < -0.30):
+                            possible_overshoot = True
+                    self._log_session(
+                        'PURE_SEG_TURN_BEGIN',
+                        f'{reason} ring_n={rn} hold={h_sec:.2f}s sign={turn_sign:+.0f} '
+                        f'e={error:+.3f} curve={curve:+.3f} rows={rows} conf={conf:.2f} | '
+                        f'SEG[far={scene["far"]:.2f} mid={scene.get("mid", 0.0):.2f} near={scene.get("near", 0.0):.2f}] '
+                        f'EDGE[L={left_ratio:.2f} R={right_ratio:.2f} Lm={left_margin:.2f} Rm={right_margin:.2f}] '
+                        f'GEO[ba={int(scene["ba"])} front={scene["front"]:.2f} straight={scene["straight"]:.2f} '
+                        f'edge_ang={edge_ang:.0f}° edge_front={int(edge_front)}] '
+                        f'APEX[has={int(apex_has)} err={apex_err:+.2f} fill={scene.get("apex_fill", 0.0):.2f}] '
+                        f'PATH[lane_off={lane_coff:+.2f} near_e={near_err:+.2f} far_e={far_err:+.2f}] '
+                        f'WARN[early={early:.2f} last_turn={last_turn:+.0f} overshoot_risk={int(possible_overshoot)}]'
+                    )
+                    return phase_name, 'PURE_SEG_TURN', 1.0, max(vmin, corner), float(
+                        self.clamp(turn_sign * max_w, max_w)
+                    )
+
+                def _is_center_full() -> bool:
+                    """居中：顶点中心线±10%有SEG（用户核心判据）。"""
+                    apex_c10 = float(scene.get('apex_center10_fill', 0.0) or 0.0)
+                    # 顶点中心±10%占比>=0.4 → 回正完成
+                    return apex_c10 >= 0.40
+
+                def _finish_turn(reason: str, go_align: bool = False):
+                    self._vision_in_turn_phase = False
+                    self._vision_corner_start_yaw = None
+                    # 完成一次环内转弯：计数+1（后续弯用更短 min_hold）
+                    try:
+                        self._vision_ring_turn_count = int(
+                            getattr(self, '_vision_ring_turn_count', 0) or 0
+                        ) + 1
+                    except Exception:
+                        self._vision_ring_turn_count = 1
+                    # 冷却时间：基础0.2s，出弯不居中时自适应延长（方案A+E）
+                    base_cooldown = 0.2
+                    if abs(error) > 0.30 or yaw_prog > 70.0:
+                        # 过冲或大误差：延长到0.6s
+                        cooldown = 0.6
+                        overshoot_flag = 'OVERSHOOT' if yaw_prog > 70.0 else 'LARGE_ERR'
+                    elif abs(error) > 0.22:
+                        # 中等误差：延长到0.4s
+                        cooldown = 0.4
+                        overshoot_flag = 'MED_ERR'
+                    else:
+                        cooldown = base_cooldown
+                        overshoot_flag = 'NORMAL'
+                    self._vision_turn_cooldown_until = now + cooldown
+                    self._vision_front_hold = 0.0
+                    self._vision_front_last_t = None
+                    self._vision_exit_turn_t = now
+                    self._vision_filt_angular = 0.0
+                    # 记录转弯方向（用于诊断）
+                    self._vision_last_turn_sign = turn_sign
+                    # 增强日志（方案E）
+                    self._log_session(
+                        'PURE_SEG_TURN_COMPLETE',
+                        f'ring_n={int(getattr(self, "_vision_ring_turn_count", 0))-1} reason={reason} '
+                        f'yaw={yaw_prog:.1f}° time={turn_active_t:.2f}s '
+                        f'exit_e={error:+.3f} exit_curve={curve:+.3f} '
+                        f'exit_far={far_now:.2f} exit_near={scene.get("near", 0.0):.2f} '
+                        f'exit_cfill={cfill_now:.2f} turn_sign={turn_sign:+.0f} '
+                        f'cooldown={cooldown:.2f}s flag={overshoot_flag} go_align={int(go_align)}'
+                    )
+                    if go_align or abs(error) > 0.22:
+                        self._vision_align_active = True
+                        self._vision_align_until = now + 0.60
+                        return 'align', 'PURE_SEG_ALIGN', 0.0, max(vmin, corner * 0.95), self._vision_align_angular(error)
+                    self._vision_align_active = False
+                    self._vision_align_until = 0.0
+                    return 'straight', 'PURE_SEG_FOLLOW', 0.0, cruise, 0.0
+
+                if bool(getattr(self, '_vision_align_active', False)):
+                    # ALIGN：只回正；真前边界(远端空) + 冷却后才打断
+                    cool_ok = now >= float(getattr(self, '_vision_turn_cooldown_until', 0.0) or 0.0)
+                    hard_corner = cool_ok and real_turn and far_closed and (
+                        scene['ba'] or scene['front'] >= 0.60 or edge_front
+                    )
+                    if hard_corner:
+                        phase, candidate, force_bias, linear, angular = _begin_turn(
+                            'from_align', 'turn_early'
+                        )
+                    else:
+                        phase = 'align'
+                        candidate = 'PURE_SEG_ALIGN'
+                        force_bias = 0.0
+                        self._vision_in_turn_phase = False
+                        linear = max(vmin, min(cruise * 0.90, max(corner, 0.24)))
+                        if _is_center_full():
+                            self._vision_align_active = False
+                            self._vision_align_until = 0.0
+                            phase = 'straight'
+                            candidate = 'PURE_SEG_FOLLOW'
+                            linear = cruise
+                            angular = 0.0
+                            self._vision_filt_angular = 0.0
+                        else:
+                            angular = self._vision_heading_from_geometry(
+                                line, scene, turn_sign=0.0, early_turn=0.0
+                            )
+                            if abs(error) > 0.25:
+                                angular = float(self.clamp(
+                                    0.45 * angular + 0.55 * self._vision_align_angular(error),
+                                    0.24,
+                                ))
+                            align_until = float(getattr(self, '_vision_align_until', 0.0) or 0.0)
+                            if now >= align_until and (
+                                scene.get('lane_clear')
+                                or (abs(error) < 0.16 and far_now >= 0.40)
+                            ):
+                                self._vision_align_active = False
+                                self._vision_align_until = 0.0
+                                phase = 'straight'
+                                candidate = 'PURE_SEG_FOLLOW'
+                                linear = cruise
+                                if abs(error) < 0.12:
+                                    angular = 0.0
+                                    self._vision_filt_angular = 0.0
+
+                elif bool(getattr(self, '_vision_in_turn_phase', False)):
+                    # TURN：环向打死，v=0.25
+                    # 用户：第1次环弯 min_hold=0.5s；后续弯 0.3s（防过大）
+                    phase = 'turn'
+                    candidate = 'PURE_SEG_TURN'
+                    if getattr(self, '_vision_corner_start_yaw', None) is None:
+                        y0 = self.navigation_yaw() if hasattr(self, 'navigation_yaw') else None
+                        self._vision_corner_start_yaw = y0
+                        self._vision_turn_active_t = 0.0
+                        turn_active_t = 0.0
+                        yaw_prog = 0.0
+
+                    force_bias = 1.0
+                    hard_w = float(max_w)
+                    linear = max(vmin, corner)
+                    ring_n = int(getattr(self, '_vision_ring_turn_count', 0) or 0)
+                    is_first_ring_turn = (ring_n <= 0)
+                    # 从配置读取第1弯 vs 后续弯参数
+                    min_hold = float(
+                        self.get_parameter('vision_first_ring_turn_min_hold_sec' if is_first_ring_turn else 'vision_ring_turn_min_hold_sec').value
+                    )
+                    min_yaw_turn = float(
+                        self.get_parameter('vision_first_ring_turn_min_yaw_deg' if is_first_ring_turn else 'vision_ring_turn_min_yaw_deg').value
+                    )
+                    # 过冲保护：后续弯更早收（方案A：更激进）
+                    overshoot_yaw = 75.0 if is_first_ring_turn else 45.0  # 后续弯45°就检查过冲
+                    nearly_yaw = 55.0 if is_first_ring_turn else 38.0
+                    hard_yaw = 95.0 if is_first_ring_turn else 65.0  # 后续弯65°强制结束
+                    hard_time = 4.5 if is_first_ring_turn else 2.5
+                    half_yaw = 50.0 if is_first_ring_turn else 28.0  # 后续弯28°开始收舵
+
+                    overshot = yaw_prog >= overshoot_yaw and abs(error) < 0.25 and far_now >= 0.40
+                    # 用户核心判据：转弯后顶点±10%有SEG → 直接停转回正
+                    center_full = _is_center_full()
+
+                    if center_full:
+                        # 顶点±10%有SEG：直接退出转弯（不需要连续确认）
+                        phase, candidate, force_bias, linear, angular = _finish_turn(
+                            'apex_center_full', go_align=False  # 已回正，不需要ALIGN
+                        )
+                        self._log_session(
+                            'PURE_SEG_CENTER_FULL_EXIT',
+                            f'yawp={yaw_prog:.1f} far={far_now:.2f} '
+                            f'e={error:+.2f} act={turn_active_t:.1f} why=apex_c10_full '
+                            f'ring_n={ring_n} hold={min_hold:.2f}'
+                        )
+                    elif overshot:
+                        phase, candidate, force_bias, linear, angular = _finish_turn(
+                            'overshoot', go_align=True
+                        )
+                        self._log_session(
+                            'PURE_SEG_CENTER_FULL_EXIT',
+                            f'yawp={yaw_prog:.1f} far={far_now:.2f} '
+                            f'e={error:+.2f} act={turn_active_t:.1f} why=overshoot '
+                            f'ring_n={ring_n} hold={min_hold:.2f}'
+                        )
+                    else:
+                        # 继续转弯：前半打死，后半收舵
+                        if yaw_prog < half_yaw:
+                            angular = float(self.clamp(turn_sign * hard_w, hard_w))
+                        else:
+                            base = turn_sign * min(hard_w, 0.50 if is_first_ring_turn else 0.40)
+                            vis = float(self.clamp(-0.35 * error, 0.18))
+                            angular = float(self.clamp(base + vis, hard_w))
+                            if angular * turn_sign < 0.0:
+                                angular = turn_sign * 0.18
+                        self._vision_filt_angular = angular
+
+                        # 兜底强制退出
+                        min_turn_ok = (turn_active_t >= min_hold) and (yaw_prog >= min_yaw_turn)
+                        hard_done = yaw_prog >= hard_yaw or turn_active_t >= hard_time
+
+                        # 周期性诊断日志（每0.3s输出一次转弯状态，方案E）
+                        last_turn_log_t = getattr(self, '_vision_last_turn_log_t', 0.0)
+                        if now - last_turn_log_t >= 0.3:
+                            self._vision_last_turn_log_t = now
+                            apex_c10 = float(scene.get('apex_center10_fill', 0.0) or 0.0)
+                            self._log_session(
+                                'PURE_SEG_TURN_PROGRESS',
+                                f'ring_n={ring_n} yaw={yaw_prog:.1f}°/{min_yaw_turn:.0f}° '
+                                f'time={turn_active_t:.2f}s/{min_hold:.2f}s '
+                                f'e={error:+.3f} curve={curve:+.3f} omega={angular:+.2f} | '
+                                f'APEX[c10={apex_c10:.2f} cfull={int(center_full)}] '
+                                f'SEG[far={far_now:.2f} mid={scene.get("mid", 0.0):.2f} near={scene.get("near", 0.0):.2f}] '
+                                f'STATE[min_ok={int(min_turn_ok)} hard={int(hard_done)} '
+                                f'overshot={int(overshot)} half_done={int(yaw_prog >= half_yaw)}]'
+                            )
+
+                        if hard_done:
+                            phase, candidate, force_bias, linear, angular = _finish_turn(
+                                'hard_limit', go_align=True
+                            )
+                            self._log_session(
+                                'PURE_SEG_CENTER_FULL_EXIT',
+                                f'yawp={yaw_prog:.1f} far={far_now:.2f} '
+                                f'e={error:+.2f} act={turn_active_t:.1f} why=hard_limit '
+                                f'ring_n={ring_n} hold={min_hold:.2f}'
+                            )
+
+                else:
+                    # FOLLOW：走中线；顶点几何判据触发TURN
+                    phase = 'follow'
+                    candidate = 'PURE_SEG_FOLLOW'
+                    force_bias = 0.0
+                    self._vision_in_turn_phase = False
+                    coff = float(scene.get('lane_center_off', 0.0) or 0.0)
+
+                    # 用户核心转弯判据：顶点左右都没SEG → 准备转弯
+                    apex_l5 = float(scene.get('apex_left5_fill', 0.0) or 0.0)
+                    apex_r5 = float(scene.get('apex_right5_fill', 0.0) or 0.0)
+                    both_empty = (apex_l5 < 0.15 and apex_r5 < 0.15)
+
+                    want_turn = cooldown_ok and both_empty and real_turn and far_closed
+
+                    if want_turn:
+                        # 增强日志：记录触发转弯时的详细状态（方案E）
+                        last_turn = getattr(self, '_vision_last_turn_sign', 0.0)
+                        cooldown_left = max(0.0, float(getattr(self, '_vision_turn_cooldown_until', 0.0) or 0.0) - now)
+                        self._log_session(
+                            'PURE_SEG_TURN_TRIGGER',
+                            f'cooldown_ok={int(cooldown_ok)} cooldown_left={cooldown_left:.2f}s '
+                            f'e={error:+.3f} curve={curve:+.3f} last_turn={last_turn:+.0f} | '
+                            f'APEX[L5={apex_l5:.2f} R5={apex_r5:.2f} both_empty={int(both_empty)}] '
+                            f'SEG[far={far_now:.2f} mid={scene.get("mid", 0.0):.2f} near={scene.get("near", 0.0):.2f}] '
+                            f'GEO[front={scene["front"]:.2f} straight={scene["straight"]:.2f} turn_geo={int(turn_geo)}] '
+                            f'PATH[lane_off={coff:+.2f} cfill={cfill_now:.2f}]'
+                        )
+                        phase, candidate, force_bias, linear, angular = _begin_turn(
+                            'LOCK', 'turn_enter'
+                        )
+                    else:
+                        linear = cruise
+                        # 用户核心判据：顶点（最远端）中心线左右对称性
+                        apex_l5 = float(scene.get('apex_left5_fill', 0.0) or 0.0)
+                        apex_r5 = float(scene.get('apex_right5_fill', 0.0) or 0.0)
+                        apex_c10 = float(scene.get('apex_center10_fill', 0.0) or 0.0)
+
+                        # ─────── 顶点几何判据（用户明确要求）───────
+                        # 1. 左右都没SEG → 准备转弯（这已被前面 want_turn 处理）
+                        # 2. 不对称（一边有一边没）→ 歪了 → 微调纠偏（速度不变）
+                        # 3. ±10%都有SEG → 回正/直行
+
+                        both_empty = (apex_l5 < 0.15 and apex_r5 < 0.15)    # 左右都没 → 可能准备转弯
+                        both_full = (apex_c10 >= 0.40)                      # ±10%有SEG → 已回正
+                        asymmetric = (not both_empty) and (not both_full) and (
+                            (apex_l5 < 0.20 and apex_r5 >= 0.30) or
+                            (apex_r5 < 0.20 and apex_l5 >= 0.30)
+                        )  # 不对称 → 一边有一边没
+
+                        if asymmetric:
+                            # 不对称：歪了一点点 → 纠偏（速度不变，微微打方向）
+                            phase = 'nudge'
+                            # 向没有SEG的一侧相反方向打
+                            # apex_l5小 → 左边没 → 向右打（angular < 0）
+                            # apex_r5小 → 右边没 → 向左打（angular > 0）
+                            if apex_l5 < apex_r5:
+                                nudge_dir = -0.18  # 向右微调
+                            else:
+                                nudge_dir = +0.18  # 向左微调
+                            angular = float(nudge_dir)
+                            self._vision_filt_angular = angular
+                            force_bias = 0.0
+                        elif both_full:
+                            # ±10%都有：回正完成 → 直行
+                            phase = 'straight'
+                            angular = 0.0
+                            self._vision_filt_angular = 0.0
+                            force_bias = 0.0
+                        else:
+                            # 其他情况：用几何控制
+                            phase = 'follow'
+                            angular = self._vision_heading_from_geometry(
+                                line, scene, turn_sign=0.0, early_turn=0.0
+                            )
+                            force_bias = 0.0
+
+            if weak_ok and not quality_ok:
+                linear = max(vmin, linear * 0.70)
+                if candidate in ('PURE_SEG_ENTRY', 'PURE_SEG_TURN'):
+                    angular = self._vision_turn_angular(
+                        turn_sign, error, max(0.70, force_bias),
+                        max_w=entry_max_w if in_entry else max_w,
+                    )
+                if candidate == 'PURE_SEG_FOLLOW':
+                    candidate = 'PURE_SEG_WEAK'
+                    phase = 'weak'
+
+            mode = self._hold_mode(candidate)
             self.current_speed = linear
+            self._vision_scene = phase
+            self._vision_bias_scale = float(force_bias)
+
+            line = dict(line)
+            line['phase'] = phase
+            line['entry_turn'] = bool(in_entry)
+            line['force_bias'] = float(force_bias)
+            line['entry_prog'] = float(entry_progress)
+            line['yaw_prog'] = float(yaw_prog)
+            line['cyaw'] = float(yaw_prog)
+            line['overshoot'] = bool(phase == 'overshoot')
+            line['exit_hold'] = float(straight_hold)
+            line['ba'] = int(scene['ba'])
+            line['sba'] = int(scene['front_trigger'])
+            line['bdist'] = float(scene['bd'])
+            line['far'] = float(scene['far'])
+            line['mid'] = float(scene['mid'])
+            line['near'] = float(scene['near'])
+            line['cstd'] = float(line.get('boundary_coverage_std', 0.0) or 0.0)
+            line['front'] = float(scene['front'])
+            line['str'] = float(scene['straight'])
+            line['sign'] = float(turn_sign)
+            line['early'] = float(locals().get('early', line.get('early', 0.0)) or 0.0)
+            line['e_near'] = float(line.get('near_error', error) or 0.0)
+            line['e_far'] = float(line.get('far_error', error) or 0.0)
+            line['bend'] = float(line.get('path_bend', curve) or 0.0)
+            line['left_margin'] = float(scene.get('left_margin', line.get('left_margin', 0.0)) or 0.0)
+            line['right_margin'] = float(scene.get('right_margin', line.get('right_margin', 0.0)) or 0.0)
+            line['lane_center_off'] = float(scene.get('lane_center_off', line.get('lane_center_off', 0.0)) or 0.0)
+            line['lane_clear'] = bool(scene.get('lane_clear', line.get('lane_clear', False)))
+            line['lm'] = line['left_margin']
+            line['rm'] = line['right_margin']
+            line['coff'] = line['lane_center_off']
+            line['center_fill'] = float(scene.get('center_fill', line.get('center_fill', 0.0)) or 0.0)
+            line['center_fill_5'] = float(scene.get('center_fill_5', line.get('center_fill_5', 0.0)) or 0.0)
+            line['apex_has_mask'] = bool(scene.get('apex_has_mask', line.get('apex_has_mask', True)))
+            line['apex_error'] = float(scene.get('apex_error', line.get('apex_error', 0.0)) or 0.0)
+            line['apex_fill'] = float(scene.get('apex_fill', line.get('apex_fill', 0.0)) or 0.0)
+            line['turn_geometry'] = bool(scene.get('turn_geometry', False))
+            line['edge_angle_deg'] = float(scene.get('edge_angle_deg', line.get('edge_angle_deg', 90.0)) or 90.0)
+            line['cfill'] = line['center_fill']
+            line['cfill5'] = line['center_fill_5']
+            line['apex'] = int(line['apex_has_mask'])
+            line['aerr'] = line['apex_error']
+            line['eang'] = line['edge_angle_deg']
+            line['vang'] = float(self._vision_edge_to_vehicle_angle_deg(line['edge_angle_deg']))
+            line['clr'] = line['lane_clear']
+            line['fh'] = float(front_hold)
+            line['sh'] = float(straight_hold)
+            line['act'] = float(entry_active_t if in_entry else turn_active_t)
             return float(linear), float(angular), mode, line
 
-        # 丢线：按最后弯向搜索，并给一点前探速度
+        # ========================= 无视觉 =========================
         last_valid = float(getattr(self, '_vision_pure_last_valid_t', 0.0) or 0.0)
+        had_valid = bool(getattr(self, '_vision_had_valid', False))
         lost_for = (now - last_valid) if last_valid > 0.0 else 999.0
+
+        # 入口阶段丢线：继续打死转弯 + 保持线速度，禁止几乎停车
+        if not entry_done:
+            turn_sign = self._vision_entry_turn_sign()
+            self._turn_direction_cache = turn_sign
+            self._vision_search_sign = turn_sign
+            yb = self._vision_yaw_progress_deg(
+                getattr(self, '_vision_entry_start_yaw', None), turn_sign)
+            hard_w = float(getattr(self, '_vision_entry_max_angular', 0.80) or 0.80)
+            hard_w = max(hard_w, float(getattr(self, '_vision_max_angular', 0.80) or 0.80))
+            # 转够很多才允许收舵，否则一直打死
+            if yb >= 85.0:
+                w = 0.0
+            else:
+                w = float(self.clamp(turn_sign * hard_w, hard_w))
+            linear = max(vmin, float(getattr(self, '_vision_corner_speed', 0.30) or 0.30))
+            mode = self._hold_mode('PURE_SEG_ENTRY')
+            self.current_speed = linear
+            self._vision_in_turn_phase = True
+            line = dict(line)
+            line.update({
+                'phase': 'entry_blind',
+                'entry_turn': 1,
+                'force_bias': 1.0,
+                'sign': float(turn_sign),
+                'entry_prog': float(entry_progress),
+                'yaw_prog': float(yb),
+                'front': float(scene.get('front', 0.0)),
+                'str': float(scene.get('straight', 0.0)),
+                'far': float(scene.get('far', 0.0)),
+                'mid': float(scene.get('mid', 0.0)),
+                'near': float(scene.get('near', 0.0)),
+                'ba': int(scene.get('ba', False)),
+                'sba': 0,
+                'fh': float(front_hold),
+                'sh': 0.0,
+                'exit_hold': 0.0,
+                'overshoot': False,
+                'act': float(entry_active_t),
+                'cyaw': 0.0,
+                'bdist': float(scene.get('bd', 0.0)),
+                'cstd': 0.0,
+            })
+            return float(linear), float(w), mode, line
+
+        # 入环后丢线
+        # 弯中丢线是常态（镜头扫到墙/空地）：开环按环向续转，禁止立刻停车卡死
+        ring = self._vision_ring_turn_sign()
         search_dir = self._vision_search_direction()
-        search_w = self.clamp(
-            search_dir * float(getattr(self, '_vision_search_angular', 0.45)),
-            self._vision_max_angular,
-        )
-        if lost_for <= timeout:
-            linear = max(float(getattr(self, '_vision_min_speed', 0.06)) * 0.85, 0.04)
-            mode = 'PURE_SEG_SEARCH'
+        lost_for_now = (now - last_valid) if last_valid > 0.0 else 999.0
+        entry_done = bool(getattr(self, '_vision_entry_turn_done', False))
+        corner = float(getattr(self, '_vision_corner_speed', 0.15))
+        vmin = float(getattr(self, '_vision_min_speed', 0.08))
+
+        if (not entry_done) or bool(getattr(self, '_vision_in_turn_phase', False)):
+            # 入口/弯中丢线：可续转，但禁止转晕（>78° 必须停转）
+            if not entry_done:
+                turn_sign = self._vision_entry_turn_sign()
+                y0 = getattr(self, '_vision_entry_start_yaw', None)
+            else:
+                turn_sign = ring
+                y0 = getattr(self, '_vision_corner_start_yaw', None)
+            cyaw = self._vision_yaw_progress_deg(y0, turn_sign)
+            max_w_lost = float(getattr(self, '_vision_max_angular', 0.80) or 0.80)
+            scale = 1.0
+            # 转够 ~78° / 丢线过久：停转进 ALIGN，绝不再打死到 100°+
+            if cyaw >= 78.0 or (cyaw >= 60.0 and lost_for_now > 1.0) or lost_for_now > 2.2:
+                search_w = 0.0
+                linear_lost = max(vmin, corner * 0.85)
+                self._vision_in_turn_phase = False
+                self._vision_align_active = True
+                self._vision_align_until = now + 0.70
+                if entry_done:
+                    self._vision_corner_start_yaw = None
+                    self._vision_turn_cooldown_until = now + 1.6
+                self._vision_filt_angular = 0.0
+                phase_lost = 'lost_hold'
+                scale = 0.0
+            elif cyaw >= 50.0:
+                # 后半弯：收舵继续找线
+                search_w = float(self.clamp(turn_sign * min(max_w_lost, 0.40), 0.45))
+                linear_lost = max(vmin, corner)
+                phase_lost = 'lost_turn'
+                scale = 0.5
+            else:
+                # 前半弯丢线：仍打死 + 弯速
+                search_w = float(self.clamp(turn_sign * max_w_lost, max_w_lost))
+                linear_lost = max(vmin, corner)
+                phase_lost = 'lost_turn'
+                scale = 1.0
+            # 写入 line 诊断
+            line = dict(line)
+            line['phase'] = phase_lost
+            line['sign'] = float(turn_sign)
+            line['yaw_prog'] = float(cyaw)
+            line['force_bias'] = float(scale)
+            line['entry_turn'] = int(not entry_done)
+            mode = self._hold_mode('PURE_SEG_TURN' if abs(search_w) > 1e-3 else 'PURE_SEG_ALIGN')
+            self.current_speed = linear_lost
+            self._vision_scene = phase_lost
+            # 补全常用字段
+            for k, v in {
+                'front': float(scene.get('front', 0.0)), 'str': float(scene.get('straight', 0.0)),
+                'far': float(scene.get('far', 0.0)), 'mid': float(scene.get('mid', 0.0)),
+                'near': float(scene.get('near', 0.0)), 'ba': int(scene.get('ba', False)),
+                'early': 0.0, 'lm': float(scene.get('left_margin', 0.0)),
+                'rm': float(scene.get('right_margin', 0.0)),
+                'coff': float(scene.get('lane_center_off', 0.0)),
+                'cfill': float(scene.get('center_fill', 0.0)),
+                'cfill5': float(scene.get('center_fill_5', 0.0)),
+                'apex': int(bool(scene.get('apex_has_mask', False))),
+                'aerr': float(scene.get('apex_error', 0.0)),
+                'eang': float(scene.get('edge_angle_deg', 90.0)),
+                'clr': bool(scene.get('lane_clear', False)),
+                'entry_prog': float(entry_progress),
+                'act': float(cyaw),
+            }.items():
+                line.setdefault(k, v)
+            return float(linear_lost), float(search_w), mode, line
+
+        # 非弯中丢线：慢爬小找，不要永久停车
+        if lost_for_now < 0.8:
+            search_w = 0.0
+            linear_lost = max(vmin * 0.7, 0.06)
+        elif lost_for_now < 2.0:
+            search_w = self.clamp(ring * 0.10, 0.10)
+            linear_lost = max(vmin * 0.5, 0.04)
+        elif lost_for_now < 4.0:
+            search_w = self.clamp(search_dir * 0.12, 0.12)
+            linear_lost = 0.03
+        else:
+            search_w = self.clamp(search_dir * 0.10, 0.10)
+            linear_lost = 0.02
+
+        line = dict(line)
+        line.update({
+            'phase': 'lost',
+            'entry_turn': 0,
+            'force_bias': 0.0,
+            'sign': float(search_dir),
+            'front': float(scene.get('front', 0.0)),
+            'str': float(scene.get('straight', 0.0)),
+            'far': float(scene.get('far', 0.0)),
+            'mid': float(scene.get('mid', 0.0)),
+            'near': float(scene.get('near', 0.0)),
+            'ba': int(scene.get('ba', False)),
+            'sba': 0,
+            'fh': float(front_hold),
+            'sh': float(straight_hold),
+            'exit_hold': float(straight_hold),
+            'overshoot': False,
+            'entry_prog': float(entry_progress),
+            'yaw_prog': 0.0,
+            'cyaw': 0.0,
+            'bdist': float(scene.get('bd', 0.0)),
+            'cstd': 0.0,
+            'act': float(turn_active_t),
+            'cfill': float(scene.get('center_fill', 0.0)),
+            'eang': float(scene.get('edge_angle_deg', 90.0)),
+            'coff': float(scene.get('lane_center_off', 0.0)),
+            'clr': bool(scene.get('lane_clear', False)),
+        })
+
+        if not had_valid:
+            linear = max(vmin * 0.5, 0.04)
+            mode = self._hold_mode('PURE_SEG_WAIT')
             self.current_speed = linear
             return float(linear), float(search_w), mode, line
-        if lost_for <= hard_lost_sec:
-            linear = max(float(getattr(self, '_vision_min_speed', 0.06)) * 0.45, 0.02)
-            mode = 'PURE_SEG_SEARCH_HARD'
-            self.current_speed = linear
-            return float(linear), float(self.clamp(search_w * 1.15, self._vision_max_angular)), mode, line
 
-        mode = 'PURE_SEG_LOST'
-        linear = 0.02
-        self.current_speed = linear
-        return float(linear), float(search_w), mode, line
+        if lost_for <= timeout:
+            mode = self._hold_mode('PURE_SEG_SEARCH')
+            self.current_speed = linear_lost
+            return float(linear_lost), float(search_w), mode, line
+        if lost_for <= hard_lost_sec:
+            mode = self._hold_mode('PURE_SEG_SEARCH_HARD')
+            self.current_speed = linear_lost
+            return float(linear_lost), float(search_w), mode, line
+
+        mode = self._hold_mode('PURE_SEG_LOST')
+        self.current_speed = linear_lost
+        return float(linear_lost), float(search_w), mode, line
 
     def _estimate_ring_mission_distance(self) -> float:
         """根据 field_track 段长估算纯视觉任务总里程。"""
@@ -761,10 +2031,53 @@ class Stage2VisionMixin:
         self.segment_heading = self.segment_start_yaw
         self._vision_pure_start_pose = self.current_position
         self._vision_pure_start_t = self.segment_started_at
+        self._vision_pure_path_m = 0.0
+        self._vision_pure_last_pos = self.current_position
+        self._vision_finish_seen_low_x = False
+        self._vision_finish_armed = False
         self._vision_pure_last_valid_t = 0.0
         self._vision_pure_last_log_t = 0.0
         self._vision_pure_mode_name = 'PURE_SEG_START'
+        self._vision_had_valid = False
+        self._vision_has_filt = False
+        self._vision_filt_angular = 0.0
+        self._vision_lost_flip_t = 0.0
+        self._vision_exit_turn_t = 0.0
+        self._vision_in_turn_phase = True          # 一进 S2 就准备转
+        self._vision_align_active = False
+        self._vision_align_until = 0.0
+        self._vision_entry_turn_done = False
+        self._vision_front_hold = 0.0
+        self._vision_front_last_t = None
+        self._vision_straight_hold = 0.0
+        self._vision_straight_last_t = None
+        self._vision_turn_cooldown_until = 0.0
+        self._vision_last_turn_exit_t = 0.0
+        self._vision_bias_scale = 0.0
+        self._vision_force_bias_scale = 0.0
+        self._vision_scene = 'entry'
+        self._vision_mode_hold = 'PURE_SEG_ENTRY'
+        self._vision_mode_hold_t = 0.0
+        self._vision_entry_active_t = 0.0
+        self._vision_entry_active_last_t = None
+        self._vision_turn_active_t = 0.0
+        self._vision_turn_active_last_t = None
+        self._vision_corner_start_yaw = None
+        self._vision_ring_turn_count = 0  # 环内已完成转弯次数；第1次 hold=0.5s，之后 0.3s
+        y0 = self.segment_start_yaw
+        if y0 is None:
+            y0 = self.navigation_yaw() if hasattr(self, 'navigation_yaw') else None
+        self._vision_entry_start_yaw = y0
+        # 入口符号：顺左 / 逆右
+        self._turn_direction_cache = self._vision_entry_turn_sign()
+        self._vision_search_sign = self._vision_entry_turn_sign()
         self._vision_pure_target_distance = target_distance
+
+        # 重置避障控制器
+        if hasattr(self, '_avoider') and self._avoider is not None:
+            self._avoider.reset()
+            self.get_logger().info('[MISSION] 避障控制器已重置')
+
         if hasattr(self, '_set_vision_inference_active'):
             self._set_vision_inference_active(True)
         elif getattr(self, '_vision_node', None) is not None:
@@ -784,8 +2097,71 @@ class Stage2VisionMixin:
                 f'direction={self.direction} target={self._vision_pure_target_distance:.2f}m',
             )
 
+    def _vision_update_path_length(self) -> float:
+        """累计真实路径长度（逐帧位移积分），绕环不会回零。"""
+        pos = self.current_position
+        if pos is None:
+            return float(getattr(self, '_vision_pure_path_m', 0.0) or 0.0)
+        last = getattr(self, '_vision_pure_last_pos', None)
+        if last is None:
+            self._vision_pure_last_pos = pos
+            return float(getattr(self, '_vision_pure_path_m', 0.0) or 0.0)
+        step = math.hypot(pos[0] - last[0], pos[1] - last[1])
+        # 滤掉跳变
+        if 1e-4 < step < 0.35:
+            self._vision_pure_path_m = float(getattr(self, '_vision_pure_path_m', 0.0) or 0.0) + step
+        self._vision_pure_last_pos = pos
+        return float(self._vision_pure_path_m)
+
+    def _vision_check_lap_finish(self, path_m: float) -> tuple:
+        """
+        一圈结束判据（比赛几何）：
+          1) 入口已完成
+          2) 路径里程 >= min_path（保证真的跑过一圈，不是刚出发）
+          3) 曾到过小 x 区（例如 x<1.5，说明绕出去了）
+          4) 回到通道口附近：x ≈ 2.5（默认 2.15~2.85），y 在合理带内
+
+        用户描述：x 从 1→2 说明跑完一圈，到 x≈2.5 触发第三阶段。
+        """
+        if not bool(getattr(self, '_vision_entry_turn_done', False)):
+            return False, 'entry_not_done'
+        min_path = float(getattr(self, '_vision_finish_min_path_m', 5.0) or 5.0)
+        if path_m < min_path:
+            return False, f'path_short:{path_m:.2f}<{min_path:.2f}'
+
+        pos = self.current_position
+        if pos is None:
+            return False, 'no_pose'
+        x, y = float(pos[0]), float(pos[1])
+
+        # 记录是否去过环外侧/小 x
+        low_x_thresh = float(getattr(self, '_vision_finish_x_m', 2.50)) - 1.0  # ~1.5
+        if x < low_x_thresh:
+            self._vision_finish_seen_low_x = True
+
+        require_rise = bool(getattr(self, '_vision_finish_require_x_rise', True))
+        if require_rise and not bool(getattr(self, '_vision_finish_seen_low_x', False)):
+            return False, f'need_low_x_first x={x:.2f}'
+
+        x_goal = float(getattr(self, '_vision_finish_x_m', 2.50))
+        x_tol = float(getattr(self, '_vision_finish_x_tol_m', 0.35))
+        y_min = float(getattr(self, '_vision_finish_y_min_m', 1.60))
+        y_max = float(getattr(self, '_vision_finish_y_max_m', 3.20))
+
+        in_x = abs(x - x_goal) <= x_tol
+        in_y = (y_min <= y <= y_max)
+        if in_x and in_y:
+            return True, f'lap_done path={path_m:.2f} xy=({x:.2f},{y:.2f})'
+
+        # 也允许：x 已越过 goal（从内侧回到通道口再往外一点）
+        if require_rise and bool(getattr(self, '_vision_finish_seen_low_x', False)):
+            if x >= (x_goal - 0.10) and in_y:
+                return True, f'lap_x_cross path={path_m:.2f} xy=({x:.2f},{y:.2f})'
+
+        return False, f'wait_gate x={x:.2f} y={y:.2f} path={path_m:.2f}'
+
     def run_pure_vision_mission(self):
-        """纯 SEG 控制循环：跟线 + 里程/超时结束。"""
+        """纯 SEG 控制循环：跟线 + 路径里程/回廊口结束。"""
         if not self.mission_active:
             self.cmd_pub.publish(self.create_twist())
             return
@@ -800,28 +2176,73 @@ class Stage2VisionMixin:
             self.finish_mission()
             return
 
-        # 里程积分：优先 wheel/odom 位移
-        progress = 0.0
-        start_pose = getattr(self, '_vision_pure_start_pose', None)
-        if start_pose is None and self.current_position is not None:
-            # 容错：若启动时未记下起点，这里补记一次
-            self._vision_pure_start_pose = self.current_position
-            start_pose = self.current_position
-            self._vision_pure_start_t = now
-        if start_pose is not None and self.current_position is not None:
-            dx = self.current_position[0] - start_pose[0]
-            dy = self.current_position[1] - start_pose[1]
-            progress = math.hypot(dx, dy)
-        target = float(getattr(self, '_vision_pure_target_distance', 6.0) or 6.0)
-        if progress >= target:
+        # 路径长度（积分）才是“跑了多远”；欧氏位移绕环会缩回
+        path_m = self._vision_update_path_length()
+        progress = path_m
+        target = float(getattr(self, '_vision_pure_target_distance', 8.0) or 8.0)
+
+        done, why = self._vision_check_lap_finish(path_m)
+        if done:
+            self.get_logger().info(f'[视觉] 纯SEG一圈完成 {why}')
+            if hasattr(self, '_log_session'):
+                self._log_session('PURE_SEG_DONE', why)
+            self.finish_mission()
+            return
+        # 兜底：路径特别长也结束（防几何门永远不触发）
+        if path_m >= max(target * 1.15, min_path := float(getattr(self, '_vision_finish_min_path_m', 5.0)) + 4.0):
             self.get_logger().info(
-                f'[视觉] 纯SEG里程完成 {progress:.2f}/{target:.2f}m'
+                f'[视觉] 纯SEG路径兜底完成 path={path_m:.2f}m target={target:.2f}m'
             )
             if hasattr(self, '_log_session'):
-                self._log_session('PURE_SEG_DONE', f'progress={progress:.2f}/{target:.2f}m')
+                self._log_session('PURE_SEG_DONE', f'path_fallback={path_m:.2f}/{target:.2f}')
             self.finish_mission()
             return
 
+        # ═══ 激光雷达避障检测 ═══
+        # 检查避障控制器是否激活
+        if hasattr(self, '_avoider') and self._avoider is not None:
+            # 构造 NavState 用于避障判断
+            from racing_stage2.avoid_controller import NavState
+            nav = NavState(
+                position=self.current_position if self.current_position is not None else (0.0, 0.0),
+                yaw=self.navigation_yaw() if hasattr(self, 'navigation_yaw') and self.navigation_yaw() is not None else (self.current_yaw if self.current_yaw is not None else 0.0),
+                segment_heading=getattr(self, 'segment_heading', None) or getattr(self, 'segment_start_yaw', None) or (self.current_yaw if self.current_yaw is not None else 0.0),
+                segment_start_pose=getattr(self, 'segment_start_pose', None) or self.current_position or (0.0, 0.0),
+                current_segment={'type': 'move', 'allow_detour': True, 'description': 'pure_seg_follow'},
+                projected_distance=progress,
+            )
+
+            # 检查避障是否已激活
+            was_avoiding = bool(getattr(self._avoider, 'is_active', False))
+
+            # 调用避障控制器的 step 方法
+            # 如果避障激活，step() 会返回 True 并直接发布避障指令
+            if self._avoider.step(nav):
+                # 避障正在进行，直接返回
+                if not was_avoiding:
+                    # 刚进入避障状态
+                    if hasattr(self, '_log_session'):
+                        front_dist = getattr(self, 'front_obstacle_distance', float('inf'))
+                        left_dist = getattr(self, 'left_clearance_distance', float('inf'))
+                        right_dist = getattr(self, 'right_clearance_distance', float('inf'))
+                        self._log_session(
+                            'PURE_SEG_AVOID_START',
+                            f'激光避障启动 | front={self.format_distance(front_dist)}m '
+                            f'left={self.format_distance(left_dist)}m '
+                            f'right={self.format_distance(right_dist)}m | '
+                            f'path={path_m:.2f}m'
+                        )
+                return
+
+            # 避障刚完成
+            if was_avoiding:
+                if hasattr(self, '_log_session'):
+                    self._log_session(
+                        'PURE_SEG_AVOID_DONE',
+                        f'激光避障完成，恢复视觉跟线 | path={path_m:.2f}m'
+                    )
+
+        # ═══ 视觉跟线控制 ═══
         linear, angular, mode, line = self._compute_pure_vision_command()
         prev_mode = getattr(self, '_vision_pure_mode_name', '')
         self._vision_pure_mode_name = mode
@@ -843,6 +2264,8 @@ class Stage2VisionMixin:
                 f'({float(la[0]):+.2f},{float(la[1]):+.2f})'
                 if la is not None and len(la) >= 2 else 'None'
             )
+            scene = str(getattr(self, '_vision_scene', '-') or '-')
+            bias = float(getattr(self, '_vision_bias_scale', 0.0) or 0.0)
             msg = (
                 f'{mode} prog={progress:.2f}/{target:.2f}m '
                 f't={now - start_t:.1f}s '
@@ -853,8 +2276,38 @@ class Stage2VisionMixin:
                 f'conf={float(line.get("confidence", 0.0)):.2f} '
                 f'age={float(line.get("age", 999.0)):.2f}s '
                 f'lost_for={lost_for:.2f}s '
-                f'rem={rem_txt}m la={la_txt} '
-                f'safe={bool(line.get("boundary_safe", True))}'
+                f'phase={line.get("phase","-")} '
+                f'sign={float(line.get("sign", 0.0) or 0.0):+.0f} '
+                f'entry={int(bool(line.get("entry_turn", False)))} '
+                f'fb={float(line.get("force_bias", 0.0) or 0.0):.2f} '
+                f'ep={float(line.get("entry_prog", 0.0) or 0.0):.2f} '
+                f'front={float(line.get("front", 0.0) or 0.0):.2f} '
+                f'early={float(line.get("early", 0.0) or 0.0):.2f} '
+                f'efar={float(line.get("e_far", 0.0) or 0.0):+.2f} '
+                f'bend={float(line.get("bend", 0.0) or 0.0):+.2f} '
+                f'lm={float(line.get("lm", line.get("left_margin", 0.0)) or 0.0):.2f} '
+                f'rm={float(line.get("rm", line.get("right_margin", 0.0)) or 0.0):.2f} '
+                f'coff={float(line.get("coff", line.get("lane_center_off", 0.0)) or 0.0):+.2f} '
+                f'cfill={float(line.get("cfill", line.get("center_fill", 0.0)) or 0.0):.2f} '
+                f'cfill5={float(line.get("cfill5", line.get("center_fill_5", 0.0)) or 0.0):.2f} '
+                f'apex={int(bool(line.get("apex", line.get("apex_has_mask", True))))} '
+                f'aerr={float(line.get("aerr", line.get("apex_error", 0.0)) or 0.0):+.2f} '
+                f'eang={float(line.get("eang", line.get("edge_angle_deg", 90.0)) or 90.0):.0f} '
+                f'vang={float(line.get("vang", 0.0) or 0.0):.0f} '
+                f'clr={int(bool(line.get("lane_clear", line.get("clr", False))))} '
+                f'str={float(line.get("str", 0.0) or 0.0):.2f} '
+                f'fh={float(line.get("fh", 0.0) or 0.0):.2f} '
+                f'sh={float(line.get("sh", line.get("exit_hold", 0.0)) or 0.0):.2f} '
+                f'act={float(line.get("act", 0.0) or 0.0):.1f} '
+                f'yawp={float(line.get("yaw_prog", 0.0) or 0.0):.1f} '
+                f'ba={int(bool(line.get("boundary_ahead", False) or line.get("ba", 0)))} '
+                f'sba={int(bool(line.get("sba", 0)))} '
+                f'far={float(line.get("far", line.get("boundary_far_ratio", 0.0)) or 0.0):.2f} '
+                f'mid={float(line.get("mid", line.get("boundary_mid_ratio", 0.0)) or 0.0):.2f} '
+                f'near={float(line.get("near", line.get("boundary_near_ratio", 0.0)) or 0.0):.2f} '
+                f'turn={int(bool(getattr(self,"_vision_in_turn_phase",False)))} '
+                f'edone={int(bool(getattr(self,"_vision_entry_turn_done",False)))} '
+                f'lowx={int(bool(getattr(self,"_vision_finish_seen_low_x",False)))}'
             )
             if self.current_position is not None:
                 msg += f' xy=({self.current_position[0]:.2f},{self.current_position[1]:.2f})'

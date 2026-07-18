@@ -162,6 +162,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_entry_region_radius_m', 0.35)
         self.declare_parameter('corridor_entry_yaw_tolerance_deg', 30.0)
         self.declare_parameter('corridor_require_yaw_for_release', False)
+        # 通道导航接近目标时禁用避障的距离阈值 (m)
+        self.declare_parameter('corridor_disable_avoidance_distance_m', 0.60)
         self.declare_parameter('corridor_path_follow_mode', 'pure_pursuit')  # pure_pursuit | stanley
         self.declare_parameter('corridor_force_reorient_enabled', False)
         self.declare_parameter('corridor_pp_min_lookahead_m', 0.25)
@@ -319,6 +321,9 @@ class CompetitionController(Stage1VisionMixin, Node):
         )
         self.corridor_require_yaw_for_release = bool(
             self.get_parameter('corridor_require_yaw_for_release').value
+        )
+        self.corridor_disable_avoidance_distance = float(
+            self.get_parameter('corridor_disable_avoidance_distance_m').value
         )
         self.corridor_path_follow_mode = str(
             self.get_parameter('corridor_path_follow_mode').value
@@ -1567,6 +1572,18 @@ class CompetitionController(Stage1VisionMixin, Node):
         # 后退阶段完全不处理激光避障，由后退逻辑全权控制
         if self.phase1_motion_state == 'backing':
             return
+
+        # 通道导航接近目标点时禁用避障，避免交接时被打断超出 Stage2 入口范围
+        if self.phase1_motion_state == 'corridor':
+            map_xy = self.get_map_position()
+            if map_xy is not None and len(self.corridor_waypoints) > 0:
+                goal_xy = self.corridor_waypoints[-1]
+                dist_to_goal = math.hypot(goal_xy['x'] - map_xy[0], goal_xy['y'] - map_xy[1])
+                if dist_to_goal <= self.corridor_disable_avoidance_distance:
+                    self.obstacle_found = False
+                    self.closest_obstacle_distance = float('inf')
+                    self.avoid_cmd = Twist()
+                    return
 
         # 通道入口大角度重定向时默认不避障，避免被侧墙二次打断并反向拉航向
         if (

@@ -271,25 +271,55 @@ stage2_inertial_navigator:
     # true  : phase=2 后全程 SEG 跟线，不跑 field_track 的 arc/move 段
     # false : 回退旧“惯导段 + 视觉纠偏”链路
     vision_pure_mode_enabled: true
+    # 控制架构（重写）：
+    #   ENTRY  = 一进S2就准备转；方向=扫码入口（顺左/逆右）；出入口=直道几何恢复
+    #   FOLLOW = 中线小纠偏；前边界触发 → TURN
+    #   TURN   = 固定环向（顺右/逆左）+ 视觉微调；出弯=直道几何恢复
+    #   ALIGN  = 只回中，无弯前馈
+    #   方向永不靠左右mask猜测
 
     # --- 速度 ---
-    # 巡航线速度 (m/s)：直道 / 误差较小时
-    vision_cruise_speed: 0.18
-    # 弯道/大偏差线速度 (m/s)
-    vision_corner_speed: 0.10
-    # 最低线速度 (m/s)，防止电机死区
-    vision_min_speed: 0.06
-    # |curve| 超过此阈值用 corner_speed
-    vision_curve_speed_thresh: 0.15
-    # |error| 超过此阈值用 corner_speed（归一化横向误差）
-    vision_error_speed_thresh: 0.20
+    # 直道巡航：尽量保持；弯中固定 corner_speed
+    vision_cruise_speed: 0.34
+    vision_corner_speed: 0.25   # 用户：转弯保持 0.25
+    vision_min_speed: 0.12
+    vision_curve_speed_thresh: 0.28
+    vision_error_speed_thresh: 0.25
+
+    # --- 弯道前馈（环向固定，不靠 rem）---
+    vision_turn_bias_enabled: true
+    vision_turn_bias_angular: 0.55
+    # 以下 rem 参数保留兼容，纯SEG状态机不再主依赖
+    vision_turn_bias_enter_rem_m: 1.05
+    vision_turn_bias_full_rem_m: 0.70
+    vision_turn_slowdown_err: 0.10
+    vision_turn_min_omega_ratio: 0.30
+    vision_overshoot_reverse_gain: 0.85
+    vision_exit_accel_ramp_sec: 0.55
+
+    # --- 转弯最短硬打时间（用户规则：第1弯足够，后续弯防过大）---
+    # 第 1 个环弯最短打死时间 (s) — 入环后第一个弯需要足够转角
+    vision_first_ring_turn_min_hold_sec: 0.40
+    # 后续环弯最短打死时间 (s) — 第2个弯起用更短时间，防转弯过大（方案A：0.30→0.20）
+    vision_ring_turn_min_hold_sec: 0.20
+    # 第 1 个环弯最小转角 (°) — 转够此角度 + 时间够才允许退出
+    vision_first_ring_turn_min_yaw_deg: 45.0
+    # 后续环弯最小转角 (°) — 后续弯放宽门槛，更早允许出弯（方案A：32→25）
+    vision_ring_turn_min_yaw_deg: 10.0
+
+    # --- 入口限幅 ---
+    vision_entry_max_angular: 0.80
+    vision_entry_min_speed: 0.08
+    # 旧 yaw 参数保留兼容，状态机不再用它们主判
+    vision_entry_yaw_full_deg: 82.0
+    vision_entry_yaw_taper_deg: 40.0
+    vision_entry_yaw_exit_deg: 70.0
+    vision_corner_yaw_full_deg: 78.0
+    vision_corner_yaw_taper_deg: 45.0
 
     # --- 丢线处理 ---
-    # 丢线搜索角速度 (rad/s)，方向由扫码顺/逆时针决定
-    vision_search_angular: 0.45
-    # 短时丢线判定 (s)：先慢速搜索
-    vision_lost_timeout_sec: 0.80
-    # 视觉数据超时 (s)：超过则本帧无效
+    vision_search_angular: 0.36
+    vision_lost_timeout_sec: 0.75
     vision_timeout_sec: 0.50
 
     # --- 任务结束 ---
@@ -297,6 +327,13 @@ stage2_inertial_navigator:
     vision_mission_distance_scale: 1.00
     # 任务超时 (s)
     vision_mission_timeout_sec: 90.0
+    # 一圈结束：路径里程 + 回到通道口 x≈2.5
+    vision_finish_min_path_m: 5.0
+    vision_finish_x_m: 2.50
+    vision_finish_x_tol_m: 0.40
+    vision_finish_y_min_m: 1.50
+    vision_finish_y_max_m: 3.40
+    vision_finish_require_x_rise: true
 
     # ────────────────────────────────────────────────────────────────────────
     # 开关（纯SEG下强制视觉主控）
@@ -318,11 +355,11 @@ stage2_inertial_navigator:
     vision_model_path: /home/sunrise/dev_ws/src/racing/racing_stage2/models/bset.bin
     vision_conf_thres: 0.25
     vision_iou_thres: 0.45
-    # 只保留画面底部 50%（近场赛道），避免扫到前方对面赛道
-    # 0.50 = 底部 50%；原先 0.55/0.60 会看到更远、易混入前方黄线
-    vision_crop_ratio: 0.50
-    # 左右各裁 20%，保留中间 60% 宽
-    vision_crop_side_ratio: 0.20
+    # 保留更多远端：用户要提前看到远端黄线
+    # 0.60 = 底部 60%（比 0.55 看得更远一点）
+    vision_crop_ratio: 0.60
+    # 左右少裁，保留宽视野
+    vision_crop_side_ratio: 0.05
     vision_http_port: 8082
 
     # ────────────────────────────────────────────────────────────────────────
@@ -336,29 +373,29 @@ stage2_inertial_navigator:
     vision_budget_disable_enabled: false
     # 多行采样
     vision_sample_rows: 9
-    # 前瞻点取路径上较远位置（0.62≈偏远）
-    vision_lookahead_ratio: 0.50
+    # 前瞻点偏远：0.35 → 更靠远端（ratio 小=更远，见 extract 实现 1-ratio）
+    vision_lookahead_ratio: 0.35
     vision_min_mask_pixels_per_row: 8
     vision_min_valid_rows: 2
     vision_mask_threshold: 0.50
-    vision_error_filter_alpha: 0.35
+    vision_error_filter_alpha: 0.28
 
     # Pure Pursuit 几何跟踪
-    vision_use_pure_pursuit: true
+    vision_use_pure_pursuit: false
     # 前瞻距离 (m)
     vision_lookahead_distance_m: 0.28
     # 轴距 (m)，与底盘 wheelbase 一致
     vision_wheelbase_m: 0.143
     # 控制增益
-    vision_pursuit_kp: 1.2
+    vision_pursuit_kp: 0.90
     # 角速度上限 (rad/s)
-    vision_max_angular: 0.70
+    vision_max_angular: 0.80
 
     # PD 回退参数（vision_use_pure_pursuit=false 时）
-    vision_angular_kp: 1.40
-    vision_angular_kd: 0.15
-    vision_curvature_kp: 0.85
-    vision_deadband: 0.020
+    vision_angular_kp: 0.95
+    vision_angular_kd: 0.10
+    vision_curvature_kp: 0.30
+    vision_deadband: 0.045
 
     # 中心竖带 / 旧接口
     vision_center_band: 0.18
