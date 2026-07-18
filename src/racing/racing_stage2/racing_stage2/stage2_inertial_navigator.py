@@ -13,6 +13,7 @@ from racing_stage2.scan_processor import ScanProcessor
 from racing_stage2.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 from racing_stage2.stage2_vision_mixin import Stage2VisionMixin
+from racing_stage2.stage2_hybrid_controller import HybridConfig, Stage2HybridController
 
 
 class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
@@ -26,6 +27,10 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('use_test_direction_fallback', False)
         self.declare_parameter('test_start_mode', 'auto')
         self.declare_parameter('test_feedback_prefix', '第二阶段')
+        # Production Stage2 control authority.  The former pure-SEG state
+        # machine remains only as an explicit compatibility fallback.
+        self.declare_parameter('hybrid_controller_enabled', True)
+        HybridConfig.declare_parameters(self)
         # field_track yaml 路径。空=根据 direction 自动选择 config/field_track_{direction}.yaml
         self.declare_parameter('field_track_yaml', '')
         # 避障参数（yaml 配置，直行避障使用）
@@ -95,6 +100,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._setup_vision_centering()
         if getattr(self, '_vision_node', None) is not None:
             self._vision_node.set_inference_active(False)
+        self._hybrid_controller = Stage2HybridController(HybridConfig.from_node(self))
+        self._hybrid_last_state = ''
+        self._hybrid_last_log_at = 0.0
         
         _avoid_cfg = AvoidConfig(
             detour_obstacle_distance=self.detour_obstacle_distance,
@@ -1271,13 +1279,108 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         if hasattr(self, '_request_stop') and self._request_stop is not None:
             self._request_stop()
 
+    def _hybrid_enabled(self) -> bool:
+        return bool(self.get_parameter('hybrid_controller_enabled').value)
+
+    def start_hybrid_mission(self) -> None:
+        now = self.get_clock().now().nanoseconds / 1e9
+        self._hybrid_controller = Stage2HybridController(HybridConfig.from_node(self))
+        self._hybrid_controller.reset(
+            self.direction,
+            self.navigation_yaw(),
+            self.current_position,
+            now,
+        )
+        self._hybrid_last_state = ''
+        self._hybrid_last_log_at = 0.0
+        self.publish_state('stage2_hybrid_entry')
+        self._log_session(
+            'HYBRID_START',
+            f'direction={self.direction} yaw={self.format_yaw_deg(self.navigation_yaw())} '
+            f'xy={self.current_position} controller=seg_imu_bounded',
+        )
+
+    def run_hybrid_mission(self) -> None:
+        """Run the sole production SEG/IMU command authority for Phase 2."""
+        if not self.mission_active:
+            self.cmd_pub.publish(self.create_twist())
+            return
+
+        now = self.get_clock().now().nanoseconds / 1e9
+        controller = self._hybrid_controller
+
+        # Keep the existing lidar detour controller for confirmed straight-line
+        # obstacles.  It never interrupts an entry, committed corner, or exit
+        # capture, where changing the turn geometry would be unsafe.
+        if controller.state in (controller.LEG, controller.APPROACH) and not controller.is_bridge_active():
+            nav = NavState(
+                position=self.current_position or (0.0, 0.0),
+                yaw=self.navigation_yaw() or 0.0,
+                segment_heading=self.navigation_yaw() or 0.0,
+                segment_start_pose=self.current_position or (0.0, 0.0),
+                current_segment={'type': 'move', 'allow_detour': True, 'description': 'hybrid_straight'},
+                projected_distance=controller.path_m,
+            )
+            if self._avoider.step(nav):
+                self._log_hybrid_state(now, controller.state, 'lidar_avoid_active')
+                return
+
+        line = self._get_vision_line_status()
+        command = controller.step(now, line, self.navigation_yaw(), self.current_position)
+        self.cmd_pub.publish(self.create_twist(command.linear, command.angular))
+        self.publish_state(f'hybrid_{command.state.lower()}')
+
+        detail = (
+            f'v={command.linear:.3f} w={command.angular:.3f} '
+            f'path={controller.path_m:.2f}m turns={controller.turn_count}/'
+            f'{controller.cfg.required_ring_turns} '
+            f'yaw={self.format_yaw_deg(self.navigation_yaw())} '
+            f'e={float(line.get("error", 0.0) or 0.0):+.3f} '
+            f'curve={float(line.get("curve", 0.0) or 0.0):+.3f} '
+            f'rows={int(line.get("valid_rows", 0) or 0)} '
+            f'conf={float(line.get("confidence", 0.0) or 0.0):.2f} '
+            f'apex30=({float(line.get("apex_left30_fill", 0.0) or 0.0):.2f},'
+            f'{float(line.get("apex_right30_fill", 0.0) or 0.0):.2f}) '
+            f'top20={float(line.get("top20_seg_fill", 0.0) or 0.0):.3f} '
+            f'age={float(line.get("age", 999.0) if line.get("age") is not None else 999.0):.2f}s'
+        )
+        if command.state in (controller.LEG, controller.APPROACH, controller.TURN):
+            straight_m, gate_m = controller.turn_gate_status()
+            detail += f' leg={straight_m:.2f}/{gate_m:.2f}m'
+        if controller.is_bridge_active():
+            detail += f' bridge={controller._bridge_progress_deg(self.navigation_yaw() or 0.0):.1f}deg'
+        self._log_hybrid_state(now, command.state, detail)
+
+        if command.safe_stop:
+            self.publish_feedback(f'{self.test_feedback_prefix}安全停车: {controller.safe_reason}')
+            self._log_session('HYBRID_SAFE_STOP', f'reason={controller.safe_reason} | {detail}')
+            return
+        if command.completed:
+            self._log_session('HYBRID_DONE', detail)
+            self.finish_mission()
+
+    def _log_hybrid_state(self, now: float, state: str, detail: str) -> None:
+        changed = state != self._hybrid_last_state
+        if changed or now - self._hybrid_last_log_at >= 0.50:
+            tag = 'HYBRID_STATE' if changed else 'HYBRID_CTRL'
+            self._log_session(tag, f'{state} | {detail}')
+            self._hybrid_last_state = state
+            self._hybrid_last_log_at = now
+
 
     def control_loop(self):
         if self.corridor_path_active:
             self.run_corridor_path_stage()
             return
 
-        # 纯 SEG 主控：不走 field_track 的 move/arc/turn 段
+        # The bounded SEG/IMU controller is the production authority.  It
+        # replaces the legacy pure-SEG state machine below.
+        if self._hybrid_enabled() and self.mission_active:
+            self.run_hybrid_mission()
+            return
+
+        # Legacy pure SEG mode is retained only for an explicit compatibility
+        # rollback while validating the production hybrid controller.
         pure_mode = bool(getattr(self, '_vision_pure_mode_enabled', False))
         if not pure_mode and self.has_parameter('vision_pure_mode_enabled'):
             pure_mode = bool(self.get_parameter('vision_pure_mode_enabled').value)
@@ -1363,7 +1466,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             f'[PHASE] 收到 competition_phase={incoming} (之前={previous_phase}, initialized={self.phase_initialized})'
         )
 
-        # 首次 latched 消息：phase=2 视为旧消息；phase=1 完成初始化
+        # 启动时可能已经处于 phase=2（节点重启、launch 延迟或 Stage1
+        # 先完成）。必须恢复武装，而不能永久等待一个不会再出现的 phase=1。
+        # 仍由 try_start_mission() 强制等待二维码方向和传感器输入，故不会盲起。
         if not self.phase_initialized:
             if incoming == 1:
                 self.phase = 1
@@ -1372,9 +1477,17 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 self.get_logger().info('[PHASE] ✓ Phase 初始化完成: phase=1，等待 Stage1 发布 phase=2')
                 return
             if incoming == 2:
-                self.phase = 1
-                self.waiting_for_phase2_start = False
-                self.get_logger().warn('[PHASE] ⚠ 忽略启动时的 phase=2（可能是旧消息），等待 phase=1')
+                self.phase = 2
+                self.phase_initialized = True
+                self.waiting_for_phase2_start = True
+                self.start_after_time = None
+                self.reported_start_delay = False
+                self.reported_waiting_pose = False
+                self._set_vision_inference_active(True)
+                self.get_logger().warn(
+                    '[PHASE] 收到启动时 latched phase=2，进入恢复武装态，等待方向和传感器输入'
+                )
+                self.try_start_mission()
                 return
             self.phase = incoming
             return
@@ -1481,7 +1594,27 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         elif getattr(self, '_vision_node', None) is not None:
             self._vision_node.set_inference_active(True)
 
-        # 纯 SEG 主控：替换 field_track 段式链路（必须在 begin_inertial_plan 之前 return）
+        if self._hybrid_enabled():
+            try:
+                # Keep the loaded plan as a diagnostic/mission-length reference;
+                # it no longer owns individual turn commands.
+                self.plan = self.build_inertial_plan(
+                    nav_succeeded=self.nav_succeeded_for_test_start()
+                )
+            except Exception as exc:
+                self.plan = []
+                self.get_logger().warn(f'[MISSION] hybrid plan 参考加载失败: {exc}')
+            self.publish_feedback(
+                f'{self.test_feedback_prefix}SEG-IMU混合接管，方向: {self.direction_text()}'
+            )
+            self._log_session(
+                'MISSION',
+                f'混合控制启动 direction={self.direction} plan_segments={len(self.plan or [])}',
+            )
+            self.start_hybrid_mission()
+            return
+
+        # 纯 SEG 主控：替换 field_track 段式链路（仅兼容回退）
         pure_mode = bool(getattr(self, '_vision_pure_mode_enabled', False))
         if not pure_mode and self.has_parameter('vision_pure_mode_enabled'):
             pure_mode = bool(self.get_parameter('vision_pure_mode_enabled').value)

@@ -150,6 +150,7 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 - Stage1 完成 → `competition_phase` 发布 phase=2
 - competition_controller 进入 `process_phase2_supervisor()`：监听 `/stage2_cmd_vel` 并转发到 `/cmd_vel`
 - `stage2_cmd_timeout`=0.5s，超时停车
+- Stage2 若在 phase=2 已发布后才启动或重启，会从 latched phase=2 进入恢复武装态；仍须等到二维码方向、IMU 和轮速输入齐全才实际出车。
 
 ---
 
@@ -166,7 +167,8 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 | **避障** | `avoid_controller.py` | 独立 6 态闭环避障控制器 |
 | **避障几何** | `avoid_geometry.py` | 绕行路径规划（转向角 + 两脚距离） |
 | **雷达处理** | `scan_processor.py` | 前方/侧方障碍检测 |
-| **视觉修正** | `stage2_vision_mixin.py` | 视觉中线主 + IMU 兜底 mixin |
+| **SEG 适配** | `stage2_vision_mixin.py` | BPU 分割模型初始化与中线状态输出 |
+| **生产控制器** | `stage2_hybrid_controller.py` | SEG 连续帧证据 + IMU 相对转角的唯一控制权状态机 |
 | **视觉检测** | `vision_lane_centering.py` | BPU YOLOv8-Seg + 多行中线/前瞻/曲率 |
 | **SEG跟线实验** | `racing_stage2_seg_follow` | 独立包，启动底盘+相机，网页只显示裁剪ROI，用左右赛道边线中点跟线，默认低速发布 `/cmd_vel` |
 | **日志** | `session_file_log.py` | 文件会话日志 |
@@ -307,38 +309,35 @@ idle → turn_away(转α, 30°) → leg1(直行0.22m) → turn_back(转β, 40°)
 | 侧边误触发 | `side_detour_threshold_m` | ↓ |
 | 避障频繁触发 | `detour_cooldown_sec` | ↑ |
 
-### 3.5 视觉中线跟随 + 圆弧过角
+### 3.5 SEG-IMU 混合闭环过角（生产策略）
 
 **文件**：
-- `stage2_vision_mixin.py` — `Stage2VisionMixin`
-- `vision_lane_centering.py` — BPU Seg + 多行中线
-- `field_track_*.yaml` — `move`/`arc` 段序（已去掉角落 pause 原地拧）
+- `stage2_hybrid_controller.py` — 生产唯一控制权状态机
+- `stage2_vision_mixin.py` / `vision_lane_centering.py` — BPU Seg + 多行中线状态输出
+- `field_track_*.yaml` — 路线拓扑和诊断参考，不再用定时 `arc` 段实际控制转弯
 
-#### 视觉算法（正式主策略）
-1. ROI：下方 `vision_crop_ratio` + 左右裁 `vision_crop_side_ratio`
-2. BPU YOLOv8-Seg → 赛道 mask
-3. 多行采样中点拟合中心线，无效行剔除
-4. 前瞻点误差 `e` + 近远场曲率 `curve`
-5. 控制：`ω = -(Kp*e + Kd*ė + Kc*curve)`，`v` 随误差/曲率降速（move 段）
-6. 丢线：IMU 段航向兜底；默认**不因短预算永久闭嘴**
+#### 状态机与职责
 
-| 模式 | 策略 | 说明 |
-|---|---|---|
-| `VIS_PRIMARY` | 视觉 100% | 中线有效（主模式） |
-| `IMU_ONLY(VIS_CENTER/ZERO)` | IMU 100% | 已居中或视觉ω≈0 |
-| `IMU_ONLY(VIS_LOST)` | IMU 100% | 视觉失效/超时 |
-| `FUSION` | 可配权重 | `vision_primary_control=false` 时 |
-| `LOST` | ω=0 | 视觉与 IMU 都不可用 |
+```
+ENTRY_COMMIT → EXIT_CAPTURE → STRAIGHT_TRACK → PRETURN → TURN_COMMIT
+       ↑             │                             │            │
+       └─────────────┴─────────────────────────────┴────────────┘
+                                      │
+                               VISION_HOLD → SAFE_STOP
+```
 
-#### 段模型
-- `move`：视觉中线主，轮速里程判段完成
-- `arc`：定时舵角段，仅使用 YAML 的 `steering_angle_deg` 和 `duration_sec`；生产直连底盘将舵角值原样下发，固定舵角保持到计时完成，然后发送 `0°` 回正，不使用车体角速度、半径或弧长判定
-- 短边 `rect_side_*` 保留为短 `move`
-- 入口 `rect_enter_align` 与四个角位均为 `±15° / 6.0s`；弧段结束立即回正，线速度保持 `turn_linear_speed`
+1. `STRAIGHT_TRACK`：SEG 多行中线的误差/曲率只做小幅跟踪，保持巡航速度。
+2. `PRETURN`：远端截断、前边界或曲率证据连续 `hybrid_turn_confirm_frames` 帧才提前掺入固定环向前馈；证据消失立即撤销。
+3. `TURN_COMMIT`：以入口或环弯的相对 IMU 转角为硬界限。SEG 不能单独结束转弯；到 `hybrid_brake_start_deg` 后按 yaw-rate 主动减角速度，抑制惯性过冲。
+4. `EXIT_CAPTURE`：达到最小转角后，必须连续 `hybrid_exit_confirm_frames` 帧捕获新直道，且 IMU 误差进入窗口才恢复巡航。
+5. `VISION_HOLD`：短时丢线仅低速保持，不发起/结束转弯；直道或弯道超过对应丢线时限进入 `SAFE_STOP`。
+6. `SAFE_STOP`：IMU 未到、弯中 IMU 不更新、出弯长期未重新捕获赛道或任务超时均停车，禁止盲走。
+
+SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相对转角；轮速 `/odom` 仅累计路径长度和最短直线距离，符合位姿源规则。
 
 #### 日志排查
 - Stage2 会话日志：`~/dev_ws/log/competition_stage2/latest.log`
-- 关键 tag：`SEGMENT` / `PLAN` / `VISION_CTRL` / `FUSION_STATE` / `ARC_SETUP` / `ARC_TIMER` / `ARC_COMPLETE` / `TELEM`
+- 关键 tag：`HYBRID_START` / `HYBRID_STATE` / `HYBRID_CTRL` / `HYBRID_SAFE_STOP` / `HYBRID_DONE` / `TELEM`
 - 视觉预览：HTTP `:8082` + `/vision_debug`
 
 ### 3.6 调参速查

@@ -715,6 +715,31 @@ class Stage2VisionMixin:
         apex_has = bool(line.get('apex_has_mask', True))
         apex_err = float(line.get('apex_error', 0.0) or 0.0)
         apex_fill = float(line.get('apex_fill', 0.0) or 0.0)
+        apex_l5 = float(line.get('apex_left5_fill', 0.0) or 0.0)
+        apex_r5 = float(line.get('apex_right5_fill', 0.0) or 0.0)
+        apex_l10 = float(line.get('apex_left10_fill', 0.0) or 0.0)
+        apex_r10 = float(line.get('apex_right10_fill', 0.0) or 0.0)
+        apex_c10 = float(line.get('apex_center10_fill', 0.0) or 0.0)
+        apex_y0 = float(line.get('apex_y0', 0.0) or 0.0)
+        apex_y1 = float(line.get('apex_y1', 0.0) or 0.0)
+        apex_top_y = float(line.get('apex_top_y', 0.0) or 0.0)
+        apex_cx = float(line.get('apex_cx', 0.0) or 0.0)
+        apex_left_x = float(line.get('apex_left_x', 0.0) or 0.0)
+        apex_right_x = float(line.get('apex_right_x', 0.0) or 0.0)
+        apex_sample_x = float(line.get('apex_sample_x', 0.0) or 0.0)
+        apex_sample_y = float(line.get('apex_sample_y', 0.0) or 0.0)
+        apex_center_src = str(line.get('apex_center_src', 'none') or 'none')
+        apex_left5_x0 = float(line.get('apex_left5_x0', 0.0) or 0.0)
+        apex_left5_x1 = float(line.get('apex_left5_x1', 0.0) or 0.0)
+        apex_right5_x0 = float(line.get('apex_right5_x0', 0.0) or 0.0)
+        apex_right5_x1 = float(line.get('apex_right5_x1', 0.0) or 0.0)
+        apex_left10_x0 = float(line.get('apex_left10_x0', 0.0) or 0.0)
+        apex_left10_x1 = float(line.get('apex_left10_x1', 0.0) or 0.0)
+        apex_right10_x0 = float(line.get('apex_right10_x0', 0.0) or 0.0)
+        apex_right10_x1 = float(line.get('apex_right10_x1', 0.0) or 0.0)
+        apex_c10_x0 = float(line.get('apex_c10_x0', 0.0) or 0.0)
+        apex_c10_x1 = float(line.get('apex_c10_x1', 0.0) or 0.0)
+        apex_far_row = float(line.get('apex_far_row_fill', 0.0) or 0.0)
         bend = float(line.get('path_bend', curve) or 0.0)
         lane_clear = bool(line.get('lane_clear', False))
         # 用户：中心左右各 10% 竖带占满 → 居中
@@ -791,6 +816,31 @@ class Stage2VisionMixin:
             'apex_has_mask': bool(apex_has),
             'apex_error': float(apex_err),
             'apex_fill': float(apex_fill),
+            'apex_left5_fill': float(apex_l5),
+            'apex_right5_fill': float(apex_r5),
+            'apex_left10_fill': float(apex_l10),
+            'apex_right10_fill': float(apex_r10),
+            'apex_center10_fill': float(apex_c10),
+            'apex_y0': float(apex_y0),
+            'apex_y1': float(apex_y1),
+            'apex_top_y': float(apex_top_y),
+            'apex_cx': float(apex_cx),
+            'apex_left_x': float(apex_left_x),
+            'apex_right_x': float(apex_right_x),
+            'apex_sample_x': float(apex_sample_x),
+            'apex_sample_y': float(apex_sample_y),
+            'apex_center_src': str(apex_center_src),
+            'apex_left5_x0': float(apex_left5_x0),
+            'apex_left5_x1': float(apex_left5_x1),
+            'apex_right5_x0': float(apex_right5_x0),
+            'apex_right5_x1': float(apex_right5_x1),
+            'apex_left10_x0': float(apex_left10_x0),
+            'apex_left10_x1': float(apex_left10_x1),
+            'apex_right10_x0': float(apex_right10_x0),
+            'apex_right10_x1': float(apex_right10_x1),
+            'apex_c10_x0': float(apex_c10_x0),
+            'apex_c10_x1': float(apex_c10_x1),
+            'apex_far_row_fill': float(apex_far_row),
             'path_bend': float(bend),
             'turn_geometry': bool(turn_geometry),
             'edge_angle_deg': edge_ang,
@@ -826,7 +876,9 @@ class Stage2VisionMixin:
         if (can_straight or (lane_clear and early_turn < 0.20)) and early_turn < 0.30:
             # 用户：中心±10%占满时可直行；若最远端中线没有SEG → 微微回正
             e_far = float(line.get('far_error', e) or e)
-            far_r = float(scene.get('far', 1.0) or 1.0)
+            # 注意：far=0.0 是合法值（远端全空），禁止用 `or 1.0` 把它吃掉
+            _far_raw = scene.get('far', 1.0)
+            far_r = float(_far_raw) if _far_raw is not None else 1.0
             e_soft = coff if abs(coff) > 1e-6 else e
             # 远端中线空/偏：用 far_error 轻微回正（不是打死）
             if far_r < 0.40 or abs(e_far) > 0.18:
@@ -1369,7 +1421,8 @@ class Stage2VisionMixin:
                     self._vision_align_active = True
                     # 入口后必须回正到中心；禁止 cfill 假满立刻出 ALIGN 再假转弯
                     self._vision_align_until = now + 0.80
-                    self._vision_turn_cooldown_until = now + 2.8
+                    # 入口后只需短冷却防抖；2.8s 会把短边第一个环弯整段挡掉
+                    self._vision_turn_cooldown_until = now + 0.60
                     self._vision_front_hold = 0.0
                     self._vision_front_last_t = None
                     self._vision_exit_turn_t = now
@@ -1403,7 +1456,9 @@ class Stage2VisionMixin:
                 turn_geo = bool(scene.get('turn_geometry', False))
                 edge_front = bool(scene.get('edge_is_front', False))
                 cfill_now = float(scene.get('center_fill', 0.0) or 0.0)
-                far_now = float(scene.get('far', 1.0) or 1.0)
+                # far=0.0 合法：对面墙/截断。`x or 1.0` 会把 0.0 误判成 1.0 → 永远不 LOCK
+                _far_raw = scene.get('far', 1.0)
+                far_now = float(_far_raw) if _far_raw is not None else 1.0
                 # 真转弯：远端必须空。禁止 far 还开着就 LOCK（日志转晕主因）
                 far_closed = far_now < 0.34
                 real_turn = far_closed and bool(
@@ -1412,7 +1467,39 @@ class Stage2VisionMixin:
                     or (scene['ba'] and far_now < 0.34)
                     or (early >= 0.55 and far_now < 0.32)
                     or (strong_front and far_now < 0.30 and front_hold >= 0.12)
+                    # far 已经彻底截断 + 前边界很强：即使 turn_geo 抖动也算真弯
+                    or (far_now < 0.12 and (scene['ba'] or scene['front'] >= 0.70 or early >= 0.80))
                 )
+
+                def _apex_diag(scene_dict: dict) -> str:
+                    """顶点窗口详细诊断：最高SEG向下10% + 几何中心窗口。"""
+                    return (
+                        f'APEX['
+                        f'top_y={float(scene_dict.get("apex_top_y", 0.0) or 0.0):.0f} '
+                        f'y={float(scene_dict.get("apex_y0", 0.0) or 0.0):.0f}:'
+                        f'{float(scene_dict.get("apex_y1", 0.0) or 0.0):.0f} '
+                        f'cx={float(scene_dict.get("apex_cx", 0.0) or 0.0):.0f} '
+                        f'src={scene_dict.get("apex_center_src", "none")} '
+                        f'L={float(scene_dict.get("apex_left_x", 0.0) or 0.0):.0f} '
+                        f'R={float(scene_dict.get("apex_right_x", 0.0) or 0.0):.0f} '
+                        f'sx={float(scene_dict.get("apex_sample_x", 0.0) or 0.0):.0f} '
+                        f'sy={float(scene_dict.get("apex_sample_y", 0.0) or 0.0):.0f} '
+                        f'L5={float(scene_dict.get("apex_left5_fill", 0.0) or 0.0):.2f}@'
+                        f'{float(scene_dict.get("apex_left5_x0", 0.0) or 0.0):.0f}-'
+                        f'{float(scene_dict.get("apex_left5_x1", 0.0) or 0.0):.0f} '
+                        f'R5={float(scene_dict.get("apex_right5_fill", 0.0) or 0.0):.2f}@'
+                        f'{float(scene_dict.get("apex_right5_x0", 0.0) or 0.0):.0f}-'
+                        f'{float(scene_dict.get("apex_right5_x1", 0.0) or 0.0):.0f} '
+                        f'L10={float(scene_dict.get("apex_left10_fill", 0.0) or 0.0):.2f} '
+                        f'R10={float(scene_dict.get("apex_right10_fill", 0.0) or 0.0):.2f} '
+                        f'C10={float(scene_dict.get("apex_center10_fill", 0.0) or 0.0):.2f}@'
+                        f'{float(scene_dict.get("apex_c10_x0", 0.0) or 0.0):.0f}-'
+                        f'{float(scene_dict.get("apex_c10_x1", 0.0) or 0.0):.0f} '
+                        f'fill={float(scene_dict.get("apex_fill", 0.0) or 0.0):.2f} '
+                        f'far_row={float(scene_dict.get("apex_far_row_fill", 0.0) or 0.0):.2f} '
+                        f'has={int(bool(scene_dict.get("apex_has_mask", False)))}'
+                        f']'
+                    )
 
                 def _begin_turn(reason: str, phase_name: str = 'turn_enter'):
                     self._vision_in_turn_phase = True
@@ -1449,7 +1536,7 @@ class Stage2VisionMixin:
                         f'EDGE[L={left_ratio:.2f} R={right_ratio:.2f} Lm={left_margin:.2f} Rm={right_margin:.2f}] '
                         f'GEO[ba={int(scene["ba"])} front={scene["front"]:.2f} straight={scene["straight"]:.2f} '
                         f'edge_ang={edge_ang:.0f}° edge_front={int(edge_front)}] '
-                        f'APEX[has={int(apex_has)} err={apex_err:+.2f} fill={scene.get("apex_fill", 0.0):.2f}] '
+                        f'{_apex_diag(scene)} '
                         f'PATH[lane_off={lane_coff:+.2f} near_e={near_err:+.2f} far_e={far_err:+.2f}] '
                         f'WARN[early={early:.2f} last_turn={last_turn:+.0f} overshoot_risk={int(possible_overshoot)}]'
                     )
@@ -1458,10 +1545,16 @@ class Stage2VisionMixin:
                     )
 
                 def _is_center_full() -> bool:
-                    """居中：顶点中心线±10%有SEG（用户核心判据）。"""
+                    """居中：顶点中心线±10%有SEG，且左右都有（防单侧墙面假满）。"""
                     apex_c10 = float(scene.get('apex_center10_fill', 0.0) or 0.0)
-                    # 顶点中心±10%占比>=0.4 → 回正完成
-                    return apex_c10 >= 0.40
+                    apex_l10 = float(scene.get('apex_left10_fill', 0.0) or 0.0)
+                    apex_r10 = float(scene.get('apex_right10_fill', 0.0) or 0.0)
+                    # 顶点中心±10%占比>=0.4，且左右10%都至少有一点 → 真回正
+                    return (
+                        apex_c10 >= 0.40
+                        and apex_l10 >= 0.18
+                        and apex_r10 >= 0.18
+                    )
 
                 def _finish_turn(reason: str, go_align: bool = False):
                     self._vision_in_turn_phase = False
@@ -1590,21 +1683,33 @@ class Stage2VisionMixin:
                     half_yaw = 50.0 if is_first_ring_turn else 28.0  # 后续弯28°开始收舵
 
                     overshot = yaw_prog >= overshoot_yaw and abs(error) < 0.25 and far_now >= 0.40
-                    # 用户核心判据：转弯后顶点±10%有SEG → 直接停转回正
+                    # 用户核心判据：转够后顶点±10%有SEG → 停转回正
+                    # 注意：进弯瞬间对面/侧向残余SEG常使 C10 已很高（本次日志 C10=0.89@yaw=2°）
+                    # 必须先满足 min_hold + min_yaw，否则会“转完没转够就直行”
                     center_full = _is_center_full()
+                    min_turn_ok = (turn_active_t >= min_hold) and (yaw_prog >= min_yaw_turn)
+                    # 远端重新打开一点：真出弯后前方应有通路；纯墙面填充 C10 时 far 仍接近 0
+                    far_reopen = far_now >= 0.18
+                    # 横向还在大偏时，即使 C10 假高也不能当“已回正”
+                    heading_ok = abs(error) < 0.30
+                    center_full_ready = bool(
+                        center_full and min_turn_ok and far_reopen and heading_ok
+                    )
 
-                    if center_full:
-                        # 顶点±10%有SEG：直接退出转弯（不需要连续确认）
+                    if center_full_ready:
+                        # 转够 + 顶点±10%有SEG + 远端已打开：直接退出（不需连续帧确认）
+                        # 若 |e| 仍偏大，_finish_turn 内部会自动进 ALIGN
                         phase, candidate, force_bias, linear, angular = _finish_turn(
-                            'apex_center_full', go_align=False  # 已回正，不需要ALIGN
+                            'apex_center_full', go_align=False
                         )
                         self._log_session(
                             'PURE_SEG_CENTER_FULL_EXIT',
                             f'yawp={yaw_prog:.1f} far={far_now:.2f} '
                             f'e={error:+.2f} act={turn_active_t:.1f} why=apex_c10_full '
-                            f'ring_n={ring_n} hold={min_hold:.2f}'
+                            f'ring_n={ring_n} hold={min_hold:.2f} min_yaw={min_yaw_turn:.0f} '
+                            f'| {_apex_diag(scene)}'
                         )
-                    elif overshot:
+                    elif overshot and min_turn_ok:
                         phase, candidate, force_bias, linear, angular = _finish_turn(
                             'overshoot', go_align=True
                         )
@@ -1612,7 +1717,7 @@ class Stage2VisionMixin:
                             'PURE_SEG_CENTER_FULL_EXIT',
                             f'yawp={yaw_prog:.1f} far={far_now:.2f} '
                             f'e={error:+.2f} act={turn_active_t:.1f} why=overshoot '
-                            f'ring_n={ring_n} hold={min_hold:.2f}'
+                            f'ring_n={ring_n} hold={min_hold:.2f} | {_apex_diag(scene)}'
                         )
                     else:
                         # 继续转弯：前半打死，后半收舵
@@ -1626,25 +1731,38 @@ class Stage2VisionMixin:
                                 angular = turn_sign * 0.18
                         self._vision_filt_angular = angular
 
-                        # 兜底强制退出
-                        min_turn_ok = (turn_active_t >= min_hold) and (yaw_prog >= min_yaw_turn)
                         hard_done = yaw_prog >= hard_yaw or turn_active_t >= hard_time
 
                         # 周期性诊断日志（每0.3s输出一次转弯状态，方案E）
                         last_turn_log_t = getattr(self, '_vision_last_turn_log_t', 0.0)
                         if now - last_turn_log_t >= 0.3:
                             self._vision_last_turn_log_t = now
-                            apex_c10 = float(scene.get('apex_center10_fill', 0.0) or 0.0)
                             self._log_session(
                                 'PURE_SEG_TURN_PROGRESS',
                                 f'ring_n={ring_n} yaw={yaw_prog:.1f}°/{min_yaw_turn:.0f}° '
                                 f'time={turn_active_t:.2f}s/{min_hold:.2f}s '
                                 f'e={error:+.3f} curve={curve:+.3f} omega={angular:+.2f} | '
-                                f'APEX[c10={apex_c10:.2f} cfull={int(center_full)}] '
+                                f'{_apex_diag(scene)} cfull={int(center_full)} '
+                                f'cfull_ready={int(center_full_ready)} far_reopen={int(far_reopen)} | '
                                 f'SEG[far={far_now:.2f} mid={scene.get("mid", 0.0):.2f} near={scene.get("near", 0.0):.2f}] '
                                 f'STATE[min_ok={int(min_turn_ok)} hard={int(hard_done)} '
                                 f'overshot={int(overshot)} half_done={int(yaw_prog >= half_yaw)}]'
                             )
+                        elif center_full and not center_full_ready:
+                            # 进弯初期 C10 已满但还没转够：低频提示，避免误以为“该停了”
+                            last_cfull_block_t = float(
+                                getattr(self, '_vision_last_cfull_block_t', 0.0) or 0.0
+                            )
+                            if now - last_cfull_block_t >= 0.25:
+                                self._vision_last_cfull_block_t = now
+                                self._log_session(
+                                    'PURE_SEG_CENTER_FULL_HOLD',
+                                    f'yawp={yaw_prog:.1f}/{min_yaw_turn:.0f} '
+                                    f'act={turn_active_t:.2f}/{min_hold:.2f} '
+                                    f'far={far_now:.2f} far_reopen={int(far_reopen)} '
+                                    f'heading_ok={int(heading_ok)} e={error:+.2f} '
+                                    f'ring_n={ring_n} | {_apex_diag(scene)}'
+                                )
 
                         if hard_done:
                             phase, candidate, force_bias, linear, angular = _finish_turn(
@@ -1654,65 +1772,147 @@ class Stage2VisionMixin:
                                 'PURE_SEG_CENTER_FULL_EXIT',
                                 f'yawp={yaw_prog:.1f} far={far_now:.2f} '
                                 f'e={error:+.2f} act={turn_active_t:.1f} why=hard_limit '
-                                f'ring_n={ring_n} hold={min_hold:.2f}'
+                                f'ring_n={ring_n} hold={min_hold:.2f} | {_apex_diag(scene)}'
                             )
 
                 else:
-                    # FOLLOW：走中线；顶点几何判据触发TURN
+                    # FOLLOW：走中线；弯前触发TURN
                     phase = 'follow'
                     candidate = 'PURE_SEG_FOLLOW'
                     force_bias = 0.0
                     self._vision_in_turn_phase = False
                     coff = float(scene.get('lane_center_off', 0.0) or 0.0)
 
-                    # 用户核心转弯判据：顶点左右都没SEG → 准备转弯
+                    # 顶点左右占比
                     apex_l5 = float(scene.get('apex_left5_fill', 0.0) or 0.0)
                     apex_r5 = float(scene.get('apex_right5_fill', 0.0) or 0.0)
+                    apex_c10 = float(scene.get('apex_center10_fill', 0.0) or 0.0)
                     both_empty = (apex_l5 < 0.15 and apex_r5 < 0.15)
+                    both_full = (apex_c10 >= 0.40)
 
-                    want_turn = cooldown_ok and both_empty and real_turn and far_closed
+                    # 弯前硬几何：远端空 + 前边界/early 足够强
+                    # 不能只靠 both_empty，否则对面残余SEG会把转弯堵死
+                    hard_front = bool(
+                        (scene['ba'] and front_hold >= 0.08 and far_now < 0.30)
+                        or (edge_front and front_hold >= 0.10 and far_now < 0.30)
+                        or (early >= 0.70 and far_now < 0.28)
+                        or (strong_front and front_hold >= 0.14 and far_now < 0.25)
+                    )
+                    # both_empty 是充分条件；hard_front 是短弯/近弯的兜底
+                    # 近墙 hard_front 即使 real_turn 因抖动失败也允许 LOCK（短边常见）
+                    want_turn = cooldown_ok and far_closed and (
+                        (both_empty and real_turn)
+                        or (hard_front and real_turn)
+                        or (hard_front and early >= 0.70 and far_now < 0.22)
+                        or (hard_front and far_now < 0.12 and front_hold >= 0.20)
+                    )
+                    turn_reason = (
+                        'APEX_EMPTY' if both_empty and real_turn else
+                        'HARD_FRONT' if hard_front else
+                        'NONE'
+                    )
 
                     if want_turn:
-                        # 增强日志：记录触发转弯时的详细状态（方案E）
                         last_turn = getattr(self, '_vision_last_turn_sign', 0.0)
-                        cooldown_left = max(0.0, float(getattr(self, '_vision_turn_cooldown_until', 0.0) or 0.0) - now)
+                        cooldown_left = max(
+                            0.0,
+                            float(getattr(self, '_vision_turn_cooldown_until', 0.0) or 0.0) - now,
+                        )
                         self._log_session(
                             'PURE_SEG_TURN_TRIGGER',
                             f'cooldown_ok={int(cooldown_ok)} cooldown_left={cooldown_left:.2f}s '
                             f'e={error:+.3f} curve={curve:+.3f} last_turn={last_turn:+.0f} | '
-                            f'APEX[L5={apex_l5:.2f} R5={apex_r5:.2f} both_empty={int(both_empty)}] '
+                            f'{_apex_diag(scene)} both_empty={int(both_empty)} both_full={int(both_full)} '
+                            f'hard_front={int(hard_front)} reason={turn_reason} | '
                             f'SEG[far={far_now:.2f} mid={scene.get("mid", 0.0):.2f} near={scene.get("near", 0.0):.2f}] '
+                            f'TRIG[ba={int(scene["ba"])} edge_front={int(edge_front)} early={early:.2f} '
+                            f'front_hold={front_hold:.2f} strong_front={int(strong_front)}] '
                             f'GEO[front={scene["front"]:.2f} straight={scene["straight"]:.2f} turn_geo={int(turn_geo)}] '
                             f'PATH[lane_off={coff:+.2f} cfill={cfill_now:.2f}]'
                         )
                         phase, candidate, force_bias, linear, angular = _begin_turn(
-                            'LOCK', 'turn_enter'
+                            turn_reason, 'turn_enter'
                         )
                     else:
+                        # 弯前已很明显却 LOCK 不了：打诊断，避免 silent straight 冲墙
+                        cornerish = bool(
+                            far_closed
+                            and (
+                                hard_front
+                                or both_empty
+                                or scene['ba']
+                                or early >= 0.70
+                                or scene['front'] >= 0.70
+                            )
+                        )
+                        if cornerish:
+                            last_block_t = float(
+                                getattr(self, '_vision_last_turn_block_t', 0.0) or 0.0
+                            )
+                            if now - last_block_t >= 0.30:
+                                self._vision_last_turn_block_t = now
+                                cooldown_left = max(
+                                    0.0,
+                                    float(getattr(self, '_vision_turn_cooldown_until', 0.0) or 0.0) - now,
+                                )
+                                self._log_session(
+                                    'PURE_SEG_TURN_BLOCKED',
+                                    f'cooldown_ok={int(cooldown_ok)} cooldown_left={cooldown_left:.2f}s '
+                                    f'far_closed={int(far_closed)} real_turn={int(real_turn)} '
+                                    f'hard_front={int(hard_front)} both_empty={int(both_empty)} '
+                                    f'both_full={int(both_full)} early={early:.2f} '
+                                    f'far={far_now:.2f} front={scene["front"]:.2f} ba={int(scene["ba"])} '
+                                    f'fh={front_hold:.2f} e={error:+.3f} rows={rows} conf={conf:.2f} | '
+                                    f'{_apex_diag(scene)}'
+                                )
+
                         linear = cruise
-                        # 用户核心判据：顶点（最远端）中心线左右对称性
-                        apex_l5 = float(scene.get('apex_left5_fill', 0.0) or 0.0)
-                        apex_r5 = float(scene.get('apex_right5_fill', 0.0) or 0.0)
-                        apex_c10 = float(scene.get('apex_center10_fill', 0.0) or 0.0)
 
-                        # ─────── 顶点几何判据（用户明确要求）───────
-                        # 1. 左右都没SEG → 准备转弯（这已被前面 want_turn 处理）
-                        # 2. 不对称（一边有一边没）→ 歪了 → 微调纠偏（速度不变）
-                        # 3. ±10%都有SEG → 回正/直行
+                        # 弯前禁止 straight 锁零舵：一旦远空+前边界强，只能轻跟线，不能 w=0 直冲
+                        approach_corner = bool(
+                            far_closed
+                            and (
+                                scene['ba']
+                                or edge_front
+                                or early >= 0.45
+                                or strong_front
+                                or scene['front'] >= 0.50
+                                or hard_front
+                            )
+                        )
 
-                        both_empty = (apex_l5 < 0.15 and apex_r5 < 0.15)    # 左右都没 → 可能准备转弯
-                        both_full = (apex_c10 >= 0.40)                      # ±10%有SEG → 已回正
+                        # ─────── 顶点几何判据 ───────
+                        # 1. 左右都没SEG → 准备转弯（上面已处理）
+                        # 2. 不对称 → 歪了 → 微调纠偏（速度不变）
+                        # 3. ±10%有SEG 且不在弯前 → 回正/直行
                         asymmetric = (not both_empty) and (not both_full) and (
-                            (apex_l5 < 0.20 and apex_r5 >= 0.30) or
-                            (apex_r5 < 0.20 and apex_l5 >= 0.30)
-                        )  # 不对称 → 一边有一边没
+                            (apex_l5 < 0.20 and apex_r5 >= 0.30)
+                            or (apex_r5 < 0.20 and apex_l5 >= 0.30)
+                        )
 
-                        if asymmetric:
+                        if approach_corner:
+                            # 接近弯角但还没满足 LOCK：保持环向预打，禁止 straight 锁 0
+                            # 越近墙预打越大，避免“快撞墙还 w=0”
+                            phase = 'approach'
+                            if far_now < 0.12 or scene['front'] >= 0.85 or early >= 0.95:
+                                pre_w = 0.55
+                            elif early >= 0.70 or scene['front'] >= 0.70:
+                                pre_w = 0.35
+                            else:
+                                pre_w = 0.18
+                            angular = float(self.clamp(turn_sign * pre_w, max_w))
+                            # 再叠一点中线微调，避免纯打死撞边
+                            vis = float(self.clamp(-0.20 * error, 0.12))
+                            angular = float(self.clamp(angular + vis, max_w))
+                            if angular * turn_sign < 0.0:
+                                angular = turn_sign * 0.12
+                            self._vision_filt_angular = angular
+                            force_bias = 0.55 if pre_w >= 0.35 else 0.35
+                            # 弯前逼近时主动降速，给 LOCK/预打留时间
+                            linear = max(vmin, min(linear, corner * 1.15 if far_now < 0.15 else cruise * 0.85))
+                        elif asymmetric:
                             # 不对称：歪了一点点 → 纠偏（速度不变，微微打方向）
                             phase = 'nudge'
-                            # 向没有SEG的一侧相反方向打
-                            # apex_l5小 → 左边没 → 向右打（angular < 0）
-                            # apex_r5小 → 右边没 → 向左打（angular > 0）
                             if apex_l5 < apex_r5:
                                 nudge_dir = -0.18  # 向右微调
                             else:
@@ -1720,8 +1920,8 @@ class Stage2VisionMixin:
                             angular = float(nudge_dir)
                             self._vision_filt_angular = angular
                             force_bias = 0.0
-                        elif both_full:
-                            # ±10%都有：回正完成 → 直行
+                        elif both_full and not far_closed:
+                            # 真正直道才允许锁 0；弯前 far 已空时不允许
                             phase = 'straight'
                             angular = 0.0
                             self._vision_filt_angular = 0.0

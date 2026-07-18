@@ -1,11 +1,11 @@
 # ================================================================================
 # Stage2 导航配置 (stage2_inertial_navigator)
 # ================================================================================
-# 当前默认：纯 SEG 视觉主控（vision_pure_mode_enabled=true）
-#   - Stage1 到入口后切 phase=2，Stage2 视觉全程接管
-#   - 不再执行 field_track 的 move/arc 开环舵角段
-#   - field_track 仅用于估算任务总里程
-# 兼容：vision_pure_mode_enabled=false 可回退旧混合链路
+# 当前默认：受限 SEG-IMU 混合闭环主控。
+#   - SEG 只提供直道跟踪、提前见弯和出弯捕获证据；连续帧才生效。
+#   - IMU 相对航向限定入口/环弯转角，并在末段主动制动回正。
+#   - field_track 仅保留路线拓扑和诊断用途，不再以固定计时舵角控制比赛。
+# 旧 pure-SEG 状态机仅可通过 hybrid_controller_enabled:=false 显式回退。
 # ================================================================================
 
 stage2_inertial_navigator:
@@ -266,17 +266,47 @@ stage2_inertial_navigator:
     corner_trigger_m: 0.25
 
     # ────────────────────────────────────────────────────────────────────────
-    # 纯 SEG 视觉主控（替换 Stage2 段式惯导）
+    # 受限 SEG-IMU 混合主控（生产唯一控制权）
     # ────────────────────────────────────────────────────────────────────────
-    # true  : phase=2 后全程 SEG 跟线，不跑 field_track 的 arc/move 段
-    # false : 回退旧“惯导段 + 视觉纠偏”链路
-    vision_pure_mode_enabled: true
-    # 控制架构（重写）：
-    #   ENTRY  = 一进S2就准备转；方向=扫码入口（顺左/逆右）；出入口=直道几何恢复
-    #   FOLLOW = 中线小纠偏；前边界触发 → TURN
-    #   TURN   = 固定环向（顺右/逆左）+ 视觉微调；出弯=直道几何恢复
-    #   ALIGN  = 只回中，无弯前馈
-    #   方向永不靠左右mask猜测
+    hybrid_controller_enabled: true
+    # 旧状态机默认关闭，只有关闭 hybrid_controller_enabled 后才可用于回退验证。
+    vision_pure_mode_enabled: false
+
+    # 路线状态机：ENTRY_TURN → LEG_TRACK → CORNER_APPROACH → CORNER_TURN。
+    # 直道中 SEG 仅做连续小角度居中；IMU 独占入口和四个 90° 转角。
+    hybrid_cruise_speed: 0.34
+    hybrid_approach_speed: 0.24
+    hybrid_turn_speed: 0.28
+    hybrid_recover_speed: 0.10
+    hybrid_max_angular: 0.75
+    hybrid_line_kp: 0.48
+    hybrid_curve_kp: 0.14
+    hybrid_line_max_angular: 0.22
+    hybrid_entry_target_deg: 90.0
+    hybrid_ring_target_deg: 90.0
+    # 转弯结束由顶点中心线左右30% SEG 连续填满决定；IMU 仅限定方向和安全范围。
+    hybrid_turn_min_deg: 25.0
+    hybrid_turn_max_deg: 140.0
+    hybrid_turn_kp: 1.45
+    hybrid_turn_rate_kd: 0.16
+    # 入弯：ROI最高20%区域没有SEG即当帧开始转向，不作连续帧确认。
+    hybrid_turn_entry_top20_max_fill: 0.0
+    # 第一环角后跳过0.8m短边的独立跟踪，持续小角度转向直到下一长边SEG出现。
+    hybrid_bridge_turn_angular: 0.30
+    hybrid_bridge_long_top20_min_fill: 0.25
+    hybrid_bridge_long_max_curve: 0.35
+    hybrid_bridge_max_deg: 145.0
+    hybrid_turn_exit_confirm_frames: 3
+    hybrid_turn_exit_fill_threshold: 0.55
+    # 相对 /odom 路线长度只用于末段的安全兜底，不参与正常视觉入弯判断。
+    hybrid_leg_extra_m: 0.35
+    hybrid_leg_lengths_csv: '1.10,0.80,2.59,0.80,1.49'
+    hybrid_vision_max_age_sec: 0.30
+    hybrid_vision_min_confidence: 0.35
+    hybrid_vision_min_rows: 4
+    # 丢线时仅保持最后确认航向走此短距离，超限停车，禁止盲目前进撞墙。
+    hybrid_vision_loss_distance_m: 0.25
+    hybrid_required_ring_turns: 4
 
     # --- 速度 ---
     # 直道巡航：尽量保持；弯中固定 corner_speed
@@ -299,7 +329,7 @@ stage2_inertial_navigator:
 
     # --- 转弯最短硬打时间（用户规则：第1弯足够，后续弯防过大）---
     # 第 1 个环弯最短打死时间 (s) — 入环后第一个弯需要足够转角
-    vision_first_ring_turn_min_hold_sec: 0.40
+    vision_first_ring_turn_min_hold_sec: 0.30
     # 后续环弯最短打死时间 (s) — 第2个弯起用更短时间，防转弯过大（方案A：0.30→0.20）
     vision_ring_turn_min_hold_sec: 0.20
     # 第 1 个环弯最小转角 (°) — 转够此角度 + 时间够才允许退出
