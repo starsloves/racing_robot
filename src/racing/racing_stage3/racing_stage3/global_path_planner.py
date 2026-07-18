@@ -59,6 +59,7 @@ class GlobalPathPlanner:
         self.static_planner_origin = None
 
         # Laser scan cache
+        self.latest_scan = None
         self.scan_frame_id = None
 
         # Path cache
@@ -143,7 +144,7 @@ class GlobalPathPlanner:
         occupied[start_cell[1], start_cell[0]] = False
         occupied[goal_cell[1], goal_cell[0]] = False
 
-        # ?        signature = (start_cell, goal_cell)
+        signature = (start_cell, goal_cell)
         if (
             self.last_plan_points
             and self.last_plan_signature == signature

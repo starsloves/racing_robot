@@ -38,6 +38,13 @@ class RouteControllerTest(unittest.TestCase):
         self.assertEqual(command.state, controller.TURN)
         self.assertLess(command.angular, 0.0)
 
+    def test_large_lateral_error_uses_stronger_continuous_recovery(self):
+        controller = self.new_leg_controller()
+
+        angular = controller._line_angular(line(error=-0.60, curve=0.0))
+
+        self.assertAlmostEqual(angular, self.cfg.line_max_angular)
+
     def test_turn_countersteers_after_nominal_angle_until_vision_exit(self):
         controller = Stage2HybridController(self.cfg)
         controller.reset('clockwise', 0.0, (0.0, 0.0), 0.0)
@@ -48,12 +55,27 @@ class RouteControllerTest(unittest.TestCase):
         self.assertEqual(command.state, controller.TURN)
         self.assertGreater(command.angular, 0.0)
 
+    def test_visual_exit_waits_for_yaw_to_settle(self):
+        controller = Stage2HybridController(self.cfg)
+        controller.reset('clockwise', 0.0, (0.0, 0.0), 0.0)
+        controller._start_turn(-1.0, 90.0, 0.0, 0.0)
+        opened = line(apex_left30_fill=0.80, apex_right30_fill=0.80)
+
+        # The visual exit is already open, but the chassis is still rotating.
+        command = controller.step(0.1, opened, -math.radians(45.0), (0.01, 0.0))
+        self.assertEqual(command.state, controller.TURN)
+
+        # Three settled frames then release the next leg.
+        for index in range(3):
+            command = controller.step(0.2 + index * 0.1, opened, -math.radians(45.0), (0.02 + index * 0.01, 0.0))
+        self.assertEqual(command.state, controller.LEG)
+
     def test_first_ring_corner_bridges_directly_to_long_edge(self):
         controller = Stage2HybridController(self.cfg)
         controller.reset('clockwise', 0.0, (0.0, 0.0), 0.0)
         controller._start_turn(-1.0, 90.0, 0.0, 0.0)
         opened = line(apex_left30_fill=0.72, apex_right30_fill=0.71)
-        for index in range(3):
+        for index in range(4):
             command = controller.step(0.1 + index * 0.1, opened, -math.radians(45.0), (0.01 + index * 0.01, 0.0))
         self.assertEqual(command.state, controller.LEG)
         self.assertEqual(controller.turn_count, 1)
@@ -66,8 +88,14 @@ class RouteControllerTest(unittest.TestCase):
         self.assertEqual(command.state, controller.LEG)
         self.assertTrue(controller.is_bridge_active())
 
-        # Acquire the following long edge and account for its second corner.
-        command = controller.step(0.5, line(top20_seg_fill=0.40, curve=0.10), -math.radians(100.0), (0.10, 0.0))
+        # Seeing the long edge while offset does not finish the bridge. It
+        # first abandons the bridge turn and captures the visible centerline.
+        command = controller.step(0.5, line(top20_seg_fill=0.40, curve=0.10, error=0.60), -math.radians(100.0), (0.10, 0.0))
+        self.assertTrue(controller.is_bridge_active())
+        self.assertLess(command.angular, 0.0)
+
+        # Once centered, acquire the long edge and account for its second corner.
+        command = controller.step(0.6, line(top20_seg_fill=0.40, curve=0.10, error=0.10), -math.radians(100.0), (0.12, 0.0))
         self.assertEqual(command.state, controller.LEG)
         self.assertFalse(controller.is_bridge_active())
         self.assertEqual(controller.turn_count, 2)

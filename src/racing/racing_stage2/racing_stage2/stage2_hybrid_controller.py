@@ -38,9 +38,9 @@ class HybridConfig:
     turn_speed: float = 0.28
     recover_speed: float = 0.10
     max_angular: float = 0.75
-    line_kp: float = 0.48
-    curve_kp: float = 0.14
-    line_max_angular: float = 0.22
+    line_kp: float = 0.72
+    curve_kp: float = 0.04
+    line_max_angular: float = 0.42
     entry_target_deg: float = 90.0
     ring_target_deg: float = 90.0
     turn_min_deg: float = 25.0
@@ -51,9 +51,10 @@ class HybridConfig:
     bridge_turn_angular: float = 0.30
     bridge_long_top20_min_fill: float = 0.25
     bridge_long_max_curve: float = 0.35
+    bridge_capture_error: float = 0.28
     bridge_max_deg: float = 145.0
-    turn_exit_confirm_frames: int = 3
     turn_exit_fill_threshold: float = 0.55
+    turn_exit_max_yaw_rate: float = 0.30
     leg_extra_m: float = 0.35
     leg_lengths_csv: str = '1.10,0.80,2.59,0.80,1.49'
     vision_max_age_sec: float = 0.30
@@ -106,9 +107,9 @@ class Stage2HybridController:
         self.last_position = position
         self.last_yaw = yaw
         self.last_yaw_at = now
+        self.last_yaw_rate = 0.0
         self.last_angular = 0.0
         self.turn_evidence_frames = 0
-        self.turn_exit_frames = 0
         self.bridge_active = False
         self.bridge_start_yaw = yaw
         self.recover_start_path_m = 0.0
@@ -186,6 +187,7 @@ class Stage2HybridController:
             delta = _angle_error(yaw, self.last_yaw)
             rate = delta / (now - self.last_yaw_at)
         self.last_yaw, self.last_yaw_at = yaw, now
+        self.last_yaw_rate = rate
         return rate
 
     def _enter_safe_stop(self, reason: str, now: float) -> HybridCommand:
@@ -196,7 +198,6 @@ class Stage2HybridController:
         self.state, self.state_started_at = self.TURN, now
         self.turn_start_yaw, self.turn_sign, self.turn_target_deg = yaw, sign, target_deg
         self.turn_evidence_frames = 0
-        self.turn_exit_frames = 0
 
     def _turn_progress_deg(self, yaw: float) -> float:
         return max(0.0, math.degrees(_angle_error(yaw, self.turn_start_yaw)) * self.turn_sign)
@@ -211,18 +212,18 @@ class Stage2HybridController:
         # remains the sole authority that releases the next straight.
         return self.cfg.turn_speed, angular
 
-    def _turn_exit_ready(self, line: Dict, yaw: float) -> bool:
+    def _turn_exit_ready(self, line: Dict, yaw: float, yaw_rate: float) -> bool:
         progress = self._turn_progress_deg(yaw)
-        if progress >= self.cfg.turn_min_deg and self._turn_exit_evidence(line):
-            self.turn_exit_frames += 1
-        else:
-            self.turn_exit_frames = 0
-        return self.turn_exit_frames >= self.cfg.turn_exit_confirm_frames
+        return bool(
+            progress >= self.cfg.turn_min_deg
+            and self._turn_exit_evidence(line)
+            and abs(yaw_rate) <= self.cfg.turn_exit_max_yaw_rate
+        )
 
     def _bridge_progress_deg(self, yaw: float) -> float:
         return max(0.0, math.degrees(_angle_error(yaw, self.bridge_start_yaw)) * self.ring_sign)
 
-    def _long_edge_found(self, line: Dict) -> bool:
+    def _long_edge_visible(self, line: Dict) -> bool:
         """Detect the long edge after skipping the short-side state.
 
         The short side may have no far SEG at all. It is therefore never used
@@ -235,7 +236,16 @@ class Stage2HybridController:
             and abs(float(line.get('curve', line.get('path_bend', 0.0)) or 0.0)) <= self.cfg.bridge_long_max_curve
         )
 
+    def _long_edge_found(self, line: Dict) -> bool:
+        return self._long_edge_visible(line) and abs(float(line.get('error', 0.0) or 0.0)) <= self.cfg.bridge_capture_error
+
     def _bridge_command(self, line: Dict) -> HybridCommand:
+        # A long edge may appear while the car is still laterally displaced by
+        # the bridge. Stop adding the bridge turn immediately and capture that
+        # edge with the ordinary visual controller before declaring it active.
+        if self._long_edge_visible(line):
+            self.last_angular = self._line_angular(line)
+            return HybridCommand(self.cfg.cruise_speed, self.last_angular, self.LEG)
         visual_trim = 0.35 * self._line_angular(line) if self._line_valid(line) else 0.0
         angular = _clamp(
             self.ring_sign * self.cfg.bridge_turn_angular + visual_trim,
@@ -264,7 +274,7 @@ class Stage2HybridController:
                 self.turn_start_yaw = yaw
             linear, angular = self._turn_command(yaw, yaw_rate)
             self.last_angular = angular
-            if self._turn_exit_ready(line, yaw):
+            if self._turn_exit_ready(line, yaw, yaw_rate):
                 self._begin_leg(yaw, now)
                 return HybridCommand(self.cfg.recover_speed, 0.0, self.LEG)
             if self._turn_progress_deg(yaw) >= self.cfg.turn_max_deg:
@@ -312,7 +322,7 @@ class Stage2HybridController:
         if self.state == self.TURN:
             linear, angular = self._turn_command(yaw, yaw_rate)
             self.last_angular = angular
-            if self._turn_exit_ready(line, yaw):
+            if self._turn_exit_ready(line, yaw, yaw_rate):
                 self.turn_count += 1
                 self.leg_index += 1
                 self._begin_leg(yaw, now)

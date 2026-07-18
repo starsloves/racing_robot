@@ -163,13 +163,13 @@ competition_controller:
     counter_steer_angular_speed: 0.95
 
     # 反舵持续时间缩放系数 — 反舵时长 = 避障时长 × 此系数
-    counter_steer_duration_scale: 1.35
+    counter_steer_duration_scale: 1.10
 
     # 反舵最小持续时间 (s)
-    counter_steer_min_duration_sec: 0.45
+    counter_steer_min_duration_sec: 0.35
 
     # 反舵最大持续时间 (s)
-    counter_steer_max_duration_sec: 1.20
+    counter_steer_max_duration_sec: 1.00
 
     # --- 恢复阶段 (Recovery) ---
     # 恢复线速度 (m/s) — 直行恢复速度
@@ -214,6 +214,12 @@ competition_controller:
 
     # 后退线速度 (m/s) — 负值表示倒车
     back_linear_speed: -0.35
+
+    # 后退转弯线速度 (m/s) — 航向误差较大时降速倒车
+    back_turn_linear_speed: -0.12
+
+    # 后退转弯降速阈值 (°) — 目标路点航向误差达到此值时启用转弯低速
+    back_turn_slowdown_angle_deg: 18.0
 
     # 后退航向修正增益 — 航向误差 → 角速度增益
     back_angular_kp: 1.8

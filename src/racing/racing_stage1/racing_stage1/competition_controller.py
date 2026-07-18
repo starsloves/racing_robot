@@ -96,6 +96,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('enable_backing', True)
         self.declare_parameter('back_target_x', 2.0)
         self.declare_parameter('back_linear_speed', -0.15)
+        self.declare_parameter('back_turn_linear_speed', -0.12)
+        self.declare_parameter('back_turn_slowdown_angle_deg', 18.0)
         self.declare_parameter('back_angular_kp', 1.8)
         self.declare_parameter('back_position_tolerance', 0.15)
         self.declare_parameter('back_path_sample_distance', 0.20)
@@ -235,6 +237,10 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.enable_backing = bool(self.get_parameter('enable_backing').value)
         self.back_target_x = float(self.get_parameter('back_target_x').value)
         self.back_linear_speed = float(self.get_parameter('back_linear_speed').value)
+        self.back_turn_linear_speed = float(self.get_parameter('back_turn_linear_speed').value)
+        self.back_turn_slowdown_angle_rad = math.radians(
+            float(self.get_parameter('back_turn_slowdown_angle_deg').value)
+        )
         self.back_angular_kp = float(self.get_parameter('back_angular_kp').value)
         self.back_position_tolerance = float(self.get_parameter('back_position_tolerance').value)
         self.back_path_sample_distance = float(self.get_parameter('back_path_sample_distance').value)
@@ -1982,9 +1988,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         
         angular_z = self.back_angular_kp * heading_error
         angular_z = self.clamp(angular_z, 1.0)
+        linear_speed = self.back_linear_speed
+        if abs(heading_error) >= self.back_turn_slowdown_angle_rad:
+            linear_speed = self.back_turn_linear_speed
         
         # 倒车（负速度），车头保持来时方向
-        self.cmd_pub.publish(self.create_twist(self.back_linear_speed, angular_z))
+        self.cmd_pub.publish(self.create_twist(linear_speed, angular_z))
         
         self.log.progress(
             f'backing: wp={self.backing_path_index}, '
@@ -1992,7 +2001,8 @@ class CompetitionController(Stage1VisionMixin, Node):
             f'odom_x={odom_x:.2f}m, '
             f'dist={dist_to_target:.2f}m, '
             f'target_yaw={math.degrees(target_yaw):.1f}°, '
-            f'yaw_error={math.degrees(heading_error):.1f}°'
+            f'yaw_error={math.degrees(heading_error):.1f}°, '
+            f'linear={linear_speed:.2f}m/s'
         )
     
     def handle_backing_align(self):
