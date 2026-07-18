@@ -406,6 +406,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.latest_map = None
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.qr_processed = False  # 二维码去重标志：防止重复扫码播报
         self._map_pose_warned = False
         self.corridor_active = False
         self.corridor_nav_mode = 'idle'  # path_follow | left_recover | idle
@@ -1718,14 +1719,21 @@ class CompetitionController(Stage1VisionMixin, Node):
         if self.phase != 1:
             return
 
+        # 去重检查：防止重复扫码播报
+        if self.qr_processed:
+            self.log.progress('qr already processed, ignoring duplicate scan')
+            return
+
         # 允许在前进、避障等状态下接收二维码(避免因临时避障错过扫码)
-        if self.phase1_motion_state not in ('forward', 'avoiding', 'countersteering', 'recovering'):
+        if self.phase1_motion_state not in ('forward', 'avoiding', 'countersteering', 'recovering', 'corridor'):
             return
 
         task = msg.data.strip()
         if not task:
             return
 
+        # 设置去重标志
+        self.qr_processed = True
         self.qr_task = task
         self.task_pub.publish(String(data=task))
 
@@ -1741,7 +1749,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         else:
             self.log.mission(f'qr detected: {task}, starting corridor navigation without backing')
             self.start_corridor_navigation(f'qr detected: {task}, no backing path')
-        
+
         # 异步播报识别结果（后台线程执行，不阻塞后退）
         self._speak_qr_result_async(task)
 
