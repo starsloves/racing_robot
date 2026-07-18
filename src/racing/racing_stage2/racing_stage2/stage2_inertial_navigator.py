@@ -1277,6 +1277,14 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self.run_corridor_path_stage()
             return
 
+        # 纯 SEG 主控：不走 field_track 的 move/arc/turn 段
+        pure_mode = bool(getattr(self, '_vision_pure_mode_enabled', False))
+        if not pure_mode and self.has_parameter('vision_pure_mode_enabled'):
+            pure_mode = bool(self.get_parameter('vision_pure_mode_enabled').value)
+        if pure_mode and self.mission_active and hasattr(self, 'run_pure_vision_mission'):
+            self.run_pure_vision_mission()
+            return
+
         if not self.mission_active or self.current_segment is None:
             if not self.mission_active:
                 self.cmd_pub.publish(self.create_twist())
@@ -1302,6 +1310,10 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             return
 
         segment_type = self.current_segment['type']
+        if segment_type == 'vision_follow':
+            if hasattr(self, 'run_pure_vision_mission'):
+                self.run_pure_vision_mission()
+            return
         if segment_type == 'turn':
             self.run_turn_segment()
         elif segment_type == 'arc':
@@ -1462,6 +1474,36 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.waiting_for_phase2_start = False
         self.mission_active = True
         self.reported_start = True
+
+        # 启用视觉推理
+        if hasattr(self, '_set_vision_inference_active'):
+            self._set_vision_inference_active(True)
+        elif getattr(self, '_vision_node', None) is not None:
+            self._vision_node.set_inference_active(True)
+
+        # 纯 SEG 主控：替换 field_track 段式链路（必须在 begin_inertial_plan 之前 return）
+        pure_mode = bool(getattr(self, '_vision_pure_mode_enabled', False))
+        if not pure_mode and self.has_parameter('vision_pure_mode_enabled'):
+            pure_mode = bool(self.get_parameter('vision_pure_mode_enabled').value)
+        if pure_mode and hasattr(self, 'start_pure_vision_mission'):
+            try:
+                # 仅用 plan 估算任务里程，不启动 arc/move 段
+                self.plan = self.build_inertial_plan(
+                    nav_succeeded=self.nav_succeeded_for_test_start()
+                )
+            except Exception as exc:
+                self.plan = []
+                self.get_logger().warn(f'[MISSION] pure-seg plan 估算失败: {exc}')
+            self.publish_feedback(
+                f'{self.test_feedback_prefix}纯SEG接管，方向: {self.direction_text()}'
+            )
+            self._log_session(
+                'MISSION',
+                f'纯SEG启动 direction={self.direction} plan_segments={len(self.plan or [])}',
+            )
+            self.start_pure_vision_mission()
+            return
+
         self.publish_feedback(
             f'{self.test_feedback_prefix}开始执行，方向: {self.direction_text()}，'
             f'模式: {self.start_mode_text()}'

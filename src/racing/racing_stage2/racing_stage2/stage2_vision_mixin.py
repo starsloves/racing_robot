@@ -57,14 +57,35 @@ class Stage2VisionMixin:
         self.declare_parameter('vision_min_valid_rows', 4)
         self.declare_parameter('vision_mask_threshold', 0.50)
         self.declare_parameter('vision_error_filter_alpha', 0.35)
+
+        # 纯 SEG 主控（替换 Stage2 段式惯导链路）
+        self.declare_parameter('vision_pure_mode_enabled', True)
+        self.declare_parameter('vision_cruise_speed', 0.22)
+        self.declare_parameter('vision_corner_speed', 0.12)
+        self.declare_parameter('vision_min_speed', 0.06)
+        self.declare_parameter('vision_search_angular', 0.28)
+        self.declare_parameter('vision_lost_timeout_sec', 0.40)
+        self.declare_parameter('vision_mission_distance_scale', 1.00)
+        self.declare_parameter('vision_mission_timeout_sec', 90.0)
+        self.declare_parameter('vision_curve_speed_thresh', 0.22)
+        self.declare_parameter('vision_error_speed_thresh', 0.30)
+
+        # Pure Pursuit 路径跟踪控制（基于引导线的几何跟踪）
+        self.declare_parameter('vision_use_pure_pursuit', True)
+        self.declare_parameter('vision_lookahead_distance_m', 0.35)
+        self.declare_parameter('vision_wheelbase_m', 0.15)
+        self.declare_parameter('vision_pursuit_kp', 1.8)
+
+        # 旧 PD 控制参数（兼容回退）
         self.declare_parameter('vision_angular_kp', 1.25)
         self.declare_parameter('vision_angular_kd', 0.20)
         self.declare_parameter('vision_curvature_kp', 0.45)
         self.declare_parameter('vision_deadband', 0.035)
-        self.declare_parameter('vision_primary_control', True)  # 视觉主 / IMU 兜底
-        self.declare_parameter('vision_budget_disable_enabled', False)  # 默认不因预算永久闭嘴
-        self.declare_parameter('vision_min_confidence', 0.30)
-        self.declare_parameter('vision_primary_max_head_err_deg', 30.0)
+
+        self.declare_parameter('vision_primary_control', True)
+        self.declare_parameter('vision_budget_disable_enabled', False)
+        self.declare_parameter('vision_min_confidence', 0.28)
+        self.declare_parameter('vision_primary_max_head_err_deg', 45.0)
         
         # 融合策略参数
         self.declare_parameter('imu_heading_deadzone_deg', 1.0)
@@ -120,6 +141,12 @@ class Stage2VisionMixin:
         self._last_valid_log = None
 
         # 横向或纵向任一开启，都加载视觉推理模块
+        # 纯 SEG 模式强制加载
+        pure_mode = bool(self.get_parameter('vision_pure_mode_enabled').value) if self.has_parameter('vision_pure_mode_enabled') else False
+        if pure_mode:
+            self._vision_enabled = True
+            self._vision_length_enabled = True
+
         if not (self._vision_enabled or self._vision_length_enabled):
             self._vision_node = None
             self._offset_history = []
@@ -133,6 +160,7 @@ class Stage2VisionMixin:
             self._vision_center_hold_latched = False
             self._vision_turn_center_hold = 0.0
             self._vision_turn_center_last_t = None
+            self._vision_pure_mode_enabled = False
             self.get_logger().info(
                 '[视觉] 模块已禁用（offset/length correction 均关闭）'
             )
@@ -208,18 +236,48 @@ class Stage2VisionMixin:
         self._vision_prev_error = 0.0
         self._vision_prev_error_t = None
         self._vision_last_detail_log_t = 0.0
-        
+
+        # Pure Pursuit 控制参数
+        self._vision_use_pure_pursuit = bool(self.get_parameter('vision_use_pure_pursuit').value)
+        self._vision_lookahead_distance_m = float(self.get_parameter('vision_lookahead_distance_m').value)
+        self._vision_wheelbase_m = float(self.get_parameter('vision_wheelbase_m').value)
+        self._vision_pursuit_kp = float(self.get_parameter('vision_pursuit_kp').value)
+
+        # 纯 SEG 主控参数
+        self._vision_pure_mode_enabled = bool(self.get_parameter('vision_pure_mode_enabled').value)
+        self._vision_cruise_speed = float(self.get_parameter('vision_cruise_speed').value)
+        self._vision_corner_speed = float(self.get_parameter('vision_corner_speed').value)
+        self._vision_min_speed = float(self.get_parameter('vision_min_speed').value)
+        self._vision_search_angular = float(self.get_parameter('vision_search_angular').value)
+        self._vision_lost_timeout_sec = float(self.get_parameter('vision_lost_timeout_sec').value)
+        self._vision_mission_distance_scale = float(self.get_parameter('vision_mission_distance_scale').value)
+        self._vision_mission_timeout_sec = float(self.get_parameter('vision_mission_timeout_sec').value)
+        self._vision_curve_speed_thresh = float(self.get_parameter('vision_curve_speed_thresh').value)
+        self._vision_error_speed_thresh = float(self.get_parameter('vision_error_speed_thresh').value)
+        self._vision_pure_last_valid_t = 0.0
+        self._vision_pure_last_log_t = 0.0
+        self._vision_pure_mode_name = 'PURE_SEG_IDLE'
+        self._vision_last_error = 0.0
+        self._vision_last_curve = 0.0
+
+        # 纯视觉模式下强制：视觉主控 + 不因预算闭嘴
+        if self._vision_pure_mode_enabled:
+            self._vision_primary_control = True
+            self._vision_budget_disable_enabled = False
+            self._vision_enabled = True
+
+        mode_txt = '纯SEG主控' if self._vision_pure_mode_enabled else '混合纠偏'
+        ctrl_txt = 'PurePursuit' if self._vision_use_pure_pursuit else 'PD+曲率'
         self.get_logger().info(
-            f'[视觉] 中线主控启用 kp={self._vision_angular_kp:.2f} kd={self._vision_angular_kd:.2f} '
-            f'kc={self._vision_curvature_kp:.2f} max_ω={self._vision_max_angular:.2f} '
-            f'primary={self._vision_primary_control} budget_disable={self._vision_budget_disable_enabled} '
+            f'[视觉] {mode_txt}/{ctrl_txt} '
+            f'cruise={self._vision_cruise_speed:.2f} corner={self._vision_corner_speed:.2f} '
+            f'lookahead={self._vision_lookahead_distance_m:.2f}m L={self._vision_wheelbase_m:.2f}m '
+            f'kp={self._vision_pursuit_kp:.2f} max_ω={self._vision_max_angular:.2f} '
             f'crop=B{float(self.get_parameter("vision_crop_ratio").value):.0%}'
-            f'+S{float(self.get_parameter("vision_crop_side_ratio").value):.0%} '
-            f'length_corr={self._vision_length_enabled} '
-            f'turn_assist={bool(self.get_parameter("vision_turn_assist_enabled").value)}'
+            f'+S{float(self.get_parameter("vision_crop_side_ratio").value):.0%}'
         )
         self.get_logger().info(
-            f'[视觉] HTTP 可视化: http://100.114.34.86:{http_port}/vision_latest.jpg (30 FPS)'
+            f'[视觉] HTTP 可视化: http://0.0.0.0:{http_port}/vision_latest.jpg'
         )
     
     def _reset_vision_offset_time_state(self) -> None:
@@ -498,29 +556,313 @@ class Stage2VisionMixin:
             'age': float(age),
         }
 
-    def _vision_line_to_angular(self, error: float, curve: float = 0.0) -> float:
+    def _vision_line_to_angular(self, error: float, curve: float = 0.0, line_status: dict = None) -> float:
         """
-        多行中线 PD + 曲率：
-            error/curve 定义：负=赛道中心偏左，正=偏右
-            控制：ω = -(Kp*e + Kd*ė + Kc*curve)
-            正ω=左转，负ω=右转
+        计算视觉角速度。
+
+        纯 SEG 默认用「PD + 曲率前馈」（能提前转弯）。
+        Pure Pursuit 仅作横向几何补充；不能只靠 PP，否则居中时 curve 再大也 w=0。
         """
+        pure = bool(getattr(self, '_vision_pure_mode_enabled', False))
+        use_pp = bool(getattr(self, '_vision_use_pure_pursuit', False))
+
+        # --- PD + 曲率（主）---
         kp = float(getattr(self, '_vision_angular_kp', self._vision_offset_kp))
         kd = float(getattr(self, '_vision_angular_kd', 0.0))
         kc = float(getattr(self, '_vision_curvature_kp', 0.0))
         deadband = float(getattr(self, '_vision_deadband', 0.0))
         e = float(error)
-        if abs(e) < deadband:
-            e = 0.0
+        # 横向死区只作用于 e；曲率项始终参与（弯道关键）
+        e_for_p = 0.0 if abs(e) < deadband else e
         now = time.time()
         deriv = 0.0
         if self._vision_prev_error_t is not None:
             dt = max(1e-3, now - self._vision_prev_error_t)
-            deriv = (e - self._vision_prev_error) / dt
-        self._vision_prev_error = e
+            deriv = (e_for_p - self._vision_prev_error) / dt
+        self._vision_prev_error = e_for_p
         self._vision_prev_error_t = now
-        angular = -(kp * e + kd * deriv + kc * float(curve))
-        return self.clamp(angular, self._vision_max_angular)
+        # error/curve>0：中线偏右/远端更靠右 → 需要右转 → 负 ω
+        angular_pd = -(kp * e_for_p + kd * deriv + kc * float(curve))
+
+        angular_pp = 0.0
+        if use_pp:
+            x_m = None
+            y_m = None
+            if line_status is not None:
+                lookahead_point = line_status.get('lookahead_point')
+                if lookahead_point is not None and len(lookahead_point) >= 2:
+                    x_m = float(lookahead_point[0])
+                    y_m = float(lookahead_point[1])
+                elif line_status.get('lateral_error_m') is not None:
+                    x_m = float(line_status.get('lateral_error_m') or 0.0)
+                    y_m = float(getattr(self, '_vision_lookahead_distance_m', 0.35))
+            if x_m is None:
+                x_m = float(error) * 0.6
+                y_m = float(getattr(self, '_vision_lookahead_distance_m', 0.35))
+            y_m = max(0.08, float(y_m))
+            alpha = math.atan2(x_m, y_m)
+            speed = float(getattr(self, 'current_speed', 0.0) or 0.0)
+            if speed < 0.05:
+                speed = float(getattr(self, '_vision_cruise_speed', 0.18))
+            wheelbase = max(0.05, float(getattr(self, '_vision_wheelbase_m', 0.15)))
+            angular_pp = -(2.0 * speed * math.sin(alpha)) / wheelbase
+            angular_pp *= float(getattr(self, '_vision_pursuit_kp', 1.2))
+
+        if pure:
+            # 纯SEG：PD+曲率主导；PP 仅补横向几何
+            angular = (0.70 * angular_pd + 0.30 * angular_pp) if use_pp else angular_pd
+        else:
+            angular = angular_pp if use_pp else angular_pd
+        return float(self.clamp(angular, self._vision_max_angular))
+
+    def _vision_search_direction(self) -> float:
+        """
+        丢线搜索方向：
+        1) 优先用丢线前最后有效 curve/error（弯道丢失时最关键）
+        2) 再按扫码方向（顺时针默认左搜）
+        """
+        last_curve = float(getattr(self, '_vision_last_curve', 0.0) or 0.0)
+        last_error = float(getattr(self, '_vision_last_error', 0.0) or 0.0)
+        if abs(last_curve) > 0.08:
+            # curve>0 远端偏右 → 右转搜索(-1)；curve<0 → 左转搜索(+1)
+            return -1.0 if last_curve > 0.0 else 1.0
+        if abs(last_error) > 0.05:
+            return -1.0 if last_error > 0.0 else 1.0
+        direction = str(getattr(self, 'direction', '') or '').lower()
+        if 'counter' in direction or 'ccw' in direction or '逆' in direction:
+            return -1.0
+        return 1.0
+
+    def _vision_select_linear_speed(self, error: float, curve: float, rows: int = 9) -> float:
+        """根据横向误差/曲率/有效行数选择速度。"""
+        cruise = float(getattr(self, '_vision_cruise_speed', 0.18))
+        corner = float(getattr(self, '_vision_corner_speed', 0.10))
+        min_speed = float(getattr(self, '_vision_min_speed', 0.06))
+        e_th = float(getattr(self, '_vision_error_speed_thresh', 0.20))
+        c_th = float(getattr(self, '_vision_curve_speed_thresh', 0.15))
+        if rows <= 4 or abs(error) > e_th or abs(curve) > c_th:
+            return max(min_speed, corner)
+        if rows <= 6 or abs(curve) > c_th * 0.6:
+            return max(min_speed, 0.5 * (cruise + corner))
+        return max(min_speed, cruise)
+
+    def _compute_pure_vision_command(self):
+        """
+        纯 SEG 主控：全程沿 mask 引导线行驶。
+
+        返回:
+            (linear, angular, mode, line_status)
+        """
+        line = self._get_vision_line_status()
+        now = time.time()
+        timeout = float(getattr(self, '_vision_lost_timeout_sec', 0.80))
+        hard_lost_sec = max(timeout * 3.0, 1.8)
+        vision_timeout = float(self.get_parameter('vision_timeout_sec').value) if self.has_parameter('vision_timeout_sec') else 0.7
+        age = float(line.get('age', 999.0))
+        valid = bool(line.get('valid', False)) and age < vision_timeout
+        min_conf = float(getattr(self, '_vision_min_confidence', 0.22))
+        min_rows = int(self.get_parameter('vision_min_valid_rows').value) if self.has_parameter('vision_min_valid_rows') else 2
+        conf = float(line.get('confidence', 0.0))
+        rows = int(line.get('valid_rows', 0))
+        error = float(line.get('error', 0.0))
+        curve = float(line.get('curve', 0.0))
+        quality_ok = valid and conf >= min_conf and rows >= max(2, min_rows)
+        weak_ok = valid and rows >= 2 and conf >= max(0.12, min_conf * 0.5)
+
+        if quality_ok or weak_ok:
+            self._vision_pure_last_valid_t = now
+            self._vision_last_error = error
+            self._vision_last_curve = curve
+            angular = self._vision_line_to_angular(error, curve, line_status=line)
+            # 大曲率额外前馈，确保会提前打方向
+            if abs(curve) > 0.12:
+                boost = -float(getattr(self, '_vision_curvature_kp', 0.85)) * float(curve) * 0.55
+                angular = self.clamp(angular + boost, self._vision_max_angular)
+            linear = self._vision_select_linear_speed(error, curve, rows=rows)
+            if weak_ok and not quality_ok:
+                linear = max(self._vision_min_speed, linear * 0.70)
+                mode = 'PURE_SEG_WEAK'
+            elif not bool(line.get('boundary_safe', True)):
+                safety_w = float(line.get('safety_weight', 0.5))
+                linear = max(self._vision_min_speed, linear * max(0.35, min(1.0, safety_w)))
+                mode = 'PURE_SEG_BOUNDARY'
+            else:
+                mode = 'PURE_SEG_FOLLOW'
+            self.current_speed = linear
+            return float(linear), float(angular), mode, line
+
+        # 丢线：按最后弯向搜索，并给一点前探速度
+        last_valid = float(getattr(self, '_vision_pure_last_valid_t', 0.0) or 0.0)
+        lost_for = (now - last_valid) if last_valid > 0.0 else 999.0
+        search_dir = self._vision_search_direction()
+        search_w = self.clamp(
+            search_dir * float(getattr(self, '_vision_search_angular', 0.45)),
+            self._vision_max_angular,
+        )
+        if lost_for <= timeout:
+            linear = max(float(getattr(self, '_vision_min_speed', 0.06)) * 0.85, 0.04)
+            mode = 'PURE_SEG_SEARCH'
+            self.current_speed = linear
+            return float(linear), float(search_w), mode, line
+        if lost_for <= hard_lost_sec:
+            linear = max(float(getattr(self, '_vision_min_speed', 0.06)) * 0.45, 0.02)
+            mode = 'PURE_SEG_SEARCH_HARD'
+            self.current_speed = linear
+            return float(linear), float(self.clamp(search_w * 1.15, self._vision_max_angular)), mode, line
+
+        mode = 'PURE_SEG_LOST'
+        linear = 0.02
+        self.current_speed = linear
+        return float(linear), float(search_w), mode, line
+
+    def _estimate_ring_mission_distance(self) -> float:
+        """根据 field_track 段长估算纯视觉任务总里程。"""
+        total = 0.0
+        plan = list(getattr(self, 'plan', []) or [])
+        for seg in plan:
+            if not isinstance(seg, dict):
+                continue
+            stype = str(seg.get('type', ''))
+            if stype == 'move':
+                total += abs(float(seg.get('distance_m', 0.0) or 0.0))
+            elif stype == 'arc':
+                # 粗估：速度×时间
+                speed = abs(float(seg.get('speed', 0.18) or 0.18))
+                duration = abs(float(seg.get('duration_sec', 0.0) or 0.0))
+                total += speed * duration
+            elif stype == 'turn':
+                # 转弯段也有前向速度
+                speed = abs(float(seg.get('turn_linear_speed', getattr(self, 'turn_linear_speed', 0.12)) or 0.12))
+                # 以 90°/0.8rad/s 粗估
+                total += speed * 1.2
+        if total < 1.0:
+            # 兜底：矩形环约 2.8 + 2*0.3 + 0.9 + 入口
+            total = 6.0
+        scale = float(getattr(self, '_vision_mission_distance_scale', 1.0) or 1.0)
+        return max(1.0, total * max(0.3, scale))
+
+    def start_pure_vision_mission(self):
+        """启动纯 SEG 跟线任务（替换 field_track 段执行）。"""
+        # 先在覆盖 plan 前估算里程
+        target_distance = self._estimate_ring_mission_distance()
+
+        self.mission_active = True
+        self.mission_finished = False
+        self.current_segment = {
+            'type': 'vision_follow',
+            'description': 'pure_seg_follow',
+            'speed': float(getattr(self, '_vision_cruise_speed', 0.22)),
+        }
+        self.plan = [self.current_segment]
+        self.plan_index = 0
+        self.segment_started_at = self.get_clock().now().nanoseconds / 1e9
+        self.segment_start_pose = self.current_position
+        self.segment_start_yaw = self.current_yaw if self.current_yaw is not None else self.navigation_yaw()
+        self.segment_heading = self.segment_start_yaw
+        self._vision_pure_start_pose = self.current_position
+        self._vision_pure_start_t = self.segment_started_at
+        self._vision_pure_last_valid_t = 0.0
+        self._vision_pure_last_log_t = 0.0
+        self._vision_pure_mode_name = 'PURE_SEG_START'
+        self._vision_pure_target_distance = target_distance
+        if hasattr(self, '_set_vision_inference_active'):
+            self._set_vision_inference_active(True)
+        elif getattr(self, '_vision_node', None) is not None:
+            self._vision_node.set_inference_active(True)
+        self.publish_state('pure_seg_follow')
+        self.publish_feedback(
+            f'第二阶段纯SEG启动 direction={self.direction} target≈{self._vision_pure_target_distance:.2f}m'
+        )
+        self.get_logger().info(
+            f'[MISSION] ✓ 纯SEG主控启动 direction={self.direction} '
+            f'target={self._vision_pure_target_distance:.2f}m '
+            f'timeout={float(getattr(self, "_vision_mission_timeout_sec", 90.0)):.1f}s'
+        )
+        if hasattr(self, '_log_session'):
+            self._log_session(
+                'PURE_SEG_START',
+                f'direction={self.direction} target={self._vision_pure_target_distance:.2f}m',
+            )
+
+    def run_pure_vision_mission(self):
+        """纯 SEG 控制循环：跟线 + 里程/超时结束。"""
+        if not self.mission_active:
+            self.cmd_pub.publish(self.create_twist())
+            return
+
+        now = self.get_clock().now().nanoseconds / 1e9
+        start_t = float(getattr(self, '_vision_pure_start_t', now) or now)
+        timeout = float(getattr(self, '_vision_mission_timeout_sec', 90.0) or 90.0)
+        if now - start_t > timeout:
+            self.get_logger().warn(f'[视觉] 纯SEG超时 {timeout:.1f}s，结束任务')
+            if hasattr(self, '_log_session'):
+                self._log_session('PURE_SEG_TIMEOUT', f't={now - start_t:.1f}s')
+            self.finish_mission()
+            return
+
+        # 里程积分：优先 wheel/odom 位移
+        progress = 0.0
+        start_pose = getattr(self, '_vision_pure_start_pose', None)
+        if start_pose is None and self.current_position is not None:
+            # 容错：若启动时未记下起点，这里补记一次
+            self._vision_pure_start_pose = self.current_position
+            start_pose = self.current_position
+            self._vision_pure_start_t = now
+        if start_pose is not None and self.current_position is not None:
+            dx = self.current_position[0] - start_pose[0]
+            dy = self.current_position[1] - start_pose[1]
+            progress = math.hypot(dx, dy)
+        target = float(getattr(self, '_vision_pure_target_distance', 6.0) or 6.0)
+        if progress >= target:
+            self.get_logger().info(
+                f'[视觉] 纯SEG里程完成 {progress:.2f}/{target:.2f}m'
+            )
+            if hasattr(self, '_log_session'):
+                self._log_session('PURE_SEG_DONE', f'progress={progress:.2f}/{target:.2f}m')
+            self.finish_mission()
+            return
+
+        linear, angular, mode, line = self._compute_pure_vision_command()
+        prev_mode = getattr(self, '_vision_pure_mode_name', '')
+        self._vision_pure_mode_name = mode
+        self.cmd_pub.publish(self.create_twist(linear, angular))
+
+        # 模式切换立即打日志；平时 2Hz
+        mode_changed = (prev_mode != mode)
+        due = (now - float(getattr(self, '_vision_pure_last_log_t', 0.0) or 0.0) >= 0.5)
+        if mode_changed or due:
+            self._vision_pure_last_log_t = now
+            lost_for = 0.0
+            last_valid = float(getattr(self, '_vision_pure_last_valid_t', 0.0) or 0.0)
+            if last_valid > 0.0:
+                lost_for = max(0.0, time.time() - last_valid)
+            rem_m = line.get('remaining_m')
+            rem_txt = f'{float(rem_m):.2f}' if rem_m is not None else 'N/A'
+            la = line.get('lookahead_point')
+            la_txt = (
+                f'({float(la[0]):+.2f},{float(la[1]):+.2f})'
+                if la is not None and len(la) >= 2 else 'None'
+            )
+            msg = (
+                f'{mode} prog={progress:.2f}/{target:.2f}m '
+                f't={now - start_t:.1f}s '
+                f'v={linear:+.3f} w={angular:+.3f} '
+                f'e={float(line.get("error", 0.0)):+.3f} '
+                f'curve={float(line.get("curve", 0.0)):+.3f} '
+                f'rows={int(line.get("valid_rows", 0))} '
+                f'conf={float(line.get("confidence", 0.0)):.2f} '
+                f'age={float(line.get("age", 999.0)):.2f}s '
+                f'lost_for={lost_for:.2f}s '
+                f'rem={rem_txt}m la={la_txt} '
+                f'safe={bool(line.get("boundary_safe", True))}'
+            )
+            if self.current_position is not None:
+                msg += f' xy=({self.current_position[0]:.2f},{self.current_position[1]:.2f})'
+            self.get_logger().info(f'[视觉] {msg}')
+            if hasattr(self, '_log_session'):
+                self._log_session('PURE_SEG_CTRL', msg)
+            if mode_changed and hasattr(self, '_log_session'):
+                self._log_session('PURE_SEG_MODE', f'{prev_mode or "INIT"} -> {mode}')
 
     def _check_imu_health(self) -> bool:
         """
@@ -608,7 +950,7 @@ class Stage2VisionMixin:
             vision_rows = int(line.get('valid_rows', 0))
             vision_centered = bool(line.get('centered', False))
             quality_ok = (vision_conf >= min_conf) and (vision_rows >= max(2, min_rows // 2))
-            candidate = self._vision_line_to_angular(vision_error, vision_curve)
+            candidate = self._vision_line_to_angular(vision_error, vision_curve, line_status=line)
             # 居中时视觉ω=0，但仍视为可用（不掉到 LOST）
             if quality_ok and (vision_centered or abs(candidate) <= 1e-6):
                 vision_available = True

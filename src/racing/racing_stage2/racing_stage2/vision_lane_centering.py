@@ -253,32 +253,35 @@ class VisionLaneCentering:
                 'age': float(age),
                 'boundary_safe': bool(getattr(self, '_latest_boundary_safe', True)),
                 'safety_weight': float(getattr(self, '_latest_safety_weight', 1.0)),
+                # Pure Pursuit 路径信息
+                'path_samples': getattr(self, '_latest_path_samples', []),  # [(x_m, y_m), ...]
+                'lookahead_point': getattr(self, '_latest_lookahead_point', None),  # (x_m, y_m)
+                'lateral_error_m': getattr(self, '_latest_lateral_error_m', 0.0),
             }
 
     def _extract_centerline_from_mask(self, mask):
         """多行采样 mask 中心线（优化版：偏向远处，同时提取边界）。
 
         返回:
-            samples: list[(x, y)] 从近到远的中心点
+            samples: list[(x_px, y_px)] 从近到远的中心点（像素坐标）
             error: 归一化横向误差 [-1,1]，负=偏左，正=偏右
             curve: 近远场中点差估计曲率
             confidence: 0~1
-            target_xy: 前瞻点
-            left_boundary: list[(x, y)] 左边界点
-            right_boundary: list[(x, y)] 右边界点
+            target_xy: 前瞻点（像素坐标）
+            path_samples_m: list[(x_m, y_m)] 世界坐标系下的路径点（相对车体）
+            lookahead_point_m: (x_m, y_m) 前瞻点世界坐标
+            lateral_error_m: float 实际横向误差（米）
         """
         if mask is None or mask.size == 0:
-            return [], None, 0.0, 0.0, None
+            return [], None, 0.0, 0.0, None, [], None, 0.0
         h, w = mask.shape[:2]
         if h < 8 or w < 8:
-            return [], None, 0.0, 0.0, None
+            return [], None, 0.0, 0.0, None, [], None, 0.0
 
         # 采样范围优化：更偏向远处（减少近处干扰）
-        # 原始：0.90(近) → 0.25(远)
-        # 优化：0.70(近) → 0.15(远) — 更多权重在远处
         rows = np.linspace(int(h * 0.70), int(h * 0.15), self._sample_rows).astype(int)
 
-        samples = []  # 中心线
+        samples = []  # 中心线（像素坐标）
         left_edges = []  # 左边界
         right_edges = []  # 右边界
 
@@ -302,9 +305,8 @@ class VisionLaneCentering:
         # 至少 3 行即可给出弱中线
         min_rows = max(3, min(self._min_valid_rows, self._sample_rows))
         if len(samples) < min_rows and len(samples) < 3:
-            return [], None, 0.0, 0.0, None
+            return [], None, 0.0, 0.0, None, [], None, 0.0
         if len(samples) < self._min_valid_rows:
-            # 弱有效：仍返回 error，但 confidence 打折
             pass
 
         # samples 已近→远；前瞻点取偏远一点
@@ -322,14 +324,12 @@ class VisionLaneCentering:
         # 置信度：综合考虑行数覆盖率 + 边界一致性
         coverage = float(len(samples)) / float(max(self._sample_rows, 1))
 
-        # 边界一致性：左右边界是否平行（标准差小说明是直道）
         boundary_consistency = 1.0
         if len(left_edges) >= 3:
             left_xs = [p[0] for p in left_edges]
             right_xs = [p[0] for p in right_edges]
             left_std = float(np.std(left_xs))
             right_std = float(np.std(right_xs))
-            # 标准差小（<10像素）说明边界平直
             boundary_consistency = max(0.0, 1.0 - (left_std + right_std) / (w * 0.05))
 
         confidence = min(1.0, coverage * 0.7 + boundary_consistency * 0.3)
@@ -343,7 +343,37 @@ class VisionLaneCentering:
         self._latest_left_boundary = left_edges
         self._latest_right_boundary = right_edges
 
-        return samples, raw_error, curve, confidence, target
+        # ═══ 像素坐标 → 世界坐标转换 ═══
+        # 相机模型简化假设：
+        # - 图像底部 = 车前 0.1m，图像顶部 = 车前 2.5m
+        # - 图像宽度在前瞻距离处约为 1.2m
+        # - 坐标系：车体为原点，X=横向（右为正），Y=纵向（前为正）
+
+        near_distance = 0.1  # 图像底部对应的实际距离（米）
+        far_distance = 2.5   # 图像顶部对应的实际距离（米）
+        fov_width_at_lookahead = 1.2  # 在前瞻距离处的视野宽度（米）
+
+        path_samples_m = []
+        for px, py in samples:
+            # Y坐标：线性映射 y_px → distance
+            ratio_y = 1.0 - (py / float(h))  # 从下往上，0→1
+            y_m = near_distance + ratio_y * (far_distance - near_distance)
+
+            # X坐标：归一化横向偏移 * 视野宽度
+            ratio_x = (px - mid_x) / mid_x  # [-1, 1]
+            # 视野宽度随距离线性变化（近处窄，远处宽）
+            fov_width = fov_width_at_lookahead * (y_m / far_distance)
+            x_m = ratio_x * (fov_width / 2.0)
+
+            path_samples_m.append((x_m, y_m))
+
+        # 前瞻点世界坐标
+        lookahead_point_m = path_samples_m[target_idx] if target_idx < len(path_samples_m) else None
+
+        # 横向误差（米）
+        lateral_error_m = lookahead_point_m[0] if lookahead_point_m else 0.0
+
+        return samples, raw_error, curve, confidence, target, path_samples_m, lookahead_point_m, lateral_error_m
 
     def _estimate_offset_from_mask(self, mask, fallback_cx=None, fallback_cy=None):
         """
@@ -777,6 +807,9 @@ setInterval(health, 500); health();
             best_valid_rows = 0
             best_boundary_safe = True
             best_safety_weight = 1.0
+            best_path_samples_m = []
+            best_lookahead_point_m = None
+            best_lateral_error_m = 0.0
             detection_valid = False
             
             if len(bboxes) > 0:
@@ -850,10 +883,13 @@ setInterval(health, 500); health();
                     valid_rows = 0
                     samples = []
                     target_xy = None
+                    path_samples_m = []
+                    lookahead_point_m = None
+                    lateral_error_m = 0.0
                     mid = w_crop // 2
 
                     if self._centerline_mode and mf is not None:
-                        samples, line_err, curve, confidence, target_xy = self._extract_centerline_from_mask(mf)
+                        samples, line_err, curve, confidence, target_xy, path_samples_m, lookahead_point_m, lateral_error_m = self._extract_centerline_from_mask(mf)
                         valid_rows = len(samples)
                         if line_err is not None:
                             if self._has_filtered_error:
@@ -904,7 +940,7 @@ setInterval(health, 500); health();
                     cx = int(round(cx_f if cx_f is not None else bbox_cx))
                     cy = int(round(cy_f if cy_f is not None else bbox_cy))
 
-                    # 中心竖带 + 中线可视化
+                    # ═══ 边界 + 引导线可视化增强 ═══
                     half_band = max(1, int(round(w_crop * float(self._offset_center_band) * 0.5)))
                     band_color = (0, 255, 0) if centered else (0, 165, 255)
                     cv2.rectangle(
@@ -914,18 +950,56 @@ setInterval(health, 500); health();
                         band_color, 1,
                     )
                     cv2.line(frame_after, (mid, 0), (mid, h_crop - 1), (255, 255, 255), 1)
+
+                    # 绘制左右边界线（红色=左边界，蓝色=右边界）
+                    if hasattr(self, '_latest_left_boundary') and hasattr(self, '_latest_right_boundary'):
+                        left_pts = getattr(self, '_latest_left_boundary', [])
+                        right_pts = getattr(self, '_latest_right_boundary', [])
+
+                        # 左边界（红色粗线）
+                        if len(left_pts) >= 2:
+                            for a, b in zip(left_pts[:-1], left_pts[1:]):
+                                cv2.line(frame_after,
+                                        (int(a[0]), int(a[1])),
+                                        (int(b[0]), int(b[1])),
+                                        (0, 0, 255), 3)  # 红色
+                            # 标注左边界点
+                            for lx, ly in left_pts:
+                                cv2.circle(frame_after, (int(lx), int(ly)), 2, (0, 0, 255), -1)
+
+                        # 右边界（蓝色粗线）
+                        if len(right_pts) >= 2:
+                            for a, b in zip(right_pts[:-1], right_pts[1:]):
+                                cv2.line(frame_after,
+                                        (int(a[0]), int(a[1])),
+                                        (int(b[0]), int(b[1])),
+                                        (255, 0, 0), 3)  # 蓝色
+                            # 标注右边界点
+                            for rx, ry in right_pts:
+                                cv2.circle(frame_after, (int(rx), int(ry)), 2, (255, 0, 0), -1)
+
+                    # 引导中线（黄色粗线 + 采样点）
                     if samples:
-                        for sx, sy in samples:
-                            cv2.circle(frame_after, (int(sx), int(sy)), 3, (255, 255, 0), -1)
+                        # 绘制引导中线（黄色粗线，更醒目）
                         for a, b in zip(samples[:-1], samples[1:]):
                             cv2.line(
                                 frame_after,
                                 (int(a[0]), int(a[1])),
                                 (int(b[0]), int(b[1])),
-                                (0, 255, 255), 2,
+                                (0, 255, 255), 4,  # 加粗到4px
                             )
-                    cv2.circle(frame_after, (cx, cy), 6, (0, 0, 255), -1)
-                    cv2.line(frame_after, (mid, h_crop - 1), (cx, cy), (255, 0, 0), 2)
+                        # 标注中线采样点（黄色圆点）
+                        for sx, sy in samples:
+                            cv2.circle(frame_after, (int(sx), int(sy)), 4, (0, 255, 255), -1)
+
+                        # 前瞻目标点（洋红色大圆）
+                        if target_xy is not None:
+                            cv2.circle(frame_after, (int(target_xy[0]), int(target_xy[1])), 8, (255, 0, 255), -1)
+                            cv2.circle(frame_after, (int(target_xy[0]), int(target_xy[1])), 12, (255, 0, 255), 2)
+
+                    # 车辆位置指示（绿色圆点 + 指向线）
+                    cv2.circle(frame_after, (cx, cy), 6, (0, 255, 0), -1)
+                    cv2.line(frame_after, (mid, h_crop - 1), (cx, cy), (0, 255, 0), 2)
 
                     rem_m, free_ratio = self._estimate_remaining_from_mask(mf)
 
@@ -935,18 +1009,19 @@ setInterval(health, 500); health();
                     rem_txt = f'{rem_m:.2f}m' if rem_m is not None else 'N/A'
                     state_txt = 'CENTERED' if centered else f'e={offset:+.2f} c={curve:+.2f}'
                     safe_txt = f'SAFE' if boundary_safe else f'DANGER(w={safety_weight:.1f})'
+                    lateral_txt = f'lat={lateral_error_m:+.3f}m' if lateral_error_m != 0.0 else ''
                     cv2.putText(
                         frame_after,
-                        f'conf={scores[i]:.2f} {state_txt} rows={valid_rows} rem={rem_txt} {safe_txt}',
+                        f'conf={scores[i]:.2f} {state_txt} rows={valid_rows} rem={rem_txt} {safe_txt} {lateral_txt}',
                         (int(x1), max(20, int(y1) - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2,
                     )
 
-                    # 取第一个检测的中线误差 + 纵向剩余 + 边界安全
+                    # 取第一个检测的中线误差 + 纵向剩余 + 边界安全 + 路径信息
                     if not detection_valid:
                         best_offset = float(offset)
-                        best_box = box  # 保存用于日志
-                        best_score = scores[i]  # 保存用于日志
+                        best_box = box
+                        best_score = scores[i]
                         best_mask = mf
                         best_remaining_m = rem_m
                         best_free_ratio = free_ratio
@@ -957,6 +1032,9 @@ setInterval(health, 500); health();
                         best_valid_rows = int(valid_rows)
                         best_boundary_safe = bool(boundary_safe)
                         best_safety_weight = float(safety_weight)
+                        best_path_samples_m = path_samples_m
+                        best_lookahead_point_m = lookahead_point_m
+                        best_lateral_error_m = float(lateral_error_m)
                         detection_valid = True
             
             # 6. 更新共享变量 + 状态变化日志
@@ -972,6 +1050,10 @@ setInterval(health, 500); health();
                     self._latest_valid_rows = int(best_valid_rows)
                     self._latest_boundary_safe = bool(best_boundary_safe)
                     self._latest_safety_weight = float(best_safety_weight)
+                    # Pure Pursuit 路径信息
+                    self._latest_path_samples = list(best_path_samples_m or [])
+                    self._latest_lookahead_point = best_lookahead_point_m
+                    self._latest_lateral_error_m = float(best_lateral_error_m or 0.0)
                     if best_remaining_m is not None:
                         self._latest_remaining_m = float(best_remaining_m)
                         self._latest_free_ratio = float(best_free_ratio)
@@ -1008,6 +1090,9 @@ setInterval(health, 500); health();
                     self._latest_valid_rows = 0
                     self._latest_boundary_safe = True
                     self._latest_safety_weight = 1.0
+                    self._latest_path_samples = []
+                    self._latest_lookahead_point = None
+                    self._latest_lateral_error_m = 0.0
                     self._has_filtered_error = False
                     
                     # 状态变化日志：从有效→失效
@@ -1025,10 +1110,29 @@ setInterval(health, 500); health();
             self._last_time = now
             avg_fps = len(self._fps_queue) / sum(self._fps_queue) if self._fps_queue else 0
             
-            cv2.putText(frame_after, f'OUTPUT (FPS: {avg_fps:.1f} | Infer: {self._infer_time_ms:.1f}ms)', 
+            cv2.putText(frame_after, f'OUTPUT (FPS: {avg_fps:.1f} | Infer: {self._infer_time_ms:.1f}ms)',
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.putText(frame_after, f'Detections: {self._det_count}', 
+            cv2.putText(frame_after, f'Detections: {self._det_count}',
                        (10, h_crop-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+            # 图例（右上角）
+            legend_x = w_crop - 280
+            legend_y = 20
+            line_h = 25
+            cv2.putText(frame_after, 'Legend:', (legend_x, legend_y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.line(frame_after, (legend_x, legend_y+10), (legend_x+50, legend_y+10), (0, 0, 255), 3)
+            cv2.putText(frame_after, 'Left Bound', (legend_x+60, legend_y+15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            cv2.line(frame_after, (legend_x, legend_y+10+line_h), (legend_x+50, legend_y+10+line_h), (255, 0, 0), 3)
+            cv2.putText(frame_after, 'Right Bound', (legend_x+60, legend_y+15+line_h),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            cv2.line(frame_after, (legend_x, legend_y+10+line_h*2), (legend_x+50, legend_y+10+line_h*2), (0, 255, 255), 4)
+            cv2.putText(frame_after, 'Guide Line', (legend_x+60, legend_y+15+line_h*2),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            cv2.circle(frame_after, (legend_x+25, legend_y+10+line_h*3), 8, (255, 0, 255), -1)
+            cv2.putText(frame_after, 'Target Pt', (legend_x+60, legend_y+15+line_h*3),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
             
             # 8. 拼接可视化（降低分辨率加速传输）
             target_h = 360  # 固定高度 360p（从原始可能的 480+ 降低）

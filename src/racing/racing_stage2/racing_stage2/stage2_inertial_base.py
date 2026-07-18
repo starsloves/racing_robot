@@ -1112,6 +1112,25 @@ class Stage2InertialBase(Node):
         self.get_logger().info(f'[MISSION] ✓ Stage2 任务启动: phase=2, direction={self.direction}')
         self.mission_active = True
         self.reported_start = True
+
+        # 启用视觉推理（Stage2 开始）
+        if hasattr(self, '_vision_node') and self._vision_node is not None:
+            self._vision_node.set_inference_active(True)
+            self.get_logger().info('[视觉] 推理已启用（Stage2 启动）')
+
+        # 纯 SEG 主控：替换整个 field_track 段式链路
+        pure_mode = bool(getattr(self, '_vision_pure_mode_enabled', False))
+        if not pure_mode and self.has_parameter('vision_pure_mode_enabled'):
+            pure_mode = bool(self.get_parameter('vision_pure_mode_enabled').value)
+        if pure_mode and hasattr(self, 'start_pure_vision_mission'):
+            # 先加载 plan 仅用于估算任务里程，再进入纯SEG主控
+            try:
+                self.plan = self.build_inertial_plan(nav_succeeded=False)
+            except Exception:
+                self.plan = []
+            self.start_pure_vision_mission()
+            return
+
         if self.use_corridor_path and self.corridor_waypoints:
             self.publish_feedback(f'第二阶段启动，方向 {self.direction}，先沿固定航点路径到通道入口')
             self.start_corridor_path()
