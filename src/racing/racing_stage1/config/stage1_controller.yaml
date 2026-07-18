@@ -249,7 +249,7 @@ competition_controller:
     # --- 通道路点 (Waypoints in map frame) ---
     # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
     # 先贴 x=2.50 再收 y，避免单点 LOS 中段漂移
-    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.20,"speed":0.18,"description":"corridor_mid_2"},{"x":2.50,"y":3.30,"speed":0.16,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.00,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
 
     # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
     corridor_waypoint_tolerance: 0.25
@@ -470,3 +470,41 @@ competition_controller:
 
     # Phase3 紧急停车距离 (m)
     phase3_emergency_stop_distance: 0.22
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 视觉通道导航 (Vision-based Corridor Navigation)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 启用视觉通道导航 — 当前禁用：Stage1 到通道口后直接切 Stage2，由 Stage2 惯导+视觉修正接管
+    vision_corridor_enabled: false
+
+    # YOLOv8-Seg 模型路径
+    vision_corridor_model_path: /home/sunrise/dev_ws/src/racing/racing_stage2/models/bset.bin
+
+    # 推理参数
+    vision_corridor_conf_thres: 0.25        # 置信度阈值
+    vision_corridor_iou_thres: 0.45         # NMS IOU 阈值
+    vision_corridor_crop_ratio: 0.4         # 裁剪上方 40%（保留下方 60%）
+    vision_corridor_crop_side_ratio: 0.20   # 左右各裁 20%（保留中间 60%）
+    vision_corridor_http_port: 8081         # HTTP 可视化服务端口
+
+    # 控制增益 (Control Gains)
+    vision_corridor_lateral_kp: 1.2         # 横向误差增益
+    vision_corridor_heading_kp: 1.5         # 航向误差增益
+    vision_corridor_curvature_kp: 0.8       # 曲率补偿增益
+    vision_corridor_max_angular: 0.55       # 最大角速度 (rad/s)
+
+    # 速度参数 (Speed Control)
+    vision_corridor_cruise_speed: 0.20      # 巡航速度 (m/s)
+    vision_corridor_approach_speed: 0.12    # 接近入口速度 (m/s)
+    vision_corridor_entry_threshold_m: 0.25 # 入口检测阈值（剩余距离 < 此值判定到达）
+
+    # 融合策略 (Fusion Strategy)
+    vision_corridor_timeout_sec: 0.5        # 视觉数据超时（超时降级到IMU直行）
+    vision_corridor_min_confidence: 0.30    # 最小置信度阈值
+    vision_corridor_imu_fallback_enabled: true  # 启用IMU直行兜底
+
+    # 中线提取参数 (Centerline Extraction)
+    vision_corridor_sample_rows: 9          # 采样行数
+    vision_corridor_lookahead_ratio: 0.62   # 前瞻比例
+    vision_corridor_min_valid_rows: 5       # 最少有效行数

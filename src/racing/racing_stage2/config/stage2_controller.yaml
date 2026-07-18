@@ -271,20 +271,20 @@ stage2_inertial_navigator:
     # ────────────────────────────────────────────────────────────────────────
 
     # --- 融合策略总开关 ---
-    # IMU 航向兜底修正启用 — true: move 段使用 IMU 兜底航向修正
-    imu_heading_correction_enabled: false
+    # IMU 航向修正启用 — true: move 段以惯导/IMU 为主保持段航向
+    imu_heading_correction_enabled: true
 
-    # 视觉横向纠偏启用 — true: move 段启用视觉车道居中修正
-    vision_offset_correction_enabled: true
+    # 视觉横向纠偏启用 — 当前先关闭 SEG 修正，只跑惯导/IMU
+    vision_offset_correction_enabled: false
 
-    # 融合模式启用 — true: 视觉主控 + IMU 兜底融合策略
+    # 融合模式启用 — true: 保留 IMU 航向修正链路；视觉关闭时为 IMU-only
     fusion_mode_enabled: true
 
-    # 非 primary 时 IMU 权重 — 视觉不可用时 IMU 权重
-    fusion_weight_imu: 0.25
+    # 非 primary 时 IMU 权重 — 惯导主控骨架
+    fusion_weight_imu: 0.75
 
-    # 非 primary 时视觉权重
-    fusion_weight_vision: 0.75
+    # 非 primary 时视觉权重 — 只做中线修正，避免抢舵
+    fusion_weight_vision: 0.25
 
     # --- IMU 健康检测 ---
     # IMU 航向死区 (°) — 航向变化 < 此值视为静止（噪声过滤）
@@ -326,8 +326,8 @@ stage2_inertial_navigator:
     # 启用中线跟随模式 — true: 多行中线 PD 控制
     vision_centerline_mode_enabled: true
 
-    # 视觉主控模式 — true: 视觉有效时视觉主控，IMU 兜底
-    vision_primary_control: true
+    # 视觉主控模式 — false: 惯导主控，视觉只作为横向修正项
+    vision_primary_control: false
 
     # 最小置信度 — 视觉检测置信度 < 此值时视觉失效
     vision_min_confidence: 0.30
@@ -394,8 +394,8 @@ stage2_inertial_navigator:
     # 视觉纵向修正 (Vision Length Correction - Odom 主，视觉辅助)
     # ────────────────────────────────────────────────────────────────────────
 
-    # 启用视觉纵向修正 — true: 直行终点视觉提前停止检测
-    vision_length_correction_enabled: true
+    # 启用视觉纵向修正 — 当前先关闭，避免启动 SEG 推理
+    vision_length_correction_enabled: false
 
     # 最小进度比例 — 进度 < 此比例时不触发视觉提前停止
     vision_length_min_progress_ratio: 0.45
@@ -432,8 +432,8 @@ stage2_inertial_navigator:
     vision_range_occ_thresh: 0.18
 
     # --- 拐弯视觉辅助（方案2严格版：检测"转弯完成+正对直道"特征）---
-    # 启用拐弯视觉辅助 — true: 转弯接近完成时，视觉确认"正对直道"可提前结束
-    vision_turn_assist_enabled: true
+    # 启用拐弯视觉辅助 — 当前先关闭，避免启动 SEG 推理
+    vision_turn_assist_enabled: false
 
     # 持续时长 (s) — 连续满足条件此时长才确认转弯完成（降低误触发）
     vision_turn_assist_hold_sec: 0.30

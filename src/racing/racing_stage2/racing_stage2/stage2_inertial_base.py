@@ -1234,6 +1234,7 @@ class Stage2InertialBase(Node):
         self.segment_start_yaw = self.pending_segment_start_yaw if self.pending_segment_start_yaw is not None else self.current_yaw
         self.pending_segment_start_pose = None
         self.pending_segment_start_yaw = None
+        self._log_segment_start_to_terminal(index, self.current_segment)
 
         if self.current_segment['type'] == 'turn':
             self.segment_target_yaw = self.normalize_angle(
@@ -1251,6 +1252,43 @@ class Stage2InertialBase(Node):
             self.publish_state(self.current_segment['description'])
         elif self.current_segment['type'] == 'pause':
             self.publish_state(self.current_segment['description'])
+
+    def _log_segment_start_to_terminal(self, index, segment):
+        """把关键段切换直接打到终端，方便现场调入口参数。"""
+        desc = str(segment.get('description', 'unknown'))
+        seg_type = str(segment.get('type', 'unknown'))
+        previous = ''
+        if index > 0 and index - 1 < len(self.plan):
+            previous = str(self.plan[index - 1].get('description', 'unknown'))
+
+        if seg_type == 'move':
+            detail = (
+                f'MOVE L={float(segment.get("distance_m", 0.0)):.2f}m '
+                f'v={float(segment.get("speed", self.corridor_linear_speed)):.2f}m/s'
+            )
+        elif seg_type == 'arc':
+            detail = (
+                f'ARC steering={float(segment.get("steering_angle_deg", 0.0)):+.1f}deg '
+                f't={float(segment.get("duration_sec", 0.0)):.2f}s '
+                f'v={float(segment.get("speed", self.turn_linear_speed)):.2f}m/s'
+            )
+        else:
+            detail = seg_type.upper()
+
+        if desc == 'entry_short_straight':
+            msg = f'45°入口圆弧结束，开始短直道: {detail}'
+        elif desc == 'entry_semicircle':
+            msg = f'短直道结束，开始半圆进长直道: {detail}'
+        elif desc == 'rect_top':
+            msg = f'半圆结束，开始长直道: {detail}'
+        elif desc == 'entry_45_arc':
+            msg = f'开始入口45°圆弧: {detail}'
+        else:
+            msg = f'开始段 {desc}: {detail}'
+
+        if previous:
+            msg += f' | prev={previous}'
+        self.get_logger().info(f'[SEGMENT_START] {index + 1}/{len(self.plan)} {msg}')
 
     def finish_mission(self):
         self.cmd_pub.publish(Twist())

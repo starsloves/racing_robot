@@ -32,9 +32,10 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 from racing_common.racing_logger import RacingLogger
+from racing_stage1.stage1_vision_mixin import Stage1VisionMixin
 
 
-class CompetitionController(Node):
+class CompetitionController(Stage1VisionMixin, Node):
     def __init__(self):
         super().__init__('competition_controller')
 
@@ -463,6 +464,9 @@ class CompetitionController(Node):
         )
         self._phase1_last_clusters = []  # 缓存上一帧的聚类结果
 
+        # 视觉通道导航初始化
+        self._setup_vision_corridor()
+
         # 初始化时立即发布 phase=1，覆盖可能存在的旧 TRANSIENT_LOCAL 消息
         self.publish_phase()
         self.log.startup(f'✓ 初始 phase={self.phase} 已发布到 {self.phase_topic}')
@@ -755,9 +759,19 @@ class CompetitionController(Node):
         self.corridor_last_plan_reason = ''
         self._corridor_last_plan_pose = None
         self._corridor_plan_count = 0
+        self._corridor_vision_handoff_done = False
         self.phase1_motion_state = 'corridor'
+
+        # 先使用地图/A* 导航到通道口，进入口子后直接放行 Stage2；
+        # 视觉修正交给 Stage2 惯导融合，不在 Stage1 抢控制权。
+        if hasattr(self, '_enable_vision_corridor'):
+            try:
+                self._enable_vision_corridor(False)
+            except Exception as e:
+                self.log.warn('VISION', f'关闭 Stage1 视觉导航失败，继续地图导航: {e}')
+        self.log.mission(f'后退完成，先地图导航到通道口，随后切 Stage2 惯导+视觉修正: {reason}')
+
         self.stop_robot()
-        self.log.mission(f'后退完成，开始地图自由空间区域进入: {reason}')
         map_xy = self.get_map_position()
         goal_xy = self.corridor_goal_point()
         if map_xy is not None and goal_xy is not None:
@@ -1817,6 +1831,27 @@ class CompetitionController(Node):
                 return
 
             if self.phase1_motion_state == 'corridor':
+                # 视觉导航优先，但必须确保模块已成功初始化
+                if (hasattr(self, '_vision_corridor_enabled') and
+                    self._vision_corridor_enabled and
+                    getattr(self, '_vision_corridor_active', False) and
+                    hasattr(self, '_vision_corridor') and
+                    self._vision_corridor is not None):
+                    try:
+                        cmd, vision_status = self._get_vision_corridor_control()
+                        if cmd is not None:
+                            self.cmd_pub.publish(cmd)
+                        else:
+                            self.stop_robot()
+                        if vision_status.get('reached_entry', False):
+                            self._enable_vision_corridor(False)
+                            self.begin_phase_transition(2, '视觉检测到达通道入口')
+                        return
+                    except Exception as e:
+                        self.log.error('VISION', f'视觉控制异常，降级到地图导航: {e}')
+                        # 降级到地图导航，不要停止程序
+
+                # 降级：使用原有地图 A* 导航
                 self.handle_corridor_navigation()
                 return
 

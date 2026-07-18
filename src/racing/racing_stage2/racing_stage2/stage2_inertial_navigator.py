@@ -1009,6 +1009,18 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                             f'直行到位，准备切换到下一段'
                         )
                     rem_txt = f'{vis_rem:.2f}m' if vis_rem is not None else 'N/A'
+                    done_desc = str(self.current_segment.get('description', '?'))
+                    if done_desc == 'entry_short_straight':
+                        done_msg = '短直道完成，准备进入半圆'
+                    elif done_desc == 'rect_top':
+                        done_msg = '长直道完成，准备进入下一段'
+                    else:
+                        done_msg = f'{done_desc} 直行完成'
+                    self.get_logger().info(
+                        f'[SEGMENT_DONE] {done_msg}: '
+                        f'{progress:.2f}/{target_distance:.2f}m '
+                        f'v={float(self.current_segment.get("speed", self.corridor_linear_speed)):.2f}m/s'
+                    )
                     self._log_session(
                         'SEGMENT_DONE',
                         f'{self.current_segment.get("description", "?")} '
@@ -1120,13 +1132,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         duration_sec = max(0.01, float(segment.get('duration_sec', 0.0)))
         elapsed = max(0.0, self.get_clock().now().nanoseconds / 1e9 - self.segment_started_at)
         progress = min(1.0, elapsed / duration_sec)
-        linear = float(self.turn_linear_speed)
-        # angular.z is the existing chassis steering-angle channel.  It is
-        # expressed in radians here; it is not a rotational velocity.
-        # The production launch uses the direct Twist path.  Its angular.z
-        # field is passed to the chassis steering channel unchanged, so the
-        # configured degree value is intentionally sent as-is.  It is not a
-        # body yaw rate and must not be converted to rad/s or radians.
+        linear = float(segment.get('speed', segment.get('turn_linear_speed', self.turn_linear_speed)))
+        # angular.z is reused here as the chassis steering-angle channel.
+        # The production launch/direct relay passes this value to the chassis
+        # unchanged, so the YAML degree value is intentionally sent as-is.
+        # It is not a body yaw rate and must not be converted to rad/s/radians.
         steering_cmd = steering_angle_deg
 
         log_bucket = min(4, int(elapsed / max(duration_sec / 4.0, 0.25)))
@@ -1144,6 +1154,18 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self._just_finished_turn = True
             self._turn_finish_time = self.get_clock().now().nanoseconds / 1e9
             self.cmd_pub.publish(self.create_twist(linear, 0.0))
+            desc = str(segment.get('description', '?'))
+            if desc == 'entry_45_arc':
+                done_msg = '入口45°圆弧完成，准备进入短直道'
+            elif desc == 'entry_semicircle':
+                done_msg = '入口半圆完成，准备进入长直道'
+            else:
+                done_msg = f'{desc} 圆弧完成'
+            self.get_logger().info(
+                f'[SEGMENT_DONE] {done_msg}: '
+                f'steering={steering_angle_deg:+.1f}deg '
+                f't={duration_sec:.2f}s v={linear:.2f}m/s'
+            )
             self._log_session(
                 'ARC_COMPLETE',
                 f'steering={steering_angle_deg:+.1f}deg duration={duration_sec:.2f}s '

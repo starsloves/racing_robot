@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>竞速机器人视觉 - 实时监控（双画面）</title>
+    <title>竞速机器人视觉 - 实时监控（三画面）</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -50,18 +50,18 @@
             50% { opacity: 0.4; }
         }
 
-        .dual-container {
+        .triple-container {
             display: flex;
             gap: 12px;
             width: 100%;
-            max-width: 1800px;
+            max-width: 2400px;
             flex-wrap: wrap;
             justify-content: center;
         }
         .pane {
-            flex: 1 1 400px;
-            min-width: 300px;
-            max-width: 880px;
+            flex: 1 1 300px;
+            min-width: 280px;
+            max-width: 780px;
             border-radius: 8px;
             overflow: hidden;
             background: #000;
@@ -115,7 +115,7 @@
             padding: 14px 18px;
             background: #2a2a2a;
             border-radius: 8px;
-            max-width: 900px;
+            max-width: 1200px;
             width: 100%;
         }
         .info-row {
@@ -136,15 +136,19 @@
             margin-top: 8px;
         }
 
-        @media (max-width: 720px) {
+        @media (max-width: 900px) {
             .pane { min-width: 100%; }
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>竞速机器人视觉 · 双画面监控</h1>
+        <h1>竞速机器人视觉 · 三画面监控</h1>
         <div class="status-bar">
+            <span class="stage-badge" id="badge-stage1">
+                <span class="dot connecting" id="dot-stage1"></span>
+                Stage1 · 8081 · <span id="s1-status">检测中</span>
+            </span>
             <span class="stage-badge" id="badge-stage2">
                 <span class="dot connecting" id="dot-stage2"></span>
                 Stage2 · 8082 · <span id="s2-status">检测中</span>
@@ -156,7 +160,21 @@
         </div>
     </div>
 
-    <div class="dual-container">
+    <div class="triple-container">
+        <div class="pane connecting" id="pane-stage1">
+            <div class="pane-header" id="pane-header-stage1">
+                <span class="name">Stage 1 · 通道导航</span>
+                <span class="age" id="age-stage1">-</span>
+                <span class="frames" id="frames-stage1">0</span>
+            </div>
+            <div class="pane-image-wrap">
+                <img class="pane-image" id="img-stage1" src="" alt="Stage1 视觉">
+                <div class="pane-loading" id="loading-stage1">
+                    <div>正在连接 8081...</div>
+                </div>
+            </div>
+        </div>
+
         <div class="pane connecting" id="pane-stage2">
             <div class="pane-header" id="pane-header-stage2">
                 <span class="name">Stage 2 · 车道居中</span>
@@ -188,6 +206,10 @@
 
     <div class="info-panel">
         <div class="info-row">
+            <span class="info-label">Stage1 帧</span>
+            <span class="info-value" id="s1-client-frames">0</span>
+        </div>
+        <div class="info-row">
             <span class="info-label">Stage2 帧</span>
             <span class="info-value" id="s2-client-frames">0</span>
         </div>
@@ -197,7 +219,7 @@
         </div>
         <div class="info-row">
             <span class="info-label">服务端帧</span>
-            <span class="info-value" id="server-frames">S2: - | S3: -</span>
+            <span class="info-value" id="server-frames">S1: - | S2: - | S3: -</span>
         </div>
         <div class="info-row">
             <span class="info-label">轮询</span>
@@ -209,6 +231,7 @@
     <script>
         const HOST = '100.114.34.86';
         const STAGES = {
+            stage1: { name: 'Stage1', port: 8081, desc: '通道导航', key: 'stage1' },
             stage2: { name: 'Stage2', port: 8082, desc: '车道居中', key: 'stage2' },
             stage3: { name: 'Stage3', port: 8083, desc: 'P点检测', key: 'stage3' }
         };
@@ -216,38 +239,46 @@
         let healthPollCount = 0;
         let lastHealthPollTime = Date.now();
 
-        let clientFrames = { stage2: 0, stage3: 0 };
+        let clientFrames = { stage1: 0, stage2: 0, stage3: 0 };
         let stageHealth = {
+            stage1: { alive: false, age: -1, frames: 0, uptime: 0, lastOk: 0 },
             stage2: { alive: false, age: -1, frames: 0, uptime: 0, lastOk: 0 },
             stage3: { alive: false, age: -1, frames: 0, uptime: 0, lastOk: 0 }
         };
 
         // DOM refs
         const imgs = {
+            stage1: document.getElementById('img-stage1'),
             stage2: document.getElementById('img-stage2'),
             stage3: document.getElementById('img-stage3')
         };
         const loadings = {
+            stage1: document.getElementById('loading-stage1'),
             stage2: document.getElementById('loading-stage2'),
             stage3: document.getElementById('loading-stage3')
         };
         const panes = {
+            stage1: document.getElementById('pane-stage1'),
             stage2: document.getElementById('pane-stage2'),
             stage3: document.getElementById('pane-stage3')
         };
         const ageSpans = {
+            stage1: document.getElementById('age-stage1'),
             stage2: document.getElementById('age-stage2'),
             stage3: document.getElementById('age-stage3')
         };
         const framesSpans = {
+            stage1: document.getElementById('frames-stage1'),
             stage2: document.getElementById('frames-stage2'),
             stage3: document.getElementById('frames-stage3')
         };
         const dots = {
+            stage1: document.getElementById('dot-stage1'),
             stage2: document.getElementById('dot-stage2'),
             stage3: document.getElementById('dot-stage3')
         };
         const statusTexts = {
+            stage1: document.getElementById('s1-status'),
             stage2: document.getElementById('s2-status'),
             stage3: document.getElementById('s3-status')
         };
@@ -318,12 +349,12 @@
             framesSpan.textContent = String(h.frames);
         }
 
-        function updateBothPanes() {
-            for (const key of ['stage2', 'stage3']) {
+        function updateAllPanes() {
+            for (const key of ['stage1', 'stage2', 'stage3']) {
                 updatePane(key);
             }
             serverFramesSpan.textContent =
-                `S2: ${stageHealth.stage2.frames} | S3: ${stageHealth.stage3.frames}`;
+                `S1: ${stageHealth.stage1.frames} | S2: ${stageHealth.stage2.frames} | S3: ${stageHealth.stage3.frames}`;
         }
 
         async function pollOneHealth(key) {
@@ -355,7 +386,6 @@
                     uptime: 0,
                     lastOk: stageHealth[key].lastOk || 0
                 };
-                showMessage(`无法连接 ${STAGES[key].name} (${stageBase(key)})`);
             }
         }
 
@@ -366,11 +396,12 @@
             healthPollCount++;
 
             await Promise.all([
+                pollOneHealth('stage1'),
                 pollOneHealth('stage2'),
                 pollOneHealth('stage3')
             ]);
 
-            updateBothPanes();
+            updateAllPanes();
 
             pollInfoSpan.textContent = `健康检查 #${healthPollCount} | 间隔 ${elapsed}ms`;
             setTimeout(pollHealth, 1000);
@@ -378,6 +409,13 @@
 
         function refreshOneImage(key) {
             imgs[key].src = `${stageBase(key)}/vision_latest.jpg?t=${Date.now()}`;
+        }
+
+        function refreshStage1() {
+            if (stageHealth.stage1.alive && stageHealth.stage1.age >= 0) {
+                refreshOneImage('stage1');
+            }
+            setTimeout(refreshStage1, 120);
         }
 
         function refreshStage2() {
@@ -395,6 +433,10 @@
         }
 
         // Image load success
+        imgs.stage1.onload = function() {
+            clientFrames.stage1++;
+            document.getElementById('s1-client-frames').textContent = clientFrames.stage1;
+        };
         imgs.stage2.onload = function() {
             clientFrames.stage2++;
             document.getElementById('s2-client-frames').textContent = clientFrames.stage2;
@@ -406,6 +448,7 @@
 
         // Start
         pollHealth();
+        refreshStage1();
         refreshStage2();
         refreshStage3();
     </script>

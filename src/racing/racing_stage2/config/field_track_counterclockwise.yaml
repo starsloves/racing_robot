@@ -1,41 +1,41 @@
-# 逆时针矩形赛道 — 固定舵角 + 固定持续时间控制
+# 逆时针矩形赛道 — 入口45°圆弧 + 短直 + 连续半圆弧 + 长直道
 # 起点：Stage1区域进入后，名义车头约90°（+Y方向）
+#
+# 入口调参顺序：
+#   1) entry_45_arc.*                       从通道口先向右圆弧拐入短直道（调成约45°）
+#   2) entry_short_straight.distance_m      进入短直道后走一小段
+#   3) entry_semicircle.*                   再画半圆进入长直道
 
 track_type: rectangle_closed
 direction: counterclockwise
 
 segments:
-  # 入口对齐：右打舵15°，保持6秒，结束回正
+  # 入口45°圆弧：从 map(2.50,2.00) 先右打圆弧，进入短直道方向
+  # 注意：这里不是IMU闭环45°，而是固定舵角+时间；现场用 duration/steering 调到约45°
   - type: arc
-    steering_angle_deg: -15.0
-    duration_sec: 6.0
-    description: rect_enter_align
+    steering_angle_deg: -8.0
+    duration_sec: 4.0
+    speed: 0.16
+    description: entry_45_arc
 
-  # 底边右侧：向右直行0.90m
+  # 入口短直：45°圆弧后在短直道上走一小段
   - type: move
-    distance_m: 0.90
-    description: rect_first_leg
+    distance_m: 0.25
+    speed: 0.20
+    allow_detour: false
+    description: entry_short_straight
 
-  # 右下拐角：左打舵15°，保持6秒，结束回正
+  # 入口半圆：连续小舵角圆弧进入长直道，不再拆成多个直角/短边
   - type: arc
-    steering_angle_deg: 15.0
-    duration_sec: 6.0
-    description: rect_corner_1
+    steering_angle_deg: 8.0
+    duration_sec: 8.0
+    speed: 0.18
+    description: entry_semicircle
 
-  # 右边向上：直行0.30m
-  - type: move
-    distance_m: 0.30
-    description: rect_side_1
-
-  # 右上拐角：左打舵15°，保持6秒，结束回正
-  - type: arc
-    steering_angle_deg: 15.0
-    duration_sec: 6.0
-    description: rect_corner_2
-
-  # 顶边向左：直行2.80m
+  # 长直道：半圆后直接进入长直道
   - type: move
     distance_m: 2.80
+    speed: 0.35
     description: rect_top
 
   # 左上拐角：左打舵15°，保持6秒，结束回正

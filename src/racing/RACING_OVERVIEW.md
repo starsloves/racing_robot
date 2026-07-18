@@ -138,10 +138,10 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 ### 2.5 通道导航（map 自由空间区域进入）
 
 - 位姿：`TF map <- base_footprint`（xy）+ IMU yaw
-- 目标：入口区域中心（默认 corridor 终点附近），**不要求精准到点 / 精准 90°**
+- 目标：入口区域中心（当前默认 map `(2.50, 2.00)`，到“2 米杠/通道口”即放行），**不要求精准到点 / 精准 90°**
 - 规划：默认 `use_corridor_planner=true`，占用膨胀 + A* 规划自由空间路径；失败回退直线
 - 跟踪：Pure Pursuit 跟踪规划路径（可斜穿）；`left_recover` 仅在 map_x 过大时介入
-- 放行：进入入口区域半径（默认 `0.35m`）即切 Stage2；默认不强制航向，可选 `corridor_require_yaw_for_release`
+- 放行：进入入口区域半径（当前 `0.10m`）即切 Stage2；默认不强制航向，可选 `corridor_require_yaw_for_release`
 - 超时：`corridor_timeout_sec` 到时策略放行 Stage2
 - 日志：`~/dev_ws/log/competition_stage1/latest.log` 输出 plan refresh / region_entry 细节
 
@@ -184,18 +184,25 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 | `ring_linear_speed` | 0.32 m/s | 环形赛道直行速度（当前降速纯惯导） |
 | `corridor_linear_speed` | 0.14 m/s | 通道段直行速度 |
 | `turn_linear_speed` | 0.07 m/s | 转弯时前向速度 |
-| `steering_angle_deg` | ±15° | field_track 每个弯段固定舵角 |
-| `duration_sec` | 6.0 s | field_track 每个弯段保持时间 |
+| `entry_45_arc.steering_angle_deg` | 顺时针 +8° / 逆时针 -8° | 通道口先拐入短直道的圆弧舵角 |
+| `entry_45_arc.duration_sec` | 4.0 s | 通道口先拐入短直道的圆弧时间（调成约45°） |
+| `entry_45_arc.speed` | 0.16 m/s | 通道口先拐入短直道的圆弧速度 |
+| `entry_short_straight.distance_m` | 0.25 m | 45°圆弧后短直道距离 |
+| `entry_semicircle.steering_angle_deg` | 顺时针 -8° / 逆时针 +8° | 入口连续半圆弧舵角 |
+| `entry_semicircle.duration_sec` | 8.0 s | 入口连续半圆弧持续时间 |
+| `entry_semicircle.speed` | 0.18 m/s | 入口连续半圆弧速度 |
 | `heading_kp` | 1.0 | 直行航向保持比例增益 |
 | `distance_tolerance` | 0.04 m | 直行到位判据 |
 | `heading_tolerance_deg` | 3.5° | 被 test.yaml 覆盖 |
 | `segment_timeout` | 25.0 s | 单段超时时间 |
 | `corridor_goal` | (2.50, 3.20) @ 90° | 通道终点（入口坐标） |
 | `detour_enabled` | true | 避障开关 |
-| `vision_offset_correction_enabled` | false | 当前暂停 SEG 模型，仅惯导+避障 |
-| `fusion_mode_enabled` | false | 当前关闭视觉/融合纠偏 |
-| `fusion_weight_imu` | 0.3 | IMU 融合权重 |
-| `fusion_weight_vision` | 0.7 | 视觉融合权重 |
+| `vision_offset_correction_enabled` | false | 当前先不启用 SEG 中线横向修正 |
+| `vision_length_correction_enabled` | false | 当前先不启用 SEG 纵向定长/剩余距离修正 |
+| `vision_turn_assist_enabled` | false | 当前先不启用 SEG 拐弯完成辅助 |
+| `fusion_mode_enabled` | true | 保留 IMU 航向修正链路，视觉关闭时为 IMU-only |
+| `fusion_weight_imu` | 0.75 | IMU/惯导主控权重 |
+| `fusion_weight_vision` | 0.25 | 视觉轻量修正权重 |
 | `vision_model_path` | models/bset.bin | BPU 模型路径 |
 
 #### direct_inertial_test.yaml — 测试覆盖参数
@@ -225,20 +232,13 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 
 通过 `field_track_*.yaml` 加载，支持相对坐标（odom 欧氏距离）和世界坐标两种模式。
 
-**顺时针段序**（`field_track_clockwise.yaml`，相对坐标 88° 转角补偿版）：
+**顺时针段序**（`field_track_clockwise.yaml`，固定舵角圆弧入口版）：
 
 ```
-  0. rect_enter_align:   左转 88°（实际 ≈ 90°）
-  1. settle:             停稳 0.05s
-  2. rect_first_leg:     向左直行 1.05m
-  3. settle:             停稳 0.05s
-  4. rect_corner_1:     右转 88°（左下拐角）
-  5. settle:             停稳 0.05s
-  6. rect_side_1:         向上直行 0.40m
-  7. settle:             停稳 0.05s
-  8. rect_corner_2:     右转 88°（左上拐角）
-  9. settle:             停稳 0.05s
-  10. rect_top:           向右直行 2.90m
+  0. entry_45_arc:         从 map(2.50,2.00) 先圆弧拐入短直道（约45°）
+  1. entry_short_straight: 在短直道上走一小段
+  2. entry_semicircle:     连续小舵角半圆弧，直接揉进长直道
+  3. rect_top:             长直道
   11. settle:             停稳 0.05s
   12. rect_corner_3:    右转 88°（右上拐角）
   13. settle:             停稳 0.05s
