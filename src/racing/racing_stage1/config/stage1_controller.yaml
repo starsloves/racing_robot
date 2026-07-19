@@ -79,7 +79,8 @@ competition_controller:
     # 盲开角速度 (rad/s) — 通常为 0（直行）
     blind_angular_speed: 0.0
 
-    # 二维码左侧搜索：超过 map_x 且仍未扫码时低速左转
+    # 二维码左侧搜索：超过 /odom_combined 的 odom_x 且仍未扫码时低速左转。
+    # 与后退结束线 back_target_x 使用相同坐标源，禁止使用 map_x。
     blind_left_search_x: 3.5
     blind_left_search_linear_speed: 0.12
     blind_left_search_angular_speed: 0.55
@@ -567,6 +568,16 @@ competition_controller:
     channel_yolo_preview_path: /tmp/stage1_channel_yolo.jpg
     channel_yolo_raw_path: /tmp/stage1_channel_raw.jpg
     channel_yolo_http_port: 8081
+
+    # 地图通道导航中的视觉居中微调：A* + Pure Pursuit 仍为主控，
+    # YOLO 仅在有效框新鲜且置信度足够时叠加小角速度，不能改变门线交权条件。
+    corridor_vision_centering_enabled: true
+    corridor_vision_centering_min_confidence: 0.35
+    corridor_vision_centering_timeout_sec: 0.25
+    corridor_vision_centering_deadband: 0.08
+    corridor_vision_centering_kp: 0.20
+    corridor_vision_centering_max_angular: 0.10
+    corridor_vision_centering_filter_alpha: 0.35
 
     # 兼容旧参数：YOLO 在倒退中持续观察，实际接管由 confirm_frames 决定。
     channel_yolo_trigger_y: 1.5

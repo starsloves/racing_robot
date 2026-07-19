@@ -63,6 +63,10 @@ class YoloBBoxDetector:
         self.raw_output_path = str(raw_output_path)
         self.http_port = int(http_port)
         self._http_start_time = time.time()
+        self._http_lock = threading.Lock()
+        self._http_server = None
+        self._http_thread = None
+        self._http_enabled = False
 
         self._lock = threading.Lock()
         self._active = False
@@ -94,7 +98,6 @@ class YoloBBoxDetector:
         self._node.create_subscription(Image, self.camera_topic, self._image_cb, qos)
         self._node.create_subscription(CameraInfo, self.camera_info_topic, self._camera_info_cb, qos)
         self._write_placeholder_images()
-        self._start_http_server()
         self._node.get_logger().info(
             f'[YOLO-{self.target_name}] ready topic={self.camera_topic} active=false'
         )
@@ -117,9 +120,15 @@ class YoloBBoxDetector:
             frame = self._latest_preview_frame if preview else self._latest_raw_frame
             return None if frame is None else frame.copy()
 
-    def _start_http_server(self) -> None:
+    def start_http_server(self) -> None:
+        """Bind the stage-owned HTTP port when that stage becomes active."""
         if self.http_port <= 0:
             return
+        with self._http_lock:
+            if self._http_enabled:
+                return
+            self._http_enabled = True
+            self._http_start_time = time.time()
 
         detector = self
         viewer_path = os.path.abspath(
@@ -221,7 +230,14 @@ class YoloBBoxDetector:
         def serve():
             try:
                 ThreadingTCPServer.allow_reuse_address = True
-                with ThreadingTCPServer(('0.0.0.0', self.http_port), Handler) as server:
+                server = ThreadingTCPServer(('0.0.0.0', self.http_port), Handler)
+                server.daemon_threads = True
+                with detector._http_lock:
+                    if not detector._http_enabled:
+                        server.server_close()
+                        return
+                    detector._http_server = server
+                try:
                     server.daemon_threads = True
                     detector._node.get_logger().info(
                         f'[YOLO-{detector.target_name}] HTTP_READY port={detector.http_port}'
@@ -232,6 +248,11 @@ class YoloBBoxDetector:
                             f'raw=/channel_raw.jpg result=/channel_yolo.jpg'
                         )
                     server.serve_forever()
+                finally:
+                    server.server_close()
+                    with detector._http_lock:
+                        if detector._http_server is server:
+                            detector._http_server = None
             except OSError as exc:
                 detector._node.get_logger().error(
                     f'[YOLO-{detector.target_name}] HTTP_ERROR port={detector.http_port}: {exc}'
@@ -241,7 +262,24 @@ class YoloBBoxDetector:
                         'CHANNEL_HTTP', f'HTTP_ERROR port={detector.http_port}: {exc}'
                     )
 
-        threading.Thread(target=serve, daemon=True, name='Stage1ChannelHTTP').start()
+        thread = threading.Thread(target=serve, daemon=True, name=f'{self.target_name}HTTP')
+        with self._http_lock:
+            self._http_thread = thread
+        thread.start()
+
+    def stop_http_server(self) -> None:
+        """Release the port immediately when this detector's stage ends."""
+        with self._http_lock:
+            self._http_enabled = False
+            server = self._http_server
+        if server is not None:
+            self._node.get_logger().info(
+                f'[YOLO-{self.target_name}] HTTP_STOP port={self.http_port}'
+            )
+            server.shutdown()
+
+    # Compatibility for older callers.
+    _start_http_server = start_http_server
 
     def set_inference_active(self, active: bool) -> None:
         active = bool(active)

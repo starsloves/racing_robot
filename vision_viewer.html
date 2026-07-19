@@ -154,7 +154,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>竞速机器人视觉 · 三画面监控</h1>
+        <h1 id="page-title">竞速机器人视觉</h1>
         <div class="status-bar">
             <span class="stage-badge" id="badge-stage1">
                 <span class="dot connecting" id="dot-stage1"></span>
@@ -252,6 +252,17 @@
             stage2: { name: 'Stage2', port: 8082, desc: '车道居中', key: 'stage2' },
             stage3: { name: 'Stage3', port: 8083, desc: 'P点检测', key: 'stage3' }
         };
+        const PORT_TO_STAGE = { '8081': 'stage1', '8082': 'stage2', '8083': 'stage3' };
+        const activeStage = PORT_TO_STAGE[window.location.port] || 'stage1';
+        const activeInfo = STAGES[activeStage];
+
+        document.getElementById('page-title').textContent =
+            `${activeInfo.name} 视觉监控 · 端口 ${activeInfo.port}`;
+        for (const key of Object.keys(STAGES)) {
+            const isActive = key === activeStage;
+            document.getElementById(`pane-${key}`).hidden = !isActive;
+            document.getElementById(`badge-${key}`).hidden = !isActive;
+        }
 
         let healthPollCount = 0;
         let lastHealthPollTime = Date.now();
@@ -371,11 +382,9 @@
         }
 
         function updateAllPanes() {
-            for (const key of ['stage1', 'stage2', 'stage3']) {
-                updatePane(key);
-            }
+            updatePane(activeStage);
             serverFramesSpan.textContent =
-                `S1: ${stageHealth.stage1.frames} | S2: ${stageHealth.stage2.frames} | S3: ${stageHealth.stage3.frames}`;
+                `${STAGES[activeStage].name}: ${stageHealth[activeStage].frames}`;
         }
 
         async function pollOneHealth(key) {
@@ -416,11 +425,7 @@
             lastHealthPollTime = now;
             healthPollCount++;
 
-            await Promise.all([
-                pollOneHealth('stage1'),
-                pollOneHealth('stage2'),
-                pollOneHealth('stage3')
-            ]);
+            await pollOneHealth(activeStage);
 
             updateAllPanes();
 
@@ -433,7 +438,7 @@
         }
 
         function refreshStage1() {
-            if (stageHealth.stage1.alive && stageHealth.stage1.age >= 0) {
+            if (activeStage === 'stage1' && stageHealth.stage1.alive && stageHealth.stage1.age >= 0) {
                 refreshOneImage('stage1');
                 stage1ChannelImgs.raw.src = `${stageBase('stage1')}/channel_raw.jpg?t=${Date.now()}`;
                 stage1ChannelImgs.yolo.src = `${stageBase('stage1')}/channel_yolo.jpg?t=${Date.now()}`;
@@ -442,14 +447,14 @@
         }
 
         function refreshStage2() {
-            if (stageHealth.stage2.alive && stageHealth.stage2.age >= 0) {
+            if (activeStage === 'stage2' && stageHealth.stage2.alive && stageHealth.stage2.age >= 0) {
                 refreshOneImage('stage2');
             }
             setTimeout(refreshStage2, 120);
         }
 
         function refreshStage3() {
-            if (stageHealth.stage3.alive && stageHealth.stage3.age >= 0) {
+            if (activeStage === 'stage3' && stageHealth.stage3.alive && stageHealth.stage3.age >= 0) {
                 refreshOneImage('stage3');
             }
             setTimeout(refreshStage3, 120);

@@ -50,6 +50,8 @@ class VisionPDetector:
         self._confidence = 0.0
         self._bbox = None
         self._timestamp = 0.0
+        self._offset = 0.0
+        self._fill_ratio = 0.0
         self._inference_active = False
 
         # HTTP 可视化
@@ -58,6 +60,9 @@ class VisionPDetector:
         self._jpeg_output_path = '/tmp/stage3_vision.jpg'
         self._http_server_start_time = time.time()
         self._last_frame_save_time = 0.0
+        self._http_lock = threading.Lock()
+        self._http_server = None
+        self._http_enabled = False
         self._target_fps = 30
         self._min_frame_interval = 1.0 / self._target_fps
         self._last_save_time = 0.0
@@ -83,18 +88,20 @@ class VisionPDetector:
 
         # 创建占位图像
         self._write_placeholder_image()
-        # 启动 HTTP 服务
-        self._start_http_server()
-
         self._node.get_logger().info('[P-DET] 模块初始化完成，等待相机数据...')
-        self._node.get_logger().info(
-            f'[P-DET] Web 接口: http://0.0.0.0:{self.http_port}/vision_latest.jpg '
-            f'| health: /health'
-        )
+        self._node.get_logger().info(f'[P-DET] HTTP 服务将在 phase=3 时绑定端口 {self.http_port}')
 
     def get_p_detection(self):
         with self._lock:
             return (self._detected, self._confidence, self._bbox, self._timestamp)
+
+    def get_p_detection_geometry(self):
+        """返回 P 检测结果及归一化水平偏差、画面填充比例。"""
+        with self._lock:
+            return (
+                self._detected, self._confidence, self._bbox, self._timestamp,
+                self._offset, self._fill_ratio,
+            )
 
     def set_inference_active(self, active: bool):
         """启用/停用 P YOLO 推理。仅 phase=3 期间应启用。"""
@@ -107,6 +114,8 @@ class VisionPDetector:
                 self._confidence = 0.0
                 self._bbox = None
                 self._timestamp = time.time()
+                self._offset = 0.0
+                self._fill_ratio = 0.0
         if previous != active:
             state = '启用' if active else '停用'
             self._node.get_logger().info(f'[P-DET] YOLO 推理已{state}')
@@ -114,6 +123,26 @@ class VisionPDetector:
     def is_inference_active(self) -> bool:
         with self._lock:
             return bool(self._inference_active)
+
+    def start_http_server(self):
+        """仅在 Stage3 活跃时绑定 8083。"""
+        if self.http_port <= 0:
+            return
+        with self._http_lock:
+            if self._http_enabled:
+                return
+            self._http_enabled = True
+            self._http_server_start_time = time.time()
+        self._start_http_server()
+
+    def stop_http_server(self):
+        """Stage3 结束时立即释放 8083。"""
+        with self._http_lock:
+            self._http_enabled = False
+            server = self._http_server
+        if server is not None:
+            self._node.get_logger().info(f'[P-DET] HTTP_STOP port={self.http_port}')
+            server.shutdown()
 
     def _write_placeholder_image(self):
         """预生成占位图像，避免浏览器首次连接时 404"""
@@ -147,7 +176,14 @@ class VisionPDetector:
 
                     def do_GET(self):
                         if self.path in ('/', '/index.html', '/vision_p.html'):
-                            body = f'''<!doctype html>
+                            viewer_path = os.path.abspath(
+                                os.path.join(os.path.dirname(__file__), '../../../../vision_viewer.html')
+                            )
+                            try:
+                                with open(viewer_path, 'rb') as viewer_file:
+                                    body = viewer_file.read()
+                            except OSError:
+                                body = f'''<!doctype html>
 <html><head><meta charset="utf-8"><title>Stage3 P YOLO</title>
 <style>body{{background:#202124;color:#eee;font-family:sans-serif;margin:20px}}
 img{{max-width:100%;border:1px solid #555}}#status{{margin:10px 0;color:#8f8}}</style></head>
@@ -285,9 +321,21 @@ setInterval(health, 500); health();
                 ThreadingTCPServer.allow_reuse_address = True
                 httpd = ThreadingTCPServer(("0.0.0.0", parent_self.http_port), NoCacheHandler)
                 httpd.daemon_threads = True
+                with parent_self._http_lock:
+                    if not parent_self._http_enabled:
+                        httpd.server_close()
+                        return
+                    parent_self._http_server = httpd
 
                 parent_self._node.get_logger().info(f'[P-DET] HTTP 服务已创建，准备进入 serve_forever()')
-                httpd.serve_forever()
+                try:
+                    httpd.serve_forever()
+                finally:
+                    httpd.server_close()
+                    with parent_self._http_lock:
+                        if parent_self._http_server is httpd:
+                            parent_self._http_server = None
+                    parent_self._node.get_logger().info('[P-DET] HTTP 服务已停止')
             except OSError as e:
                 parent_self._node.get_logger().error(f'[P-DET] HTTP 端口绑定失败: {e}')
             except Exception as e:
@@ -324,6 +372,8 @@ setInterval(health, 500); health();
                     self._confidence = 0.0
                     self._bbox = None
                     self._timestamp = time.time()
+                    self._offset = 0.0
+                    self._fill_ratio = 0.0
                 self._publish_visualization(frame_before, frame_after, 'P inference disabled')
                 return
 
@@ -377,6 +427,8 @@ setInterval(health, 500); health();
             detected = False
             confidence = 0.0
             best_bbox = None
+            offset = 0.0
+            fill_ratio = 0.0
             frame_after = img_cropped.copy()
 
             if len(bboxes) > 0:
@@ -435,6 +487,8 @@ setInterval(health, 500); health();
                 self._confidence = confidence
                 self._bbox = best_bbox
                 self._timestamp = time.time()
+                self._offset = float(offset)
+                self._fill_ratio = float(fill_ratio)
 
             self._publish_visualization(
                 frame_before,

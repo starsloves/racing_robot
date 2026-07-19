@@ -1,6 +1,7 @@
 import math
 import heapq
 import json
+import time
 import numpy as np
 import threading
 
@@ -195,6 +196,14 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_replan_offpath_m', 0.28)
         self.declare_parameter('corridor_min_cruise_speed', 0.10)
         self.declare_parameter('corridor_max_turn_linear_speed', 0.08)
+        # 地图通道导航仍由 A* + Pure Pursuit 主控；YOLO 只提供受限居中微调。
+        self.declare_parameter('corridor_vision_centering_enabled', True)
+        self.declare_parameter('corridor_vision_centering_min_confidence', 0.35)
+        self.declare_parameter('corridor_vision_centering_timeout_sec', 0.25)
+        self.declare_parameter('corridor_vision_centering_deadband', 0.08)
+        self.declare_parameter('corridor_vision_centering_kp', 0.20)
+        self.declare_parameter('corridor_vision_centering_max_angular', 0.10)
+        self.declare_parameter('corridor_vision_centering_filter_alpha', 0.35)
         # 通道 YOLO 中心对齐 + 阶段内 map 初始值重置（不发布/覆盖 /odom_combined）
         self.declare_parameter('channel_yolo_enabled', True)
         self.declare_parameter('channel_yolo_model_path', '/home/sunrise/dev_ws/best_rdk_tongdao.bin')
@@ -474,6 +483,27 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_max_turn_linear_speed = float(
             self.get_parameter('corridor_max_turn_linear_speed').value
         )
+        self.corridor_vision_centering_enabled = bool(
+            self.get_parameter('corridor_vision_centering_enabled').value
+        )
+        self.corridor_vision_centering_min_confidence = float(
+            self.get_parameter('corridor_vision_centering_min_confidence').value
+        )
+        self.corridor_vision_centering_timeout_sec = float(
+            self.get_parameter('corridor_vision_centering_timeout_sec').value
+        )
+        self.corridor_vision_centering_deadband = float(
+            self.get_parameter('corridor_vision_centering_deadband').value
+        )
+        self.corridor_vision_centering_kp = float(
+            self.get_parameter('corridor_vision_centering_kp').value
+        )
+        self.corridor_vision_centering_max_angular = float(
+            self.get_parameter('corridor_vision_centering_max_angular').value
+        )
+        self.corridor_vision_centering_filter_alpha = min(1.0, max(0.05, float(
+            self.get_parameter('corridor_vision_centering_filter_alpha').value
+        )))
         self.channel_yolo_enabled = bool(self.get_parameter('channel_yolo_enabled').value)
         self.channel_yolo_model_path = str(self.get_parameter('channel_yolo_model_path').value)
         self.channel_yolo_camera_topic = str(self.get_parameter('channel_yolo_camera_topic').value)
@@ -646,6 +676,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self._corridor_last_plan_pose = None
         self._corridor_plan_count = 0
         self._corridor_angular_cmd_filtered = 0.0
+        self._corridor_visual_angular_cmd_filtered = 0.0
         self._channel_yolo_detector = None
         self._channel_handoff_step = 'idle'
         self._channel_handoff_started_at = None
@@ -704,6 +735,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         # 视觉通道导航初始化
         self._setup_vision_corridor()
         self._setup_channel_yolo_detector()
+        self._set_stage1_http_active(True)
 
         # 初始化时立即发布 phase=1，覆盖可能存在的旧 TRANSIENT_LOCAL 消息
         self.publish_phase()
@@ -842,6 +874,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             return
 
         self.phase = target_phase
+        self._set_stage1_http_active(target_phase == 1)
         self.publish_phase()
         self.log.mission(f'✓ Phase切换执行: {self.phase-1} → {target_phase}, 原因: {reason}')
         self.stop_robot()
@@ -867,6 +900,35 @@ class CompetitionController(Stage1VisionMixin, Node):
         if abs(self._corridor_angular_cmd_filtered) < 0.5 * self.corridor_angular_deadband:
             self._corridor_angular_cmd_filtered = 0.0
         return self._corridor_angular_cmd_filtered
+
+    def _corridor_visual_centering_angular(self):
+        """Return a bounded YOLO center correction for map path following only."""
+        detector = getattr(self, '_channel_yolo_detector', None)
+        if not self.corridor_vision_centering_enabled or detector is None:
+            self._corridor_visual_angular_cmd_filtered = 0.0
+            return 0.0, False, 0.0, 0.0
+
+        detected, confidence, _bbox, timestamp, offset, _fill = detector.get_detection()
+        fresh = (
+            detected
+            and timestamp > 0.0
+            and time.time() - timestamp <= self.corridor_vision_centering_timeout_sec
+            and confidence >= self.corridor_vision_centering_min_confidence
+        )
+        if not fresh:
+            self._corridor_visual_angular_cmd_filtered = 0.0
+            return 0.0, False, float(offset), float(confidence)
+
+        error = float(offset)
+        raw = 0.0 if abs(error) <= self.corridor_vision_centering_deadband else (
+            -self.corridor_vision_centering_kp * error
+        )
+        raw = self.clamp(raw, self.corridor_vision_centering_max_angular)
+        alpha = self.corridor_vision_centering_filter_alpha
+        self._corridor_visual_angular_cmd_filtered = (
+            (1.0 - alpha) * self._corridor_visual_angular_cmd_filtered + alpha * raw
+        )
+        return self._corridor_visual_angular_cmd_filtered, True, error, float(confidence)
 
     def clamp(self, value, limit):
         return max(-limit, min(limit, value))
@@ -1058,6 +1120,14 @@ class CompetitionController(Stage1VisionMixin, Node):
         detector = getattr(self, '_channel_yolo_detector', None)
         if detector is not None:
             detector.set_inference_active(active)
+
+    def _set_stage1_http_active(self, active):
+        detector = getattr(self, '_channel_yolo_detector', None)
+        if detector is None:
+            return
+        method = getattr(detector, 'start_http_server' if active else 'stop_http_server', None)
+        if method is not None:
+            method()
 
     def _channel_yolo_has_fresh_detection(self, now_ts):
         detector = getattr(self, '_channel_yolo_detector', None)
@@ -1588,8 +1658,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self._drive_to_channel_map_target(pose_xy, yaw, now_ts)
 
     def start_corridor_navigation(self, reason):
-        # 只有倒退/YOLO追踪阶段使用通道检测；进入旧地图通道导航后释放BPU资源。
-        self._set_channel_yolo_active(False)
+        # 地图路径仍是主控；通道 YOLO 保持推理，为路径跟踪提供受限居中微调。
+        self._set_channel_yolo_active(True)
         if not self.enable_corridor_navigation or not self.corridor_waypoints:
             self.phase1_motion_state = 'forward'
             self.begin_phase_transition(2, reason)
@@ -1604,6 +1674,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_final_align_since = None
         self._corridor_timeout_logged = False
         self._corridor_angular_cmd_filtered = 0.0
+        self._corridor_visual_angular_cmd_filtered = 0.0
         self.corridor_index = max(0, len(self.corridor_waypoints) - 1)
         self.corridor_started_at = self.get_clock().now().nanoseconds / 1e9
         self.corridor_path_points = []
@@ -1978,19 +2049,22 @@ class CompetitionController(Stage1VisionMixin, Node):
         return self.create_twist(linear, angular)
 
     def maybe_blind_left_search_cmd(self):
-        """二维码未识别且 map_x 超过阈值时，低速向左搜索二维码。"""
+        """二维码未识别且 odom_x 超过阈值时，低速向左搜索二维码。"""
         if self.qr_processed or self.phase1_motion_state != 'forward':
             return None
 
-        map_x = self._lookup_map_x()
-        if map_x is None or map_x <= self.blind_left_search_x:
+        # 与 back_target_x 使用同一个 /odom_combined 坐标源，不能混用 map_x。
+        if self.current_odom is None:
+            return None
+        odom_x = float(self.current_odom.pose.pose.position.x)
+        if odom_x <= self.blind_left_search_x:
             return None
 
         now_ts = self.get_clock().now().nanoseconds / 1e9
         if now_ts - getattr(self, '_blind_left_search_log_time', 0.0) >= 1.0:
             self._blind_left_search_log_time = now_ts
             self.log.progress(
-                f'blind_left_search: qr未识别, map_x={map_x:.2f}>'
+                f'blind_left_search: qr未识别, odom_x={odom_x:.2f}>'
                 f'{self.blind_left_search_x:.2f} '
                 f'v={self.blind_left_search_linear_speed:.2f} '
                 f'w={self.blind_left_search_angular_speed:.2f}'
@@ -2021,7 +2095,9 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_final_align_active = False
         self.corridor_final_align_since = None
         self._corridor_angular_cmd_filtered = 0.0
+        self._corridor_visual_angular_cmd_filtered = 0.0
         self.phase1_motion_state = 'forward'
+        self._set_channel_yolo_active(False)
         self.stop_robot()
         self.log.mission(reason)
         self.begin_phase_transition(2, reason)
@@ -2241,6 +2317,10 @@ class CompetitionController(Stage1VisionMixin, Node):
             if abs(alpha) > math.radians(30.0):
                 angular += 0.30 * self.corridor_alpha_kp * alpha
 
+        visual_angular, vision_valid, vision_offset, vision_confidence = (
+            self._corridor_visual_centering_angular()
+        )
+        angular += visual_angular
         angular = self.clamp(angular, self.max_angular_speed)
         angular = self._smooth_corridor_angular(angular, heading_error=alpha)
         if abs(angular) > 0.30:
@@ -2266,6 +2346,8 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f'alpha={math.degrees(alpha):.1f}deg look=({look_pt[0]:.2f},{look_pt[1]:.2f}) '
                 f'body=({target_x:.2f},{target_y:.2f}) ld={ld:.2f} offpath={offpath:.2f}m '
                 f'v={linear:.2f} w={angular:.2f} mode={self.corridor_nav_mode} '
+                f'vision(valid={vision_valid},off={vision_offset:+.3f},'
+                f'conf={vision_confidence:.2f},w={visual_angular:+.3f}) '
                 f'plan={self.corridor_last_plan_reason} pts={len(path)} cursor={cursor} '
                 f'plans={getattr(self, "_corridor_plan_count", 0)} '
                 f'pos_ok={pos_ok} yaw_ok={yaw_ok} t={elapsed:.1f}s'
@@ -2884,7 +2966,7 @@ class CompetitionController(Stage1VisionMixin, Node):
                 self.handle_channel_yolo_handoff()
                 return
 
-            # 二维码在左侧：盲开超过 map_x 阈值仍未识别时，低速向左搜索。
+            # 二维码在左侧：盲开超过 odom_x 阈值仍未识别时，低速向左搜索。
             left_search_cmd = self.maybe_blind_left_search_cmd()
             if left_search_cmd is not None:
                 self.cmd_pub.publish(left_search_cmd)
@@ -3127,6 +3209,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.log.progress(f'QR播报已启动后台线程，车辆开始后退')
 
     def destroy_node(self):
+        self._set_channel_yolo_active(False)
+        self._set_stage1_http_active(False)
         self.log.close()
         super().destroy_node()
 

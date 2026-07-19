@@ -135,6 +135,9 @@ class VisionLaneCentering:
         # HTTP 健康检查共享状态
         self._http_server_start_time = time.time()
         self._last_frame_save_time = 0.0  # 最后一次保存图像的时间戳
+        self._http_lock = threading.Lock()
+        self._http_server = None
+        self._http_enabled = False
         
         # FPS 控制（30 FPS 高刷新率）
         self._target_fps = 30
@@ -169,13 +172,8 @@ class VisionLaneCentering:
 # 创建占位图像（避免首次连接 404）
         self._write_placeholder_image()
 
-        # 启动 HTTP 静态服务器（后台线程）
-        self._start_http_server()
-
         self._node.get_logger().info('[视觉] 模块初始化完成，等待相机数据...')
-        self._node.get_logger().info(
-            f'[视觉] HTTP 服务已启动: http://0.0.0.0:{self.http_port}/vision_latest.jpg'
-        )
+        self._node.get_logger().info(f'[视觉] HTTP 服务将在 phase=2 时绑定端口 {self.http_port}')
     
     # ═══════════════════════════════════════════════════════
     # 外部接口（供导航节点调用）
@@ -197,6 +195,26 @@ class VisionLaneCentering:
     def is_inference_active(self) -> bool:
         with self._lock:
             return bool(getattr(self, '_inference_active', False))
+
+    def start_http_server(self):
+        """仅在 Stage2 活跃时绑定 8082。"""
+        if self.http_port <= 0:
+            return
+        with self._http_lock:
+            if self._http_enabled:
+                return
+            self._http_enabled = True
+            self._http_server_start_time = time.time()
+        self._start_http_server()
+
+    def stop_http_server(self):
+        """Stage2 结束时立即释放 8082。"""
+        with self._http_lock:
+            self._http_enabled = False
+            server = self._http_server
+        if server is not None:
+            self._node.get_logger().info(f'[视觉] HTTP_STOP port={self.http_port}')
+            server.shutdown()
 
     def get_latest_offset(self):
         """
@@ -960,7 +978,14 @@ class VisionLaneCentering:
                     
                     def do_GET(self):
                         if self.path in ('/', '/index.html', '/seg.html'):
-                            body = f'''<!doctype html>
+                            viewer_path = os.path.abspath(
+                                os.path.join(os.path.dirname(__file__), '../../../../vision_viewer.html')
+                            )
+                            try:
+                                with open(viewer_path, 'rb') as viewer_file:
+                                    body = viewer_file.read()
+                            except OSError:
+                                body = f'''<!doctype html>
 <html><head><meta charset="utf-8"><title>Stage2 SEG</title>
 <style>body{{background:#202124;color:#eee;font-family:sans-serif;margin:20px}}
 img{{max-width:100%;border:1px solid #555}}#status{{margin:10px 0;color:#8f8}}</style></head>
@@ -1098,10 +1123,21 @@ setInterval(health, 500); health();
                 
                 httpd = ThreadingTCPServer(("0.0.0.0", parent_self.http_port), NoCacheHandler)
                 httpd.daemon_threads = True
+                with parent_self._http_lock:
+                    if not parent_self._http_enabled:
+                        httpd.server_close()
+                        return
+                    parent_self._http_server = httpd
                 
                 parent_self._node.get_logger().info(f'[视觉] ✓ HTTP 服务已创建，准备进入 serve_forever()')
-                httpd.serve_forever()
-                parent_self._node.get_logger().warn('[视觉] serve_forever() 退出（不应该发生）')
+                try:
+                    httpd.serve_forever()
+                finally:
+                    httpd.server_close()
+                    with parent_self._http_lock:
+                        if parent_self._http_server is httpd:
+                            parent_self._http_server = None
+                    parent_self._node.get_logger().info('[视觉] HTTP 服务已停止')
             except OSError as e:
                 parent_self._node.get_logger().error(f'[视觉] ✗ HTTP 端口绑定失败（端口可能被占用）: {e}')
             except Exception as e:

@@ -1,5 +1,5 @@
-"""Stage3 官方返程导航：通道对中 + P 矩形中心直达 + Stage1 4态避障
-- 状态机: idle → armed → pre_return_channel_yolo → running(drive_to_p_center) → complete
+"""Stage3 官方返程导航：通道对中 + 地图粗导航 + P 视觉最终到达 + Stage1 4态避障
+- 状态机: idle → armed → pre_return_channel_yolo → running(map_search_p) → p_approach → complete
 - running 时可中断：avoiding → countersteer → recovering → running
 - 仅在 competition_phase=3 时启动
 - 输出 /cmd_vel（phase3 由 Stage1 礼让）
@@ -9,6 +9,7 @@ import json
 import math
 import sys
 import threading
+import time
 
 import rclpy
 from geometry_msgs.msg import Twist
@@ -28,6 +29,7 @@ from .cmd_vel_stop import (
     publish_stop,
     spin_until_stop,
 )
+from .vision_p_detector import VisionPDetector
 
 
 class Stage3ReturnNavigator(Node):
@@ -71,6 +73,12 @@ class Stage3ReturnNavigator(Node):
         self._settled_start = None
         self._filtered_heading_err = 0.0
 
+        # P 视觉最终接管：地图只用于粗导航，P 视觉决定最终到达。
+        self._p_detector = None
+        self._p_approaching = False
+        self._p_consecutive_hits = 0
+        self._p_offset_filtered = 0.0
+
         # 激光扫描
         self.latest_scan = None
 
@@ -103,6 +111,7 @@ class Stage3ReturnNavigator(Node):
         self.create_subscription(Imu, self.imu_topic, self._imu_cb, 10)
         self.create_subscription(LaserScan, self.scan_topic, self._scan_cb, 10)
 
+        self._init_p_detector()
         self._init_channel_detector()
 
         self._publish_state('idle')
@@ -134,6 +143,18 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('goal_box_y_max', 0.2)
         self.declare_parameter('goal_center_stop_distance_m', 0.10)
         self.declare_parameter('path_timeout_sec', 60.0)
+
+        # ── P 点视觉最终到达 ──
+        self.declare_parameter('p_model_path', '')
+        self.declare_parameter('p_conf_thres', 0.25)
+        self.declare_parameter('p_iou_thres', 0.45)
+        self.declare_parameter('p_crop_ratio', 0.4)
+        self.declare_parameter('p_approach_conf_threshold', 0.5)
+        self.declare_parameter('p_approach_consecutive_hits', 3)
+        self.declare_parameter('p_approach_linear_speed', 0.50)
+        self.declare_parameter('p_approach_angular_kp', 0.8)
+        self.declare_parameter('p_web_port', 8083)
+        self.declare_parameter('p_detection_timeout_sec', 0.35)
 
         # ── Pure Pursuit ──
         self.declare_parameter('pursuit_linear_speed', 0.18)
@@ -241,6 +262,21 @@ class Stage3ReturnNavigator(Node):
             0.0, float(self.get_parameter('goal_center_stop_distance_m').value)
         )
         self.path_timeout_sec = float(self.get_parameter('path_timeout_sec').value)
+
+        self.p_model_path = str(self.get_parameter('p_model_path').value)
+        self.p_conf_thres = float(self.get_parameter('p_conf_thres').value)
+        self.p_iou_thres = float(self.get_parameter('p_iou_thres').value)
+        self.p_crop_ratio = float(self.get_parameter('p_crop_ratio').value)
+        self.p_approach_conf = float(self.get_parameter('p_approach_conf_threshold').value)
+        self.p_approach_hits_required = max(
+            1, int(self.get_parameter('p_approach_consecutive_hits').value)
+        )
+        self.p_approach_linear = float(self.get_parameter('p_approach_linear_speed').value)
+        self.p_approach_angular_kp = float(self.get_parameter('p_approach_angular_kp').value)
+        self.p_web_port = int(self.get_parameter('p_web_port').value)
+        self.p_detection_timeout = max(
+            0.0, float(self.get_parameter('p_detection_timeout_sec').value)
+        )
 
         self.pursuit_linear_speed = float(self.get_parameter('pursuit_linear_speed').value)
         self.pursuit_lookahead = float(self.get_parameter('pursuit_lookahead_m').value)
@@ -495,6 +531,7 @@ class Stage3ReturnNavigator(Node):
                 conf_thres=self.stage3_channel_conf_thres,
                 iou_thres=self.stage3_channel_iou_thres,
                 jpeg_output_path=self.stage3_channel_preview_path,
+                http_port=0,
             )
             self._set_channel_inference_active(False)
             self.log.startup(
@@ -513,26 +550,22 @@ class Stage3ReturnNavigator(Node):
         if detector is not None and hasattr(detector, 'set_inference_active'):
             detector.set_inference_active(active)
 
+    def _set_stage3_http_active(self, active: bool):
+        detector = getattr(self, '_p_detector', None)
+        if detector is None:
+            return
+        method = getattr(detector, 'start_http_server' if active else 'stop_http_server', None)
+        if method is not None:
+            method()
+
     def _set_channel_inference_active(self, active: bool):
         detector = getattr(self, '_channel_detector', None)
         if detector is not None and hasattr(detector, 'set_inference_active'):
             detector.set_inference_active(active)
 
-    def _should_enable_p_vision(self) -> bool:
-        # Enable P vision only when map y is below the configured threshold.
-        if self.current_position is None:
-            return False
-        return float(self.current_position[1]) < float(self.p_vision_enable_y_max)
-
     def _update_p_inference_gate(self):
-        # Gate YOLO inference by phase and y threshold; keep on during approach.
-        if self.phase != 3 or self.mission_finished:
-            self._set_p_inference_active(False)
-            return
-        if self._p_approaching or self._p_extra_forward_active:
-            self._set_p_inference_active(True)
-            return
-        self._set_p_inference_active(self._should_enable_p_vision())
+        # map 位置存在偏移；Phase3 全程启用 P 检测，由视觉决定最终到达。
+        self._set_p_inference_active(self.phase == 3 and not self.mission_finished)
 
     def _phase_cb(self, msg):
         prev = self.phase
@@ -546,6 +579,7 @@ class Stage3ReturnNavigator(Node):
                 self.phase = 1
                 self.phase_initialized = True
                 self._set_p_inference_active(False)
+                self._set_stage3_http_active(False)
                 self.get_logger().info('[PHASE] ✓ Phase 初始化完成: phase=1')
                 return
             if incoming == 3:
@@ -555,13 +589,16 @@ class Stage3ReturnNavigator(Node):
                 return
             self.phase = incoming
             self._set_p_inference_active(False)
+            self._set_stage3_http_active(False)
             return
 
         self.phase = incoming
         if prev == 3 and self.phase != 3:
             self._reset_mission()
             self._set_p_inference_active(False)
+            self._set_stage3_http_active(False)
         elif prev != 3 and self.phase == 3:
+            self._set_stage3_http_active(True)
             self._arm_mission()
 
     def _odom_cb(self, msg):
@@ -602,6 +639,9 @@ class Stage3ReturnNavigator(Node):
         self._settled_start = None
         self.avoid_state = 'forward'
         self.start_after_time = self._now_sec() + self.start_delay_sec
+        self._p_approaching = False
+        self._p_consecutive_hits = 0
+        self._p_offset_filtered = 0.0
         self._set_p_inference_active(False)
         self._set_channel_inference_active(False)
         self._pre_return_state = 'turn_to_channel_yaw' if self.stage3_channel_yolo_enabled else 'done'
@@ -629,11 +669,7 @@ class Stage3ReturnNavigator(Node):
         self.avoid_state = 'forward'
         self._p_approaching = False
         self._p_consecutive_hits = 0
-        self._p_approach_start_pose = None
         self._p_offset_filtered = 0.0
-        self._p_extra_forward_active = False
-        self._p_extra_forward_start_pose = None
-        self._p_extra_forward_heading = None
         self._pre_return_state = 'idle'
         self._channel_hits = 0
         self._channel_offset_filtered = 0.0
@@ -653,6 +689,7 @@ class Stage3ReturnNavigator(Node):
         self.path_started_at = self._now_sec()
         self.path_index = 0
         self._publish_state('running')
+        self._update_p_inference_gate()
         self.log.mission(
             f'return started, {len(self.return_waypoints)} waypoints (map coords), '
             f'current=({self.current_position[0]:.2f},{self.current_position[1]:.2f}) '
@@ -664,7 +701,6 @@ class Stage3ReturnNavigator(Node):
         self.cmd_pub.publish(Twist())
         self.mission_active = False
         self.mission_finished = True
-        self._p_extra_forward_active = False
         self._set_p_inference_active(False)
         self._publish_state('complete')
         self._publish_feedback(feedback_text)
@@ -674,7 +710,6 @@ class Stage3ReturnNavigator(Node):
         self.cmd_pub.publish(Twist())
         self.mission_active = False
         self.mission_finished = True
-        self._p_extra_forward_active = False
         self._set_channel_inference_active(False)
         self._set_p_inference_active(False)
         self._publish_state('failed')
@@ -844,20 +879,27 @@ class Stage3ReturnNavigator(Node):
         if self._check_emergency_stop():
             return
 
-        # 2. 到 P 矩形中心前 0.1m 直接停车完成
-        if self._check_goal_center_stop():
+        # 2. P 已确认后由视觉完全接管；不再使用 map 位置判定到达。
+        if self._p_approaching:
+            self._run_p_approach()
             return
 
-        # 3. 避障检测（仅在 running 态）
+        # 3. 地图仅用于粗导航和搜索 P；检测到 P 后立即切入视觉终段。
+        self._update_p_detection()
+        if self._p_approaching:
+            self._run_p_approach()
+            return
+
+        # 4. 避障检测（仅在地图粗导航态）
         if self.avoid_state == 'forward' and self.latest_scan is not None:
             self._check_obstacle()
 
-        # 4. 若在避障状态，运行避障
+        # 5. 若在避障状态，运行避障
         if self.avoid_state != 'forward':
             self._run_avoidance()
             return
 
-        # 5. 简单目标点控制：当前位置 → P 矩形中心
+        # 6. 尚未识别 P，继续地图粗导航。
         self._run_center_drive()
 
     def _check_emergency_stop(self):
@@ -878,7 +920,48 @@ class Stage3ReturnNavigator(Node):
     def stop_robot(self):
         self.cmd_pub.publish(Twist())
 
-    # ══════════════ P 矩形中心直达控制（map 坐标系）══════════════
+    # ══════════════ 地图粗导航 + P 视觉最终到达 ══════════════
+
+    def _p_detection(self):
+        if self._p_detector is None:
+            return False, 0.0, None, 0.0, 0.0, 0.0
+        detected, conf, bbox, stamp, offset, fill = self._p_detector.get_p_detection_geometry()
+        fresh = time.time() - float(stamp or 0.0) <= self.p_detection_timeout
+        return bool(detected and bbox is not None and fresh), conf, bbox, stamp, offset, fill
+
+    def _update_p_detection(self):
+        detected, conf, _bbox, _stamp, offset, _fill = self._p_detection()
+        confirmed = detected and conf >= self.p_approach_conf
+        self._p_consecutive_hits = self._p_consecutive_hits + 1 if confirmed else 0
+        if self._p_consecutive_hits < self.p_approach_hits_required:
+            return
+        self._p_approaching = True
+        self._p_offset_filtered = float(offset)
+        self._publish_state('p_approach')
+        self.log.segment(
+            f'P acquired conf={conf:.2f} offset={offset:+.3f}; '
+            f'visual approach v={self.p_approach_linear:.2f}'
+        )
+        self._publish_feedback('P acquired, visual final approach started')
+
+    def _run_p_approach(self):
+        detected, conf, _bbox, _stamp, offset, fill = self._p_detection()
+        if not detected or conf < self.p_approach_conf:
+            self.cmd_pub.publish(Twist())
+            self.log.segment('P lost after visual acquisition: v=0, complete and coast into P')
+            self._finish_mission('P lost after acquisition: v=0, inertial coast into P')
+            return
+
+        alpha = 0.35
+        self._p_offset_filtered = alpha * float(offset) + (1.0 - alpha) * self._p_offset_filtered
+        angular = self._clamp(-self.p_approach_angular_kp * self._p_offset_filtered, self.max_angular)
+        self._publish_state('p_approach')
+        self.log.telemetry(
+            'P_APPROACH',
+            f'conf={conf:.2f} off={self._p_offset_filtered:+.3f} fill={fill:.2%} '
+            f'spd={self.p_approach_linear:.2f} ang={angular:.2f}',
+        )
+        self.cmd_pub.publish(self._twist(self.p_approach_linear, angular))
 
 
     def _advance_waypoint(self, pose):
@@ -901,10 +984,7 @@ class Stage3ReturnNavigator(Node):
             self.log.warn('ODOM', 'no pose, waiting for odom')
             return
 
-        # 目标固定为 P 矩形中心；不再让 P 视觉 bbox/额外前进接管
-        if self._check_goal_center_stop():
-            return
-
+        # P 尚未识别时用地图目标作粗导航；地图坐标不参与最终完成判定。
         target_x, target_y = self._goal_center()
 
         # ── 计算目标相对车体坐标 ──
@@ -922,7 +1002,7 @@ class Stage3ReturnNavigator(Node):
         self._filtered_heading_err = alpha * heading_err + (1.0 - alpha) * self._filtered_heading_err
         heading_err = self._filtered_heading_err
 
-        self._publish_state('drive_to_p_center')
+        self._publish_state('map_search_p')
 
         angular = self._clamp(self.pursuit_turn_kp * heading_err, self.max_angular)
         if abs(angular) < 1e-4:
@@ -934,8 +1014,8 @@ class Stage3ReturnNavigator(Node):
         elif abs(heading_err) > math.radians(5.0):
             speed = self.pursuit_linear_speed * 0.5
 
-        self.log.telemetry('P_CENTER',
-            f'dist={target_dist:.2f} stop={self.goal_center_stop_distance_m:.2f} '
+        self.log.telemetry('MAP_SEARCH_P',
+            f'dist={target_dist:.2f} '
             f'err={math.degrees(heading_err):.1f}° '
             f'spd={speed:.2f} ang={angular:.2f} '
             f'pos=({self.current_position[0]:.2f},{self.current_position[1]:.2f}) '
@@ -1064,18 +1144,6 @@ class Stage3ReturnNavigator(Node):
         return best
 
     def _check_obstacle(self):
-        # 距离终点 0.6m 内不判定避障（终点附近墙壁和边界多）
-        if self.current_position is not None:
-            goal_center_x = (self.goal_box_x_min + self.goal_box_x_max) / 2.0
-            goal_center_y = (self.goal_box_y_min + self.goal_box_y_max) / 2.0
-            dist_to_goal = math.hypot(
-                self.current_position[0] - goal_center_x,
-                self.current_position[1] - goal_center_y
-            )
-            if dist_to_goal < 0.60:
-                self.log.telemetry('AVOID_SKIP', f'near goal ({dist_to_goal:.2f}m), skip obstacle check')
-                return
-        
         obs = self._find_nearest_obstacle(self.latest_scan)
         if obs is not None and obs['dist'] < self.avoid_safe_dist:
             self._begin_avoidance(obs['danger_deg'])
@@ -1194,6 +1262,8 @@ class Stage3ReturnNavigator(Node):
 
     def destroy_node(self):
         try:
+            self._set_p_inference_active(False)
+            self._set_stage3_http_active(False)
             self.log.close()
             if rclpy.ok():
                 self.cmd_pub.publish(Twist())

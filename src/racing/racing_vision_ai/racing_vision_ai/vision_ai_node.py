@@ -3,15 +3,12 @@
 
 from __future__ import annotations
 
-import base64
-import io
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-import cv2
 import rclpy
 import yaml
 from cv_bridge import CvBridge
@@ -20,10 +17,8 @@ from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import Empty, Int32, String
 
-try:
-    from volcenginesdkarkruntime import Ark
-except ImportError:  # pragma: no cover - deployment dependency
-    Ark = None
+from voice_api.env_config import VoiceEnvConfig
+from voice_api.vision_analyzer import VisionAnalyzer
 
 
 class VisionAINode(Node):
@@ -42,14 +37,20 @@ class VisionAINode(Node):
 
         self._config = self._load_config()
         volc = self._config.get('volcengine', {})
-        self._api_key = str(volc.get('api_key') or os.environ.get('ARK_API_KEY', '')).strip()
-        self._model_id = str(volc.get('model_id') or os.environ.get(
-            'ARK_MODEL_ID', 'doubao-seed-1-6-250615'
-        )).strip()
+        self._voice_env = VoiceEnvConfig.from_env()
+        self._vision_provider, self._api_key, self._model_id = self._resolve_vision_api(volc)
         self._prompt = str(volc.get(
             'prompt', '请用一小段话简单描述这张图片中的内容，包括物体、场景、颜色等信息。'
         ))
         self._jpeg_quality = int(self._config.get('image', {}).get('jpeg_quality', 85))
+        self._vision = VisionAnalyzer(
+            provider=self._vision_provider,
+            api_key=self._api_key,
+            model_id=self._model_id,
+            prompt=self._prompt,
+            jpeg_quality=self._jpeg_quality,
+            logger=self.get_logger(),
+        )
         self._frame_max_age_sec = max(0.1, float(self.get_parameter('frame_max_age_sec').value))
         self._request_timeout_sec = max(1.0, float(self.get_parameter('request_timeout_sec').value))
         self._bridge = CvBridge()
@@ -92,15 +93,35 @@ class VisionAINode(Node):
                 f'image_topic={image_topic} max_age={self._frame_max_age_sec:.1f}s'
             )
 
-        if Ark is None:
-            self.get_logger().error('[VISION_AI] Ark SDK unavailable; install volcengine-python-sdk[ark]')
-        elif not self._api_key:
-            self.get_logger().error('[VISION_AI] ARK_API_KEY is empty; cloud analysis disabled')
+        if not self._vision.ready:
+            self.get_logger().error(
+                f'[VISION_AI] {self._vision_provider} API is not ready; '
+                'check the shared voice_driver/.env credentials'
+            )
         else:
             self.get_logger().info(
-                f'[VISION_AI] Ark ready model={self._model_id} '
+                f'[VISION_AI] provider={self._vision_provider} ready model={self._model_id} '
                 f'prompt_len={len(self._prompt)}'
             )
+
+    def _resolve_vision_api(self, volc: dict) -> tuple[str, str, str]:
+        """Prefer the shared .env provider, retaining legacy Ark YAML fallback."""
+        provider = os.environ.get('VISION_PROVIDER', '').strip().lower()
+        if not provider:
+            provider = 'ark' if (volc.get('api_key') or os.environ.get('ARK_API_KEY')) else self._voice_env.resolved_vision_provider()
+
+        if provider in {'dashscope', 'bailian', '百炼'}:
+            return (
+                'dashscope',
+                self._voice_env.dashscope_api_key,
+                self._voice_env.dashscope_model_id,
+            )
+
+        return (
+            'ark',
+            str(volc.get('api_key') or self._voice_env.ark_api_key).strip(),
+            str(volc.get('model_id') or self._voice_env.ark_model_id).strip(),
+        )
 
     def _load_config(self) -> dict:
         configured = str(self.get_parameter('config_path').value).strip()
@@ -173,25 +194,15 @@ class VisionAINode(Node):
 
     def _analyze_worker(self, frame: Any) -> None:
         try:
-            if Ark is None or not self._api_key:
-                self._publish_status('analysis_failed:ark_not_ready')
+            if not self._vision.ready:
+                self._publish_status(f'analysis_failed:{self._vision_provider}_not_ready')
                 return
             started = self.get_clock().now().nanoseconds / 1e9
-            self.get_logger().info('[VISION_AI] cloud request started')
-            encoded = self._encode_image(frame)
-            client = Ark(api_key=self._api_key)
-            response = client.chat.completions.create(
-                model=self._model_id,
-                messages=[{'role': 'user', 'content': [
-                    {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{encoded}'}},
-                    {'type': 'text', 'text': self._prompt},
-                ]}],
-                timeout=self._request_timeout_sec,
+            self.get_logger().info(
+                f'[VISION_AI] {self._vision_provider} cloud request started '
+                f'timeout={self._request_timeout_sec:.1f}s'
             )
-            content = response.choices[0].message.content if response.choices else ''
-            if not isinstance(content, str):
-                content = str(content)
-            content = content.strip()
+            content = self._vision.analyze_bgr(frame)
             elapsed = self.get_clock().now().nanoseconds / 1e9 - started
             if not content:
                 self.get_logger().error(f'[VISION_AI] cloud response empty elapsed={elapsed:.3f}s')
@@ -212,14 +223,6 @@ class VisionAINode(Node):
             with self._busy_lock:
                 self._busy = False
             self.get_logger().info('[VISION_AI] background task finished; ready for next trigger')
-
-    def _encode_image(self, frame: Any) -> str:
-        ok, encoded = cv2.imencode(
-            '.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality]
-        )
-        if not ok:
-            raise RuntimeError('jpeg_encode_failed')
-        return base64.b64encode(encoded.tobytes()).decode('ascii')
 
     def _publish_status(self, status: str) -> None:
         msg = String()

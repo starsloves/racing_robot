@@ -360,6 +360,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._log_session('CONFIG', f'日志路径={self._session_log.path}')
 
     def destroy_node(self):
+        self._set_vision_inference_active(False)
+        self._set_stage2_http_active(False)
         if getattr(self, '_session_log', None) is not None:
             self._session_log.close()
             self._session_log = None
@@ -1649,6 +1651,15 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         if node is not None and hasattr(node, 'set_inference_active'):
             node.set_inference_active(active)
 
+    def _set_stage2_http_active(self, active: bool):
+        node = getattr(self, '_vision_node', None)
+        if node is None:
+            return
+        method_name = 'start_http_server' if active else 'stop_http_server'
+        method = getattr(node, method_name, None)
+        if method is not None:
+            method()
+
     def phase_callback(self, msg):
         previous_phase = self.phase
         incoming = int(msg.data)
@@ -1672,6 +1683,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                     self.start_after_time = None
                     self.reported_start_delay = False
                     self.reported_waiting_pose = False
+                    self._set_stage2_http_active(True)
                     self._set_vision_inference_active(True)
                     self.get_logger().info('[PHASE] ✓ 测试模式接受初始 phase=2，准备启动 Stage2')
                     self.try_start_mission()
@@ -1687,6 +1699,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         if previous_phase != self.phase and self.phase != 2:
             self.waiting_for_phase2_start = False
             self._set_vision_inference_active(False)
+            self._set_stage2_http_active(False)
             if self.mission_active or previous_phase == 2:
                 self.cmd_pub.publish(self.create_twist())
                 self.mission_active = False
@@ -1699,6 +1712,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self.start_after_time = None
             self.reported_start_delay = False
             self.reported_waiting_pose = False
+            self._set_stage2_http_active(True)
             self._set_vision_inference_active(True)
             self.get_logger().info('[MISSION] 收到 phase=2，准备启动 Stage2')
             self.try_start_mission()

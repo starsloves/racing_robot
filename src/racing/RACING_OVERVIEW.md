@@ -9,7 +9,11 @@
 
 ## 1. 系统架构总览
 
-### 1.1 三阶段流转
+### 1.1 HTTP 监控端口互斥规则
+
+三个阶段虽然由总启动常驻加载，但视觉 HTTP 服务严格随 `competition_phase` 互斥：Stage1 仅在 phase=1 绑定 **8081**，Stage2 仅在 phase=2 绑定 **8082**，Stage3 仅在 phase=3 绑定 **8083**。阶段切换时，离开阶段会先停止 HTTP server 并释放其端口；Stage3 的通道 YOLO 只做内部重定位，**不提供 8081 HTTP 服务**。根路径均提供同一 `vision_viewer.html`，页面只轮询当前访问的端口并只显示对应阶段。
+
+### 1.2 三阶段流转
 
 ```
 competition_controller.py（Stage1 主控）
@@ -28,12 +32,12 @@ competition_controller.py（Stage1 主控）
   │
   └── phase=3 ──── Stage3: 返程导航
                    │ 官方包：racing_stage3
-                   ├── Stage3ReturnNavigator — 通道对中 + P 矩形中心直达
+                   ├── Stage3ReturnNavigator — 通道对中 + 地图粗导航 + P 视觉最终到达
                    ├── Stage1 4态避障复用
                    └── 终点 P 点区域
 ```
 
-### 1.2 关键 Topic 拓扑
+### 1.3 关键 Topic 拓扑
 
 | Topic | 类型 | 发布者 | 说明 |
 |---|---|---|---|
@@ -56,7 +60,7 @@ competition_controller.py（Stage1 主控）
 | `/stage2_obstacle_markers` | MarkerArray | Stage2InertialNavigator | 障碍物聚类可视化（rviz2） |
 | `/vision_debug` | Image | Stage2InertialNavigator | 视觉车道居中矫正图（rviz2） |
 
-### 1.3 坐标系
+### 1.4 坐标系
 
 | 坐标系 | 类型 | 说明 |
 |---|---|---|
@@ -64,7 +68,7 @@ competition_controller.py（Stage1 主控）
 | `/odom_combined` | 局部里程计 | EKF 融合 IMU+轮速；Stage2 仅使用相邻 xy 的欧氏距离，不使用其 orientation |
 | `/map` | 全局地图 | 全局地图坐标系；`map→odom_combined` 静态变换由 launch 参数注入（默认 0.50, 0.20 @ ~10°） |
 
-### 1.4 位姿源规则
+### 1.5 位姿源规则
 
 - **Stage1 通道导航位置使用 TF `map <- base_footprint`**（目标点是 map 坐标，不能直接拿 `/odom_combined` xy）
 - **里程距离（`/odom_combined`）**：仅使用相邻位置的欧氏位移累计距离；不得使用其 orientation
@@ -72,7 +76,7 @@ competition_controller.py（Stage1 主控）
 - **禁止**使用 `/odom` 的角度参与导航计算，角度来源必须为 IMU
 - `/odom` 的 orientation 与 `/odom_combined` 的 orientation 均不参与 Stage2 导航
 
-### 1.5 Package 总览
+### 1.6 Package 总览
 
 | 包 | 阶段 | 类型 | 说明 |
 |---|---|---|---|
@@ -113,7 +117,7 @@ timer_callback()
 ### 2.2 盲驱行为
 
 - 默认固定线速度 0.2 m/s、不转向（`blind_angular_speed=0`）盲驱。
-- 若二维码仍未识别且 TF 得到的 `map_x > 3.5m`，进入二维码左侧搜索：降速至
+- 若二维码仍未识别且 `/odom_combined` 的 `odom_x > 3.5m`，进入二维码左侧搜索：降速至
   `0.12m/s` 并以 `+0.55rad/s` 左转；二维码回调后立即退出该搜索分支。
 - 左侧搜索只作用于 Stage1 `forward` 状态，不影响避障、后退和通道导航。
 
@@ -146,10 +150,11 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 - 目标：Stage1 -> Stage2 交接目标由 YOLO bbox 水平中心和 YAML 垂直锚点通过 `/aurora/rgb/camera_info` 和相机 TF 实时投影到 map；Stage1 的 corridor 起始目标和交接时本地 map 对齐点当前均为 YAML 配置的 `(2.50, 2.50)`。
 - 规划：默认 `use_corridor_planner=true`，占用膨胀 + A* 规划自由空间路径；失败回退直线
 - 跟踪：Pure Pursuit 跟踪规划路径（可斜穿）；`left_recover` 仅在 map_x 过大时介入
+- 地图通道视觉居中：倒退结束进入 A* + Pure Pursuit 后，YOLO 保持推理；仅对新鲜且置信度达标的 bbox 水平偏移叠加死区、低通和限幅后的微小角速度。路径、速度和门线交权仍完全由地图 + IMU 决定，视觉不能单独切 Stage2。
 - 通道 YOLO 交接：二维码触发后，倒退阶段立即启用 YOLO；连续 `channel_yolo_confirm_frames` 个有效框后才接管，防止单帧误检。接管先以 `channel_yolo_align_speed` 和 IMU 对齐 `channel_handoff_yaw_deg`，误差小于 `channel_yolo_align_tolerance_deg` 后才以 `channel_yolo_chase_speed` 快速沿 +Y 接近；YOLO 仅提供水平误差，IMU 是唯一 yaw 来源。
 - 末端交接：不再以丢框后的里程计距离交权。到达 YAML 门线 `channel_handoff_release_y` 后，必须同时满足 `channel_handoff_release_x_tolerance_m` 和 `channel_handoff_release_yaw_tolerance_deg`，才停车并切 Stage2。丢框期间保持 IMU +Y，超过 `channel_yolo_lost_continue_sec` 仍未过门线则回退已有地图通道导航。激光避障优先打断追踪，恢复后回到被打断状态。
 - 倒退：二维码回调后立即进入记录路径倒退，不再先发送零速度制动。路径记录、路点追踪和 `back_target_x` 截止判定均使用 `/odom_combined` 的位置；满足 `odom_x <= back_target_x` 后立即退出倒退，map 坐标不参与倒退截止。
-- 图像监控：通道 YOLO 独立持有 YAML `channel_yolo_http_port`（默认 8081），启动即提供占位帧；`/channel_raw.jpg`、`/channel_yolo.jpg` 为单帧，`/stream_raw.mjpg`、`/stream.mjpg` 为实时流，`/health` 提供帧数、帧龄和推理状态。根路径网页同时显示原图与检测流。旧分割模块不再抢占 8081。模型、速度、门线、容差和图像路径均以 `stage1_controller.yaml` 为唯一来源。
+- 图像监控：通道 YOLO 在且仅在 `competition_phase=1` 时绑定 YAML `channel_yolo_http_port`（默认 8081）；离开 Stage1 立即关闭服务并释放端口。`/channel_raw.jpg`、`/channel_yolo.jpg` 为单帧，`/stream_raw.mjpg`、`/stream.mjpg` 为实时流，`/health` 提供帧数、帧龄和推理状态。根路径网页同时显示原图与检测流。旧分割模块不再抢占 8081。模型、速度、门线、容差和图像路径均以 `stage1_controller.yaml` 为唯一来源。
 - 相机信息话题、停车距离、位置容差、速度、角速度和航向增益均以 `stage1_controller.yaml` 为准。
 - 超时：`corridor_timeout_sec` 到时停车等待，不绕过 map 目标直接放行 Stage2
 - 日志：`~/dev_ws/log/competition_stage1/latest.log` 输出 plan refresh / region_entry 细节
@@ -354,7 +359,7 @@ SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相
 #### 日志排查
 - Stage2 会话日志：`~/dev_ws/log/competition_stage2/latest.log`
 - 关键 tag：`HYBRID_START` / `HYBRID_STATE` / `HYBRID_CTRL` / `HYBRID_SAFE_STOP` / `HYBRID_DONE` / `TELEM`
-- 视觉预览：HTTP `:8082` + `/vision_debug`
+- 视觉预览：仅在 `competition_phase=2` 时提供 HTTP `:8082`；切离 Stage2 即关闭。`/vision_debug` 话题不受 HTTP 生命周期影响。
 
 #### 长直道异步图生文与语音
 
@@ -387,7 +392,7 @@ SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相
 
 | 核心文件 | 行数 | 说明 |
 |---|---|---|
-| `stage3_return_navigator.py` | — | 官方返程主体：前置通道 YOLO 对中 + P 矩形中心直达 + Stage1 4态避障 |
+| `stage3_return_navigator.py` | — | 官方返程主体：前置通道 YOLO 对中 + 地图粗导航 + P 视觉最终到达 + Stage1 4态避障 |
 | `global_path_planner.py` | — | A* 规划 mixin（TF 转换 / occupancy grid / scan overlay）|
 | `phase3_test_trigger.py` | — | 独立测试工具，正式 total 不启动 |
 | `stage3_test_simulator.py` | — | 返程测试工具，正式 total 不启动 |
@@ -396,24 +401,25 @@ SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相
 
 ### 4.1 返程路径
 
-路点通过 **JSON 参数** 传入（map 全局坐标系），当前生产配置以 P 矩形中心为最终目标：
+路点通过 **JSON 参数** 传入（map 全局坐标系），仅用于尚未识别 P 时的粗导航；最终到达完全由 P 视觉决定：
 
 | 参数 | 当前值 | 说明 |
 |---|---|---|
-| `return_waypoints_json` | `[{"x":0.20,"y":0.15,"speed":0.15,"description":"P_region_center"}]` | 默认终点为 P 矩形中心 |
+| `return_waypoints_json` | `[{"x":0.20,"y":0.15,"speed":0.15,"description":"P_region_center"}]` | 搜索 P 的地图粗导航目标，不作最终完成判据 |
 | `goal_box_x_min/max` | `0.1 / 0.3` | P 矩形区域 X 边界 |
 | `goal_box_y_min/max` | `0.1 / 0.2` | P 矩形区域 Y 边界 |
-| `goal_center_stop_distance_m` | `0.10` | 距 P 矩形中心 10cm 时提前停车并完成 Stage3 |
+| `goal_center_stop_distance_m` | `0.10` | 保留历史参数；生产 Stage3 不再使用地图中心判定完成 |
 
-Phase3 启动后先执行前置通道 YOLO 对中并重置内部 map 初始值，然后根据当前 map 位姿直接朝 P 矩形中心行驶。距离中心小于等于 `goal_center_stop_distance_m` 时立即停车完成。
+Phase3 启动后先执行前置通道 YOLO 对中并重置内部 map 初始值，再以地图目标 `0.35 m/s` 粗导航并全程检测 P。连续确认 P 后切入视觉伺服，以 `0.50 m/s` 和 bbox 水平偏差控制；视觉接管后 P 丢失或检测超时即发布 `v=0`、完成 Stage3，让底盘惯性自然滑入 P，不再以 map 位姿结束。
 
 ### 4.2 核心参数
 
 | 参数 | 值 | 说明 |
 |---|---|---|
 | `pursuit_lookahead_m` | 0.45 m | 预瞄距离 |
-| `pursuit_linear_speed` | 0.18 m/s | PP 线速度 |
-| `goal_center_stop_distance_m` | 0.10 m | 距 P 矩形中心 10cm 提前停车 |
+| `pursuit_linear_speed` | 0.35 m/s | 未识别 P 时的地图粗导航速度 |
+| `p_approach_linear_speed` | 0.50 m/s | 连续识别 P 后的视觉终段速度 |
+| `p_detection_timeout_sec` | 0.35 s | 视觉终段检测超时后发布零速度并完成 |
 | `pursuit_heading_stop_deg` | 70.0° | 航向差大于此值则进入低速正向重定向 |
 | `pursuit_turn_kp` | 1.2 | PP 转向 P 增益 |
 | `waypoint_tolerance` | 0.18 m | 中间路点容差 |
@@ -425,15 +431,15 @@ phase=3 收到
   └─ start_delay_sec 后 → pre_return_channel_yolo → reset_stage3_map_origin
       └─ control_loop
           ├─ emergency_stop
-          ├─ goal_center_stop: 距 P 矩形中心 ≤ goal_center_stop_distance_m → complete
-          ├─ [避障] Stage1 4态聚类避障（interrupt running）
-          └─ drive_to_p_center：固定目标为 P 矩形中心，按距离/航向闭环前进
+          ├─ [避障] Stage1 4态聚类避障（仅地图粗导航态）
+          └─ map_search_p：地图粗导航 + P 检测连续确认
+              └─ p_approach：视觉伺服 0.50m/s；P 丢失/超时 → v=0 → complete
 ```
 
 ### 4.4 状态机
 
 ```
-idle → armed → pre_return_channel_yolo → running(drive_to_p_center) → complete
+idle → armed → pre_return_channel_yolo → running(map_search_p) → p_approach → complete
   ↑         running 时可中断为：
   └── avoiding → countersteer → recovering → running
 ```
@@ -443,7 +449,7 @@ idle → armed → pre_return_channel_yolo → running(drive_to_p_center) → co
 | 问题 | 参数 | 方向 |
 |---|---|---|
 | 路点到不了 | `waypoint_tolerance` | ↑ |
-| P 中心提前停车距离不准 | `goal_center_stop_distance_m` | 停太早 ↓ / 停太晚 ↑ |
+| P 视觉终段过早/过晚 | `p_approach_consecutive_hits` / `p_detection_timeout_sec` | ↑确认帧 / 调整超时 |
 | 震荡 | `pursuit_turn_kp` | ↓ |
 | 避障误触发 | `avoid_min_turn_angle_deg` / `avoid_safe_distance` | 调阈值 |
 

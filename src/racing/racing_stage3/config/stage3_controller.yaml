@@ -86,8 +86,8 @@ stage3_return_navigator:
     # Pure Pursuit 路径跟踪 (Pure Pursuit Path Following)
     # ────────────────────────────────────────────────────────────────────────
 
-    # 巡航线速度 (m/s) — 路径跟踪时的前进速度
-    pursuit_linear_speed: 0.18
+    # 地图粗导航线速度 (m/s) — 仅用于尚未识别到 P 时搜索目标
+    pursuit_linear_speed: 0.35
 
     # 前视距离 (m) — 追踪路径上前方此距离的点
     pursuit_lookahead_m: 0.45
@@ -134,8 +134,11 @@ stage3_return_navigator:
     # 完成条件 bbox 填充比例 — bbox 宽度占画面比例 > 此值判定到达；降低阈值用于提前刹停
     p_complete_bbox_fill_ratio: 0.35
 
-    # 接近线速度 (m/s) — 识别到 P 后视觉伺服高速接近
+    # 接近线速度 (m/s) — 连续识别到 P 后由视觉接管并直接高速接近
     p_approach_linear_speed: 0.50
+
+    # P 检测结果的最大有效年龄 (s)；P 已接管后若超时/丢失，立即发布 v=0 并完成
+    p_detection_timeout_sec: 0.35
 
     # P 点视觉到达后额外前进距离 (m) — 0 表示达到视觉阈值即刹停
     p_extra_forward_distance_m: 0.00
