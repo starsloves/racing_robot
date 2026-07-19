@@ -67,7 +67,7 @@ def generate_launch_description():
     )
     enable_cmd_relay_arg = DeclareLaunchArgument(
         'enable_cmd_relay',
-        default_value='false',
+        default_value='true',
         description='Relay Stage2 velocity commands to /cmd_vel (standalone only)',
     )
     relay_input_topic_arg = DeclareLaunchArgument('relay_input_topic', default_value='/stage2_cmd_vel')

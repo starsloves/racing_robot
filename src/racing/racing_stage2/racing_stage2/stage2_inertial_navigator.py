@@ -13,6 +13,7 @@ from racing_stage2.scan_processor import ScanProcessor
 from racing_stage2.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 from racing_stage2.stage2_vision_mixin import Stage2VisionMixin
+from racing_stage2.track_controller import ImuDistancePose, Stage2TrackController
 
 
 class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
@@ -26,6 +27,34 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('use_test_direction_fallback', False)
         self.declare_parameter('test_start_mode', 'auto')
         self.declare_parameter('test_feedback_prefix', '第二阶段')
+        self.declare_parameter('track_controller_enabled', True)
+        self.declare_parameter('start_stationary_speed_mps', 0.03)
+        self.declare_parameter('start_stationary_yaw_rate_rps', 0.08)
+        self.declare_parameter('start_stationary_hold_sec', 0.50)
+        self.declare_parameter('track_max_speed', 0.34)
+        self.declare_parameter('track_corner_speed', 0.12)
+        self.declare_parameter('track_max_lateral_accel', 0.55)
+        self.declare_parameter('track_heading_kp', 1.8)
+        self.declare_parameter('track_line_heading_kp', 0.80)
+        self.declare_parameter('track_cross_kp', 2.2)
+        self.declare_parameter('track_curvature_kp', 1.0)
+        self.declare_parameter('track_max_angular', 0.75)
+        self.declare_parameter('track_entry_angular', 0.75)
+        self.declare_parameter('track_entry_linear', 0.08)
+        self.declare_parameter('track_entry_min_linear', 0.04)
+        self.declare_parameter('track_entry_radius', 0.18)
+        self.declare_parameter('track_entry_tolerance_deg', 2.0)
+        self.declare_parameter('track_settle_sec', 0.25)
+        self.declare_parameter('track_entry_heading_kp', 1.0)
+        self.declare_parameter('track_yaw_rate_damping', 0.30)
+        self.declare_parameter('track_entry_yaw_rate_tolerance', 0.10)
+        self.declare_parameter('track_corner_radius', 0.18)
+        self.declare_parameter('track_vision_lateral_scale_m', 0.30)
+        self.declare_parameter('track_vision_lateral_weight', 0.35)
+        self.declare_parameter('track_lookahead_m', 0.45)
+        self.declare_parameter('track_heading_slowdown_deg', 10.0)
+        self.declare_parameter('track_finish_tolerance_m', 0.10)
+        self.declare_parameter('track_odom_combined_step_max_m', 0.12)
         # field_track yaml 路径。空=根据 direction 自动选择 config/field_track_{direction}.yaml
         self.declare_parameter('field_track_yaml', '')
         # 避障参数（yaml 配置，直行避障使用）
@@ -135,6 +164,46 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 
         self._setup_wheel_odom_position()
         self._setup_session_log()
+        self._track_controller = Stage2TrackController(
+            max_speed=float(self.get_parameter('track_max_speed').value),
+            corner_speed=float(self.get_parameter('track_corner_speed').value),
+            max_lateral_accel=float(self.get_parameter('track_max_lateral_accel').value),
+            stanley_heading_kp=float(self.get_parameter('track_heading_kp').value),
+            line_heading_kp=float(self.get_parameter('track_line_heading_kp').value),
+            stanley_cross_kp=float(self.get_parameter('track_cross_kp').value),
+            curvature_kp=float(self.get_parameter('track_curvature_kp').value),
+            max_angular=float(self.get_parameter('track_max_angular').value),
+            entry_angular=float(self.get_parameter('track_entry_angular').value),
+            entry_linear=float(self.get_parameter('track_entry_linear').value),
+            entry_min_linear=float(self.get_parameter('track_entry_min_linear').value),
+            entry_radius=float(self.get_parameter('track_entry_radius').value),
+            entry_tolerance_deg=float(self.get_parameter('track_entry_tolerance_deg').value),
+            settle_sec=float(self.get_parameter('track_settle_sec').value),
+            entry_heading_kp=float(self.get_parameter('track_entry_heading_kp').value),
+            yaw_rate_damping=float(self.get_parameter('track_yaw_rate_damping').value),
+            entry_yaw_rate_tolerance=float(
+                self.get_parameter('track_entry_yaw_rate_tolerance').value
+            ),
+            corner_radius=float(self.get_parameter('track_corner_radius').value),
+            vision_lateral_scale_m=float(self.get_parameter('track_vision_lateral_scale_m').value),
+            vision_lateral_weight=float(self.get_parameter('track_vision_lateral_weight').value),
+            lookahead_m=float(self.get_parameter('track_lookahead_m').value),
+            heading_slowdown_deg=float(
+                self.get_parameter('track_heading_slowdown_deg').value
+            ),
+            finish_tolerance_m=float(self.get_parameter('track_finish_tolerance_m').value),
+        )
+        self._track_mission_active = False
+        # The track controller works in an IMU-aligned local frame.  The EKF
+        # odometry contributes only travelled distance; its orientation is
+        # deliberately never used by Stage2 navigation.
+        self._track_pose = None
+        self._track_pose_integrator = ImuDistancePose(
+            max_step_m=float(self.get_parameter('track_odom_combined_step_max_m').value)
+        )
+        self._track_distance_m = 0.0
+        self._stationary_since = None
+        self._last_stationary_log = 0.0
         self._pure_linear_after_avoid = False  # 避障完成后纯线速度直行
         
         # 加速渐变状态（转弯后平滑过渡）
@@ -251,6 +320,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 
     def imu_callback(self, msg):
         self.imu_yaw = self.quaternion_to_yaw(msg.orientation)
+        self.current_imu_yaw_rate = float(msg.angular_velocity.z)
         # 航向角始终使用 IMU，不管位置源是什么
         self.current_yaw = self.imu_yaw
         if self.waiting_for_phase2_start:
@@ -602,11 +672,25 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         )
         self.current_odom_yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
+        self._update_track_pose_from_odom_combined()
         
         if not self._wheel_pose_source_active() or not self._wheel_odom_ready:
             self.current_position = self._last_ekf_position
         if self.waiting_for_phase2_start:
             self.try_start_mission()
+
+    def _update_track_pose_from_odom_combined(self):
+        """Integrate EKF distance in the IMU heading frame for track control."""
+        if (
+            not self._track_mission_active
+            or self._last_ekf_position is None
+            or self.current_yaw is None
+        ):
+            return
+        self._track_pose = self._track_pose_integrator.update(
+            self._last_ekf_position, self.current_yaw
+        )
+        self._track_distance_m = self._track_pose_integrator.total_distance_m
 
     def projected_distance(self):
         """使用 odom 帧的欧氏距离判断直行完成，避免航向偏差导致投影错误。
@@ -762,6 +846,107 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         if self.test_start_mode in ('full_entry', 'pre_loop', 'nav_failed', 'false'):
             return False
         return bool(self.use_corridor_path)
+
+    def _stage2_start_is_stationary(self):
+        """Do not arm Stage2 while another velocity source moves the base."""
+        twist = getattr(self, '_wheel_twist', None)
+        if twist is None:
+            return False
+        speed = math.hypot(float(twist[0]), float(twist[1]))
+        yaw_rate = abs(float(twist[2]))
+        speed_limit = float(self.get_parameter('start_stationary_speed_mps').value)
+        yaw_limit = float(self.get_parameter('start_stationary_yaw_rate_rps').value)
+        now = self.get_clock().now().nanoseconds / 1e9
+        if speed > speed_limit or yaw_rate > yaw_limit:
+            self._stationary_since = None
+            if now - self._last_stationary_log > 1.0:
+                self._last_stationary_log = now
+                self._log_session(
+                    'START_BLOCKED',
+                    f'底盘未静止 speed={speed:.3f} yaw_rate={yaw_rate:.3f}',
+                )
+            return False
+        if self._stationary_since is None:
+            self._stationary_since = now
+            return False
+        return now - self._stationary_since >= float(
+            self.get_parameter('start_stationary_hold_sec').value
+        )
+
+    def _start_track_mission(self):
+        if self._last_ekf_position is None or self.current_yaw is None:
+            return False
+        now = self.get_clock().now().nanoseconds / 1e9
+        self._track_pose_integrator.reset(self._last_ekf_position, self.current_yaw)
+        self._track_pose = self._track_pose_integrator.pose
+        self._track_distance_m = self._track_pose_integrator.total_distance_m
+        self._track_controller.start(self.direction, self._track_pose,
+                                     self.current_yaw, now,
+                                     distance_m=self._track_distance_m)
+        self._track_mission_active = True
+        self.mission_active = True
+        self.current_segment = {'type': 'track', 'description': 'rounded_track'}
+        self._log_session(
+            'TRACK_START',
+            f'direction={self.direction} local=(0.000,0.000) '
+            f'odom_combined=({self._last_ekf_position[0]:.3f},'
+            f'{self._last_ekf_position[1]:.3f}) '
+            f'yaw_imu={math.degrees(self.current_yaw):.1f}',
+        )
+        self.publish_feedback(
+            f'{self.test_feedback_prefix}圆角轨迹闭环启动，方向: {self.direction_text()}'
+        )
+        return True
+
+    def _run_track_controller(self):
+        now = self.get_clock().now().nanoseconds / 1e9
+        visual = None
+        if self._track_pose is None or self.current_yaw is None:
+            self.cmd_pub.publish(self.create_twist())
+            return
+        if self.front_obstacle_distance < float(
+                self.get_parameter('turn_obstacle_stop_m').value):
+            command = self._track_controller.safe_stop('front_obstacle')
+        else:
+            visual = self._get_vision_line_status() if getattr(
+                self, '_vision_node', None) is not None else None
+            command = self._track_controller.step(
+                now, self._track_pose, self.current_yaw, visual,
+                yaw_rate=getattr(self, 'current_imu_yaw_rate', 0.0),
+                distance_m=self._track_distance_m,
+            )
+        self.cmd_pub.publish(self.create_twist(command.linear, command.angular))
+        if visual and bool(visual.get('valid', False)):
+            vision_log = (f'valid e={float(visual.get("error", 0.0) or 0.0):+.3f} '
+                          f'c={float(visual.get("confidence", 0.0) or 0.0):.2f} '
+                          f'age={float(visual.get("age", 999.0) or 999.0):.2f}')
+        else:
+            vision_log = 'invalid'
+        self._log_session(
+            'TRACK_CTRL',
+            f'state={command.state} v={command.linear:.3f} w={command.angular:.3f} '
+            f'progress={command.progress_m:.3f} cross={command.cross_track_m:.3f} '
+            f'head={math.degrees(command.heading_error_rad):.1f} '
+            f'target_v={command.target_speed:.3f} '
+            f'segment={command.segment} '
+            f'seg_s={command.segment_progress_m:.3f}/{command.segment_target_m:.3f} '
+            f'turn={math.degrees(command.turn_progress_rad):.1f}/'
+            f'{math.degrees(command.turn_target_rad):.1f} '
+            f'imu_xy=({self._track_pose[0]:.3f},{self._track_pose[1]:.3f}) '
+            f'ekf_s={self._track_distance_m:.3f} '
+            f'imu_w={getattr(self, "current_imu_yaw_rate", 0.0):.3f} '
+            f'vision={vision_log}',
+        )
+        if command.safe_stop:
+            self._log_session('TRACK_SAFE_STOP', command.reason)
+            self.publish_feedback(
+                f'{self.test_feedback_prefix}轨迹控制停车: {command.reason}'
+            )
+            self._track_mission_active = False
+            self.mission_active = False
+        elif command.complete:
+            self._track_mission_active = False
+            self.finish_mission()
 
     def start_mode_text(self):
         if self.nav_succeeded_for_test_start():
@@ -1277,12 +1462,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self.run_corridor_path_stage()
             return
 
-        # 纯 SEG 主控：不走 field_track 的 move/arc/turn 段
-        pure_mode = bool(getattr(self, '_vision_pure_mode_enabled', False))
-        if not pure_mode and self.has_parameter('vision_pure_mode_enabled'):
-            pure_mode = bool(self.get_parameter('vision_pure_mode_enabled').value)
-        if pure_mode and self.mission_active and hasattr(self, 'run_pure_vision_mission'):
-            self.run_pure_vision_mission()
+        if self._track_mission_active:
+            self._run_track_controller()
             return
 
         if not self.mission_active or self.current_segment is None:
@@ -1310,9 +1491,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             return
 
         segment_type = self.current_segment['type']
-        if segment_type == 'vision_follow':
-            if hasattr(self, 'run_pure_vision_mission'):
-                self.run_pure_vision_mission()
+        if segment_type == 'track':
+            self._run_track_controller()
             return
         if segment_type == 'turn':
             self.run_turn_segment()
@@ -1451,6 +1631,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 )
             return
 
+        if not self._stage2_start_is_stationary():
+            self.start_after_time = None
+            self.reported_start_delay = False
+            return
+
         if self.start_after_time is None:
             self.start_after_time = self.get_clock().now().nanoseconds / 1e9 + self.start_delay_sec
             if not self.reported_start_delay:
@@ -1481,27 +1666,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         elif getattr(self, '_vision_node', None) is not None:
             self._vision_node.set_inference_active(True)
 
-        # 纯 SEG 主控：替换 field_track 段式链路（必须在 begin_inertial_plan 之前 return）
-        pure_mode = bool(getattr(self, '_vision_pure_mode_enabled', False))
-        if not pure_mode and self.has_parameter('vision_pure_mode_enabled'):
-            pure_mode = bool(self.get_parameter('vision_pure_mode_enabled').value)
-        if pure_mode and hasattr(self, 'start_pure_vision_mission'):
-            try:
-                # 仅用 plan 估算任务里程，不启动 arc/move 段
-                self.plan = self.build_inertial_plan(
-                    nav_succeeded=self.nav_succeeded_for_test_start()
-                )
-            except Exception as exc:
-                self.plan = []
-                self.get_logger().warn(f'[MISSION] pure-seg plan 估算失败: {exc}')
-            self.publish_feedback(
-                f'{self.test_feedback_prefix}纯SEG接管，方向: {self.direction_text()}'
-            )
-            self._log_session(
-                'MISSION',
-                f'纯SEG启动 direction={self.direction} plan_segments={len(self.plan or [])}',
-            )
-            self.start_pure_vision_mission()
+        if bool(self.get_parameter('track_controller_enabled').value):
+            self._start_track_mission()
             return
 
         self.publish_feedback(

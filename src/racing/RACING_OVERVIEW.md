@@ -39,8 +39,8 @@ competition_controller.py（Stage1 主控）
 |---|---|---|---|
 | `/cmd_vel` | Twist | competition_controller (phase1) / Stage3 / twist_cmd_relay | phase1/3 控制输出 |
 | `/stage2_cmd_vel` | Twist | Stage2InertialNavigator | phase2 独立控制 → Stage1 转发 /cmd_vel |
-| `/odom` | Odometry | origincar_base | 轮速里程计（编码器）— **Stage2 主位姿源** |
-| `/odom_combined` | PoseWithCovarianceStamped | robot_localization EKF | IMU+轮速融合 — Stage2 仅诊断日志 / Stage3 使用 |
+| `/odom` | Odometry | origincar_base | 轮速里程计；Stage2 仅用于启动静止判定和诊断 |
+| `/odom_combined` | Odometry | robot_localization EKF | Stage2 里程距离源（仅相邻 xy 欧氏距离）及 Stage3 定位源 |
 | `/map` | OccupancyGrid | map_overlay | 全局地图 — Stage3 使用 |
 | `/scan` | LaserScan | 激光雷达 | 避障输入 |
 | `/imu/data` | Imu | BNO055 | **航向角（yaw）来源** — Stage2 角度基准 |
@@ -57,17 +57,17 @@ competition_controller.py（Stage1 主控）
 
 | 坐标系 | 类型 | 说明 |
 |---|---|---|
-| `/odom` | 局部里程计 | 轮速编码器积分，**Stage2 主位姿源**（xy + yaw + 计程 + 控制同源） |
-| `/odom_combined` | 局部里程计 | EKF 融合 IMU+轮速，Stage2 仅诊断、Stage3 使用 |
+| `/odom` | 局部里程计 | 轮速编码器积分，仅用于 Stage2 启动静止判定和诊断 |
+| `/odom_combined` | 局部里程计 | EKF 融合 IMU+轮速；Stage2 仅使用相邻 xy 的欧氏距离，不使用其 orientation |
 | `/map` | 全局地图 | 全局地图坐标系；`map→odom_combined` 静态变换由 launch 参数注入（默认 0.50, 0.20 @ ~10°） |
 
 ### 1.4 位姿源规则
 
 - **Stage1 通道导航位置使用 TF `map <- base_footprint`**（目标点是 map 坐标，不能直接拿 `/odom_combined` xy）
-- **里程计（`/odom`）**：仅用于位置/距离计数（`x`、`y`、位移）
+- **里程距离（`/odom_combined`）**：仅使用相邻位置的欧氏位移累计距离；不得使用其 orientation
 - **IMU（`/imu/data`）**：用于提供航向角（`yaw`），同时为激光雷达提供角度基准
 - **禁止**使用 `/odom` 的角度参与导航计算，角度来源必须为 IMU
-- `/odom_combined`（EKF 融合）仅作诊断日志，不参与 Stage2 导航
+- `/odom` 的 orientation 与 `/odom_combined` 的 orientation 均不参与 Stage2 导航
 
 ### 1.5 Package 总览
 
@@ -162,7 +162,7 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 
 | 模块 | 核心文件 | 功能 |
 |---|---|---|
-| **导航** | `stage2_inertial_navigator.py` | 主控：YAML field_track + odom 欧氏距离 |
+| **导航** | `stage2_inertial_navigator.py` | 主控：锁定 `LINE` / `ARC` 段状态机；`/odom_combined` 距离 + IMU 航向 |
 | **场测赛道** | `field_track.py` | YAML 赛道段序加载 |
 | **避障** | `avoid_controller.py` | 独立 6 态闭环避障控制器 |
 | **避障几何** | `avoid_geometry.py` | 绕行路径规划（转向角 + 两脚距离） |

@@ -1,11 +1,11 @@
 # ================================================================================
 # Stage2 导航配置 (stage2_inertial_navigator)
 # ================================================================================
-# 当前默认：纯 SEG 视觉主控（vision_pure_mode_enabled=true）
-#   - Stage1 到入口后切 phase=2，Stage2 视觉全程接管
-#   - 不再执行 field_track 的 move/arc 开环舵角段
-#   - field_track 仅用于估算任务总里程
-# 兼容：vision_pure_mode_enabled=false 可回退旧混合链路
+# 当前默认：分段锁定轨迹闭环（/odom_combined 距离 + IMU 航向）
+#   - Stage1 到入口后切 phase=2，Stage2 先完成 IMU 入口转角
+#   - 直线和圆角使用固定轨迹闭环，视觉只做横向修正
+#   - field_track 旧段式执行仅保留兼容，不作为默认生产控制
+# 旧视觉主控仅保留为调试兼容模式，不作为生产入口
 # ================================================================================
 
 stage2_inertial_navigator:
@@ -54,6 +54,10 @@ stage2_inertial_navigator:
 
     # 启动延迟 (s) — Phase2 进入后等待此时长确保位姿就绪
     start_delay_sec: 0.5
+    track_controller_enabled: true
+    start_stationary_speed_mps: 0.03
+    start_stationary_yaw_rate_rps: 0.08
+    start_stationary_hold_sec: 0.50
 
     # ────────────────────────────────────────────────────────────────────────
     # 速度控制 (Speed Control)
@@ -266,11 +270,11 @@ stage2_inertial_navigator:
     corner_trigger_m: 0.25
 
     # ────────────────────────────────────────────────────────────────────────
-    # 纯 SEG 视觉主控（替换 Stage2 段式惯导）
+    # 旧纯 SEG 视觉主控（仅调试兼容，不作为生产入口）
     # ────────────────────────────────────────────────────────────────────────
     # true  : phase=2 后全程 SEG 跟线，不跑 field_track 的 arc/move 段
     # false : 回退旧“惯导段 + 视觉纠偏”链路
-    vision_pure_mode_enabled: true
+    vision_pure_mode_enabled: false
     # 控制架构（重写）：
     #   ENTRY  = 一进S2就准备转；方向=扫码入口（顺左/逆右）；出入口=直道几何恢复
     #   FOLLOW = 中线小纠偏；前边界触发 → TURN
@@ -339,7 +343,7 @@ stage2_inertial_navigator:
     # 开关（纯SEG下强制视觉主控）
     # ────────────────────────────────────────────────────────────────────────
     # IMU 航向修正：纯SEG下关闭，避免抢舵
-    imu_heading_correction_enabled: false
+    imu_heading_correction_enabled: true
     # 视觉横向控制总开关
     vision_offset_correction_enabled: true
     # 融合开关（兼容旧接口）
@@ -428,6 +432,40 @@ stage2_inertial_navigator:
     vision_turn_assist_angle_window_deg: 10.0
     move_accel_ramp_sec: 0.3
 
+    # 分段锁定圆角轨迹控制器
+    track_max_speed: 0.34
+    # 22:50 实测满舵时 IMU yaw-rate 约 0.45rad/s，因此按
+    # v/R=0.18/0.40=0.45rad/s 设计；更小半径必然距离不足、转角超调。
+    track_corner_speed: 0.18
+    track_max_lateral_accel: 0.55
+    # 圆弧采用 track_heading_kp；直线单独采用低增益航向闭环，避免
+    # 入口余转速触发反复左右摆舵。
+    track_heading_kp: 1.8
+    track_line_heading_kp: 0.80
+    # 仅保留兼容参数；惯导积分横偏不参与转向，横向修正仅接受新鲜高
+    # 置信视觉中线数据。
+    track_cross_kp: 2.2
+    track_curvature_kp: 1.0
+    track_max_angular: 0.75
+    track_entry_angular: 0.75
+    # 入口与圆角都保持非零线速度。0.18 / 0.40 = 0.45rad/s，匹配实测
+    # 满舵响应，同时避免 0.04m/s 时转向响应不足而画出异常大弧。
+    track_entry_linear: 0.18
+    track_entry_min_linear: 0.04
+    track_entry_radius: 0.40
+    track_entry_tolerance_deg: 3.0
+    track_settle_sec: 0.25
+    track_entry_heading_kp: 1.60
+    track_yaw_rate_damping: 0.45
+    track_entry_yaw_rate_tolerance: 0.10
+    track_corner_radius: 0.40
+    track_vision_lateral_scale_m: 0.30
+    track_vision_lateral_weight: 0.35
+    track_lookahead_m: 0.45
+    track_heading_slowdown_deg: 10.0
+    track_finish_tolerance_m: 0.10
+    track_odom_combined_step_max_m: 0.12
+
     # ────────────────────────────────────────────────────────────────────────
     # 定位 / 日志
     # ────────────────────────────────────────────────────────────────────────
@@ -437,6 +475,6 @@ stage2_inertial_navigator:
     wheel_odom_warmup_min_msgs: 5
     session_log_subdir: competition_stage2
     session_log_filename: latest.log
-    # 纯SEG 主控日志 2Hz；TELEM 可稍慢
+    # 轨迹控制日志 2Hz；TELEM 可稍慢
     session_telemetry_interval_sec: 0.50
     test_feedback_prefix: 第二阶段
