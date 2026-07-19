@@ -5,7 +5,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -72,6 +72,37 @@ def generate_launch_description():
     )
     relay_input_topic_arg = DeclareLaunchArgument('relay_input_topic', default_value='/stage2_cmd_vel')
     relay_output_topic_arg = DeclareLaunchArgument('relay_output_topic', default_value='/cmd_vel')
+    phase_topic_arg = DeclareLaunchArgument(
+        'phase_topic',
+        default_value='competition_phase',
+        description='Competition phase topic for production Stage2',
+    )
+    task_topic_arg = DeclareLaunchArgument(
+        'task_topic',
+        default_value='competition_qr_task',
+        description='QR task topic for production Stage2',
+    )
+    test_phase_topic_arg = DeclareLaunchArgument(
+        'test_phase_topic',
+        default_value='/stage2_test/competition_phase',
+        description='Isolated phase topic used only when enable_test_publisher=true',
+    )
+    test_task_topic_arg = DeclareLaunchArgument(
+        'test_task_topic',
+        default_value='/stage2_test/competition_qr_task',
+        description='Isolated task topic used only when enable_test_publisher=true',
+    )
+
+    active_phase_topic = PythonExpression([
+        "'", LaunchConfiguration('test_phase_topic'), "' if '",
+        LaunchConfiguration('enable_test_publisher'), "'.lower() in ('true', '1', 'yes') else '",
+        LaunchConfiguration('phase_topic'), "'"
+    ])
+    active_task_topic = PythonExpression([
+        "'", LaunchConfiguration('test_task_topic'), "' if '",
+        LaunchConfiguration('enable_test_publisher'), "'.lower() in ('true', '1', 'yes') else '",
+        LaunchConfiguration('task_topic'), "'"
+    ])
 
     # Optional support stack for standalone runs only
     support_actions = []
@@ -113,6 +144,8 @@ def generate_launch_description():
         parameters=[{
             'stage_number': 2,
             'test_direction': LaunchConfiguration('test_direction'),
+            'phase_topic': active_phase_topic,
+            'task_topic': active_task_topic,
         }],
         output='screen',
         condition=IfCondition(LaunchConfiguration('enable_test_publisher')),
@@ -126,6 +159,8 @@ def generate_launch_description():
             stage2_config,  # 统一配置文件（包含原 inertial + avoid 参数）
             {
                 'imu_topic': LaunchConfiguration('imu_topic'),
+                'phase_topic': active_phase_topic,
+                'task_topic': active_task_topic,
                 'test_direction': LaunchConfiguration('test_direction'),
                 'use_test_direction_fallback': LaunchConfiguration('enable_test_publisher'),
             },
@@ -177,6 +212,10 @@ def generate_launch_description():
         enable_cmd_relay_arg,
         relay_input_topic_arg,
         relay_output_topic_arg,
+        phase_topic_arg,
+        task_topic_arg,
+        test_phase_topic_arg,
+        test_task_topic_arg,
         *support_actions,
         map_overlay_stack,
         test_publisher,

@@ -87,7 +87,7 @@ class Stage3ReturnNavigator(Node):
         self._p_detector = None
         self._p_consecutive_hits = 0
         self._p_approach_conf_threshold = 0.5
-        self._p_complete_bbox_fill_ratio = 0.5
+        self._p_complete_bbox_fill_ratio = 0.35
         self._p_offset_filtered = 0.0
         self._p_extra_forward_active = False
         self._p_extra_forward_start_pose = None
@@ -225,14 +225,14 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_crop_ratio', 0.4)
         self.declare_parameter('p_approach_conf_threshold', 0.5)
         self.declare_parameter('p_approach_consecutive_hits', 3)
-        self.declare_parameter('p_complete_bbox_fill_ratio', 0.5)
-        self.declare_parameter('p_approach_linear_speed', 0.06)
+        self.declare_parameter('p_complete_bbox_fill_ratio', 0.35)
+        self.declare_parameter('p_approach_linear_speed', 0.50)
         self.declare_parameter('p_approach_angular_kp', 0.8)
         self.declare_parameter('p_approach_angular_deadband', 0.06)
         self.declare_parameter('p_approach_max_angular', 0.22)
         self.declare_parameter('p_approach_offset_filter_alpha', 0.35)
-        self.declare_parameter('p_extra_forward_distance_m', 0.50)
-        self.declare_parameter('p_extra_forward_speed', 0.08)
+        self.declare_parameter('p_extra_forward_distance_m', 0.00)
+        self.declare_parameter('p_extra_forward_speed', 0.50)
         # map y below this threshold enables P vision / YOLO inference
         self.declare_parameter('p_vision_enable_y_max', 2.0)
         self.declare_parameter('p_web_port', 8083)
@@ -772,7 +772,7 @@ class Stage3ReturnNavigator(Node):
             angular = -self._p_approach_angular_kp * effective_offset
         angular = max(-self._p_approach_max_angular, min(self._p_approach_max_angular, angular))
         
-        # 偏移较大时减速，偏移较小时加速
+        # 偏移较大时减速，偏移较小时按配置高速接近 P 点
         speed = self._p_approach_linear_speed
         if abs(filtered_offset) > 0.3:
             speed = speed * 0.5

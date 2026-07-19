@@ -5,7 +5,6 @@ import os
 import rclpy
 from nav_msgs.msg import Odometry
 
-from racing_stage2 import field_track
 from racing_stage2.stage2_inertial_base import Stage2InertialBase
 from racing_stage2.avoid_controller import AvoidConfig, AvoidController, NavState
 from racing_stage2.avoid_geometry import cross_segment_m
@@ -27,10 +26,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('use_test_direction_fallback', False)
         self.declare_parameter('test_start_mode', 'auto')
         self.declare_parameter('test_feedback_prefix', '第二阶段')
-        self.declare_parameter('track_controller_enabled', True)
         self.declare_parameter('start_stationary_speed_mps', 0.03)
         self.declare_parameter('start_stationary_yaw_rate_rps', 0.08)
-        self.declare_parameter('start_stationary_hold_sec', 0.50)
+        self.declare_parameter('start_stationary_hold_sec', 0.0)
         self.declare_parameter('track_max_speed', 0.34)
         self.declare_parameter('track_corner_speed', 0.12)
         self.declare_parameter('track_max_lateral_accel', 0.55)
@@ -40,14 +38,28 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_curvature_kp', 1.0)
         self.declare_parameter('track_max_angular', 0.75)
         self.declare_parameter('track_entry_angular', 0.75)
+        self.declare_parameter('track_corner_angular', 0.75)
         self.declare_parameter('track_entry_linear', 0.08)
         self.declare_parameter('track_entry_min_linear', 0.04)
         self.declare_parameter('track_entry_radius', 0.18)
+        self.declare_parameter('track_entry_medium_distance_m', 0.85)
+        self.declare_parameter('track_top_long_distance_m', 2.59)
+        self.declare_parameter('track_exit_medium_distance_m', 1.49)
         self.declare_parameter('track_entry_tolerance_deg', 2.0)
         self.declare_parameter('track_settle_sec', 0.25)
         self.declare_parameter('track_entry_heading_kp', 1.0)
         self.declare_parameter('track_yaw_rate_damping', 0.30)
         self.declare_parameter('track_entry_yaw_rate_tolerance', 0.10)
+        self.declare_parameter('track_entry_align_max_distance_m', 0.45)
+        self.declare_parameter('track_entry_align_error_tolerance', 0.08)
+        self.declare_parameter('track_entry_align_hold_sec', 0.20)
+        self.declare_parameter('track_entry_align_visual_kp', 0.55)
+        self.declare_parameter('track_arc_min_completion_ratio', 0.70)
+        self.declare_parameter('track_arc_finish_predict_sec', 0.18)
+        self.declare_parameter('track_arc_mismatch_angle_deg', 14.0)
+        self.declare_parameter('track_entry_stop_prepare_deg', 0.0)
+        self.declare_parameter('track_entry_arc_complete_lead_deg', 0.0)
+        self.declare_parameter('track_corner_arc_complete_lead_deg', 0.0)
         self.declare_parameter('track_corner_radius', 0.18)
         self.declare_parameter('track_vision_lateral_scale_m', 0.30)
         self.declare_parameter('track_vision_lateral_weight', 0.35)
@@ -55,8 +67,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_heading_slowdown_deg', 10.0)
         self.declare_parameter('track_finish_tolerance_m', 0.10)
         self.declare_parameter('track_odom_combined_step_max_m', 0.12)
-        # field_track yaml 路径。空=根据 direction 自动选择 config/field_track_{direction}.yaml
-        self.declare_parameter('field_track_yaml', '')
         # 避障参数（yaml 配置，直行避障使用）
         self.declare_parameter('avoid_turn_away_deg', 30.0)
         self.declare_parameter('avoid_turn_back_deg', 40.0)
@@ -87,13 +97,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.use_test_direction_fallback = bool(self.get_parameter('use_test_direction_fallback').value)
         self.test_start_mode = str(self.get_parameter('test_start_mode').value).strip().lower() or 'auto'
         self.test_feedback_prefix = str(self.get_parameter('test_feedback_prefix').value).strip() or '第二阶段'
-        ft_custom = str(self.get_parameter('field_track_yaml').value)
-        if ft_custom:
-            self._field_track_yaml = ft_custom
-        else:
-            here = os.path.dirname(os.path.realpath(__file__))
-            src_dir = os.path.dirname(here)
-            self._field_track_yaml = field_track.resolve_yaml_path(src_dir, self.test_direction, '')
+        self._track_config_name = 'stage2_controller.yaml::track_*'
 
         # 比赛默认待命：只有 competition_phase=2 后才启动
         self.phase = 1
@@ -174,15 +178,55 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             curvature_kp=float(self.get_parameter('track_curvature_kp').value),
             max_angular=float(self.get_parameter('track_max_angular').value),
             entry_angular=float(self.get_parameter('track_entry_angular').value),
+            corner_angular=float(self.get_parameter('track_corner_angular').value),
             entry_linear=float(self.get_parameter('track_entry_linear').value),
             entry_min_linear=float(self.get_parameter('track_entry_min_linear').value),
             entry_radius=float(self.get_parameter('track_entry_radius').value),
+            entry_medium_distance_m=float(
+                self.get_parameter('track_entry_medium_distance_m').value
+            ),
+            top_long_distance_m=float(
+                self.get_parameter('track_top_long_distance_m').value
+            ),
+            exit_medium_distance_m=float(
+                self.get_parameter('track_exit_medium_distance_m').value
+            ),
             entry_tolerance_deg=float(self.get_parameter('track_entry_tolerance_deg').value),
             settle_sec=float(self.get_parameter('track_settle_sec').value),
             entry_heading_kp=float(self.get_parameter('track_entry_heading_kp').value),
             yaw_rate_damping=float(self.get_parameter('track_yaw_rate_damping').value),
             entry_yaw_rate_tolerance=float(
                 self.get_parameter('track_entry_yaw_rate_tolerance').value
+            ),
+            entry_align_max_distance_m=float(
+                self.get_parameter('track_entry_align_max_distance_m').value
+            ),
+            entry_align_error_tolerance=float(
+                self.get_parameter('track_entry_align_error_tolerance').value
+            ),
+            entry_align_hold_sec=float(
+                self.get_parameter('track_entry_align_hold_sec').value
+            ),
+            entry_align_visual_kp=float(
+                self.get_parameter('track_entry_align_visual_kp').value
+            ),
+            arc_min_completion_ratio=float(
+                self.get_parameter('track_arc_min_completion_ratio').value
+            ),
+            arc_finish_predict_sec=float(
+                self.get_parameter('track_arc_finish_predict_sec').value
+            ),
+            arc_mismatch_angle_deg=float(
+                self.get_parameter('track_arc_mismatch_angle_deg').value
+            ),
+            entry_stop_prepare_deg=float(
+                self.get_parameter('track_entry_stop_prepare_deg').value
+            ),
+            entry_arc_complete_lead_deg=float(
+                self.get_parameter('track_entry_arc_complete_lead_deg').value
+            ),
+            corner_arc_complete_lead_deg=float(
+                self.get_parameter('track_corner_arc_complete_lead_deg').value
             ),
             corner_radius=float(self.get_parameter('track_corner_radius').value),
             vision_lateral_scale_m=float(self.get_parameter('track_vision_lateral_scale_m').value),
@@ -223,7 +267,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.get_logger().info(
             f'{self.test_feedback_prefix}导航节点已就绪，方向={self.direction_text()}，'
             f'模式={self.start_mode_text()}，'
-            f'field_track={self._field_track_yaml}，'
+            f'track_config={self._track_config_name}，'
             f'避障=边转边避 away={_avoid_cfg.avoid_turn_away_deg:.0f}deg back={_avoid_cfg.avoid_turn_back_deg:.0f}deg recover={_avoid_cfg.avoid_recover_deg:.0f}deg×'
             f'{_avoid_cfg.avoid_leg1_distance_m:.2f}m/{_avoid_cfg.avoid_leg2_distance_m:.2f}m '
             f'侧边阈值={_avoid_cfg.side_detour_threshold_m:.2f}m '
@@ -234,7 +278,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._log_session(
             'CONFIG',
             f'方向={self.direction_text()} 模式={self.start_mode_text()} '
-            f'field_track={self._field_track_yaml} '
+            f'track_config={self._track_config_name} '
             f'避障 away={_avoid_cfg.avoid_turn_away_deg:.0f}deg back={_avoid_cfg.avoid_turn_back_deg:.0f}deg recover={_avoid_cfg.avoid_recover_deg:.0f}deg '
             f'L1={_avoid_cfg.avoid_leg1_distance_m:.2f}m L2={_avoid_cfg.avoid_leg2_distance_m:.2f}m '
             f'pose_source={self._navigation_pose_source} '
@@ -851,7 +895,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         """Do not arm Stage2 while another velocity source moves the base."""
         twist = getattr(self, '_wheel_twist', None)
         if twist is None:
-            return False
+            # 官方 Stage2 不再强制等待 /odom；无轮速 twist 时由 Stage1 phase 切换
+            # 和启动延迟保证交接，不阻塞 /odom_combined + IMU 的正常启动。
+            return True
         speed = math.hypot(float(twist[0]), float(twist[1]))
         yaw_rate = abs(float(twist[2]))
         speed_limit = float(self.get_parameter('start_stationary_speed_mps').value)
@@ -868,7 +914,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             return False
         if self._stationary_since is None:
             self._stationary_since = now
-            return False
+            return float(self.get_parameter('start_stationary_hold_sec').value) <= 0.0
         return now - self._stationary_since >= float(
             self.get_parameter('start_stationary_hold_sec').value
         )
@@ -1506,31 +1552,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         else:
             self.start_segment(self.plan_index + 1)
 
-    def build_ring_plan(self):
-        here = os.path.dirname(os.path.realpath(__file__))
-        src_dir = os.path.dirname(here)
-        yaml_path = field_track.resolve_yaml_path(src_dir, self.direction, '', use_world=True)
-        result = field_track.load_plan(
-            yaml_path,
-            self.direction,
-            ring_linear_speed=self.ring_linear_speed,
-            allow_detour=True,
-        )
-        
-        # 检查是否返回了 (plan, start_pose) 元组（世界坐标系）
-        if isinstance(result, tuple) and len(result) == 2:
-            plan, start_pose = result
-            self._world_start_pose = start_pose  # 保存起点信息
-            self.get_logger().info(
-                f'loaded world coordinate track: '
-                f'start=({start_pose.get("x", 0):.2f}, {start_pose.get("y", 0):.2f}) '
-                f'yaw={start_pose.get("yaw_deg", 0):.1f}deg'
-            )
-            return plan
-        else:
-            self._world_start_pose = None
-            return result
-
     def _set_vision_inference_active(self, active: bool):
         node = getattr(self, '_vision_node', None)
         if node is not None and hasattr(node, 'set_inference_active'):
@@ -1552,6 +1573,17 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 self.get_logger().info('[PHASE] ✓ Phase 初始化完成: phase=1，等待 Stage1 发布 phase=2')
                 return
             if incoming == 2:
+                if self.use_test_direction_fallback:
+                    self.phase = 2
+                    self.phase_initialized = True
+                    self.waiting_for_phase2_start = True
+                    self.start_after_time = None
+                    self.reported_start_delay = False
+                    self.reported_waiting_pose = False
+                    self._set_vision_inference_active(True)
+                    self.get_logger().info('[PHASE] ✓ 测试模式接受初始 phase=2，准备启动 Stage2')
+                    self.try_start_mission()
+                    return
                 self.phase = 1
                 self.waiting_for_phase2_start = False
                 self.get_logger().warn('[PHASE] ⚠ 忽略启动时的 phase=2（可能是旧消息），等待 phase=1')
@@ -1666,14 +1698,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         elif getattr(self, '_vision_node', None) is not None:
             self._vision_node.set_inference_active(True)
 
-        if bool(self.get_parameter('track_controller_enabled').value):
-            self._start_track_mission()
-            return
-
-        self.publish_feedback(
-            f'{self.test_feedback_prefix}开始执行，方向: {self.direction_text()}，'
-            f'模式: {self.start_mode_text()}'
-        )
+        self._start_track_mission()
+        return
         self.begin_inertial_plan_after_nav(nav_succeeded=self.nav_succeeded_for_test_start())
 
 

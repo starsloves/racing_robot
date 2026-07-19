@@ -1,480 +1,169 @@
 # ================================================================================
-# Stage2 导航配置 (stage2_inertial_navigator)
+# Stage2 生产配置 — 唯一调参入口
 # ================================================================================
-# 当前默认：分段锁定轨迹闭环（/odom_combined 距离 + IMU 航向）
-#   - Stage1 到入口后切 phase=2，Stage2 先完成 IMU 入口转角
-#   - 直线和圆角使用固定轨迹闭环，视觉只做横向修正
-#   - field_track 旧段式执行仅保留兼容，不作为默认生产控制
-# 旧视觉主控仅保留为调试兼容模式，不作为生产入口
+# 生产控制器：Stage2TrackController
+# 位姿规则：
+#   - 距离只用 /odom_combined 相邻 xy 欧氏位移累计
+#   - 航向/转角只用 /imu/data 的 yaw
+#   - 禁止使用 /odom 或 /odom_combined 的 orientation 做导航角度
+#
+# 固定段序：
+#   entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc -> exit_medium
+#
+# 调参速查：
+#   两个 180° 前触发点：
+#     track_entry_medium_distance_m 控制 entry_medium -> left_side_arc
+#     track_top_long_distance_m 控制 top_long -> right_side_arc
+#   直线速度：track_max_speed
+#   弯道速度：track_corner_speed / track_entry_linear
+#   弯道转向力度：track_entry_angular / track_corner_angular
+#   转弯过冲：track_entry_arc_complete_lead_deg / track_corner_arc_complete_lead_deg
+#   出弯反修过猛：track_line_heading_kp / track_yaw_rate_damping
 # ================================================================================
 
 stage2_inertial_navigator:
   ros__parameters:
 
     # ────────────────────────────────────────────────────────────────────────
-    # 话题配置 (Topic Configuration)
+    # ROS 话题
     # ────────────────────────────────────────────────────────────────────────
-
-    # 赛程阶段订阅话题（监听 Phase 切换）
     phase_topic: competition_phase
-
-    # 扫码任务订阅话题（获取方向：顺时针/逆时针）
     task_topic: competition_qr_task
-
-    # 里程计话题（位姿定位，map 坐标系通过 TF 查询）
     odom_topic: /odom_combined
-
-    # IMU 九轴数据话题（航向修正）
     imu_topic: /imu/data
-
-    # 地图话题（栅格地图，用于避障规划）
-    map_topic: /map
-
-    # 激光雷达扫描话题（激光避障）
     scan_topic: /scan
-
-    # 速度指令输出话题（发送到 twist_cmd_relay → /cmd_vel）
     cmd_topic: /stage2_cmd_vel
-
-    # 通道路径发布话题（用于 RViz2 可视化）
-    corridor_path_topic: /stage2_corridor_path
-
-    # 反馈话题（状态反馈给 Stage1/3）
     feedback_topic: competition_feedback
-
-    # 状态发布话题（完成信号：'complete'）
     state_topic: stage2_state
 
     # ────────────────────────────────────────────────────────────────────────
-    # 控制频率 (Control Rate)
+    # 启动 / 循环
     # ────────────────────────────────────────────────────────────────────────
-
-    # 主控制循环频率 (Hz)
     control_rate_hz: 20.0
-
-    # 启动延迟 (s) — Phase2 进入后等待此时长确保位姿就绪
-    start_delay_sec: 0.5
-    track_controller_enabled: true
+    # Stage1 发布 phase=2 后立即启动 Stage2；不再额外等待 0.5s。
+    start_delay_sec: 0.0
     start_stationary_speed_mps: 0.03
     start_stationary_yaw_rate_rps: 0.08
-    start_stationary_hold_sec: 0.50
+    # 只检查当前底盘是否仍在明显运动；不再要求连续静止保持 0.5s。
+    start_stationary_hold_sec: 0.0
+    test_feedback_prefix: 第二阶段
+
+    # 生产定位源：距离使用 /odom_combined，角度使用 IMU。
+    navigation_pose_source: ekf
+    wheel_odom_topic: /odom
+    wheel_odom_warmup_sec: 0.40
+    wheel_odom_warmup_min_msgs: 5
 
     # ────────────────────────────────────────────────────────────────────────
-    # 速度控制 (Speed Control)
+    # 生产轨迹参数
     # ────────────────────────────────────────────────────────────────────────
+    # 直线速度：entry_medium / top_long / exit_medium
+    track_max_speed: 0.50
 
-    # 通道段直行速度 (m/s) — 通道导航时的线速度
-    corridor_linear_speed: 0.30
+    # 后续 180° 弯线速度：left_side_arc / right_side_arc
+    track_corner_speed: 0.50
 
-    # 环形赛道直行速度 (m/s) — field_track 直行段线速度
-    ring_linear_speed: 0.40
+    # 全局角速度限幅
+    track_max_angular: 0.75
 
-    # 固定舵角弯段线速度 (m/s) — arc 段执行时的线速度
-    turn_linear_speed: 0.20
+    # 入口 90° 弯：线速度 + 角速度
+    track_entry_linear: 0.24
+    track_entry_angular: 0.75
 
-    # ────────────────────────────────────────────────────────────────────────
-    # 转向控制 (Steering Control)
-    # ────────────────────────────────────────────────────────────────────────
+    # 后续 180° 弯：角速度
+    track_corner_angular: 0.75
 
-    # 转向角速度 (rad/s) — 基于时间的转向速度上限
-    turn_angular_speed: 0.75
+    # 第一个 180° 触发点：entry_arc 后走多远开始 left_side_arc。
+    # 最新日志约在 0.45m 后切入；现场要求再提前约 10cm，因此由 0.50m 收到 0.40m。
+    track_entry_medium_distance_m: 0.40
 
-    # 转向最小角速度 (rad/s) — 防止转速过低
-    turn_min_angular_speed: 0.45
+    # 第二个 180° 触发点：top_long 走多远开始 right_side_arc。
+    # 最新日志约在 2.50m 后切入；现场要求再提前约 10cm，因此由 2.59m 收到 2.49m。
+    track_top_long_distance_m: 2.40
 
-    # IMU 航向兜底增益 — 直行段航向误差 → 角速度修正增益
-    heading_kp: 1.0
+    # 出口最后直线长度：right_side_arc 后走多远判定 Stage2 完成。
+    # 最新实车反馈最后一段偏长，缩短 20cm：1.49m -> 1.29m。
+    track_exit_medium_distance_m: 1.10
 
-    # 全局最大角速度 (rad/s)
-    max_angular_speed: 0.8
+    # 名义半径：用于日志/弧长诊断，实际切段以 IMU 相对角为准
+    track_entry_radius: 0.40
+    track_corner_radius: 0.40
 
-    # ────────────────────────────────────────────────────────────────────────
-    # 到位精度 (Segment Completion Criteria)
-    # ────────────────────────────────────────────────────────────────────────
+    # 基础转角容差
+    track_entry_tolerance_deg: 3.0
 
-    # 直行到位判据 (m) — odom 行驶距离与目标距离误差 ≤ 此值判定到位
-    distance_tolerance: 0.04
+    # 提前切段角：
+    #   entry_arc 目标 90°，提前 50° => 约转到 40° 切入 entry_medium
+    #   corner_arc 目标 180°，提前 35° => 约转到 145° 切入下一条直线
+    track_entry_arc_complete_lead_deg: 50.0
+    track_corner_arc_complete_lead_deg: 40.0
 
-    # 转弯到位容差 (°) — IMU 航向误差 ≤ 此值判定转弯到位
-    heading_tolerance_deg: 2.0
+    # 关闭 yaw-rate 预测切段和提前反向刹车，只使用上面的明确提前角
+    track_arc_finish_predict_sec: 0.0
+    track_entry_stop_prepare_deg: 0.0
 
-    # 单段超时 (s) — 单个 segment 执行超过此时长强制切换下一段
-    segment_timeout: 25.0
+    # 直线段出弯修正
+    track_line_heading_kp: 0.80
+    track_yaw_rate_damping: 0.45
 
-    # ────────────────────────────────────────────────────────────────────────
-    # 方向解析 (Direction Parsing from QR Code)
-    # ────────────────────────────────────────────────────────────────────────
+    # 视觉横向辅助：只在 LINE 段小幅纠偏，不接管主控
+    vision_pure_mode_enabled: false
+    vision_primary_control: false
+    vision_offset_correction_enabled: true
+    vision_length_correction_enabled: false
+    vision_turn_assist_enabled: false
+    imu_heading_correction_enabled: true
+    fusion_mode_enabled: true
+    fusion_weight_imu: 1.0
+    fusion_weight_vision: 0.0
+    track_vision_lateral_scale_m: 0.30
+    track_vision_lateral_weight: 0.35
 
-    # 奇偶规则 — true: 奇数圈=顺时针, false: 奇数圈=逆时针
-    odd_is_clockwise: true
-
-    # 顺时针关键词（逗号分隔，支持中文）
-    clockwise_keywords: 顺时针,cw,clockwise
-
-    # 逆时针关键词（逗号分隔，支持中文）
-    counterclockwise_keywords: 逆时针,ccw,counterclockwise
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 通道导航 (Corridor Navigation - Stage1 已完成，此处禁用)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 启用通道路径 — false: Stage1 已完成通道导航，Stage2 直接执行 field_track
-    use_corridor_path: false
-
-    # 路点是否在全局坐标系 — true: map 坐标系
-    corridor_waypoints_are_global: true
-
-    # 全局坐标系名称
-    global_frame_id: map
-
-    # 通道路点列表（JSON 格式，Stage2 置空）
-    corridor_waypoints_json: '[]'
-
-    # 路点容差 (m)
-    corridor_waypoint_tolerance: 0.18
-
-    # 终点容差 (m)
-    corridor_goal_tolerance: 0.10
-
-    # 终点前停车距离 (m) — 距离终点此距离时停车
-    corridor_goal_standoff_m: 0.18
-
-    # 终点航向容差 (°)
-    corridor_goal_yaw_tolerance_deg: 6.0
-
-    # 通道路径超时 (s)
-    corridor_path_timeout_sec: 45.0
-
-    # 跳过 pre_loop 规划 — true: 比赛无 pre_loop
-    corridor_path_skip_pre_loop_plan: true
-
-    # 通道后路径规划（JSON 格式，Stage2 置空）
-    post_corridor_path_plan_json: '[]'
-
-    # 环前路径规划（JSON 格式，比赛无 pre_loop）
-    pre_loop_plan_json: '[]'
+    # /odom_combined 单步异常过滤，防 EKF 跳变误累计距离。
+    # 这不是限速参数，只是“单次里程跳变是否计入”的阈值。
+    # 最新日志里 top_long 后半段 /odom_combined 单步超过 0.12m 被连续丢弃，
+    # 导致 seg_s 卡在 2.07/2.59m，right_side_arc 没有触发。
+    # 0.40m 可覆盖 0.50m/s 高速直线下的低频/抖动里程更新，同时仍过滤明显跳变。
+    track_odom_combined_step_max_m: 0.40
 
     # ────────────────────────────────────────────────────────────────────────
-    # 纯追踪 (Pure Pursuit for Corridor Path Following)
+    # 雷达安全停车 / 避障
     # ────────────────────────────────────────────────────────────────────────
+    # 生产轨迹中关闭 front_obstacle 硬停车，避免圆弧扫边误触发 SAFE_STOP。
+    # 0.0 表示关闭；圆弧按 IMU/里程连续执行。
+    turn_obstacle_stop_m: 0.0
 
-    # 前视距离 (m) — 追踪路径上前方此距离的点
-    pure_pursuit_lookahead_m: 0.45
-
-    # 航向差停止阈值 (°) — 航向误差 > 此值时停止纯追踪
-    pure_pursuit_heading_stop_deg: 70.0
-
-    # 转向增益 — 曲率 → 角速度增益
-    pure_pursuit_turn_kp: 1.8
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 栅格规划器 (Occupancy Grid Planner for Corridor Avoidance)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 启用栅格规划器 — true: 通道内动态规划避障路径
-    use_occupancy_grid_planner: true
-
-    # --- 静态栅格参数 (Static Grid) ---
-    # 地图降采样倍率 — 每 N×N 个栅格合并为 1 个
-    planner_downsample: 4
-
-    # 占据阈值 (0-100) — 栅格值 ≥ 此阈值视为障碍物
-    planner_occupied_threshold: 50
-
-    # 未知区域视为占据 — true: 未知区域不可通行
-    planner_unknown_is_occupied: true
-
-    # 静态障碍物膨胀半径 (m)
-    planner_obstacle_inflation_m: 0.14
-
-    # --- 动态障碍物参数 (Dynamic Obstacle Injection) ---
-    # 动态障碍物框大小 (m) — 激光检测到的障碍物映射为此大小的方框
-    planner_dynamic_obstacle_box_size_m: 0.25
-
-    # 动态障碍物膨胀半径 (m)
-    planner_dynamic_obstacle_inflation_m: 0.04
-
-    # 动态障碍物检测范围 (m) — 激光点距离 < 此值才注入动态障碍
-    planner_dynamic_obstacle_range_m: 0.7
-
-    # 重规划周期 (s) — 每隔此时间重规划一次路径
-    planner_replan_period_sec: 0.25
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 激光避障 (Lidar Detour Avoidance)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 启用激光避障 — true: 直行段检测到障碍物时触发绕行
+    # 直线段避障触发阈值
     detour_enabled: true
-
-    # --- 前方障碍检测 (Front Obstacle Detection) ---
-    # 前方障碍触发距离 (m) — 前方扇形区域内障碍物距离 < 此值触发避障
     detour_obstacle_distance: 0.52
-
-    # 前方检测扇形半角 (°) — 检测扇形为 ±此角度
     detour_front_angle_deg: 18.0
-
-    # --- 侧方障碍检测 (Side Obstacle Detection) ---
-    # 侧方检测中心角 (°) — 左右两侧检测扇形的中心角
     detour_side_center_deg: 65.0
-
-    # 侧方检测窗口宽度 (°) — 侧方检测扇形的角度宽度
     detour_side_window_deg: 30.0
-
-    # 侧方最小余量 (m) — 左右间隙 < 此值触发侧边避障
     detour_min_side_clearance: 0.55
 
-    # --- 绕行轨迹参数 (Detour Trajectory) ---
-    # 侧移距离 (m) — 绕行横向偏移量
-    detour_lateral_distance_m: 0.32
-
-    # 前向距离 (m) — 绕行前后直行距离
-    detour_forward_distance_m: 0.75
-
-    # 避障冷却时间 (s) — 完成一次避障后此时间内不再触发新避障
-    detour_cooldown_sec: 2.0
-
-    # --- 避障转向参数 (Detour Steering - 由 avoid_controller 覆盖) ---
-    # 第一拐转开角度 (°)
+    # 避障动作参数
     avoid_turn_away_deg: 30.0
-
-    # 第二拐回正角度 (°)
     avoid_turn_back_deg: 40.0
-
-    # 回正转角 (°)
     avoid_recover_deg: 40.0
-
-    # 第一段直行距离 (m)
     avoid_leg1_distance_m: 0.22
-
-    # 第二段直行距离 (m)
     avoid_leg2_distance_m: 0.22
-
-    # 侧边触发阈值 (m)
+    avoid_leg_linear_speed: 0.10
+    avoid_turn_linear_speed: 0.08
+    avoid_turn_angular_speed: 0.40
+    avoid_leg_distance_tol_m: 0.04
     side_detour_threshold_m: 0.18
-
-    # 避障航向到位容差 (°)
     avoider_heading_tolerance_deg: 1.5
 
-    # --- 转角避障 (Corner Obstacle Avoidance) ---
-    # 转角第一拐转开角度 (°)
-    corner_turn_away_deg: 60.0
-
-    # 转角第二拐回正角度 (°)
-    corner_turn_back_deg: 30.0
-
-    # 转角斜边直行距离 (m)
-    corner_leg_distance_m: 0.354
-
-    # 转角触发距离 (m) — 距离段末 < 此值 + 前方有障 → 触发转角避障
-    corner_trigger_m: 0.25
-
     # ────────────────────────────────────────────────────────────────────────
-    # 旧纯 SEG 视觉主控（仅调试兼容，不作为生产入口）
-    # ────────────────────────────────────────────────────────────────────────
-    # true  : phase=2 后全程 SEG 跟线，不跑 field_track 的 arc/move 段
-    # false : 回退旧“惯导段 + 视觉纠偏”链路
-    vision_pure_mode_enabled: false
-    # 控制架构（重写）：
-    #   ENTRY  = 一进S2就准备转；方向=扫码入口（顺左/逆右）；出入口=直道几何恢复
-    #   FOLLOW = 中线小纠偏；前边界触发 → TURN
-    #   TURN   = 固定环向（顺右/逆左）+ 视觉微调；出弯=直道几何恢复
-    #   ALIGN  = 只回中，无弯前馈
-    #   方向永不靠左右mask猜测
-
-    # --- 速度 ---
-    # 直道巡航：尽量保持；弯中固定 corner_speed
-    vision_cruise_speed: 0.34
-    vision_corner_speed: 0.25   # 用户：转弯保持 0.25
-    vision_min_speed: 0.12
-    vision_curve_speed_thresh: 0.28
-    vision_error_speed_thresh: 0.25
-
-    # --- 弯道前馈（环向固定，不靠 rem）---
-    vision_turn_bias_enabled: true
-    vision_turn_bias_angular: 0.55
-    # 以下 rem 参数保留兼容，纯SEG状态机不再主依赖
-    vision_turn_bias_enter_rem_m: 1.05
-    vision_turn_bias_full_rem_m: 0.70
-    vision_turn_slowdown_err: 0.10
-    vision_turn_min_omega_ratio: 0.30
-    vision_overshoot_reverse_gain: 0.85
-    vision_exit_accel_ramp_sec: 0.55
-
-    # --- 转弯最短硬打时间（用户规则：第1弯足够，后续弯防过大）---
-    # 第 1 个环弯最短打死时间 (s) — 入环后第一个弯需要足够转角
-    vision_first_ring_turn_min_hold_sec: 0.40
-    # 后续环弯最短打死时间 (s) — 第2个弯起用更短时间，防转弯过大（方案A：0.30→0.20）
-    vision_ring_turn_min_hold_sec: 0.20
-    # 第 1 个环弯最小转角 (°) — 转够此角度 + 时间够才允许退出
-    vision_first_ring_turn_min_yaw_deg: 45.0
-    # 后续环弯最小转角 (°) — 后续弯放宽门槛，更早允许出弯（方案A：32→25）
-    vision_ring_turn_min_yaw_deg: 10.0
-
-    # --- 入口限幅 ---
-    vision_entry_max_angular: 0.80
-    vision_entry_min_speed: 0.08
-    # 旧 yaw 参数保留兼容，状态机不再用它们主判
-    vision_entry_yaw_full_deg: 82.0
-    vision_entry_yaw_taper_deg: 40.0
-    vision_entry_yaw_exit_deg: 70.0
-    vision_corner_yaw_full_deg: 78.0
-    vision_corner_yaw_taper_deg: 45.0
-
-    # --- 丢线处理 ---
-    vision_search_angular: 0.36
-    vision_lost_timeout_sec: 0.75
-    vision_timeout_sec: 0.50
-
-    # --- 任务结束 ---
-    # 任务总里程缩放：相对 field_track 估算总长
-    vision_mission_distance_scale: 1.00
-    # 任务超时 (s)
-    vision_mission_timeout_sec: 90.0
-    # 一圈结束：路径里程 + 回到通道口 x≈2.5
-    vision_finish_min_path_m: 5.0
-    vision_finish_x_m: 2.50
-    vision_finish_x_tol_m: 0.40
-    vision_finish_y_min_m: 1.50
-    vision_finish_y_max_m: 3.40
-    vision_finish_require_x_rise: true
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 开关（纯SEG下强制视觉主控）
-    # ────────────────────────────────────────────────────────────────────────
-    # IMU 航向修正：纯SEG下关闭，避免抢舵
-    imu_heading_correction_enabled: true
-    # 视觉横向控制总开关
-    vision_offset_correction_enabled: true
-    # 融合开关（兼容旧接口）
-    fusion_mode_enabled: true
-    fusion_weight_imu: 0.0
-    fusion_weight_vision: 1.0
-    imu_heading_deadzone_deg: 1.0
-    imu_max_yaw_rate_deg_s: 600.0
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 视觉模型 / ROI
+    # 视觉模型 / 日志
     # ────────────────────────────────────────────────────────────────────────
     vision_model_path: /home/sunrise/dev_ws/src/racing/racing_stage2/models/bset.bin
     vision_conf_thres: 0.25
     vision_iou_thres: 0.45
-    # 保留更多远端：用户要提前看到远端黄线
-    # 0.60 = 底部 60%（比 0.55 看得更远一点）
     vision_crop_ratio: 0.60
-    # 左右少裁，保留宽视野
     vision_crop_side_ratio: 0.05
     vision_http_port: 8082
 
-    # ────────────────────────────────────────────────────────────────────────
-    # 中线跟随 / Pure Pursuit
-    # ────────────────────────────────────────────────────────────────────────
-    vision_centerline_mode_enabled: true
-    vision_primary_control: true
-    # 检测置信度下限
-    vision_min_confidence: 0.22
-    vision_primary_max_head_err_deg: 45.0
-    vision_budget_disable_enabled: false
-    # 多行采样
-    vision_sample_rows: 9
-    # 前瞻点偏远：0.35 → 更靠远端（ratio 小=更远，见 extract 实现 1-ratio）
-    vision_lookahead_ratio: 0.35
-    vision_min_mask_pixels_per_row: 8
-    vision_min_valid_rows: 2
-    vision_mask_threshold: 0.50
-    vision_error_filter_alpha: 0.28
-
-    # Pure Pursuit 几何跟踪
-    vision_use_pure_pursuit: false
-    # 前瞻距离 (m)
-    vision_lookahead_distance_m: 0.28
-    # 轴距 (m)，与底盘 wheelbase 一致
-    vision_wheelbase_m: 0.143
-    # 控制增益
-    vision_pursuit_kp: 0.90
-    # 角速度上限 (rad/s)
-    vision_max_angular: 0.80
-
-    # PD 回退参数（vision_use_pure_pursuit=false 时）
-    vision_angular_kp: 0.95
-    vision_angular_kd: 0.10
-    vision_curvature_kp: 0.30
-    vision_deadband: 0.045
-
-    # 中心竖带 / 旧接口
-    vision_center_band: 0.18
-    vision_center_occ_thresh: 0.45
-    vision_centroid_bottom_ratio: 0.70
-    vision_center_hold_sec: 0.0
-    vision_offset_kp: 0.30
-    # 0 = 不限制视觉纠偏时长
-    vision_offset_max_sec: 0.0
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 纵向估计 / 旧转弯辅助（纯SEG不切段，仅保留）
-    # ────────────────────────────────────────────────────────────────────────
-    vision_length_correction_enabled: true
-    vision_length_min_progress_ratio: 0.45
-    vision_length_min_progress_m: 0.15
-    vision_length_stop_remaining_m: 0.35
-    vision_length_confirm_frames: 3
-    vision_length_max_shorten_ratio: 0.25
-    vision_length_max_extend_ratio: 0.12
-    vision_length_max_extend_m: 0.18
-    vision_range_near_m: 0.15
-    vision_range_far_m: 3.00
-    vision_range_center_band: 0.30
-    vision_range_occ_thresh: 0.18
-    # 纯SEG不按 turn 段结束，关闭
-    vision_turn_assist_enabled: false
-    vision_turn_assist_hold_sec: 0.30
-    vision_turn_assist_min_progress_ratio: 0.80
-    vision_turn_assist_angle_window_deg: 10.0
-    move_accel_ramp_sec: 0.3
-
-    # 分段锁定圆角轨迹控制器
-    track_max_speed: 0.34
-    # 22:50 实测满舵时 IMU yaw-rate 约 0.45rad/s，因此按
-    # v/R=0.18/0.40=0.45rad/s 设计；更小半径必然距离不足、转角超调。
-    track_corner_speed: 0.18
-    track_max_lateral_accel: 0.55
-    # 圆弧采用 track_heading_kp；直线单独采用低增益航向闭环，避免
-    # 入口余转速触发反复左右摆舵。
-    track_heading_kp: 1.8
-    track_line_heading_kp: 0.80
-    # 仅保留兼容参数；惯导积分横偏不参与转向，横向修正仅接受新鲜高
-    # 置信视觉中线数据。
-    track_cross_kp: 2.2
-    track_curvature_kp: 1.0
-    track_max_angular: 0.75
-    track_entry_angular: 0.75
-    # 入口与圆角都保持非零线速度。0.18 / 0.40 = 0.45rad/s，匹配实测
-    # 满舵响应，同时避免 0.04m/s 时转向响应不足而画出异常大弧。
-    track_entry_linear: 0.18
-    track_entry_min_linear: 0.04
-    track_entry_radius: 0.40
-    track_entry_tolerance_deg: 3.0
-    track_settle_sec: 0.25
-    track_entry_heading_kp: 1.60
-    track_yaw_rate_damping: 0.45
-    track_entry_yaw_rate_tolerance: 0.10
-    track_corner_radius: 0.40
-    track_vision_lateral_scale_m: 0.30
-    track_vision_lateral_weight: 0.35
-    track_lookahead_m: 0.45
-    track_heading_slowdown_deg: 10.0
-    track_finish_tolerance_m: 0.10
-    track_odom_combined_step_max_m: 0.12
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 定位 / 日志
-    # ────────────────────────────────────────────────────────────────────────
-    navigation_pose_source: wheel
-    wheel_odom_topic: /odom
-    wheel_odom_warmup_sec: 0.40
-    wheel_odom_warmup_min_msgs: 5
     session_log_subdir: competition_stage2
     session_log_filename: latest.log
-    # 轨迹控制日志 2Hz；TELEM 可稍慢
     session_telemetry_interval_sec: 0.50
-    test_feedback_prefix: 第二阶段

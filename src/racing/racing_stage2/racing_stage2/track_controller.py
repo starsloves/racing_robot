@@ -131,12 +131,15 @@ class _ActiveSegment:
     start_distance: float
     start_position: Tuple[float, float]
     start_heading: float
+    last_yaw: Optional[float] = None
+    turn_progress_rad: float = 0.0
 
 
 class Stage2TrackController:
     """One-segment-at-a-time distance/IMU trajectory executor."""
 
     ENTRY = 'ENTRY_ARC'
+    ALIGN = 'ENTRY_ALIGN'
     TRACK = 'TRACK'
     COMPLETE = 'COMPLETE'
     SAFE_STOP = 'SAFE_STOP'
@@ -150,14 +153,28 @@ class Stage2TrackController:
                  curvature_kp: float = 1.0,
                  max_angular: float = 0.75,
                  entry_angular: float = 0.75,
+                 corner_angular: float = 0.75,
                  entry_linear: float = 0.18,
                  entry_min_linear: float = 0.04,
                  entry_radius: float = 0.40,
+                 entry_medium_distance_m: float = 0.85,
+                 top_long_distance_m: float = 2.59,
+                 exit_medium_distance_m: float = 1.49,
                  entry_tolerance_deg: float = 3.0,
                  settle_sec: float = 0.25,
                  entry_heading_kp: float = 1.6,
                  yaw_rate_damping: float = 0.45,
                  entry_yaw_rate_tolerance: float = 0.10,
+                 entry_align_max_distance_m: float = 0.45,
+                 entry_align_error_tolerance: float = 0.08,
+                 entry_align_hold_sec: float = 0.20,
+                 entry_align_visual_kp: float = 0.55,
+                 arc_min_completion_ratio: float = 0.70,
+                 arc_finish_predict_sec: float = 0.18,
+                 arc_mismatch_angle_deg: float = 14.0,
+                 entry_stop_prepare_deg: float = 0.0,
+                 entry_arc_complete_lead_deg: float = 0.0,
+                 corner_arc_complete_lead_deg: float = 0.0,
                  corner_radius: float = 0.40,
                  vision_lateral_scale_m: float = 0.30,
                  vision_lateral_weight: float = 0.35,
@@ -175,8 +192,12 @@ class Stage2TrackController:
         self.cross_kp = max(0.0, stanley_cross_kp)
         self.max_angular = max(0.1, max_angular)
         self.entry_angular = min(self.max_angular, max(0.1, entry_angular))
+        self.corner_angular = min(self.max_angular, max(0.1, corner_angular))
         self.entry_speed = max(0.01, entry_linear)
         self.entry_radius = max(0.05, entry_radius)
+        self.entry_medium_distance = max(0.05, entry_medium_distance_m)
+        self.top_long_distance = max(0.20, top_long_distance_m)
+        self.exit_medium_distance = max(0.05, exit_medium_distance_m)
         self.corner_radius = max(0.05, corner_radius)
         self.entry_tolerance = math.radians(max(0.5, entry_tolerance_deg))
         self.angle_tolerance = self.entry_tolerance
@@ -184,6 +205,16 @@ class Stage2TrackController:
         self.entry_heading_kp = max(0.1, entry_heading_kp)
         self.yaw_rate_damping = max(0.0, yaw_rate_damping)
         self.yaw_rate_settle = max(0.01, entry_yaw_rate_tolerance)
+        self.entry_align_max_distance = max(0.05, entry_align_max_distance_m)
+        self.entry_align_error_tolerance = max(0.01, entry_align_error_tolerance)
+        self.entry_align_hold_sec = max(0.0, entry_align_hold_sec)
+        self.entry_align_visual_kp = max(0.05, entry_align_visual_kp)
+        self.arc_min_completion_ratio = max(0.35, min(1.0, arc_min_completion_ratio))
+        self.arc_finish_predict_sec = max(0.0, min(0.50, arc_finish_predict_sec))
+        self.arc_mismatch_angle = math.radians(max(3.0, arc_mismatch_angle_deg))
+        self.entry_stop_prepare = math.radians(max(0.0, min(60.0, entry_stop_prepare_deg)))
+        self.entry_arc_complete_lead = math.radians(max(0.0, min(60.0, entry_arc_complete_lead_deg)))
+        self.corner_arc_complete_lead = math.radians(max(0.0, min(90.0, corner_arc_complete_lead_deg)))
         self.vision_lateral_scale_m = max(0.0, vision_lateral_scale_m)
         self.vision_lateral_weight = max(0.0, min(1.0, vision_lateral_weight))
         self.distance_tolerance = 0.025
@@ -196,23 +227,26 @@ class Stage2TrackController:
         self._index = 0
         self._active: Optional[_ActiveSegment] = None
         self._entry_heading = 0.0
+        self._entry_align_settled_at: Optional[float] = None
+        self._entry_align_best_heading: Optional[float] = None
+        self._entry_align_best_error = float('inf')
         self._fallback_distance = 0.0
         self._fallback_position: Optional[Tuple[float, float]] = None
 
     def _build_specs(self, clockwise: bool) -> List[_SegmentSpec]:
         sign = -1.0 if clockwise else 1.0
-        spans = (1.10, 0.80, 2.59, 0.80, 1.49)
-        speeds = (0.30, 0.30, self.max_speed, 0.30, 0.30)
-        specs = []
-        for i, span in enumerate(spans):
-            tangent = max(0.0, span - self.corner_radius * (int(i > 0) + int(i < len(spans) - 1)))
-            specs.append(_SegmentSpec('line_%d' % (i + 1), 'LINE', tangent,
-                                      min(self.max_speed, speeds[i])))
-            if i < len(spans) - 1:
-                specs.append(_SegmentSpec('corner_%d' % (i + 1), 'ARC',
-                                          math.pi * self.corner_radius / 2.0,
-                                          self.corner_speed, sign * math.pi / 2.0))
-        return specs
+        # Only the two medium lines and the top line are straight commands.
+        # Each nominal 0.80 m side is one continuous 180 degree bridge arc,
+        # never two 90 degree arcs with a zero-length line between them.
+        return [
+            _SegmentSpec('entry_medium', 'LINE', self.entry_medium_distance, self.max_speed),
+            _SegmentSpec('left_side_arc', 'ARC', math.pi * self.corner_radius,
+                         self.corner_speed, sign * math.pi),
+            _SegmentSpec('top_long', 'LINE', self.top_long_distance, self.max_speed),
+            _SegmentSpec('right_side_arc', 'ARC', math.pi * self.corner_radius,
+                         self.corner_speed, sign * math.pi),
+            _SegmentSpec('exit_medium', 'LINE', self.exit_medium_distance, self.max_speed),
+        ]
 
     def start(self, direction: str, position: Tuple[float, float], yaw: float,
               now: float, distance_m: float = 0.0) -> None:
@@ -227,6 +261,9 @@ class Stage2TrackController:
         self._active = _ActiveSegment(self._specs[0], distance_m, position, yaw)
         self._fallback_distance = distance_m
         self._fallback_position = position
+        self._entry_align_settled_at = None
+        self._entry_align_best_heading = None
+        self._entry_align_best_error = float('inf')
         self.state = self.ENTRY
         self.safe_reason = ''
 
@@ -245,7 +282,8 @@ class Stage2TrackController:
         limit = self.entry_angular if entry else self.max_angular
         return max(-limit, min(limit, value))
 
-    def _activate_next(self, position: Tuple[float, float], distance: float) -> bool:
+    def _activate_next(self, position: Tuple[float, float], distance: float,
+                       heading_override: Optional[float] = None) -> bool:
         assert self._active is not None
         finished = self._active.spec
         self._index += 1
@@ -256,6 +294,9 @@ class Stage2TrackController:
         next_spec = self._specs[self._index]
         if finished.name == 'entry_arc':
             heading = self._entry_heading
+            self.state = self.ALIGN if next_spec.kind == 'ALIGN' else self.TRACK
+        elif finished.kind == 'ALIGN':
+            heading = self._entry_heading if heading_override is None else heading_override
             self.state = self.TRACK
         elif finished.kind == 'ARC':
             heading = wrap_angle(self._active.start_heading + finished.turn_rad)
@@ -273,7 +314,7 @@ class Stage2TrackController:
                             complete, safe_stop, reason, spec.name if spec else '', progress,
                             spec.target_m if spec else 0.0, turn, spec.turn_rad if spec else 0.0)
 
-    def _line_command(self, active, position, yaw, yaw_rate, distance, visual):
+    def _line_command(self, active, position, yaw, yaw_rate, distance, visual, now):
         heading_error = wrap_angle(active.start_heading - yaw)
         dx, dy = position[0] - active.start_position[0], position[1] - active.start_position[1]
         inertial_cross = -math.sin(active.start_heading) * dx + math.cos(active.start_heading) * dy
@@ -286,8 +327,6 @@ class Stage2TrackController:
                                 * float(visual.get('error', 0.0) or 0.0)
                                 * self.vision_lateral_scale_m)
         speed = active.spec.speed_mps
-        if abs(heading_error) > self.heading_slowdown or abs(yaw_rate) > self.yaw_rate_settle:
-            speed = min(speed, self.corner_speed)
         # The IMU-distance pose is dead reckoning, not an independent lateral
         # observation. Its cross value is logged for diagnosis only.  Vision
         # is the sole lateral correction source once it is fresh/confident.
@@ -299,59 +338,102 @@ class Stage2TrackController:
             - self.yaw_rate_damping * yaw_rate
         )
         progress = distance - active.start_distance
-        ready_for_corner = (
-            progress >= active.spec.target_m - self.distance_tolerance
-            and abs(heading_error) <= self.line_heading_tolerance
-            and abs(yaw_rate) <= self.yaw_rate_settle
-        )
+        ready_for_corner = progress >= active.spec.target_m - self.distance_tolerance
         if ready_for_corner:
             if self._activate_next(position, distance):
-                return self._step_active(position, yaw, yaw_rate, distance, visual)
+                return self._step_active(position, yaw, yaw_rate, distance, visual, now)
             return self._command(complete=True)
-        if progress > active.spec.target_m + self.max_line_overrun_m:
-            return self.safe_stop('%s_heading_unsettled' % active.spec.name)
         return self._command(speed, angular, active=active, distance=distance,
                              cross=inertial_cross, heading_error=heading_error)
 
-    def _arc_command(self, active, position, yaw, yaw_rate, distance):
-        target_heading = wrap_angle(active.start_heading + active.spec.turn_rad)
-        heading_error = wrap_angle(target_heading - yaw)
-        signed_turn = (1.0 if active.spec.turn_rad > 0.0 else -1.0) * wrap_angle(yaw - active.start_heading)
+    def _arc_command(self, active, position, yaw, yaw_rate, distance, visual, now):
+        turn_sign = 1.0 if active.spec.turn_rad > 0.0 else -1.0
+        if active.last_yaw is None:
+            active.last_yaw = active.start_heading
+        active.turn_progress_rad += turn_sign * wrap_angle(yaw - active.last_yaw)
+        active.last_yaw = yaw
+        signed_turn = active.turn_progress_rad
         target_turn = abs(active.spec.turn_rad)
-        turn_error = target_turn - signed_turn
-        gain = self.entry_heading_kp if active.spec.name == 'entry_arc' else self.heading_kp
-        angular = self._clamp_angular(gain * heading_error - self.yaw_rate_damping * yaw_rate,
-                                      entry=active.spec.name == 'entry_arc')
+        angular = self._clamp_angular(
+            turn_sign * (self.entry_angular if active.spec.name == 'entry_arc' else self.corner_angular),
+            entry=active.spec.name == 'entry_arc'
+        )
         progress = distance - active.start_distance
-        # First valid crossing transfers immediately to the following line.
-        # The line retains the yaw-rate damping while the vehicle keeps moving.
-        if progress >= active.spec.target_m - self.distance_tolerance and abs(turn_error) <= self.angle_tolerance:
+        signed_rate = turn_sign * float(yaw_rate or 0.0)
+        lead = self.entry_arc_complete_lead if active.spec.name == 'entry_arc' else self.corner_arc_complete_lead
+        angle_ready = signed_turn >= target_turn - max(self.angle_tolerance, lead)
+        if angle_ready:
             if self._activate_next(position, distance):
-                return self._step_active(position, yaw, yaw_rate, distance, None)
+                return self._step_active(position, yaw, yaw_rate, distance, visual, now)
             return self._command(complete=True)
-        if progress > active.spec.target_m + self.max_arc_overrun_m:
-            return self.safe_stop('%s_distance_yaw_mismatch' % active.spec.name)
         return self._command(active.spec.speed_mps, angular, active=active, distance=distance,
-                             heading_error=heading_error, turn=signed_turn)
+                             heading_error=target_turn - signed_turn, turn=signed_turn)
 
-    def _step_active(self, position, yaw, yaw_rate, distance, visual):
+    def _align_command(self, active, position, yaw, yaw_rate, distance, visual, now):
+        progress = distance - active.start_distance
+        visual_valid = (
+            bool(visual and visual.get('valid', False))
+            and float(visual.get('age', 999.0) or 999.0) <= 0.20
+            and float(visual.get('confidence', 0.0) or 0.0) >= 0.35
+        )
+        # Without a trustworthy external line observation, preserve the
+        # relative IMU route rather than waiting indefinitely at the entry.
+        if not visual_valid:
+            self._entry_align_settled_at = None
+            if self._activate_next(position, distance, heading_override=self._entry_heading):
+                return self._step_active(position, yaw, yaw_rate, distance, visual, now)
+            return self._command(complete=True)
+
+        error = float(visual.get('error', 0.0) or 0.0)
+        if abs(error) < self._entry_align_best_error:
+            self._entry_align_best_error = abs(error)
+            self._entry_align_best_heading = yaw
+        angular = self._clamp_angular(
+            self.entry_align_visual_kp * error - self.yaw_rate_damping * yaw_rate,
+            entry=True,
+        )
+        centered = (abs(error) <= self.entry_align_error_tolerance
+                    and abs(yaw_rate) <= self.yaw_rate_settle)
+        if centered:
+            if self._entry_align_settled_at is None:
+                self._entry_align_settled_at = now
+            elif now - self._entry_align_settled_at >= self.entry_align_hold_sec:
+                # This is the only place Stage2 establishes the heading of
+                # its local track. It makes the route robust to Stage1 yaw.
+                if self._activate_next(position, distance, heading_override=yaw):
+                    return self._step_active(position, yaw, yaw_rate, distance, visual, now)
+                return self._command(complete=True)
+        else:
+            self._entry_align_settled_at = None
+        if progress > active.spec.target_m:
+            heading = self._entry_align_best_heading
+            if heading is None:
+                heading = yaw
+            if self._activate_next(position, distance, heading_override=heading):
+                return self._step_active(position, yaw, yaw_rate, distance, visual, now)
+            return self._command(complete=True)
+        return self._command(active.spec.speed_mps, angular, active=active,
+                             distance=distance, heading_error=error)
+
+    def _step_active(self, position, yaw, yaw_rate, distance, visual, now):
         if self._active is None:
             self.state = self.COMPLETE
             return self._command(complete=True)
         if self._active.spec.kind == 'LINE':
-            return self._line_command(self._active, position, yaw, yaw_rate, distance, visual)
-        return self._arc_command(self._active, position, yaw, yaw_rate, distance)
+            return self._line_command(self._active, position, yaw, yaw_rate, distance, visual, now)
+        if self._active.spec.kind == 'ALIGN':
+            return self._align_command(self._active, position, yaw, yaw_rate, distance, visual, now)
+        return self._arc_command(self._active, position, yaw, yaw_rate, distance, visual, now)
 
     def step(self, now: float, position: Tuple[float, float], yaw: float,
              visual: Optional[dict] = None, yaw_rate: float = 0.0,
              distance_m: Optional[float] = None) -> TrackCommand:
-        del now
         if self.state == self.SAFE_STOP:
             return self._command(safe_stop=True, reason=self.safe_reason)
         if self.state == self.COMPLETE:
             return self._command(complete=True)
         distance = self._distance(position, distance_m)
-        return self._step_active(position, yaw, float(yaw_rate or 0.0), distance, visual)
+        return self._step_active(position, yaw, float(yaw_rate or 0.0), distance, visual, now)
 
     def safe_stop(self, reason: str) -> TrackCommand:
         self.state = self.SAFE_STOP

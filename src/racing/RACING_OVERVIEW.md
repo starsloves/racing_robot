@@ -22,7 +22,7 @@ competition_controller.py（Stage1 主控）
   │
   ├── phase=2 ──── Stage2: 矩形赛道惯性导航
   │                │ 官方包：racing_stage2
-  │                ├── Stage2InertialNavigator — 轮速惯导 + field_track
+  │                ├── Stage2InertialNavigator — /odom_combined 距离 + IMU 转角轨迹控制
   │                ├── Stage2VisionMixin — 视觉中线跟随
   │                └── AvoidController — 独立避障模块
   │
@@ -109,8 +109,10 @@ timer_callback()
 
 ### 2.2 盲驱行为
 
-- 固定线速度 0.2 m/s，不转向（`blind_angular_speed=0`）
-- 无位姿依赖，纯开环直行
+- 默认固定线速度 0.2 m/s、不转向（`blind_angular_speed=0`）盲驱。
+- 若二维码仍未识别且 TF 得到的 `map_x > 3.5m`，进入二维码左侧搜索：降速至
+  `0.12m/s` 并以 `+0.55rad/s` 左转；二维码回调后立即退出该搜索分支。
+- 左侧搜索只作用于 Stage1 `forward` 状态，不影响避障、后退和通道导航。
 
 ### 2.3 避障状态机（4态）
 
@@ -141,7 +143,7 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 - 目标：入口区域中心（当前默认 map `(2.50, 2.00)`，到“2 米杠/通道口”即放行），**不要求精准到点 / 精准 90°**
 - 规划：默认 `use_corridor_planner=true`，占用膨胀 + A* 规划自由空间路径；失败回退直线
 - 跟踪：Pure Pursuit 跟踪规划路径（可斜穿）；`left_recover` 仅在 map_x 过大时介入
-- 放行：进入入口区域半径（当前 `0.10m`）即切 Stage2；默认不强制航向，可选 `corridor_require_yaw_for_release`
+- 放行：距离入口目标 0.60m 内锁定末端正向对齐；固定以 IMU 航向 90° 穿过入口门线，保持非零线速度。末端不再追一个欧氏点，满足 x 带宽、门线前后窗口和航向稳定后停车切 Stage2；若已越过门线且姿态仍可接受，直接放行，禁止掉头回追目标点。
 - 超时：`corridor_timeout_sec` 到时策略放行 Stage2
 - 日志：`~/dev_ws/log/competition_stage1/latest.log` 输出 plan refresh / region_entry 细节
 
@@ -150,6 +152,7 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 - Stage1 完成 → `competition_phase` 发布 phase=2
 - competition_controller 进入 `process_phase2_supervisor()`：监听 `/stage2_cmd_vel` 并转发到 `/cmd_vel`
 - `stage2_cmd_timeout`=0.5s，超时停车
+- Stage2 `start_delay_sec`=0.0s、`start_stationary_hold_sec`=0.0s；phase=2 后输入齐全且底盘未明显运动即启动，不再额外 0.5s 停顿。
 - Stage2 若在 phase=2 已发布后才启动或重启，会从 latched phase=2 进入恢复武装态；仍须等到二维码方向、IMU 和轮速输入齐全才实际出车。
 
 ---
@@ -162,8 +165,7 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 
 | 模块 | 核心文件 | 功能 |
 |---|---|---|
-| **导航** | `stage2_inertial_navigator.py` | 主控：锁定 `LINE` / `ARC` 段状态机；`/odom_combined` 距离 + IMU 航向 |
-| **场测赛道** | `field_track.py` | YAML 赛道段序加载 |
+| **导航** | stage2_inertial_navigator.py | 主控：生产段序固定在 Stage2TrackController；stage2_controller.yaml 的 track_* 为唯一调参入口 |
 | **避障** | `avoid_controller.py` | 独立 6 态闭环避障控制器 |
 | **避障几何** | `avoid_geometry.py` | 绕行路径规划（转向角 + 两脚距离） |
 | **雷达处理** | `scan_processor.py` | 前方/侧方障碍检测 |
@@ -228,35 +230,36 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 | `avoid_leg2_distance_m` | 0.22 m | leg2 直行长度 |
 | `side_detour_threshold_m` | 0.18 m | 侧边触发阈值 |
 | `avoider_heading_tolerance_deg` | 1.5° | 避障转弯到位精度 |
+| `turn_obstacle_stop_m` | 0.0 m | Stage2 生产轨迹 front_obstacle 硬停车阈值；0 表示关闭，避免圆弧扫边误停 |
 | `detour_obstacle_distance` | 0.52 m | 直行段前方障碍触发距离 |
 
-### 3.2 赛道段序（field_track YAML）
+### 3.2 赛道段序（生产 Stage2TrackController）
 
-通过 `field_track_*.yaml` 加载，支持相对坐标（odom 欧氏距离）和世界坐标两种模式。
+Stage2 生产段序固定在 Stage2TrackController 中，所有可调参数统一写在
+src/racing/racing_stage2/config/stage2_controller.yaml 的 track_* 段。
+旧顺/逆时针赛道 YAML 已删除，生产不再读取赛道 YAML。
 
-**顺时针段序**（`field_track_clockwise.yaml`，固定舵角圆弧入口版）：
+固定段序：
 
 ```
-  0. entry_45_arc:         从 map(2.50,2.00) 先圆弧拐入短直道（约45°）
-  1. entry_short_straight: 在短直道上走一小段
-  2. entry_semicircle:     连续小舵角半圆弧，直接揉进长直道
-  3. rect_top:             长直道
-  11. settle:             停稳 0.05s
-  12. rect_corner_3:    右转 88°（右上拐角）
-  13. settle:             停稳 0.05s
-  14. rect_side_2:        向下直行 0.40m
-  15. settle:             停稳 0.05s
-  16. rect_corner_4:    右转 88°（右下拐角）
-  17. settle:             停稳 0.05s
-  18. rect_return_origin: 向左直行 1.05m（回起点）
+entry_arc → entry_medium → left_side_arc → top_long → right_side_arc → exit_medium
 ```
 
-**世界坐标版**（`field_track_clockwise_world.yaml`）：标准 90°转角，`rect_side=0.80m`，`rect_return_origin=1.85m`。实际比赛使用。
+关键调参入口：
+- track_entry_arc_complete_lead_deg：入口 90°弯提前切段角。
+- track_entry_medium_distance_m：第一个 180° 前短直距离，控制 entry_medium → left_side_arc 的触发点。
+- track_top_long_distance_m：第二个 180° 前长直距离，控制 top_long → right_side_arc 的触发点。
+- track_exit_medium_distance_m：最后出口直线距离，控制 exit_medium 完成点。
+- track_max_speed：直线速度。
+- track_corner_speed：后续 180°弯线速度。
+- track_entry_angular：入口 90°弯角速度。
+- track_corner_angular：后续 180°弯角速度。
+- track_corner_arc_complete_lead_deg：后续 180°弯提前切段角。
 
-**导航方式**：
-- 相对坐标模式：odom 帧欧氏距离判断直行完成。段起点 = 当前 odom 位置，目标距离 = YAML 的 `distance_m`，完成判据 = `projected_distance() >= target - distance_tolerance`
-- 直行航向从 YAML 的 `heading_deg`（正交矩形边方向：90°/0°/-90°/180°）或上一个转弯目标 yaw 继承
-- **不需要世界坐标系**：全程在 odom 帧完成，避免 map→odom 变换误差
+导航方式：
+- 距离：/odom_combined 相邻 xy 欧氏位移累计。
+- 转角：/imu/data 相对 yaw 累计。
+- 禁止使用 /odom 或 /odom_combined 的 orientation 参与航向控制。
 
 ### 3.3 转弯系统
 
@@ -280,6 +283,12 @@ if abs(error) < turn_min_angular_speed:
 **转角补偿**：
 - `turn_inertia_compensation_deg`：惯性补偿（提前停）
 - `turn_angle_compensation_deg`：系统性转角补偿（IMU/机械零点偏差）
+
+**TrackController 圆弧结束判据（当前生产实现）**：
+- 转弯完成以 IMU 相对转角为主判据；`/odom_combined` 相邻 xy 累计弧长只作为“已走过足够距离”和“严重失配”保护，不要求弧长与角度在同一采样点同时命中。
+- 当弧长达到目标弧长的 `track_arc_min_completion_ratio`（默认 70%）后，若 IMU 相对转角已进入容差，或按当前 yaw-rate 预判 `track_arc_finish_predict_sec`（默认 0.18s）内会越过目标角，即立即移交下一段。
+- 若弧长超过目标弧长 + overrun，但 IMU 角度仍落后超过 `track_arc_mismatch_angle_deg`（默认 14°），才判定 `*_distance_yaw_mismatch` 停车；否则切入下一段并由直线航向/yaw-rate 阻尼吸收余摆。
+- `entry_align` 是非零速度的短距离视觉参考校正段；视觉不能在距离上限内完全居中时，使用最佳视觉误差对应的 IMU 航向继续进入 `entry_medium`，不再因为未居中而长时间卡住。
 
 ### 3.4 避障控制器（AvoidController）
 
@@ -314,7 +323,7 @@ idle → turn_away(转α, 30°) → leg1(直行0.22m) → turn_back(转β, 40°)
 **文件**：
 - `stage2_hybrid_controller.py` — 生产唯一控制权状态机
 - `stage2_vision_mixin.py` / `vision_lane_centering.py` — BPU Seg + 多行中线状态输出
-- `field_track_*.yaml` — 路线拓扑和诊断参考，不再用定时 `arc` 段实际控制转弯
+- `stage2_controller.yaml` — Stage2 生产唯一参数源，`track_*` 段控制赛道速度、距离、角速度和提前切段
 
 #### 状态机与职责
 
@@ -347,7 +356,7 @@ SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相
 | 直行不到位 | `distance_tolerance` | ↑ |
 | 转弯过冲 | `heading_tolerance_deg` / `turn_min_speed_ratio` | ↑（提前停） |
 | 转弯不足 | `turn_kp` / `turn_angle_compensation_deg` | ↑ |
-| 某角欠转 | `field_track_*.yaml` 对应 `angle_deg` | ↑ |
+| 某角欠转 | `stage2_controller.yaml` 中对应 `track_*_complete_lead_deg` 或角速度 | 提前角↓ / 角速度↑ |
 | 转弯后加速突兀 | `move_accel_ramp_sec` | ↑ |
 | 视觉修正打晃 | `vision_offset_kp` / `fusion_weight_imu` | ↓ / ↑ |
 | 视觉检测 timeout | `vision_timeout_sec` | ↑ |
@@ -388,7 +397,10 @@ SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相
 |---|---|---|
 | `pursuit_lookahead_m` | 0.45 m | 预瞄距离 |
 | `pursuit_linear_speed` | 0.18 m/s | PP 线速度 |
-| `pursuit_heading_stop_deg` | 70.0° | 航向差大于此值则原地转向 |
+| `p_approach_linear_speed` | 0.50 m/s | 识别到 P 后视觉伺服接近速度 |
+| `p_complete_bbox_fill_ratio` | 0.35 | P 框宽度达到画面 35% 即判定到达，提前刹停 |
+| `p_extra_forward_distance_m` | 0.00 m | P 到达后不再额外前进 |
+| `pursuit_heading_stop_deg` | 70.0° | 航向差大于此值则进入低速正向重定向 |
 | `pursuit_turn_kp` | 1.8 | PP 转向 P 增益 |
 | `waypoint_tolerance` | 0.18 m | 中间路点容差 |
 | `goal_tolerance` | 0.10 m | 目标点容差 |
@@ -406,12 +418,12 @@ phase=3 收到
           ├─ maybe_advance_waypoint()   // 距当前路点 < tolerance → index++
           ├─ 非末段：
           │   ├─ [A* 启用] plan_global_path() → select_path_lookahead_point()
-          │   ├─ Pure Pursuit: 航向差 > heading_stop → 原地转; 否则曲率控制
+          │   ├─ Pure Pursuit: 航向差 > heading_stop → 低速正向重定向; 否则曲率控制
           │   └─ [避障] Stage1 4态聚类避障（interrupt running）
           └─ 仅当 map y < p_vision_enable_y_max(默认 2.0) 后启动 P 视觉：
               ├─ YOLO 连续检测到 P 点
-              ├─ p_approaching：按 P 框中心低通纠偏并加速接近
-              ├─ bbox fill 达阈值：沿当前行驶方向额外前进 0.50m
+              ├─ p_approaching：按 P 框中心低通纠偏，以 0.50m/s 接近
+              ├─ bbox fill 达 0.35：立即完成，不再额外前进
               └─ → finish_mission()
 ```
 
@@ -433,7 +445,7 @@ idle → armed → running(PurePursuit + A*) → p_approaching → p_extra_forwa
 | 过早误检 P / 太晚才开视觉 | `p_vision_enable_y_max` | ↑ 更早开 / ↓ 更晚开 |
 | P 点视觉接近太慢 | `p_approach_linear_speed` | ↑ |
 | P 点接近左右抖 | `p_approach_angular_kp` / `p_approach_angular_deadband` | ↓ / ↑ |
-| P 点停车过早 | `p_extra_forward_distance_m` | ↑ |
+| P 点停车过早 | `p_complete_bbox_fill_ratio` / `p_extra_forward_distance_m` | ↑ / ↑ |
 | 震荡 | `pursuit_turn_kp` | ↓ |
 | A* 频繁重规划耗资源 | `planner_replan_period_sec` | ↑ |
 | 无 map 时 A* 阻塞 | `use_occupancy_grid_planner` | false（切纯路点模式）|
@@ -490,7 +502,6 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
 |---|---|---|
 | `test_direction` | clockwise | 行驶方向 |
 | `test_start_mode` | auto | 启动模式 |
-| `field_track_yaml` | '' | 自定义赛道 YAML 路径 |
 | `include_support` | true | 是否启动底层支持（轮速/IMU/雷达）|
 | `include_bringup` | true | 是否启动 origincar_bringup |
 | `include_lidar` | true | 是否启动激光雷达 |

@@ -128,11 +128,17 @@ stage3_return_navigator:
     # 连续检测次数阈值 — 连续检测到 P 点此帧数后触发接近（抗抖动）
     p_approach_consecutive_hits: 3
 
-    # 完成条件 bbox 填充比例 — bbox 宽度占画面比例 > 此值判定到达
-    p_complete_bbox_fill_ratio: 0.5
+    # 完成条件 bbox 填充比例 — bbox 宽度占画面比例 > 此值判定到达；降低阈值用于提前刹停
+    p_complete_bbox_fill_ratio: 0.35
 
-    # 接近线速度 (m/s) — 视觉伺服接近时的前进速度
-    p_approach_linear_speed: 0.06
+    # 接近线速度 (m/s) — 识别到 P 后视觉伺服高速接近
+    p_approach_linear_speed: 0.50
+
+    # P 点视觉到达后额外前进距离 (m) — 0 表示达到视觉阈值即刹停
+    p_extra_forward_distance_m: 0.10
+
+    # P 点视觉到达后额外前进速度 (m/s)
+    p_extra_forward_speed: 0.50
 
     # 接近角速度增益 — bbox 中心 offset → 角速度增益
     p_approach_angular_kp: 0.8
