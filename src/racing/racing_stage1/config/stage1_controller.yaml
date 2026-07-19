@@ -492,7 +492,7 @@ competition_controller:
     transition_stop_duration: 0.05
 
     # Stage2 指令超时 (s) — Phase2 时，超过此时长未收到 Stage2 指令则停车
-    stage2_cmd_timeout: 0.5
+    stage2_cmd_timeout: 2.0
 
     # Phase2 障碍覆盖 — true: Phase2 时仍响应 Phase1 避障
     phase2_obstacle_override: false

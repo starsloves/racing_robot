@@ -75,7 +75,7 @@ stage2_inertial_navigator:
 
     # 第一个 180° 触发点：entry_arc 后走多远开始 left_side_arc。
     # 最新日志约在 0.45m 后切入；现场要求再提前约 10cm，因此由 0.50m 收到 0.40m。
-    track_entry_medium_distance_m: 0.40
+    track_entry_medium_distance_m: 0.60
 
     # 第二个 180° 触发点：top_long 走多远开始 right_side_arc。
     # 最新日志约在 2.50m 后切入；现场要求再提前约 10cm，因此由 2.59m 收到 2.49m。
@@ -83,7 +83,7 @@ stage2_inertial_navigator:
 
     # 出口最后直线长度：right_side_arc 后走多远判定 Stage2 完成。
     # 最新实车反馈最后一段偏长，缩短 20cm：1.49m -> 1.29m。
-    track_exit_medium_distance_m: 1.10
+    track_exit_medium_distance_m: 0.5
 
     # 名义半径：用于日志/弧长诊断，实际切段以 IMU 相对角为准
     track_entry_radius: 0.40

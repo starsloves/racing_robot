@@ -18,8 +18,16 @@ def generate_launch_description():
     stage2_config = os.path.join(stage2_dir, 'config', 'stage2_controller.yaml')
     obstacle_marker_config = os.path.join(stage2_dir, 'config', 'obstacle_circle_markers.yaml')
 
-    include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='false')
-    include_lidar_arg = DeclareLaunchArgument('include_lidar', default_value='false')
+    include_bringup_arg = DeclareLaunchArgument(
+        'include_bringup',
+        default_value='true',
+        description='Standalone Stage2 starts base/EKF support by default; total launch passes false',
+    )
+    include_lidar_arg = DeclareLaunchArgument(
+        'include_lidar',
+        default_value='true',
+        description='Standalone Stage2 starts lidar by default; total launch passes false',
+    )
     include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
     include_camera_arg = DeclareLaunchArgument('include_camera', default_value='false')
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='false')
@@ -42,8 +50,8 @@ def generate_launch_description():
     )
     enable_test_publisher_arg = DeclareLaunchArgument(
         'enable_test_publisher',
-        default_value='false',
-        description='Publish phase and direction topics for standalone testing',
+        default_value='true',
+        description='Publish isolated phase=2 and direction topics for standalone testing; total launch passes false',
     )
     map_to_odom_x_arg = DeclareLaunchArgument(
         'map_to_odom_x',

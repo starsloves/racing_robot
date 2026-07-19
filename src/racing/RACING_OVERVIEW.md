@@ -501,13 +501,10 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `test_direction` | clockwise | 行驶方向 |
-| `test_start_mode` | auto | 启动模式 |
-| `include_support` | true | 是否启动底层支持（轮速/IMU/雷达）|
-| `include_bringup` | true | 是否启动 origincar_bringup |
-| `include_lidar` | true | 是否启动激光雷达 |
+| `enable_test_publisher` | true | 单启动默认发布隔离测试 phase=2 和方向；总启动显式关闭 |
+| `include_bringup` | true | 单启动默认启动 origincar_bringup，提供底盘、EKF 和 /odom_combined；总启动显式关闭 |
+| `include_lidar` | true | 单启动默认启动激光雷达；总启动显式关闭 |
 | `include_camera` | false | 是否启动普通摄像头 |
-| `include_recorder` | true | 是否启动 CSV 记录 |
-| `vision_camera` | true | 是否启动 Aurora 930 视觉相机 |
 | `enable_cmd_relay` | true | 是否启动 cmd_vel 中继（stage2→主控）|
 | `enable_rviz` | false | 是否启动 rviz2 |
 | `carto_slam` | false | 是否启动 Cartographer SLAM |

@@ -135,7 +135,7 @@ stage3_return_navigator:
     p_approach_linear_speed: 0.50
 
     # P 点视觉到达后额外前进距离 (m) — 0 表示达到视觉阈值即刹停
-    p_extra_forward_distance_m: 0.10
+    p_extra_forward_distance_m: 0.00
 
     # P 点视觉到达后额外前进速度 (m/s)
     p_extra_forward_speed: 0.50

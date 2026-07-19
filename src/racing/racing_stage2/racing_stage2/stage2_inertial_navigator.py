@@ -295,6 +295,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('session_log_subdir', 'direct_inertial_test')
         self.declare_parameter('session_log_filename', 'latest.log')
         self.declare_parameter('session_telemetry_interval_sec', 0.25)
+        self.declare_parameter('control_gap_warn_sec', 0.35)
         subdir = (
             str(self.get_parameter('session_log_subdir').value).strip()
             or 'direct_inertial_test'
@@ -319,6 +320,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._ekf_twist = None
         self._last_cmd_linear = 0.0
         self._last_cmd_angular = 0.0
+        self._last_control_loop_sec = None
+        self._last_cmd_publish_sec = None
+        self._control_gap_warn_sec = max(
+            0.10, float(self.get_parameter('control_gap_warn_sec').value)
+        )
         self.get_logger().info(
             f'{self.test_feedback_prefix}会话日志: {self._session_log.path}'
         )
@@ -343,6 +349,37 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._last_cmd_linear = float(linear_x)
         self._last_cmd_angular = float(angular_z)
         return super().create_twist(linear_x, angular_z)
+
+    def _log_control_timing(self, now_sec: float, tag: str, will_publish: bool = True) -> None:
+        last_loop = getattr(self, '_last_control_loop_sec', None)
+        last_pub = getattr(self, '_last_cmd_publish_sec', None)
+        loop_gap = 0.0 if last_loop is None else now_sec - last_loop
+        publish_gap = 0.0 if last_pub is None else now_sec - last_pub
+        self._last_control_loop_sec = now_sec
+        if will_publish:
+            self._last_cmd_publish_sec = now_sec
+        if loop_gap <= self._control_gap_warn_sec and publish_gap <= self._control_gap_warn_sec:
+            return
+        visual_age = float('nan')
+        visual_valid = False
+        if getattr(self, '_vision_node', None) is not None:
+            try:
+                line = self._get_vision_line_status()
+                visual_age = float(line.get('age', 999.0) or 999.0)
+                visual_valid = bool(line.get('valid', False))
+            except Exception:
+                visual_age = float('nan')
+                visual_valid = False
+        self._log_session(
+            'CTRL_GAP',
+            f'tag={tag} loop_gap={loop_gap:.3f}s publish_gap={publish_gap:.3f}s '
+            f'will_publish={int(bool(will_publish))} '
+            f'cmd=({self._last_cmd_linear:.3f},{self._last_cmd_angular:.3f}) '
+            f'mission={int(bool(self.mission_active))} track={int(bool(self._track_mission_active))} '
+            f'seg={(self.current_segment or {}).get("description", "none")} '
+            f'vision_valid={int(visual_valid)} vision_age={visual_age:.2f}s '
+            f'{self._full_telemetry()}',
+        )
 
     def navigation_yaw(self):
         """统一位姿航向（current_yaw）；轮速模式下由 /odom 写入，IMU 仅诊断。"""
@@ -948,7 +985,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         now = self.get_clock().now().nanoseconds / 1e9
         visual = None
         if self._track_pose is None or self.current_yaw is None:
-            self.cmd_pub.publish(self.create_twist())
+            stop_cmd = self.create_twist()
+            self._log_control_timing(now, 'track_missing_pose')
+            self.cmd_pub.publish(stop_cmd)
             return
         if self.front_obstacle_distance < float(
                 self.get_parameter('turn_obstacle_stop_m').value):
@@ -961,7 +1000,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 yaw_rate=getattr(self, 'current_imu_yaw_rate', 0.0),
                 distance_m=self._track_distance_m,
             )
-        self.cmd_pub.publish(self.create_twist(command.linear, command.angular))
+        cmd_msg = self.create_twist(command.linear, command.angular)
+        self._log_control_timing(now, f'track:{command.segment or command.state}')
+        self.cmd_pub.publish(cmd_msg)
         if visual and bool(visual.get('valid', False)):
             vision_log = (f'valid e={float(visual.get("error", 0.0) or 0.0):+.3f} '
                           f'c={float(visual.get("confidence", 0.0) or 0.0):.2f} '
