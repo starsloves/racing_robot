@@ -6,6 +6,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -13,6 +14,8 @@ def generate_launch_description():
     stage1_dir = get_package_share_directory('racing_stage1')
     stage2_dir = get_package_share_directory('racing_stage2')
     stage3_dir = get_package_share_directory('racing_stage3')
+    vision_ai_dir = get_package_share_directory('racing_vision_ai')
+    voice_driver_dir = get_package_share_directory('voice_driver')
 
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
     stage1_launch_path = os.path.join(stage1_dir, 'launch', 'competition_stage1.launch.py')
@@ -23,6 +26,8 @@ def generate_launch_description():
     include_stage1_arg = DeclareLaunchArgument('include_stage1', default_value='true')
     include_stage2_arg = DeclareLaunchArgument('include_stage2', default_value='true')
     include_stage3_arg = DeclareLaunchArgument('include_stage3', default_value='true')
+    include_vision_ai_arg = DeclareLaunchArgument('include_vision_ai', default_value='true')
+    include_voice_arg = DeclareLaunchArgument('include_voice', default_value='true')
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='false')
     include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
     include_obstacle_markers_arg = DeclareLaunchArgument('include_obstacle_markers', default_value='true')
@@ -97,11 +102,36 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('include_stage3')),
     )
 
+    vision_ai_node = Node(
+        package='racing_vision_ai',
+        executable='vision_ai_node',
+        name='stage2_vision_ai',
+        output='screen',
+        parameters=[{
+            'mode': 'stage2',
+            'config_path': os.path.join(vision_ai_dir, 'config', 'vision_ai_config.yaml'),
+            'trigger_topic': 'stage2_ai_capture',
+            'image_topic': '/aurora/rgb/image_raw',
+            'result_topic': 'ai_description',
+            'status_topic': 'stage2_ai_status',
+        }],
+        condition=IfCondition(LaunchConfiguration('include_vision_ai')),
+    )
+
+    voice_stack = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(voice_driver_dir, 'launch', 'voice_tts.launch.py')
+        ),
+        condition=IfCondition(LaunchConfiguration('include_voice')),
+    )
+
     return LaunchDescription([
         include_map_overlay_arg,
         include_stage1_arg,
         include_stage2_arg,
         include_stage3_arg,
+        include_vision_ai_arg,
+        include_voice_arg,
         include_depth_arg,
         include_bno055_arg,
         include_obstacle_markers_arg,
@@ -115,4 +145,6 @@ def generate_launch_description():
         stage1_stack,
         stage2_stack,
         stage3_stack,
+        vision_ai_node,
+        voice_stack,
     ])

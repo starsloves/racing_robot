@@ -9,10 +9,13 @@
 
   <depend>ament_index_python</depend>
   <depend>launch</depend>
+  <depend>launch_ros</depend>
   <depend>racing_stage1</depend>
   <depend>racing_stage2</depend>
   <depend>racing_stage3</depend>
   <depend>origincar_bringup</depend>
+  <depend>racing_vision_ai</depend>
+  <depend>voice_driver</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

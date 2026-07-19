@@ -439,3 +439,20 @@ class Stage2TrackController:
         self.state = self.SAFE_STOP
         self.safe_reason = reason
         return self._command(safe_stop=True, reason=reason)
+
+    @property
+    def active_segment_name(self) -> str:
+        """Return the segment currently being evaluated."""
+        return self._active.spec.name if self._active is not None else ''
+
+    @property
+    def active_segment_progress_m(self) -> float:
+        """Return distance progress for the active segment."""
+        if self._active is None:
+            return 0.0
+        return max(0.0, self._fallback_distance - self._active.start_distance)
+
+    @property
+    def active_segment_target_m(self) -> float:
+        """Return the active segment's nominal target distance."""
+        return self._active.spec.target_m if self._active is not None else 0.0

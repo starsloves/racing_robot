@@ -141,20 +141,20 @@ competition_controller:
     avoid_min_turn_angle_deg: 18.0
 
     # 启动宽限期 (s) — 节点启动后此时间内不触发避障（避免噪声误触发）
-    phase1_avoid_startup_grace_sec: 1.5
+    phase1_avoid_startup_grace_sec: 1.0
 
     # --- 激光扫描配置 (Lidar Scan Config) ---
     # 扫描角度范围 (°) — ±此角度内的激光点参与检测
     scan_angle_deg: 45.0
 
     # 安全距离 (m) — 障碍物距离小于此值触发避障
-    safe_distance: 0.5
+    safe_distance: 0.3
 
     # 清除距离 (m) — 障碍物距离大于此值视为清除
-    clear_distance: 0.65
+    clear_distance: 0.5
 
     # 最小有效量程 (m) — 激光点距离小于此值视为无效
-    min_valid_range: 0.15
+    min_valid_range: 0.10
 
     # ────────────────────────────────────────────────────────────────────────
     # 避障恢复 (Avoidance Recovery)
@@ -214,7 +214,8 @@ competition_controller:
     # 启用后退功能 — true: 扫码后沿轨迹后退, false: 直接通道导航
     enable_backing: true
 
-    # 后退目标 X (m, map 坐标系) — 后退到 map_x ≤ 此值时停止
+    # 后退结束线 X (m, /odom_combined 坐标系) — 到 odom_x ≤ 此值时停止。
+    # 倒退路点本身仍在 map 坐标系中跟踪，禁止用 map_x 替代此赛程结束线。
     back_target_x: 2.0
 
     # 后退线速度 (m/s) — 负值表示倒车
@@ -259,8 +260,8 @@ competition_controller:
 
     # --- 通道路点 (Waypoints in map frame) ---
     # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
-    # 先贴 x=2.50 再收 y，避免单点 LOS 中段漂移
-    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.80,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    # Stage1 -> Stage2 交接目标统一由 YAML 控制，当前目标为 (2.50, 2.50)。
+    corridor_waypoints_json: '[{"x":2.50,"y":2.60,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
 
     # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
     corridor_waypoint_tolerance: 0.25
@@ -521,7 +522,8 @@ competition_controller:
     vision_corridor_iou_thres: 0.45         # NMS IOU 阈值
     vision_corridor_crop_ratio: 0.4         # 裁剪上方 40%（保留下方 60%）
     vision_corridor_crop_side_ratio: 0.20   # 左右各裁 20%（保留中间 60%）
-    vision_corridor_http_port: 8081         # HTTP 可视化服务端口
+    # 8081 由通道 YOLO 独立服务持有；旧分割模块不再抢占端口。
+    vision_corridor_http_port: 0
 
     # 控制增益 (Control Gains)
     vision_corridor_lateral_kp: 1.2         # 横向误差增益
@@ -543,3 +545,71 @@ competition_controller:
     vision_corridor_sample_rows: 9          # 采样行数
     vision_corridor_lookahead_ratio: 0.62   # 前瞻比例
     vision_corridor_min_valid_rows: 5       # 最少有效行数
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 通道 YOLO 中心交接 (Stage1 -> Stage2 Channel YOLO Handoff)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 启用通道 YOLO 中心交接；到达中心后只重置本节点 map 初始值，不发布/覆盖 /odom_combined
+    channel_yolo_enabled: true
+    channel_yolo_model_path: /home/sunrise/dev_ws/best_rdk_tongdao.bin
+    channel_yolo_camera_topic: /aurora/rgb/image_raw
+    channel_yolo_camera_info_topic: /aurora/rgb/camera_info
+    # 空间投影优先使用 CameraInfo/image 的 frame_id；查不到时回退到此帧。
+    # 车体 URDF 中 camera 是 +X 前、+Y 左、+Z 上的车体式帧，不是 optical 帧。
+    channel_yolo_camera_frame: camera
+    channel_yolo_camera_frame_is_optical: true
+    # bbox 垂直投影锚点：0=顶边，0.5=几何中心，1=底边中心。
+    # 地面交点默认使用底边中心；几何中心不是地面点，不能直接投影到地面。
+    channel_yolo_bbox_anchor_v_ratio: 1.0
+    channel_yolo_conf_thres: 0.25
+    channel_yolo_iou_thres: 0.45
+    channel_yolo_preview_path: /tmp/stage1_channel_yolo.jpg
+    channel_yolo_raw_path: /tmp/stage1_channel_raw.jpg
+    channel_yolo_http_port: 8081
+
+    # 兼容旧参数：YOLO 在倒退中持续观察，实际接管由 confirm_frames 决定。
+    channel_yolo_trigger_y: 1.5
+    channel_handoff_yaw_deg: 90.0
+    channel_handoff_yaw_tolerance_deg: 5.0
+
+    # Stage1 -> Stage2 交接时的 map 本地对齐点。
+    channel_handoff_position_tolerance_m: 0.10
+    channel_handoff_lateral_kp: 1.20
+
+    # 到达交接目标时，把当前 odom/IMU 映射为此 map 初始点
+    channel_reset_map_x: 2.5
+    channel_reset_map_y: 2.5
+    channel_reset_yaw_deg: 90.0
+
+    # YOLO 几何目标控制；bbox 水平中心 + YAML 垂直锚点通过
+    # camera_info + camera TF 投影到地面，再转换到 map。
+    channel_yolo_linear_speed: 0.18
+    # 倒退中发现通道框后，视觉追踪固定正向速度。
+    channel_yolo_chase_speed: 0.35
+    channel_yolo_finish_speed: 0.08
+    channel_yolo_max_angular: 0.35
+    # yaw 保持优先于横向修正，避免车辆为追横向误差持续转过 90°。
+    channel_yolo_yaw_correction_gain: 1.00
+    # 锁定视觉中心后，沿 channel_handoff_yaw_deg 正向继续前进的距离。
+    channel_handoff_advance_m: 0.10
+    # YOLO 超时仍无框时，使用下方 YAML map handoff 继续导航；仍检查横向和 yaw。
+    channel_yolo_fallback_enabled: true
+    channel_yolo_timeout_sec: 12.0
+    # 丢框后仍保持正向运动，完成航向收敛和末端前进。
+    channel_yolo_lost_timeout_sec: 0.30
+    channel_yolo_finish_yaw_tolerance_deg: 3.0
+
+    # 视觉交接状态机：连续确认 -> IMU 对齐 +Y -> 快速接近 -> map Y 门线交权。
+    channel_yolo_confirm_frames: 3
+    channel_yolo_align_tolerance_deg: 8.0
+    channel_yolo_align_speed: 0.08
+    # 丢框时继续使用 IMU +Y 的最长时间；超时则回退现有地图导航。
+    channel_yolo_lost_continue_sec: 6.0
+    # Stage2 交接门线。仅 y 达线、x 在窗口内且 IMU yaw 达标时才发布 phase=2。
+    channel_handoff_release_y: 2.60
+    channel_handoff_release_x: 2.50
+    channel_handoff_release_x_tolerance_m: 0.35
+    channel_handoff_release_yaw_tolerance_deg: 5.0
+    # 快速视觉接近的最大 /odom_combined 位移；未过 Y 门线即超限时回退地图导航。
+    channel_yolo_approach_max_distance_m: 2.40

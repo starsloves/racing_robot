@@ -35,6 +35,9 @@ stage2_inertial_navigator:
     cmd_topic: /stage2_cmd_vel
     feedback_topic: competition_feedback
     state_topic: stage2_state
+    stage2_ai_capture_enabled: true
+    stage2_ai_capture_lead_m: 0.50
+    stage2_ai_trigger_topic: stage2_ai_capture
 
     # ────────────────────────────────────────────────────────────────────────
     # 启动 / 循环
@@ -77,7 +80,7 @@ stage2_inertial_navigator:
 
     # 第一个 180° 触发点：entry_arc 后走多远开始 left_side_arc。
     # 最新日志约在 0.45m 后切入；现场要求再提前约 10cm，因此由 0.50m 收到 0.40m。
-    track_entry_medium_distance_m: 0.60
+    track_entry_medium_distance_m: 0.45
 
     # 第二个 180° 触发点：top_long 走多远开始 right_side_arc。
     # 最新日志约在 2.50m 后切入；现场要求再提前约 10cm，因此由 2.59m 收到 2.49m。

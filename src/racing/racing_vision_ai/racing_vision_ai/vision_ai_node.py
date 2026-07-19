@@ -1,286 +1,240 @@
 #!/usr/bin/env python3
+"""Asynchronous one-frame vision analysis for the racing robot."""
+
+from __future__ import annotations
+
 import base64
-import os
 import io
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
+
 import cv2
-import numpy as np
-from PIL import Image
-
 import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile
-from std_msgs.msg import Int32
-from std_msgs.msg import String
-from sensor_msgs.msg import CompressedImage
-from cv_bridge import CvBridge
 import yaml
+from cv_bridge import CvBridge
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, qos_profile_sensor_data
+from sensor_msgs.msg import Image
+from std_msgs.msg import Empty, Int32, String
 
-# 导入火山引擎SDK
 try:
     from volcenginesdkarkruntime import Ark
-except ImportError:
-    print("Warning: volcengine-python-sdk[ark] not installed. Please install with: pip install volcengine-python-sdk[ark]")
+except ImportError:  # pragma: no cover - deployment dependency
     Ark = None
 
 
 class VisionAINode(Node):
-    """
-    Racing Vision AI Node
-    订阅sign4return信号，当接收到值为9时，订阅一帧图像并发送给火山引擎大模型进行图生文字分析
-    """
-    
-    def __init__(self):
+    """Cache camera frames and run cloud analysis outside the ROS callbacks."""
+
+    def __init__(self) -> None:
         super().__init__('vision_ai_node')
-        
-        # 初始化CV Bridge用于图像转换
-        self.bridge = CvBridge()
-        
-        # 声明参数，允许用户指定配置文件路径
+        self.declare_parameter('mode', 'stage2')
         self.declare_parameter('config_path', '')
-        
-        # 加载配置文件
-        self.config = self.load_config()
-        
-        # 初始化火山引擎客户端
-        self.ark_client = None
-        if Ark is not None:
-            api_key = self.config.get('volcengine', {}).get('api_key')
-            if api_key:
-                self.ark_client = Ark(api_key=api_key)
-                self.get_logger().info("Volcengine Ark client initialized successfully")
-            else:
-                self.get_logger().warn("ARK_API_KEY not set in config file")
-                # 尝试从环境变量获取API密钥
-                api_key = os.environ.get('ARK_API_KEY')
-                if api_key:
-                    self.ark_client = Ark(api_key=api_key)
-                    self.get_logger().info("Volcengine Ark client initialized using environment variable")
-                else:
-                    self.get_logger().error("ARK_API_KEY not set in config file or environment variable")
+        self.declare_parameter('trigger_topic', 'stage2_ai_capture')
+        self.declare_parameter('image_topic', '/aurora/rgb/image_raw')
+        self.declare_parameter('result_topic', 'ai_description')
+        self.declare_parameter('status_topic', 'stage2_ai_status')
+        self.declare_parameter('frame_max_age_sec', 1.0)
+        self.declare_parameter('request_timeout_sec', 30.0)
+
+        self._config = self._load_config()
+        volc = self._config.get('volcengine', {})
+        self._api_key = str(volc.get('api_key') or os.environ.get('ARK_API_KEY', '')).strip()
+        self._model_id = str(volc.get('model_id') or os.environ.get(
+            'ARK_MODEL_ID', 'doubao-seed-1-6-250615'
+        )).strip()
+        self._prompt = str(volc.get(
+            'prompt', '请用一小段话简单描述这张图片中的内容，包括物体、场景、颜色等信息。'
+        ))
+        self._jpeg_quality = int(self._config.get('image', {}).get('jpeg_quality', 85))
+        self._frame_max_age_sec = max(0.1, float(self.get_parameter('frame_max_age_sec').value))
+        self._request_timeout_sec = max(1.0, float(self.get_parameter('request_timeout_sec').value))
+        self._bridge = CvBridge()
+        self._frame_lock = threading.Lock()
+        self._latest_frame: Any | None = None
+        self._latest_frame_time = 0.0
+        self._busy = False
+        self._busy_lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='vision-ai')
+        self._result_topic = str(self.get_parameter('result_topic').value)
+
+        self._result_pub = self.create_publisher(
+            String, self._result_topic, QoSProfile(depth=10)
+        )
+        self._status_pub = self.create_publisher(
+            String, str(self.get_parameter('status_topic').value), QoSProfile(depth=10)
+        )
+        image_topic = str(self.get_parameter('image_topic').value)
+        self._image_sub = self.create_subscription(
+            Image, image_topic, self._image_callback, qos_profile_sensor_data
+        )
+
+        mode = str(self.get_parameter('mode').value).strip().lower()
+        if mode == 'full':
+            target_sign = int(self._config.get('detection', {}).get('target_sign', 9))
+            sign_topic = str(self._config.get('detection', {}).get('sign_topic', 'sign4return'))
+            self._sign_sub = self.create_subscription(
+                Int32, sign_topic, lambda msg: self._trigger_callback(target_sign, msg.data), 10
+            )
+            self.get_logger().info(
+                f'[VISION_AI] mode=full sign_topic={sign_topic} target_sign={target_sign}'
+            )
         else:
-            self.get_logger().warn("Volcengine SDK not available")
-        
-        # 从配置文件获取模型ID，如果不存在尝试从环境变量获取
-        self.model_id = self.config.get('volcengine', {}).get('model_id')
-        if not self.model_id:
-            self.model_id = os.environ.get('ARK_MODEL_ID', 'your-model-id')
-            if self.model_id != 'your-model-id':
-                self.get_logger().info(f"Using model ID from environment variable: {self.model_id}")
-        
-        # 目标sign值从配置文件获取，如果不存在则使用默认值9
-        self.target_sign = self.config.get('detection', {}).get('target_sign', 9)
-        
-        # 状态变量
-        self.waiting_for_image = False
-        self.latest_image = None
-        
-        # QoS配置
-        qos_profile = QoSProfile(depth=10)
-        
-        # 订阅sign4return话题
-        self.sign_subscriber = self.create_subscription(
-            Int32,
-            self.config.get('detection', {}).get('sign_topic', 'sign4return'),  # 状态切换话题
-            self.sign_callback,
-            qos_profile
-        )
-        
-        # 图像话题名称
-        self.image_topic = self.config.get('detection', {}).get('image_topic', '/image')
-        
-        # 订阅图像话题（仅在需要时订阅）
-        self.image_sub = None
-        
-        # ai_description话题发布器
-        self.ai_description_publisher = self.create_publisher(
-            String,
-            'ai_description',
-            qos_profile
-        )
-        
-        self.get_logger().info("Vision AI Node initialized")
-        self.get_logger().info(f"Waiting for sign4return={self.target_sign} signal...")
-    
-    def load_config(self):
-        """加载配置文件"""
-        # 使用ament_index_python查找包的安装路径（如果已安装）
+            trigger_topic = str(self.get_parameter('trigger_topic').value)
+            self._trigger_sub = self.create_subscription(
+                Empty, trigger_topic, self._stage2_trigger_callback, 10
+            )
+            self.get_logger().info(
+                f'[VISION_AI] mode=stage2 trigger_topic={trigger_topic} '
+                f'image_topic={image_topic} max_age={self._frame_max_age_sec:.1f}s'
+            )
+
+        if Ark is None:
+            self.get_logger().error('[VISION_AI] Ark SDK unavailable; install volcengine-python-sdk[ark]')
+        elif not self._api_key:
+            self.get_logger().error('[VISION_AI] ARK_API_KEY is empty; cloud analysis disabled')
+        else:
+            self.get_logger().info(
+                f'[VISION_AI] Ark ready model={self._model_id} '
+                f'prompt_len={len(self._prompt)}'
+            )
+
+    def _load_config(self) -> dict:
+        configured = str(self.get_parameter('config_path').value).strip()
+        candidates = []
+        if configured:
+            candidates.append(Path(configured))
         try:
             from ament_index_python.packages import get_package_share_directory
-            package_share_dir = get_package_share_directory('racing_vision_ai')
-            installed_config_path = os.path.join(package_share_dir, 'config', 'vision_ai_config.yaml')
+            candidates.append(Path(get_package_share_directory('racing_vision_ai'))
+                             / 'config' / 'vision_ai_config.yaml')
         except Exception:
-            installed_config_path = None
-            self.get_logger().debug("找不到已安装的包共享目录")
-        
-        # 尝试多个可能的配置文件路径
-        possible_paths = [
-            # 1. 检查当前工作目录的配置文件
-            os.path.join(os.getcwd(), 'vision_ai_config.yaml'),
-            
-            # 2. 开发环境相对路径
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'vision_ai_config.yaml'),
-        ]
-        
-        # 如果找到了已安装的配置路径，添加到搜索列表
-        if installed_config_path:
-            possible_paths.append(installed_config_path)
-        
-        # 获取用户通过参数指定的配置文件路径
-        param_config_path = self.get_parameter('config_path').get_parameter_value().string_value
-        
-        if param_config_path:
-            possible_paths.insert(0, param_config_path)  # 将用户指定的路径放在最前面
-            self.get_logger().info(f"用户指定的配置文件路径: {param_config_path}")
-        
-        # 尝试每个可能的路径
-        for config_path in possible_paths:
+            pass
+        candidates.append(Path(__file__).resolve().parents[1] / 'config' / 'vision_ai_config.yaml')
+        for path in candidates:
             try:
-                with open(config_path, 'r', encoding='utf-8') as file:
-                    config = yaml.safe_load(file)
-                    self.get_logger().info(f"成功加载配置文件: {config_path}")
-                    return config
-            except Exception as e:
-                self.get_logger().debug(f"无法从 {config_path} 加载配置文件: {str(e)}")
-                continue
-        
-        # 如果所有路径都失败，记录警告并返回空字典
-        self.get_logger().warn("无法找到配置文件，将使用默认值")
+                with path.open(encoding='utf-8') as stream:
+                    config = yaml.safe_load(stream) or {}
+                self.get_logger().info(f'[VISION_AI] config loaded: {path}')
+                return config
+            except (OSError, yaml.YAMLError) as exc:
+                self.get_logger().debug(f'[VISION_AI] config unavailable path={path}: {exc}')
+        self.get_logger().warn('[VISION_AI] no config file found; using environment/defaults')
         return {}
-    
-    def sign_callback(self, msg):
-        """处理sign4return信号"""
-        self.get_logger().info(f"Received sign4return: {msg.data}")
-        
-        if msg.data == self.target_sign:
-            self.get_logger().info(f"Received trigger signal (sign4return={self.target_sign}), subscribing to image topic...")
-            self.waiting_for_image = True
-            
-            # 创建图像订阅者
-            if self.image_sub is None:
-                qos_profile = QoSProfile(depth=10)
-                self.image_sub = self.create_subscription(
-                    CompressedImage,
-                    self.image_topic,
-                    self.image_callback,
-                    qos_profile
-                )
-                self.get_logger().info(f"Subscribed to {self.image_topic} topic")
-    
-    def image_callback(self, msg):
-        """处理接收到的压缩图像"""
-        if not self.waiting_for_image:
+
+    def _image_callback(self, msg: Image) -> None:
+        try:
+            frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            frame = frame.copy()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f'[VISION_AI] frame decode failed: {exc}')
             return
-        
-        self.get_logger().info("Received compressed image, processing with AI model...")
-        
-        try:
-            # 将压缩图像消息转换为OpenCV格式
-            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            
-            # 调用AI模型分析图像
-            result = self.analyze_image_with_ai(cv_image)
-            
-            if result:
-                self.get_logger().error(f"AI Analysis Result: {result}")
-                # 发布话题ai_description    
-                msg = String()
-                msg.data = result
-                self.ai_description_publisher.publish(msg)
-                self.get_logger().info("Published AI analysis result")
-            else:
-                self.get_logger().warn("Failed to get AI analysis result")
-        
-        except Exception as e:
-            self.get_logger().error(f"Error processing compressed image: {str(e)}")
-        
-        finally:
-            # 重置状态，取消订阅（如果只需要处理一帧）
-            self.waiting_for_image = False
-            if self.image_sub is not None:
-                self.destroy_subscription(self.image_sub)
-                self.image_sub = None
-                self.get_logger().info("Unsubscribed from image topic")
-    
-    def encode_image_to_base64(self, cv_image):
-        """将OpenCV图像编码为Base64字符串"""
-        try:
-            # 将BGR图像转换为RGB
-            rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
-            
-            # 转换为PIL Image
-            pil_image = Image.fromarray(rgb_image)
-            
-            # 从配置文件获取图像质量和格式
-            quality = self.config.get('image', {}).get('jpeg_quality', 85)
-            format_type = self.config.get('image', {}).get('format', 'JPEG')
-            
-            # 编码为指定格式的Base64
-            buffered = io.BytesIO()
-            pil_image.save(buffered, format=format_type, quality=quality)
-            
-            # 获取Base64编码
-            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-            
-            return img_base64
-        
-        except Exception as e:
-            self.get_logger().error(f"Error encoding image to base64: {str(e)}")
-            return None
-    
-    def analyze_image_with_ai(self, cv_image):
-        """使用火山引擎AI模型分析图像"""
-        if self.ark_client is None:
-            self.get_logger().warn("Ark client not available, skipping AI analysis")
-            return "AI client not available"
-        
-        try:
-            # 将图像编码为Base64
-            base64_image = self.encode_image_to_base64(cv_image)
-            if base64_image is None:
-                return None
-            
-            # 调用火山引擎API
-            prompt = self.config.get('volcengine', {}).get('prompt', "请详细描述这张图片中的内容，包括物体、场景、颜色等信息。")
-            
-            response = self.ark_client.chat.completions.create(
-                model=self.model_id,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                },         
-                            },
-                            {
-                                "type": "text",
-                                "text": prompt,
-                            },
-                        ],
-                    }
-                ],
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
+        now = self.get_clock().now().nanoseconds / 1e9
+        with self._frame_lock:
+            self._latest_frame = frame
+            self._latest_frame_time = stamp if stamp > 0.0 else now
+
+    def _stage2_trigger_callback(self, _msg: Empty) -> None:
+        self._trigger_callback(None, None)
+
+    def _trigger_callback(self, target_sign: int | None, value: int | None) -> None:
+        if target_sign is not None and value != target_sign:
+            return
+        now = self.get_clock().now().nanoseconds / 1e9
+        with self._busy_lock:
+            if self._busy:
+                self.get_logger().warn('[VISION_AI] trigger ignored: previous request still running')
+                self._publish_status('busy')
+                return
+            self._busy = True
+        with self._frame_lock:
+            frame = None if self._latest_frame is None else self._latest_frame.copy()
+            frame_time = self._latest_frame_time
+        age = now - frame_time if frame is not None else float('inf')
+        if frame is None or age > self._frame_max_age_sec:
+            self.get_logger().error(
+                f'[VISION_AI] trigger failed: no fresh frame age={age:.3f}s '
+                f'max={self._frame_max_age_sec:.3f}s'
             )
-            
-            # 提取响应内容
-            if response.choices and len(response.choices) > 0:
-                content = response.choices[0].message.content
-                return content
-            else:
-                self.get_logger().warn("No response from AI model")
-                return None
-        
-        except Exception as e:
-            self.get_logger().error(f"Error calling AI model: {str(e)}")
-            return None
+            self._publish_status('capture_failed:no_fresh_frame')
+            with self._busy_lock:
+                self._busy = False
+            return
+        self.get_logger().info(
+            f'[VISION_AI] frame captured age={age:.3f}s shape={frame.shape}; '
+            f'queueing cloud request timeout={self._request_timeout_sec:.1f}s'
+        )
+        self._publish_status(f'captured:age={age:.3f}s')
+        self._executor.submit(self._analyze_worker, frame)
+
+    def _analyze_worker(self, frame: Any) -> None:
+        try:
+            if Ark is None or not self._api_key:
+                self._publish_status('analysis_failed:ark_not_ready')
+                return
+            started = self.get_clock().now().nanoseconds / 1e9
+            self.get_logger().info('[VISION_AI] cloud request started')
+            encoded = self._encode_image(frame)
+            client = Ark(api_key=self._api_key)
+            response = client.chat.completions.create(
+                model=self._model_id,
+                messages=[{'role': 'user', 'content': [
+                    {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{encoded}'}},
+                    {'type': 'text', 'text': self._prompt},
+                ]}],
+                timeout=self._request_timeout_sec,
+            )
+            content = response.choices[0].message.content if response.choices else ''
+            if not isinstance(content, str):
+                content = str(content)
+            content = content.strip()
+            elapsed = self.get_clock().now().nanoseconds / 1e9 - started
+            if not content:
+                self.get_logger().error(f'[VISION_AI] cloud response empty elapsed={elapsed:.3f}s')
+                self._publish_status('analysis_failed:empty_response')
+                return
+            result = String()
+            result.data = content[:1000]
+            self._result_pub.publish(result)
+            self.get_logger().info(
+                f'[VISION_AI] result published topic={self._result_topic} '
+                f'elapsed={elapsed:.3f}s chars={len(result.data)}'
+            )
+            self._publish_status(f'analysis_ok:elapsed={elapsed:.3f}s:chars={len(result.data)}')
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f'[VISION_AI] cloud request failed: {type(exc).__name__}: {exc}')
+            self._publish_status(f'analysis_failed:{type(exc).__name__}')
+        finally:
+            with self._busy_lock:
+                self._busy = False
+            self.get_logger().info('[VISION_AI] background task finished; ready for next trigger')
+
+    def _encode_image(self, frame: Any) -> str:
+        ok, encoded = cv2.imencode(
+            '.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality]
+        )
+        if not ok:
+            raise RuntimeError('jpeg_encode_failed')
+        return base64.b64encode(encoded.tobytes()).decode('ascii')
+
+    def _publish_status(self, status: str) -> None:
+        msg = String()
+        msg.data = status
+        self._status_pub.publish(msg)
+
+    def destroy_node(self) -> bool:
+        self.get_logger().info('[VISION_AI] shutting down executor')
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        return super().destroy_node()
 
 
-def main(args=None):
+def main(args=None) -> None:
     rclpy.init(args=args)
-    
     node = VisionAINode()
-    
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

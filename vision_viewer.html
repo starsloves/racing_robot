@@ -109,6 +109,17 @@
         .pane-image-wrap {
             position: relative;
         }
+        .stage1-channel-pair {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2px;
+            background: #222;
+        }
+        .stage1-channel-pair img {
+            display: block;
+            width: 100%;
+            min-width: 0;
+        }
 
         .info-panel {
             margin-top: 14px;
@@ -173,6 +184,10 @@
                     <div>正在连接 8081...</div>
                 </div>
             </div>
+            <div class="stage1-channel-pair">
+                <img id="img-stage1-channel-raw" src="" alt="Stage1 通道原图">
+                <img id="img-stage1-channel-yolo" src="" alt="Stage1 通道YOLO结果">
+            </div>
         </div>
 
         <div class="pane connecting" id="pane-stage2">
@@ -229,7 +244,9 @@
     </div>
 
     <script>
-        const HOST = '100.114.34.86';
+        // When served by Stage1 on 8081, use the board's actual hostname/IP.
+        // Keep the board fallback for opening this file directly from disk.
+        const HOST = window.location.hostname || '100.114.34.86';
         const STAGES = {
             stage1: { name: 'Stage1', port: 8081, desc: '通道导航', key: 'stage1' },
             stage2: { name: 'Stage2', port: 8082, desc: '车道居中', key: 'stage2' },
@@ -251,6 +268,10 @@
             stage1: document.getElementById('img-stage1'),
             stage2: document.getElementById('img-stage2'),
             stage3: document.getElementById('img-stage3')
+        };
+        const stage1ChannelImgs = {
+            raw: document.getElementById('img-stage1-channel-raw'),
+            yolo: document.getElementById('img-stage1-channel-yolo')
         };
         const loadings = {
             stage1: document.getElementById('loading-stage1'),
@@ -414,6 +435,8 @@
         function refreshStage1() {
             if (stageHealth.stage1.alive && stageHealth.stage1.age >= 0) {
                 refreshOneImage('stage1');
+                stage1ChannelImgs.raw.src = `${stageBase('stage1')}/channel_raw.jpg?t=${Date.now()}`;
+                stage1ChannelImgs.yolo.src = `${stageBase('stage1')}/channel_yolo.jpg?t=${Date.now()}`;
             }
             setTimeout(refreshStage1, 120);
         }

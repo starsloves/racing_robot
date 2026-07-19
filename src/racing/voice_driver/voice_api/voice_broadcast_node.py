@@ -102,6 +102,10 @@ class VoiceBroadcastNode(Node):
         text = msg.data.strip()
         if not text:
             return
+        self.get_logger().info(
+            f'[VOICE_BROADCAST] ai_description received chars={len(text)}; '
+            'queueing background speech task'
+        )
         self._run_async('text', lambda: self._service.speak_text(text))
 
     def _run_async(self, kind: str, task) -> None:
@@ -113,6 +117,7 @@ class VoiceBroadcastNode(Node):
 
         def _worker() -> None:
             try:
+                self.get_logger().info(f'[VOICE_BROADCAST] worker started kind={kind}')
                 result = task()
                 if result:
                     if isinstance(result, str):
@@ -124,6 +129,7 @@ class VoiceBroadcastNode(Node):
             finally:
                 with self._lock:
                     self._busy = False
+                self.get_logger().info(f'[VOICE_BROADCAST] worker finished kind={kind}')
 
         threading.Thread(target=_worker, daemon=True).start()
 

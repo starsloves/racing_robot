@@ -20,7 +20,7 @@ def generate_launch_description():
             name='vision_ai_node',
             output='screen',
             parameters=[
-                {'use_sim_time': False}
+                {'use_sim_time': False, 'mode': 'stage2'},
             ],
             arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level')]
         ),

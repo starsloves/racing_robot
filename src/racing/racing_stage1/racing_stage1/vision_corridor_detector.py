@@ -45,13 +45,17 @@ class VisionCorridorDetector:
     """
 
     def __init__(self, parent_node, model_path, conf_thres=0.25, iou_thres=0.45,
-                 crop_ratio=0.4, http_port=8081, crop_side_ratio=0.20):
+                 crop_ratio=0.4, http_port=8081, crop_side_ratio=0.20,
+                 channel_raw_path='/tmp/stage1_channel_raw.jpg',
+                 channel_yolo_path='/tmp/stage1_channel_yolo.jpg'):
         self._node = parent_node
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.crop_ratio = crop_ratio
         self.crop_side_ratio = float(np.clip(crop_side_ratio, 0.0, 0.45))
         self.http_port = http_port
+        self._channel_raw_path = str(channel_raw_path)
+        self._channel_yolo_path = str(channel_yolo_path)
 
         # 共享变量（线程安全）
         self._lock = threading.Lock()
@@ -222,6 +226,9 @@ class VisionCorridorDetector:
 
     def _start_http_server(self):
         """启动 HTTP 静态服务器"""
+        if int(self.http_port) <= 0:
+            self._node.get_logger().info('[Stage1视觉] HTTP 服务由通道YOLO接管')
+            return
         server_dir = os.path.dirname(self._jpeg_output_path)
 
         class HealthHandler(SimpleHTTPRequestHandler):
@@ -233,10 +240,30 @@ class VisionCorridorDetector:
             def do_GET(self):
                 if self.path.startswith('/health'):
                     self.send_health_response()
+                elif self.path.startswith('/channel_raw.jpg'):
+                    self.serve_external_image(self.parent_detector._channel_raw_path)
+                elif self.path.startswith('/channel_yolo.jpg'):
+                    self.serve_external_image(self.parent_detector._channel_yolo_path)
                 elif self.path.startswith('/vision_latest.jpg'):
                     self.serve_latest_image()
                 else:
                     super().do_GET()
+
+            def serve_external_image(self, path):
+                try:
+                    with open(path, 'rb') as image_file:
+                        content = image_file.read()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('Content-Length', len(content))
+                    self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(content)
+                except FileNotFoundError:
+                    self.send_error(404, 'Image not found')
+                except BrokenPipeError:
+                    pass
 
             def send_health_response(self):
                 """返回健康检查 JSON"""

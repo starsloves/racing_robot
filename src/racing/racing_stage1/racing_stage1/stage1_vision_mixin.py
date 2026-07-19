@@ -76,6 +76,8 @@ class Stage1VisionMixin:
             self._vision_crop_ratio = float(self.get_parameter('vision_corridor_crop_ratio').value)
             self._vision_crop_side_ratio = float(self.get_parameter('vision_corridor_crop_side_ratio').value)
             self._vision_http_port = int(self.get_parameter('vision_corridor_http_port').value)
+            self._channel_raw_path = str(self.get_parameter('channel_yolo_raw_path').value)
+            self._channel_yolo_path = str(self.get_parameter('channel_yolo_preview_path').value)
 
             self._vision_lateral_kp = float(self.get_parameter('vision_corridor_lateral_kp').value)
             self._vision_heading_kp = float(self.get_parameter('vision_corridor_heading_kp').value)
@@ -95,8 +97,9 @@ class Stage1VisionMixin:
             return
 
         if not self._vision_corridor_enabled:
-            self.get_logger().info('[Stage1视觉] 视觉导航已禁用')
-            return
+            # 视觉分割不参与控制，但保留 detector 的 HTTP 服务，供
+            # Stage1 通道 YOLO 原图/结果图在 8081 端口显示。
+            self.get_logger().info('[Stage1视觉] 分割控制已禁用，仅保留8081监控服务')
 
         # 创建视觉检测器
         try:
@@ -108,6 +111,8 @@ class Stage1VisionMixin:
                 crop_ratio=self._vision_crop_ratio,
                 http_port=self._vision_http_port,
                 crop_side_ratio=self._vision_crop_side_ratio,
+                channel_raw_path=self._channel_raw_path,
+                channel_yolo_path=self._channel_yolo_path,
             )
 
             # 更新采样参数

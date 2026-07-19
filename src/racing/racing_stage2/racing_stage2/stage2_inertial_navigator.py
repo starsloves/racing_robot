@@ -4,6 +4,7 @@ import os
 
 import rclpy
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Empty
 
 from racing_stage2.stage2_inertial_base import Stage2InertialBase
 from racing_stage2.avoid_controller import AvoidConfig, AvoidController, NavState
@@ -67,6 +68,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_heading_slowdown_deg', 10.0)
         self.declare_parameter('track_finish_tolerance_m', 0.10)
         self.declare_parameter('track_odom_combined_step_max_m', 0.12)
+        self.declare_parameter('stage2_ai_capture_enabled', True)
+        self.declare_parameter('stage2_ai_capture_lead_m', 0.50)
+        self.declare_parameter('stage2_ai_trigger_topic', 'stage2_ai_capture')
         # 避障参数（yaml 配置，直行避障使用）
         self.declare_parameter('avoid_turn_away_deg', 30.0)
         self.declare_parameter('avoid_turn_back_deg', 40.0)
@@ -238,6 +242,19 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             finish_tolerance_m=float(self.get_parameter('track_finish_tolerance_m').value),
         )
         self._track_mission_active = False
+        self._stage2_ai_capture_enabled = bool(
+            self.get_parameter('stage2_ai_capture_enabled').value
+        )
+        self._stage2_ai_capture_lead_m = max(
+            0.0, float(self.get_parameter('stage2_ai_capture_lead_m').value)
+        )
+        self._stage2_ai_capture_sent = False
+        self._stage2_ai_trigger_topic = str(
+            self.get_parameter('stage2_ai_trigger_topic').value
+        ).strip() or 'stage2_ai_capture'
+        self._stage2_ai_trigger_pub = self.create_publisher(
+            Empty, self._stage2_ai_trigger_topic, 1
+        )
         # The track controller works in an IMU-aligned local frame.  The EKF
         # odometry contributes only travelled distance; its orientation is
         # deliberately never used by Stage2 navigation.
@@ -275,6 +292,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             f'可视化窗口=[{self._cluster_window_config["min_x"]:.2f}-{self._cluster_window_config["max_x"]:.2f}m, '
             f'±{self._cluster_window_config["half_y"]:.2f}m]'
         )
+        self.get_logger().info(
+            f'[AI_CAPTURE] enabled={self._stage2_ai_capture_enabled} '
+            f'topic={self._stage2_ai_trigger_topic} lead={self._stage2_ai_capture_lead_m:.2f}m '
+            f'trigger=top_long_before_right_side_arc'
+        )
         self._log_session(
             'CONFIG',
             f'方向={self.direction_text()} 模式={self.start_mode_text()} '
@@ -289,6 +311,13 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             f'head_tol={math.degrees(self.heading_tolerance):.1f}deg '
             f'detour_d={self.detour_obstacle_distance:.2f}m '
             f'segment_timeout={self.segment_timeout:.1f}s',
+        )
+        self._log_session(
+            'AI_CAPTURE_CONFIG',
+            f'enabled={self._stage2_ai_capture_enabled} '
+            f'topic={self._stage2_ai_trigger_topic} '
+            f'lead={self._stage2_ai_capture_lead_m:.2f}m '
+            f'trigger=top_long_before_right_side_arc',
         )
 
     def _setup_session_log(self) -> None:
@@ -966,6 +995,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._track_controller.start(self.direction, self._track_pose,
                                      self.current_yaw, now,
                                      distance_m=self._track_distance_m)
+        self._stage2_ai_capture_sent = False
         self._track_mission_active = True
         self.mission_active = True
         self.current_segment = {'type': 'track', 'description': 'rounded_track'}
@@ -981,6 +1011,26 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         )
         return True
 
+    def _maybe_trigger_stage2_ai_capture(self) -> None:
+        if not self._stage2_ai_capture_enabled or self._stage2_ai_capture_sent:
+            return
+        if self._track_controller.active_segment_name != 'top_long':
+            return
+        target = self._track_controller.active_segment_target_m
+        progress = self._track_controller.active_segment_progress_m
+        remaining = max(0.0, target - progress)
+        if remaining > self._stage2_ai_capture_lead_m:
+            return
+
+        self._stage2_ai_capture_sent = True
+        self._stage2_ai_trigger_pub.publish(Empty())
+        message = (
+            f'top_long progress={progress:.3f}/{target:.3f}m '
+            f'remaining={remaining:.3f}m direction={self.direction}'
+        )
+        self.get_logger().info(f'[AI_CAPTURE] trigger published: {message}')
+        self._log_session('AI_CAPTURE_TRIGGER', message)
+
     def _run_track_controller(self):
         now = self.get_clock().now().nanoseconds / 1e9
         visual = None
@@ -993,6 +1043,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 self.get_parameter('turn_obstacle_stop_m').value):
             command = self._track_controller.safe_stop('front_obstacle')
         else:
+            self._maybe_trigger_stage2_ai_capture()
             visual = self._get_vision_line_status() if getattr(
                 self, '_vision_node', None) is not None else None
             command = self._track_controller.step(
