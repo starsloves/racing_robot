@@ -40,6 +40,8 @@ stage2_inertial_navigator:
     # 启动 / 循环
     # ────────────────────────────────────────────────────────────────────────
     control_rate_hz: 20.0
+    # 控制循环/命令发布间隔超过该阈值时写 CTRL_GAP 诊断日志。
+    control_gap_warn_sec: 0.35
     # Stage1 发布 phase=2 后立即启动 Stage2；不再额外等待 0.5s。
     start_delay_sec: 0.0
     start_stationary_speed_mps: 0.03

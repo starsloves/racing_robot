@@ -476,6 +476,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.warned_missing_heading = False
         self.latest_stage2_cmd = Twist()
         self.latest_stage2_cmd_time = None
+        self._stage2_cmd_timeout_active = False
+        self._last_stage2_timeout_log_sec = 0.0
         self.transition_end_time = None
         self.qr_task = ''
         self.stage2_state = 'idle'
@@ -2007,6 +2009,13 @@ class CompetitionController(Stage1VisionMixin, Node):
     def stage2_cmd_callback(self, msg):
         self.latest_stage2_cmd = msg
         self.latest_stage2_cmd_time = self.get_clock().now()
+        if self._stage2_cmd_timeout_active:
+            self._stage2_cmd_timeout_active = False
+            self.log.info(
+                'STAGE2_CMD_RECOVER',
+                f'received cmd after timeout: '
+                f'v={msg.linear.x:.3f} w={msg.angular.z:.3f}',
+            )
 
     def stage2_cmd_is_fresh(self):
         if self.latest_stage2_cmd_time is None:
@@ -2014,6 +2023,29 @@ class CompetitionController(Stage1VisionMixin, Node):
 
         age = self.get_clock().now() - self.latest_stage2_cmd_time
         return age.nanoseconds <= int(self.stage2_cmd_timeout * 1e9)
+
+    def stage2_cmd_age_sec(self):
+        if self.latest_stage2_cmd_time is None:
+            return None
+        age = self.get_clock().now() - self.latest_stage2_cmd_time
+        return age.nanoseconds / 1e9
+
+    def log_stage2_cmd_timeout_if_needed(self):
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        if self._stage2_cmd_timeout_active and now_sec - self._last_stage2_timeout_log_sec < 1.0:
+            return
+        self._stage2_cmd_timeout_active = True
+        self._last_stage2_timeout_log_sec = now_sec
+        age_sec = self.stage2_cmd_age_sec()
+        age_text = 'none' if age_sec is None else f'{age_sec:.3f}s'
+        self.log.warn(
+            'STAGE2_CMD_TIMEOUT',
+            f'phase=2 stop_robot: no fresh /stage2_cmd_vel '
+            f'age={age_text} timeout={self.stage2_cmd_timeout:.3f}s '
+            f'last_cmd=({self.latest_stage2_cmd.linear.x:.3f},'
+            f'{self.latest_stage2_cmd.angular.z:.3f}) '
+            f'stage2_state={self.stage2_state}',
+        )
 
     def control_loop(self):
         if self.mission_finished:
@@ -2141,6 +2173,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.cmd_pub.publish(self.latest_stage2_cmd)
             return
 
+        self.log_stage2_cmd_timeout_if_needed()
         self.stop_robot()
 
 
