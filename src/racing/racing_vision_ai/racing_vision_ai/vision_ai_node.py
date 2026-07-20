@@ -42,6 +42,7 @@ class VisionAINode(Node):
         self._prompt = str(volc.get(
             'prompt', '请用一小段话简单描述这张图片中的内容，包括物体、场景、颜色等信息。'
         ))
+        self._max_description_chars = max(1, int(volc.get('max_description_chars', 20)))
         self._jpeg_quality = int(self._config.get('image', {}).get('jpeg_quality', 85))
         self._vision = VisionAnalyzer(
             provider=self._vision_provider,
@@ -208,12 +209,14 @@ class VisionAINode(Node):
                 self.get_logger().error(f'[VISION_AI] cloud response empty elapsed={elapsed:.3f}s')
                 self._publish_status('analysis_failed:empty_response')
                 return
+            description = content.strip()[:self._max_description_chars]
             result = String()
-            result.data = content[:1000]
+            result.data = description
             self._result_pub.publish(result)
             self.get_logger().info(
                 f'[VISION_AI] result published topic={self._result_topic} '
-                f'elapsed={elapsed:.3f}s chars={len(result.data)}'
+                f'elapsed={elapsed:.3f}s chars={len(result.data)} '
+                f'max_chars={self._max_description_chars}'
             )
             self._publish_status(f'analysis_ok:elapsed={elapsed:.3f}s:chars={len(result.data)}')
         except Exception as exc:  # noqa: BLE001

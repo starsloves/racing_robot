@@ -178,6 +178,7 @@ class Stage2TrackController:
                  corner_radius: float = 0.40,
                  vision_lateral_scale_m: float = 0.30,
                  vision_lateral_weight: float = 0.35,
+                 vision_correction_max_angular: float = 0.10,
                  lookahead_m: float = 0.45,
                  heading_slowdown_deg: float = 10.0,
                  finish_tolerance_m: float = 0.10):
@@ -217,6 +218,9 @@ class Stage2TrackController:
         self.corner_arc_complete_lead = math.radians(max(0.0, min(90.0, corner_arc_complete_lead_deg)))
         self.vision_lateral_scale_m = max(0.0, vision_lateral_scale_m)
         self.vision_lateral_weight = max(0.0, min(1.0, vision_lateral_weight))
+        self.vision_correction_max_angular = min(
+            self.max_angular, max(0.01, vision_correction_max_angular)
+        )
         self.distance_tolerance = 0.025
         self.max_arc_overrun_m = 0.16
         self.max_line_overrun_m = 0.12
@@ -323,7 +327,9 @@ class Stage2TrackController:
         if visual and bool(visual.get('valid', False)):
             if float(visual.get('age', 999.0) or 999.0) <= 0.20 and float(visual.get('confidence', 0.0) or 0.0) >= 0.35:
                 visual_valid = True
-                visual_cross = (-self.vision_lateral_weight
+                # Vision error > 0 means the lane center is right in the image,
+                # so the vehicle is left of center and must steer right.
+                visual_cross = (self.vision_lateral_weight
                                 * float(visual.get('error', 0.0) or 0.0)
                                 * self.vision_lateral_scale_m)
         speed = active.spec.speed_mps
@@ -331,8 +337,14 @@ class Stage2TrackController:
         # observation. Its cross value is logged for diagnosis only.  Vision
         # is the sole lateral correction source once it is fresh/confident.
         cross_correction = 0.0
-        if visual_valid and abs(yaw_rate) <= self.yaw_rate_settle:
-            cross_correction = max(-0.10, min(0.10, -0.8 * visual_cross))
+        # A line can retain a small yaw rate while it corrects lateral error.
+        # Gating vision at yaw_rate_settle made the correction flicker on/off
+        # around 0.10 rad/s and let the vehicle keep drifting.
+        if visual_valid:
+            cross_correction = max(
+                -self.vision_correction_max_angular,
+                min(self.vision_correction_max_angular, -0.8 * visual_cross),
+            )
         angular = self._clamp_angular(
             self.line_heading_kp * heading_error + cross_correction
             - self.yaw_rate_damping * yaw_rate

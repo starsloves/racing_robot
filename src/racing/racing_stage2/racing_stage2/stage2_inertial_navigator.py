@@ -67,6 +67,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_corner_radius', 0.18)
         self.declare_parameter('track_vision_lateral_scale_m', 0.30)
         self.declare_parameter('track_vision_lateral_weight', 0.35)
+        self.declare_parameter('track_vision_correction_max_angular', 0.10)
         self.declare_parameter('track_lookahead_m', 0.45)
         self.declare_parameter('track_heading_slowdown_deg', 10.0)
         self.declare_parameter('track_finish_tolerance_m', 0.10)
@@ -239,6 +240,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             corner_radius=float(self.get_parameter('track_corner_radius').value),
             vision_lateral_scale_m=float(self.get_parameter('track_vision_lateral_scale_m').value),
             vision_lateral_weight=float(self.get_parameter('track_vision_lateral_weight').value),
+            vision_correction_max_angular=float(
+                self.get_parameter('track_vision_correction_max_angular').value
+            ),
             lookahead_m=float(self.get_parameter('track_lookahead_m').value),
             heading_slowdown_deg=float(
                 self.get_parameter('track_heading_slowdown_deg').value

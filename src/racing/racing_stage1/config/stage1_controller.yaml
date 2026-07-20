@@ -260,7 +260,7 @@ competition_controller:
     # --- 通道路点 (Waypoints in map frame) ---
     # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
     # 先贴 x=2.50 再收 y，避免单点 LOS 中段漂移
-    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.60,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    corridor_waypoints_json: '[{"x":2.60,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.60,"y":2.55,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
 
     # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
     corridor_waypoint_tolerance: 0.25
@@ -291,17 +291,20 @@ competition_controller:
     corridor_require_yaw_for_release: false
 
     # --- 终端逼近 (Terminal Approach) ---
-    # 近 Y 门线且 X/yaw 已进入容差时锁存；锁存后不再重规划，稳定小角速度沿 +Y 逼近
+    # 近 Y 门线且 X 已进入预留带时锁存；锁存后停止重规划，先回正航向再微调 X
     corridor_terminal_enabled: true
 
     # 从 Y 门线前多远开始允许切入终端逼近 (m)
     corridor_terminal_start_y_margin_m: 0.45
 
-    # 切入终端逼近和交权所需的横向 X 误差容差 (m)
+    # Stage2 交权所需的最终横向 X 误差容差 (m)
     corridor_terminal_x_tolerance_m: 0.12
 
-    # 终端逼近退出回 Pure Pursuit 的横向误差阈值 (m)，必须大于切入阈值以避免抖动
-    corridor_terminal_x_exit_tolerance_m: 0.18
+    # X 先收敛到该预留带后即锁存，并开始回正到 +Y；此时不再持续追 X
+    corridor_terminal_heading_settle_x_tolerance_m: 0.20
+
+    # 锁存后若 X 再偏离该值，才退出回 Pure Pursuit；必须大于预留带以避免抖动
+    corridor_terminal_x_exit_tolerance_m: 0.28
 
     # 切入终端逼近所需的 IMU 航向误差容差 (°)
     corridor_terminal_yaw_tolerance_deg: 8.0
@@ -312,8 +315,11 @@ competition_controller:
     # 终端逼近固定正线速度 (m/s)，正常导航中绝不为 0
     corridor_terminal_linear_speed: 0.15
 
-    # 横向 X 误差映射到期望航向的增益 (1/m)
-    corridor_terminal_lateral_gain: 2.0
+    # 距离 Y 门线该距离以内，若仍未进入最终 X 容差才开启微小横向修正 (m)
+    corridor_terminal_micro_start_y_margin_m: 0.18
+
+    # 最后一小段横向 X 误差映射到期望航向的增益 (1/m)
+    corridor_terminal_lateral_gain: 0.8
 
     # 期望航向误差到角速度的比例增益
     corridor_terminal_heading_kp: 1.0
@@ -323,6 +329,9 @@ competition_controller:
 
     # 终端逼近角速度绝对上限 (rad/s)
     corridor_terminal_max_angular_speed: 0.12
+
+    # 最后一小段 X 微调的角速度绝对上限 (rad/s)
+    corridor_terminal_micro_max_angular_speed: 0.06
 
     # 通道导航超时 (s) — 超时后强制切 Stage2
     corridor_timeout_sec: 45.0
@@ -481,8 +490,23 @@ competition_controller:
     # 强制重定向 — true: 每次进入通道都重定向
     corridor_force_reorient_enabled: false
 
-    # 允许倒车模式 — true: 允许倒车回正（当前未使用）
-    corridor_reverse_enabled: false
+    # 前瞻点已落到车后时，低速倒车恢复，禁止正向绕大圈追点
+    corridor_reverse_enabled: true
+
+    # 前瞻点相对车头超过该角度进入倒车恢复 (°)
+    corridor_reverse_enter_angle_deg: 70.0
+
+    # 倒车恢复后，前瞻点回到此前方扇区才恢复正向跟踪 (°)
+    corridor_reverse_exit_angle_deg: 40.0
+
+    # 倒车恢复固定线速度 (m/s)
+    corridor_reverse_linear_speed: -0.06
+
+    # 倒车时车尾追踪前瞻点的航向增益
+    corridor_reverse_heading_kp: 1.0
+
+    # 倒车恢复角速度绝对上限 (rad/s)
+    corridor_reverse_max_angular_speed: 0.35
 
     # ────────────────────────────────────────────────────────────────────────
     # 左侧恢复 (Left Recovery - Anti Right-Wall Drift)

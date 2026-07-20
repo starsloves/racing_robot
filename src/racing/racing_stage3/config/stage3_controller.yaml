@@ -140,8 +140,11 @@ stage3_return_navigator:
     # 接近线速度 (m/s) — 连续识别到 P 后由视觉接管并直接高速接近
     p_approach_linear_speed: 0.50
 
-    # P 检测结果的最大有效年龄 (s)；P 已接管后若超时/丢失，立即发布 v=0 并完成
+    # P 检测结果的最大有效年龄 (s)
     p_detection_timeout_sec: 0.35
+
+    # P 已接管后短暂丢帧，先停车等待重识别；超时后才回到 A* 搜索
+    p_loss_hold_sec: 1.0
 
     # P 点视觉到达后额外前进距离 (m) — 0 表示达到视觉阈值即刹停
     p_extra_forward_distance_m: 0.00
@@ -154,6 +157,10 @@ stage3_return_navigator:
 
     # P YOLO 只允许在返程终段接管；此前始终由 A* 绕开黑色禁区导航
     p_visual_takeover_max_y: 2.0
+
+    # 即使 YOLO 已在 y<2 推理，也必须驶入该近终点区域才允许视觉接管并关闭通用避障
+    p_visual_terminal_max_x: 1.0
+    p_visual_terminal_max_y: 1.0
 
     # 视觉完成必须满足：P 框宽度达到画面宽度比例且水平居中，连续命中后停车
     p_complete_offset_tolerance: 0.12
@@ -311,13 +318,10 @@ stage3_return_navigator:
     # Stage3 入场定位与前置通道 YOLO 对中 (Before Return-to-P)
     # ────────────────────────────────────────────────────────────────────────
 
-    # Phase3 入场时按二维码方向将当前 /odom_combined 投影到指定 map 点；保持 IMU 航向不变
-    stage3_entry_map_x_clockwise: 2.6
-    stage3_entry_map_x_counterclockwise: 2.4
-    stage3_entry_map_y: 3.0
-
-    # 入场定位完成后，先对齐到 -90°，再由通道 YOLO 做视觉对中；YOLO 不再改写 map 原点
-    stage3_channel_yolo_enabled: true
+    # Stage3 继承 Stage1/map_overlay 发布的 map<-base TF，禁止在本节点重置 map 原点。
+    # 生产返程在 y>=2 时只允许 A* 控制；前置通道 YOLO 禁用，避免脱离黑区约束自行驱动。
+    # P YOLO 仅由 p_visual_takeover_max_y (2.0m) 后接管。
+    stage3_channel_yolo_enabled: false
     stage3_channel_model_path: /home/sunrise/dev_ws/best_rdk_tongdao.bin
     stage3_channel_camera_topic: /aurora/rgb/image_raw
     stage3_channel_conf_thres: 0.25

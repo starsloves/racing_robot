@@ -133,6 +133,11 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_creep_speed', 0.04)
         self.declare_parameter('corridor_beta_blend_distance', 0.55)
         self.declare_parameter('corridor_reverse_enabled', False)
+        self.declare_parameter('corridor_reverse_enter_angle_deg', 70.0)
+        self.declare_parameter('corridor_reverse_exit_angle_deg', 40.0)
+        self.declare_parameter('corridor_reverse_linear_speed', -0.06)
+        self.declare_parameter('corridor_reverse_heading_kp', 1.0)
+        self.declare_parameter('corridor_reverse_max_angular_speed', 0.35)
         self.declare_parameter('corridor_entry_reorient_enabled', True)
         self.declare_parameter('corridor_entry_reorient_angle_deg', 50.0)
         self.declare_parameter('corridor_entry_reorient_done_deg', 25.0)
@@ -172,14 +177,17 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_terminal_enabled', True)
         self.declare_parameter('corridor_terminal_start_y_margin_m', 0.45)
         self.declare_parameter('corridor_terminal_x_tolerance_m', 0.12)
+        self.declare_parameter('corridor_terminal_heading_settle_x_tolerance_m', 0.20)
         self.declare_parameter('corridor_terminal_x_exit_tolerance_m', 0.18)
         self.declare_parameter('corridor_terminal_yaw_tolerance_deg', 8.0)
         self.declare_parameter('corridor_terminal_release_yaw_tolerance_deg', 10.0)
         self.declare_parameter('corridor_terminal_linear_speed', 0.09)
+        self.declare_parameter('corridor_terminal_micro_start_y_margin_m', 0.18)
         self.declare_parameter('corridor_terminal_lateral_gain', 2.0)
         self.declare_parameter('corridor_terminal_heading_kp', 1.0)
         self.declare_parameter('corridor_terminal_yaw_deadband_deg', 1.0)
         self.declare_parameter('corridor_terminal_max_angular_speed', 0.12)
+        self.declare_parameter('corridor_terminal_micro_max_angular_speed', 0.06)
         self.declare_parameter('corridor_path_follow_mode', 'pure_pursuit')  # pure_pursuit | stanley
         self.declare_parameter('corridor_force_reorient_enabled', False)
         self.declare_parameter('corridor_pp_min_lookahead_m', 0.25)
@@ -294,6 +302,22 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_creep_speed = float(self.get_parameter('corridor_creep_speed').value)
         self.corridor_beta_blend_distance = float(self.get_parameter('corridor_beta_blend_distance').value)
         self.corridor_reverse_enabled = bool(self.get_parameter('corridor_reverse_enabled').value)
+        self.corridor_reverse_enter_angle = math.radians(max(0.0, min(179.0, float(
+            self.get_parameter('corridor_reverse_enter_angle_deg').value
+        ))))
+        self.corridor_reverse_exit_angle = math.radians(max(0.0, min(
+            math.degrees(self.corridor_reverse_enter_angle),
+            float(self.get_parameter('corridor_reverse_exit_angle_deg').value),
+        )))
+        self.corridor_reverse_linear_speed = min(
+            -0.01, float(self.get_parameter('corridor_reverse_linear_speed').value)
+        )
+        self.corridor_reverse_heading_kp = max(
+            0.0, float(self.get_parameter('corridor_reverse_heading_kp').value)
+        )
+        self.corridor_reverse_max_angular_speed = max(
+            0.0, float(self.get_parameter('corridor_reverse_max_angular_speed').value)
+        )
         self.corridor_entry_reorient_enabled = bool(self.get_parameter('corridor_entry_reorient_enabled').value)
         self.corridor_entry_reorient_angle = math.radians(
             float(self.get_parameter('corridor_entry_reorient_angle_deg').value)
@@ -359,8 +383,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_terminal_x_tolerance = max(
             0.0, float(self.get_parameter('corridor_terminal_x_tolerance_m').value)
         )
-        self.corridor_terminal_x_exit_tolerance = max(
+        self.corridor_terminal_heading_settle_x_tolerance = max(
             self.corridor_terminal_x_tolerance,
+            float(self.get_parameter('corridor_terminal_heading_settle_x_tolerance_m').value),
+        )
+        self.corridor_terminal_x_exit_tolerance = max(
+            self.corridor_terminal_heading_settle_x_tolerance,
             float(self.get_parameter('corridor_terminal_x_exit_tolerance_m').value),
         )
         self.corridor_terminal_yaw_tolerance = math.radians(float(
@@ -371,6 +399,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         ))
         self.corridor_terminal_linear_speed = max(
             0.01, float(self.get_parameter('corridor_terminal_linear_speed').value)
+        )
+        self.corridor_terminal_micro_start_y_margin = max(
+            0.0, min(
+                self.corridor_terminal_start_y_margin,
+                float(self.get_parameter('corridor_terminal_micro_start_y_margin_m').value),
+            )
         )
         self.corridor_terminal_lateral_gain = max(
             0.0, float(self.get_parameter('corridor_terminal_lateral_gain').value)
@@ -383,6 +417,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         ))
         self.corridor_terminal_max_angular_speed = max(
             0.0, float(self.get_parameter('corridor_terminal_max_angular_speed').value)
+        )
+        self.corridor_terminal_micro_max_angular_speed = max(
+            0.0, min(
+                self.corridor_terminal_max_angular_speed,
+                float(self.get_parameter('corridor_terminal_micro_max_angular_speed').value),
+            )
         )
         self.corridor_path_follow_mode = str(
             self.get_parameter('corridor_path_follow_mode').value
@@ -476,6 +516,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_active = False
         self.corridor_nav_mode = 'idle'  # path_follow | left_recover | idle
         self.corridor_terminal_active = False
+        self.corridor_reverse_active = False
         self.corridor_capture_active = False
         self.corridor_align_active = False
         self._node_start_time = self.get_clock().now()
@@ -828,6 +869,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_active = True
         self.corridor_nav_mode = 'path_follow'
         self.corridor_terminal_active = False
+        self.corridor_reverse_active = False
         self.corridor_capture_active = False
         self.corridor_align_active = False
         self.corridor_entry_reorient_active = False
@@ -1278,15 +1320,15 @@ class CompetitionController(Stage1VisionMixin, Node):
         goal_xy = (float(goal_xy[0]), float(goal_xy[1]))
         self.corridor_index = max(0, len(self.corridor_waypoints) - 1)
 
-        # 终端状态只在靠近 Y 门线、横向和航向均已收敛时锁存一次。
-        # 锁存后不再随 A* 重规划切换前瞻点，避免末段反复打舵。
+        # X 收敛到预留带后锁存末端状态。先只回正到 +Y，最后一小段才微调 X，
+        # 避免 A* 重规划和持续横向修正共同造成反复打舵。
         x_error = goal_xy[0] - pose_xy[0]
         yaw_to_goal_error = self.angle_error(self.corridor_goal_yaw, yaw)
         terminal_start_y = self.corridor_release_min_y - self.corridor_terminal_start_y_margin
         terminal_entry_ok = (
             self.corridor_terminal_enabled
             and pose_xy[1] >= terminal_start_y
-            and abs(x_error) <= self.corridor_terminal_x_tolerance
+            and abs(x_error) <= self.corridor_terminal_heading_settle_x_tolerance
             and abs(yaw_to_goal_error) <= self.corridor_terminal_yaw_tolerance
         )
         if terminal_entry_ok and not self.corridor_terminal_active:
@@ -1294,7 +1336,8 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.corridor_nav_mode = 'terminal_approach'
             self.log.mission(
                 f'terminal approach latched map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                f'xerr={x_error:.3f}m yaw_err={math.degrees(yaw_to_goal_error):.1f}deg '
+                f'xerr={x_error:.3f}m settle_x={self.corridor_terminal_heading_settle_x_tolerance:.3f}m '
+                f'yaw_err={math.degrees(yaw_to_goal_error):.1f}deg '
                 f'release_y={self.corridor_release_min_y:.2f}'
             )
         elif (
@@ -1365,17 +1408,28 @@ class CompetitionController(Stage1VisionMixin, Node):
             return
 
         if self.corridor_terminal_active:
-            self.corridor_nav_mode = 'terminal_approach'
-            desired_yaw = self.normalize_angle(
-                self.corridor_goal_yaw - math.atan(self.corridor_terminal_lateral_gain * x_error)
+            micro_start_y = self.corridor_release_min_y - self.corridor_terminal_micro_start_y_margin
+            micro_correct_x = (
+                pose_xy[1] >= micro_start_y
+                and abs(x_error) > self.corridor_terminal_x_tolerance
             )
+            if micro_correct_x:
+                self.corridor_nav_mode = 'terminal_micro_correct'
+                desired_yaw = self.normalize_angle(
+                    self.corridor_goal_yaw - math.atan(self.corridor_terminal_lateral_gain * x_error)
+                )
+                angular_limit = self.corridor_terminal_micro_max_angular_speed
+            else:
+                self.corridor_nav_mode = 'terminal_heading_settle'
+                desired_yaw = self.corridor_goal_yaw
+                angular_limit = self.corridor_terminal_max_angular_speed
             terminal_yaw_error = self.angle_error(desired_yaw, yaw)
             if abs(terminal_yaw_error) <= self.corridor_terminal_yaw_deadband:
                 angular = 0.0
             else:
                 angular = self.clamp(
                     self.corridor_terminal_heading_kp * terminal_yaw_error,
-                    self.corridor_terminal_max_angular_speed,
+                    angular_limit,
                 )
             linear = self.corridor_terminal_linear_speed
             self.corridor_desired_heading = desired_yaw
@@ -1385,8 +1439,8 @@ class CompetitionController(Stage1VisionMixin, Node):
                 self._corridor_last_log_time = now_ts
                 elapsed = now_ts - self.corridor_started_at if self.corridor_started_at else 0.0
                 self.log.segment(
-                    f'terminal_approach map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                    f'xerr={x_error:.3f}m y_gate={y_gate_ok} '
+                    f'{self.corridor_nav_mode} map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                    f'xerr={x_error:.3f}m y_gate={y_gate_ok} micro_start_y={micro_start_y:.2f} '
                     f'yaw={math.degrees(yaw):.1f}deg desired={math.degrees(desired_yaw):.1f}deg '
                     f'err={math.degrees(terminal_yaw_error):.1f}deg '
                     f'v={linear:.2f} w={angular:.2f} t={elapsed:.1f}s'
@@ -1402,6 +1456,46 @@ class CompetitionController(Stage1VisionMixin, Node):
         los = math.atan2(dy, dx) if (abs(dx) + abs(dy)) > 1e-6 else yaw
         alpha = self.angle_error(los, yaw)
         self.corridor_desired_heading = los
+
+        # 前瞻点已落到车后时，正向 Pure Pursuit 会绕大圈追点。倒车时以车尾追踪
+        # 同一前瞻点，待它回到前方扇区后才恢复正向跟踪。
+        if self.corridor_reverse_enabled:
+            if self.corridor_reverse_active:
+                if abs(alpha) <= self.corridor_reverse_exit_angle:
+                    self.corridor_reverse_active = False
+                    self.log.mission(
+                        f'corridor reverse recovery complete alpha={math.degrees(alpha):.1f}deg'
+                    )
+            elif abs(alpha) >= self.corridor_reverse_enter_angle:
+                self.corridor_reverse_active = True
+                self.log.warn(
+                    'CORRIDOR',
+                    f'corridor reverse recovery enter alpha={math.degrees(alpha):.1f}deg '
+                    f'look=({look_pt[0]:.2f},{look_pt[1]:.2f})'
+                )
+
+            if self.corridor_reverse_active:
+                reverse_desired_yaw = self.normalize_angle(los + math.pi)
+                reverse_yaw_error = self.angle_error(reverse_desired_yaw, yaw)
+                reverse_angular = self.clamp(
+                    self.corridor_reverse_heading_kp * reverse_yaw_error,
+                    self.corridor_reverse_max_angular_speed,
+                )
+                self.corridor_nav_mode = 'reverse_recover'
+                self.corridor_desired_heading = reverse_desired_yaw
+                self.cmd_pub.publish(self.create_twist(
+                    self.corridor_reverse_linear_speed, reverse_angular
+                ))
+                if now_ts - self._corridor_last_log_time >= self.corridor_log_period_sec:
+                    self._corridor_last_log_time = now_ts
+                    elapsed = now_ts - self.corridor_started_at if self.corridor_started_at else 0.0
+                    self.log.segment(
+                        f'reverse_recover map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                        f'alpha={math.degrees(alpha):.1f}deg desired={math.degrees(reverse_desired_yaw):.1f}deg '
+                        f'err={math.degrees(reverse_yaw_error):.1f}deg '
+                        f'v={self.corridor_reverse_linear_speed:.2f} w={reverse_angular:.2f} t={elapsed:.1f}s'
+                    )
+                return
 
         # Pure Pursuit 几何曲率
         ld = max(math.hypot(dx, dy), self.corridor_pp_min_lookahead)

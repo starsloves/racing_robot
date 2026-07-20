@@ -81,15 +81,15 @@ stage2_inertial_navigator:
 
     # 第一个 180° 触发点：entry_arc 后走多远开始 left_side_arc。
     # 最新日志约在 0.45m 后切入；现场要求再提前约 10cm，因此由 0.50m 收到 0.40m。
-    track_entry_medium_distance_m: 0.45
+    track_entry_medium_distance_m: 0.55
 
     # 第二个 180° 触发点：top_long 走多远开始 right_side_arc。
     # 最新日志约在 2.50m 后切入；现场要求再提前约 10cm，因此由 2.59m 收到 2.49m。
-    track_top_long_distance_m: 2.00
+    track_top_long_distance_m: 2.40
 
     # 出口最后直线长度：right_side_arc 后走多远判定 Stage2 完成。
     # 最新实车反馈最后一段偏长，缩短 20cm：1.49m -> 1.29m。
-    track_exit_medium_distance_m: 0.5
+    track_exit_medium_distance_m: 0.30
 
     # 名义半径：用于日志/弧长诊断，实际切段以 IMU 相对角为准
     track_entry_radius: 0.40
@@ -102,7 +102,7 @@ stage2_inertial_navigator:
     #   entry_arc 目标 90°，提前 50° => 约转到 40° 切入 entry_medium
     #   corner_arc 目标 180°，提前 35° => 约转到 145° 切入下一条直线
     track_entry_arc_complete_lead_deg: 40.0
-    track_corner_arc_complete_lead_deg: 30.0
+    track_corner_arc_complete_lead_deg: 20.0
 
     # 关闭 yaw-rate 预测切段和提前反向刹车，只使用上面的明确提前角
     track_arc_finish_predict_sec: 0.0
@@ -122,8 +122,13 @@ stage2_inertial_navigator:
     fusion_mode_enabled: true
     fusion_weight_imu: 1.0
     fusion_weight_vision: 0.0
-    track_vision_lateral_scale_m: 0.30
-    track_vision_lateral_weight: 0.35
+    # 长直线视觉横向纠偏：当前实车测试将有效修正强度提高四倍。
+    # weight 是归一化权重（0~1），因此通过 scale 放大实际修正量。
+    track_vision_lateral_scale_m: 2.40
+    track_vision_lateral_weight: 0.70
+    # 视觉修正本身的角速度限幅，同步由 0.10 提高四倍至 0.40rad/s；
+    # 总输出仍受 track_max_angular=0.75rad/s 限制。
+    track_vision_correction_max_angular: 0.40
 
     # /odom_combined 单步异常过滤，防 EKF 跳变误累计距离。
     # 这不是限速参数，只是“单次里程跳变是否计入”的阈值。

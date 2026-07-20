@@ -8,8 +8,9 @@ volcengine:
   # 模型ID - 可用 ARK_MODEL_ID 环境变量覆盖
   model_id: "doubao-seed-1-6-250615"
   
-  # AI分析提示词
-  prompt: "请用一小段话简单述这张图片中的内容，包括物体、场景、颜色等信息。"
+  # AI分析提示词（与 MAE01 短句播报长度保持一致）
+  prompt: "仅描述画面中展示牌或标牌上的可见文字、图案和关键信息，忽略背景、赛道和其他物体。用10至20个汉字输出适合语音播报的中文短句"
+  max_description_chars: 20
 
 # 检测配置
 detection:
