@@ -155,9 +155,14 @@ class VisionLaneCentering:
         
         # ROS 订阅
         self.bridge = CvBridge()
-        # Keep inference independent from navigation and discard stale frames.
+        # The ROS callback only keeps the newest frame.  BPU inference runs in
+        # a worker so a slow first inference cannot delay velocity control.
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self._image_callback_group = MutuallyExclusiveCallbackGroup()
+        self._pending_image_lock = threading.Lock()
+        self._pending_image = None
+        self._pending_image_event = threading.Event()
+        self._inference_stop_event = threading.Event()
         
         # 订阅原始相机图像
         self._node.create_subscription(
@@ -172,6 +177,13 @@ class VisionLaneCentering:
         self._fps_queue = deque(maxlen=30)
         self._last_time = time.perf_counter()
         self._infer_time_ms = 0.0
+
+        self._inference_thread = threading.Thread(
+            target=self._inference_worker,
+            daemon=True,
+            name='Stage2VisionInference',
+        )
+        self._inference_thread.start()
         
 # 创建占位图像（避免首次连接 404）
         self._write_placeholder_image()
@@ -192,6 +204,8 @@ class VisionLaneCentering:
             if not active:
                 self._valid = False
                 self._range_valid = False
+                with self._pending_image_lock:
+                    self._pending_image = None
         if prev != active:
             state = '启用' if active else '停用'
             self._node.get_logger().info(f'[视觉] 推理已{state}')
@@ -199,6 +213,36 @@ class VisionLaneCentering:
     def is_inference_active(self) -> bool:
         with self._lock:
             return bool(getattr(self, '_inference_active', False))
+
+    def shutdown(self):
+        """Stop the inference worker before the owning ROS node is destroyed."""
+        self.set_inference_active(False)
+        self._inference_stop_event.set()
+        self._pending_image_event.set()
+        thread = getattr(self, '_inference_thread', None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+
+    def _image_callback(self, msg):
+        """Keep only the newest camera frame; inference is done by a worker."""
+        if not self.is_inference_active():
+            return
+        with self._pending_image_lock:
+            self._pending_image = msg
+        self._pending_image_event.set()
+
+    def _inference_worker(self):
+        """Run the expensive BPU path outside the ROS executor callback."""
+        while not self._inference_stop_event.is_set():
+            self._pending_image_event.wait(timeout=0.2)
+            self._pending_image_event.clear()
+            if self._inference_stop_event.is_set():
+                break
+            with self._pending_image_lock:
+                msg = self._pending_image
+                self._pending_image = None
+            if msg is not None and self.is_inference_active():
+                self._run_inference(msg)
 
     def start_http_server(self):
         """仅在 Stage2 活跃时绑定 8082。"""
@@ -314,7 +358,8 @@ class VisionLaneCentering:
                 'safety_weight': float(getattr(self, '_latest_safety_weight', 1.0)),
                 # 转弯边界线检测
                 'boundary_ahead': bool(getattr(self, '_boundary_ahead', False)),
-                'boundary_angle_deg': float(getattr(self, '_boundary_angle_deg', 0.0)),
+                # _detect_boundary_ahead() writes the horizontal-edge estimate here.
+                'boundary_angle_deg': float(getattr(self, '_edge_angle_deg', 90.0)),
                 'boundary_distance_ratio': float(getattr(self, '_boundary_distance_ratio', 0.0)),
                 'boundary_far_ratio': float(getattr(self, '_boundary_far_ratio', 0.0)),
                 'boundary_mid_ratio': float(getattr(self, '_boundary_mid_ratio', 0.0)),
@@ -1170,7 +1215,7 @@ setInterval(health, 500); health();
     # 内部推理逻辑
     # ═══════════════════════════════════════════════════════
 
-    def _image_callback(self, msg):
+    def _run_inference(self, msg):
         """ROS 图像回调 → 推理 → 更新 offset"""
         try:
             if not self.is_inference_active():

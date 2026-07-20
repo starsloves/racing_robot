@@ -7,6 +7,8 @@ import time
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.callback_groups import ReentrantCallbackGroup
+from geometry_msgs.msg import PointStamped
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Empty
 
 from racing_stage2.stage2_inertial_base import Stage2InertialBase
@@ -47,6 +49,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_entry_min_linear', 0.04)
         self.declare_parameter('track_entry_radius', 0.18)
         self.declare_parameter('track_entry_medium_distance_m', 0.85)
+        self.declare_parameter('track_entry_boundary_trigger_enabled', False)
+        self.declare_parameter('track_entry_boundary_guard_half_width_m', 0.15)
+        self.declare_parameter('track_entry_boundary_top_y_ratio', 0.18)
+        self.declare_parameter('track_entry_boundary_max_angle_deg', 20.0)
+        self.declare_parameter('track_entry_boundary_confirm_frames', 3)
         self.declare_parameter('track_top_long_distance_m', 2.59)
         self.declare_parameter('track_exit_medium_distance_m', 1.49)
         self.declare_parameter('track_entry_tolerance_deg', 2.0)
@@ -72,6 +79,10 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_heading_slowdown_deg', 10.0)
         self.declare_parameter('track_finish_tolerance_m', 0.10)
         self.declare_parameter('track_odom_combined_step_max_m', 0.12)
+        self.declare_parameter('track_entry_map_x', 2.80)
+        self.declare_parameter('track_entry_map_y', 3.10)
+        self.declare_parameter('track_stage3_handoff_map_y', 2.0)
+        self.declare_parameter('stage3_entry_anchor_topic', 'stage3_entry_anchor')
         self.declare_parameter('stage2_ai_capture_enabled', True)
         self.declare_parameter('stage2_ai_capture_lead_m', 0.50)
         self.declare_parameter('stage2_ai_trigger_topic', 'stage2_ai_capture')
@@ -194,6 +205,21 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             entry_medium_distance_m=float(
                 self.get_parameter('track_entry_medium_distance_m').value
             ),
+            entry_boundary_trigger_enabled=bool(
+                self.get_parameter('track_entry_boundary_trigger_enabled').value
+            ),
+            entry_boundary_guard_half_width_m=float(
+                self.get_parameter('track_entry_boundary_guard_half_width_m').value
+            ),
+            entry_boundary_top_y_ratio=float(
+                self.get_parameter('track_entry_boundary_top_y_ratio').value
+            ),
+            entry_boundary_max_angle_deg=float(
+                self.get_parameter('track_entry_boundary_max_angle_deg').value
+            ),
+            entry_boundary_confirm_frames=int(
+                self.get_parameter('track_entry_boundary_confirm_frames').value
+            ),
             top_long_distance_m=float(
                 self.get_parameter('track_top_long_distance_m').value
             ),
@@ -262,6 +288,20 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         ).strip() or 'stage2_ai_capture'
         self._stage2_ai_trigger_pub = self.create_publisher(
             Empty, self._stage2_ai_trigger_topic, 1
+        )
+        anchor_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                                reliability=ReliabilityPolicy.RELIABLE)
+        self._stage3_anchor_pub = self.create_publisher(
+            PointStamped,
+            str(self.get_parameter('stage3_entry_anchor_topic').value),
+            anchor_qos,
+        )
+        self._track_entry_map_xy = (
+            float(self.get_parameter('track_entry_map_x').value),
+            float(self.get_parameter('track_entry_map_y').value),
+        )
+        self._track_stage3_handoff_map_y = float(
+            self.get_parameter('track_stage3_handoff_map_y').value
         )
         # The track controller works in an IMU-aligned local frame.  The EKF
         # odometry contributes only travelled distance; its orientation is
@@ -380,6 +420,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
     def destroy_node(self):
         self._set_vision_inference_active(False)
         self._set_stage2_http_active(False)
+        vision_node = getattr(self, '_vision_node', None)
+        if vision_node is not None and hasattr(vision_node, 'shutdown'):
+            vision_node.shutdown()
         if getattr(self, '_session_log', None) is not None:
             self._session_log.close()
             self._session_log = None
@@ -1086,10 +1129,17 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self._maybe_trigger_stage2_ai_capture()
             visual = self._get_vision_line_status() if getattr(
                 self, '_vision_node', None) is not None else None
+            track_map_xy = self._track_map_position()
+            handoff_reached = (
+                self._track_controller.active_segment_name == 'stage3_handoff_line'
+                and track_map_xy is not None
+                and track_map_xy[1] < self._track_stage3_handoff_map_y
+            )
             command = self._track_controller.step(
                 now, self._track_pose, self.current_yaw, visual,
                 yaw_rate=getattr(self, 'current_imu_yaw_rate', 0.0),
                 distance_m=self._track_distance_m,
+                stage3_handoff_reached=handoff_reached,
             )
         cmd_msg = self.create_twist(command.linear, command.angular)
         self._log_control_timing(now, f'track:{command.segment or command.state}')
@@ -1110,6 +1160,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             f'seg_s={command.segment_progress_m:.3f}/{command.segment_target_m:.3f} '
             f'turn={math.degrees(command.turn_progress_rad):.1f}/'
             f'{math.degrees(command.turn_target_rad):.1f} '
+            f'entry_boundary={command.entry_boundary_trigger or "none"} '
+            f'entry_guard={command.entry_boundary_window_min_m:.3f}/'
+            f'{command.entry_boundary_window_max_m:.3f} '
+            f'entry_top_y={command.entry_boundary_top_y_ratio:.3f} '
+            f'entry_angle={command.entry_boundary_angle_deg:.1f} '
+            f'entry_confirm={command.entry_boundary_confirm_frames} '
             f'imu_xy=({self._track_pose[0]:.3f},{self._track_pose[1]:.3f}) '
             f'ekf_s={self._track_distance_m:.3f} '
             f'imu_w={getattr(self, "current_imu_yaw_rate", 0.0):.3f} '
@@ -1123,8 +1179,38 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self._track_mission_active = False
             self.mission_active = False
         elif command.complete:
+            self._publish_stage3_entry_anchor()
             self._track_mission_active = False
             self.finish_mission()
+
+    def _track_map_position(self):
+        """Convert the IMU-aligned Stage2 local integration to map xy."""
+        if self._track_pose is None:
+            return None
+        return (
+            self._track_entry_map_xy[0] + self._track_pose[0],
+            self._track_entry_map_xy[1] + self._track_pose[1],
+        )
+
+    def _publish_stage3_entry_anchor(self):
+        map_xy = self._track_map_position()
+        if map_xy is None:
+            return
+        msg = PointStamped()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.point.x = map_xy[0]
+        msg.point.y = map_xy[1]
+        self._stage3_anchor_pub.publish(msg)
+        self._log_session(
+            'STAGE3_HANDOFF',
+            f'map=({map_xy[0]:.3f},{map_xy[1]:.3f}) threshold_y='
+            f'{self._track_stage3_handoff_map_y:.3f}',
+        )
+        self.get_logger().info(
+            f'[STAGE3_HANDOFF] map anchor=({map_xy[0]:.2f},{map_xy[1]:.2f}), '
+            f'y<{self._track_stage3_handoff_map_y:.2f}'
+        )
 
     def start_mode_text(self):
         if self.nav_succeeded_for_test_start():
@@ -1873,8 +1959,12 @@ def main(args=None):
             cli_topics=['/cmd_vel', '/stage2_cmd_vel'],
         )
         node._request_stop = request_stop
-        while rclpy.ok() and not stop_event.is_set():
-            executor.spin_once(timeout_sec=0.05)
+        threading.Thread(
+            target=lambda: (stop_event.wait(), executor.shutdown()),
+            daemon=True,
+            name='Stage2ExecutorStop',
+        ).start()
+        executor.spin()
     except KeyboardInterrupt:
         if request_stop is not None:
             request_stop()

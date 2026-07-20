@@ -224,16 +224,20 @@ competition_controller:
     back_linear_speed: -0.35
 
     # 后退航向修正增益 — 航向误差 → 角速度增益
-    back_angular_kp: 1.8
+    back_angular_kp: 0.9
 
-    # 路点到达容差 (m) — 距离当前目标路点小于此值时推进到下一路点
-    back_position_tolerance: 0.15
+    # 后退角速度绝对上限与每秒变化率，抑制高速倒退时的反复反打
+    back_max_angular_speed: 0.40
+    back_angular_slew_rate: 0.50
+
+    # 路点到达容差 (m) — 小于采样间隔的两倍，避免一次跳过多个路点
+    back_position_tolerance: 0.04
 
     # 路径采样间隔 (m) — 前进时每隔此距离记录一个路点
     back_path_sample_distance: 0.02
 
-    # 倒序路径前瞻距离 (m) — 车尾追踪该距离后的来时轨迹点
-    back_lookahead_m: 0.05
+    # 倒序路径前瞻距离 (m) — 高速倒退需跨多个采样点以平滑目标航向
+    back_lookahead_m: 0.18
 
     # 后退超时 (s) — 后退超过此时长则跳过后退，直接通道导航
     back_timeout_sec: 20.0
@@ -260,7 +264,7 @@ competition_controller:
     # --- 通道路点 (Waypoints in map frame) ---
     # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
     # 先贴 x=2.50 再收 y，避免单点 LOS 中段漂移
-    corridor_waypoints_json: '[{"x":2.80,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.80,"y":2.55,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.55,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
 
     # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
     corridor_waypoint_tolerance: 0.25
@@ -295,7 +299,7 @@ competition_controller:
     corridor_terminal_enabled: true
 
     # Stage2 交权所需的最终横向 X 误差容差 (m)
-    corridor_terminal_x_tolerance_m: 0.12
+    corridor_terminal_x_tolerance_m: 0.06
 
     # 终端锁存后若 X 再偏离该值，才退出回 Pure Pursuit；必须大于最终 X 容差以避免抖动
     corridor_terminal_x_exit_tolerance_m: 0.28
@@ -494,7 +498,7 @@ competition_controller:
     # ────────────────────────────────────────────────────────────────────────
 
     # 触发 X 阈值 (m, map 坐标系) — map_x > 此值时降速运行（防止贴右墙）
-    corridor_left_recover_x: 3.5
+    corridor_left_recover_x: 3.0
 
     # 左旋角速度 (rad/s) — 向左旋回的角速度
     corridor_left_recover_angular: 0.70

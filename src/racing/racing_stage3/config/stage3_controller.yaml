@@ -50,6 +50,15 @@ stage3_return_navigator:
     # 启动延迟 (s) — Phase3 进入后等待此时长确保位姿就绪
     start_delay_sec: 0.5
 
+    # Phase3 入场位置锚定：切到 phase=3 时将当前 /odom_combined xy 记为参考原点，
+    # 后续 map 位置只叠加 odom xy 平移增量；不得使用 odom orientation。
+    # 坐标为 Stage2 正常完赛出口的实际 map 位置，日志中的 odom 值不可填入此处。
+    stage3_entry_anchor_enabled: true
+    stage3_entry_map_x: 2.80
+    stage3_entry_map_y: 3.25
+    # 生产比赛由 S2 在 y<2 的交权瞬间发布实际 map 入口；此静态值仅作独立 S3 测试回退。
+    stage3_entry_anchor_topic: stage3_entry_anchor
+
     # ────────────────────────────────────────────────────────────────────────
     # 路点与目标区域 (Waypoints and Goal Region)
     # ────────────────────────────────────────────────────────────────────────
@@ -307,6 +316,9 @@ stage3_return_navigator:
     planner_forbidden_reverse_speed: 0.10
     planner_forbidden_reverse_distance_m: 0.30
     planner_forbidden_reverse_timeout_sec: 5.0
+
+    # 连续固定倒车后仍命中禁区时停车并发布 planner_forbidden_recovery_failed。
+    planner_forbidden_reverse_max_attempts: 3
 
     # ────────────────────────────────────────────────────────────────────────
     # Stage3 通道 YOLO（生产返程禁用）

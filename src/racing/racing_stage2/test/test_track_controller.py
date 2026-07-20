@@ -94,6 +94,97 @@ class TrackControllerTest(unittest.TestCase):
                                   yaw_rate=0.0, distance_m=1.71)
         self.assertEqual(command.segment, 'left_side_arc')
 
+    @staticmethod
+    def _front_boundary_visual(**overrides):
+        visual = {
+            'valid': True,
+            'confidence': 0.80,
+            'age': 0.02,
+            'boundary_ahead': True,
+            'boundary_top_y_ratio': 0.20,
+            'boundary_angle_deg': 0.0,
+        }
+        visual.update(overrides)
+        return visual
+
+    def _entry_boundary_controller(self, direction='clockwise'):
+        controller = Stage2TrackController(
+            entry_medium_distance_m=0.65,
+            entry_boundary_trigger_enabled=True,
+            entry_boundary_guard_half_width_m=0.15,
+            entry_boundary_top_y_ratio=0.18,
+            entry_boundary_max_angle_deg=20.0,
+            entry_boundary_confirm_frames=3,
+        )
+        self._enter_medium(controller)
+        self.assertEqual(controller.active_segment_name, 'entry_medium')
+        return controller, direction
+
+    def test_entry_boundary_is_ignored_before_guard_window(self):
+        controller, _ = self._entry_boundary_controller()
+        command = controller.step(1.1, (-0.20, 0.60), math.pi / 2.0,
+                                  distance_m=1.05,
+                                  visual=self._front_boundary_visual())
+        self.assertEqual(command.segment, 'entry_medium')
+        self.assertEqual(command.entry_boundary_trigger, 'below_guard_min')
+        self.assertEqual(command.entry_boundary_confirm_frames, 0)
+
+    def test_entry_boundary_confirms_in_window_and_enters_first_180(self):
+        controller, _ = self._entry_boundary_controller()
+        visual = self._front_boundary_visual()
+        for now, distance in ((1.1, 1.12), (1.2, 1.14)):
+            command = controller.step(now, (-0.20, 0.60), math.pi / 2.0,
+                                      distance_m=distance, visual=visual)
+            self.assertEqual(command.segment, 'entry_medium')
+            self.assertEqual(command.entry_boundary_trigger, 'vision_candidate')
+        command = controller.step(1.3, (-0.20, 0.60), math.pi / 2.0,
+                                  distance_m=1.16, visual=visual)
+        self.assertEqual(command.segment, 'left_side_arc')
+        self.assertEqual(command.entry_boundary_trigger, 'vision_confirmed')
+        self.assertEqual(command.entry_boundary_angle_deg, 0.0)
+
+    def test_entry_boundary_confirmation_resets_after_invalid_frame(self):
+        controller, _ = self._entry_boundary_controller()
+        visual = self._front_boundary_visual()
+        controller.step(1.1, (-0.20, 0.60), math.pi / 2.0,
+                        distance_m=1.12, visual=visual)
+        command = controller.step(1.2, (-0.20, 0.60), math.pi / 2.0,
+                                  distance_m=1.14,
+                                  visual=self._front_boundary_visual(valid=False))
+        self.assertEqual(command.entry_boundary_confirm_frames, 0)
+        controller.step(1.3, (-0.20, 0.60), math.pi / 2.0,
+                        distance_m=1.16, visual=visual)
+        command = controller.step(1.4, (-0.20, 0.60), math.pi / 2.0,
+                                  distance_m=1.18, visual=visual)
+        self.assertEqual(command.segment, 'entry_medium')
+        self.assertEqual(command.entry_boundary_confirm_frames, 2)
+
+    def test_entry_boundary_uses_distance_fallback_at_guard_max(self):
+        controller, _ = self._entry_boundary_controller()
+        command = controller.step(1.1, (-0.20, 0.60), math.pi / 2.0,
+                                  distance_m=1.41,
+                                  visual=self._front_boundary_visual(valid=False))
+        self.assertEqual(command.segment, 'left_side_arc')
+        self.assertEqual(command.entry_boundary_trigger, 'distance_fallback')
+
+    def test_entry_boundary_keeps_qr_selected_turn_direction(self):
+        for direction, entry_sign, corner_sign in (
+                ('clockwise', 1.0, -1.0),
+                ('counterclockwise', -1.0, 1.0)):
+            controller = Stage2TrackController(
+                entry_medium_distance_m=0.65,
+                entry_boundary_trigger_enabled=True,
+                entry_boundary_confirm_frames=1,
+            )
+            controller.start(direction, (0.0, 0.0), 0.0, 0.0, distance_m=0.0)
+            controller.step(1.0, (-0.14, 0.54), entry_sign * math.pi / 2.0,
+                            yaw_rate=0.45, distance_m=0.61)
+            command = controller.step(1.1, (-0.20, 0.60), entry_sign * math.pi / 2.0,
+                                      distance_m=1.12,
+                                      visual=self._front_boundary_visual())
+            self.assertEqual(command.segment, 'left_side_arc')
+            self.assertGreater(command.angular * corner_sign, 0.0)
+
     def test_side_is_one_180_degree_arc(self):
         controller = Stage2TrackController()
         self._enter_medium(controller)

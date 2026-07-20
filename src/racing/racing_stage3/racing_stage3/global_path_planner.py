@@ -202,6 +202,28 @@ class GlobalPathPlanner:
                 return False
         return True
 
+    def describe_world_occupancy(self, position):
+        """Return the planner layer that occupies a world-space position."""
+        planner_grid = self._build_static_planner_grid()
+        if planner_grid is None:
+            return 'map_unavailable'
+
+        static_occupied, resolution, origin_x, origin_y = planner_grid
+        height, width = static_occupied.shape
+        cell = self._world_to_planner_cell(
+            position[0], position[1], resolution, origin_x, origin_y, width, height
+        )
+        if cell is None:
+            return 'outside_planner_grid'
+        if static_occupied[cell[1], cell[0]]:
+            return 'static_forbidden_rectangle_or_inflation'
+        occupied = self._overlay_scan_obstacles(
+            static_occupied, resolution, origin_x, origin_y
+        )
+        if occupied[cell[1], cell[0]]:
+            return 'dynamic_scan_obstacle'
+        return 'free'
+
     def _build_static_planner_grid(self):
         """build static planner grid"""
         if self.latest_map is None:

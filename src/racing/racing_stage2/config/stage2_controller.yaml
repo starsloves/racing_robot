@@ -8,7 +8,8 @@
 #   - 禁止使用 /odom 或 /odom_combined 的 orientation 做导航角度
 #
 # 固定段序：
-#   entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc -> exit_medium
+#   entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
+#   -> exit_medium -> exit_turn_90 -> stage3_handoff_line
 #
 # 调参速查：
 #   两个 180° 前触发点：
@@ -63,11 +64,11 @@ stage2_inertial_navigator:
     # ────────────────────────────────────────────────────────────────────────
     # 生产轨迹参数
     # ────────────────────────────────────────────────────────────────────────
-    # 直线速度：entry_medium / top_long / exit_medium
+    # 直线速度：entry_medium / top_long / exit_medium / stage3_handoff_line
     track_max_speed: 0.70
 
     # 后续 180° 弯线速度：left_side_arc / right_side_arc
-    track_corner_speed: 0.42
+    track_corner_speed: 0.44
 
     # 全局角速度限幅
     track_max_angular: 0.75
@@ -79,9 +80,20 @@ stage2_inertial_navigator:
     # 后续 180° 弯：角速度
     track_corner_angular: 0.80
 
-    # 第一个 180° 触发点：entry_arc 后走多远开始 left_side_arc。
-    # 最新日志约在 0.45m 后切入；现场要求再提前约 10cm，因此由 0.50m 收到 0.40m。
+    # 第一个 180° 的标定中心：entry_arc 后 entry_medium 的名义距离。
+    # 视觉触发开启后，此值不再是常规切段点，而是下方保护窗口的中心。
     track_entry_medium_distance_m: 0.65
+
+    # 第一个 180°：在 0.65m ± 0.15m 窗口内由前方正对边界触发。
+    # 到达窗口上限仍未连续确认视觉边界时，按距离保护强制进入 left_side_arc。
+    track_entry_boundary_trigger_enabled: true
+    track_entry_boundary_guard_half_width_m: 0.15
+    # 前方横边在分割 ROI 中自顶部向下的位置比例；值越大代表边界越靠近车头。
+    track_entry_boundary_top_y_ratio: 0.25
+    # 只接受近似水平、正对车头的横向边界。
+    track_entry_boundary_max_angle_deg: 20.0
+    # 连续有效视觉帧数；现场试跑先用 1，支持改为 2 或 3 抑制误检。
+    track_entry_boundary_confirm_frames: 2
 
     # 第二个 180° 触发点：top_long 走多远开始 right_side_arc。
     # 最新日志约在 2.50m 后切入；现场要求再提前约 10cm，因此由 2.59m 收到 2.49m。
@@ -89,7 +101,15 @@ stage2_inertial_navigator:
 
     # 出口最后直线长度：right_side_arc 后走多远判定 Stage2 完成。
     # 最新实车反馈最后一段偏长，缩短 20cm：1.49m -> 1.29m。
-    track_exit_medium_distance_m: 0.30
+    track_exit_medium_distance_m: 0.70
+
+    # 两个 180° 和出口短直线完成后，按方向执行 90°：顺时针左转、逆时针右转。
+    # 该段复用入口 90° 的 track_entry_linear / track_entry_angular / radius 配置，
+    # 随后沿 -Y 直行；估计 map_y 严格小于此值时交权给 Stage3。
+    track_entry_map_x: 2.80
+    track_entry_map_y: 3.10
+    track_stage3_handoff_map_y: 2.80
+    stage3_entry_anchor_topic: stage3_entry_anchor
 
     # 名义半径：用于日志/弧长诊断，实际切段以 IMU 相对角为准
     track_entry_radius: 0.40

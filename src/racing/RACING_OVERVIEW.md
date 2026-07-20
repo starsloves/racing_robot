@@ -44,7 +44,7 @@ competition_controller.py（Stage1 主控）
 | `/cmd_vel` | Twist | competition_controller (phase1) / Stage3 / twist_cmd_relay | phase1/3 控制输出 |
 | `/stage2_cmd_vel` | Twist | Stage2InertialNavigator | phase2 独立控制 → Stage1 转发 /cmd_vel |
 | `/odom` | Odometry | origincar_base | 轮速里程计；Stage2 仅用于启动静止判定和诊断 |
-| `/odom_combined` | Odometry | robot_localization EKF | Stage2 里程距离源（仅相邻 xy 欧氏距离）及 Stage3 定位源 |
+| `/odom_combined` | Odometry | robot_localization EKF | Stage2 里程距离源；Stage3 仅叠加入场锚点后的 xy 平移增量 |
 | `/map` | OccupancyGrid | map_overlay | 全局地图 — Stage3 使用 |
 | `/scan` | LaserScan | 激光雷达 | 避障输入 |
 | `/imu/data` | Imu | BNO055 | **航向角（yaw）来源** — Stage2 角度基准 |
@@ -74,7 +74,7 @@ competition_controller.py（Stage1 主控）
 - **里程距离（`/odom_combined`）**：仅使用相邻位置的欧氏位移累计距离；不得使用其 orientation
 - **IMU（`/imu/data`）**：用于提供航向角（`yaw`），同时为激光雷达提供角度基准。Stage1 首帧原始 IMU yaw 映射到 YAML `imu_initial_map_yaw_deg`（当前 10°），后续仅累计原始 IMU 相对转角；所有 Stage1 状态使用此处理后的 yaw。
 - **禁止**使用 `/odom` 的角度参与导航计算，角度来源必须为 IMU
-- `/odom` 的 orientation 与 `/odom_combined` 的 orientation 均不参与 Stage2 导航
+- `/odom` 的 orientation 与 `/odom_combined` 的 orientation 均不参与 Stage2 / Stage3 导航
 
 ### 1.6 Package 总览
 
@@ -153,7 +153,7 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 - 地图通道视觉居中：倒退结束进入 A* + Pure Pursuit 后，YOLO 保持推理；仅对新鲜且置信度达标的 bbox 水平偏移叠加死区、低通和限幅后的微小角速度。路径、速度和门线交权仍完全由地图 + IMU 决定，视觉不能单独切 Stage2。
 - 通道 YOLO 交接：二维码触发后，倒退阶段立即启用 YOLO；连续 `channel_yolo_confirm_frames` 个有效框后才接管，防止单帧误检。接管先以 `channel_yolo_align_speed` 和 IMU 对齐 `channel_handoff_yaw_deg`，误差小于 `channel_yolo_align_tolerance_deg` 后才以 `channel_yolo_chase_speed` 快速沿 +Y 接近；YOLO 仅提供水平误差，IMU 是唯一 yaw 来源。
 - 末端交接：A* 先将 X 收敛到最终 `corridor_terminal_x_tolerance_m` 窗口。只有已到达 Y 门线 `map_y >= corridor_release_min_y_m`、X 已到位但 IMU 航向尚未达到 `corridor_terminal_yaw_tolerance_deg` 时，才进入 `terminal_reverse_align`，以低速后退且固定 `corridor_goal_yaw` 回正；通道中段禁止倒车。对齐后锁存终端状态并停止 A* 重规划和 Pure Pursuit 前瞻点切换。锁存后固定正线速度回正到 +Y。仅在门线前 `corridor_terminal_micro_start_y_margin_m` 的最后一段且 X 尚未满足最终容差时，才以更小的角速度限幅微调横向。只有终端状态已锁存且 `map_y >= corridor_release_min_y_m`、X/yaw 均满足交权容差才交给 Stage2。所有门限以 `stage1_controller.yaml` 为唯一来源。
-- 倒退：二维码回调后立即进入记录路径倒退，不再先发送零速度制动。路径记录和倒序路径前瞻追踪均使用 `/odom_combined` 的位置；车尾追踪来时轨迹上的前瞻点，IMU 仅计算该几何目标对应的车头反向航向，禁止直接锁定历史记录 yaw。`back_target_x` 的截止坐标系以 `stage1_controller.yaml` 和运行日志为准。
+- 倒退：二维码回调后立即进入记录路径倒退，不再先发送零速度制动或因航向误差原地对齐。路径记录和倒序路径前瞻追踪均使用 `/odom_combined` 的位置；车尾追踪来时轨迹上的前瞻点，以负线速度连续回放，IMU 仅计算该几何目标对应的车头反向航向并闭环修正角速度，禁止直接锁定历史记录 yaw。`back_target_x` 的截止坐标系以 `stage1_controller.yaml` 和运行日志为准。
 - 图像监控：通道 YOLO 在且仅在 `competition_phase=1` 时绑定 YAML `channel_yolo_http_port`（默认 8081）；离开 Stage1 立即关闭服务并释放端口。`/channel_raw.jpg`、`/channel_yolo.jpg` 为单帧，`/stream_raw.mjpg`、`/stream.mjpg` 为实时流，`/health` 提供帧数、帧龄和推理状态。根路径网页同时显示原图与检测流。旧分割模块不再抢占 8081。模型、速度、门线、容差和图像路径均以 `stage1_controller.yaml` 为唯一来源。
 - 相机信息话题、停车距离、位置容差、速度、角速度和航向增益均以 `stage1_controller.yaml` 为准。
 - 超时：`corridor_timeout_sec` 到时停车等待，不绕过 map 目标直接放行 Stage2
@@ -255,13 +255,17 @@ src/racing/racing_stage2/config/stage2_controller.yaml 的 track_* 段。
 
 ```
 entry_arc → entry_medium → left_side_arc → top_long → right_side_arc → exit_medium
+→ exit_turn_90 → stage3_handoff_line
 ```
 
 关键调参入口：
 - track_entry_arc_complete_lead_deg：入口 90°弯提前切段角。
-- track_entry_medium_distance_m：第一个 180° 前短直距离，控制 entry_medium → left_side_arc 的触发点。
+- track_entry_medium_distance_m：第一个 180°前短直距离的标定中心。生产默认由 `track_entry_boundary_*` 在其 `±guard_half_width` 窗口内以分割前方正对边界触发 `entry_medium → left_side_arc`；超过窗口上限仍未确认则按里程保护切段。
+- track_entry_boundary_confirm_frames：首弯边界连续确认次数，当前生产值为 `1` 用于现场观察；可设为 `2` 或 `3` 抑制误检。
 - track_top_long_distance_m：第二个 180° 前长直距离，控制 top_long → right_side_arc 的触发点。
-- track_exit_medium_distance_m：最后出口直线距离，控制 exit_medium 完成点。
+- track_exit_medium_distance_m：第二个 180° 后的出口短直线距离。
+- exit_turn_90：出口短直线后顺时针左转 / 逆时针右转 90°；复用入口 90° 的线速度、角速度和半径配置。
+- stage3_handoff_line：转完后沿 -Y 直行，推导 map `y < track_stage3_handoff_map_y`（默认 2.0）时交权 Stage3。
 - track_max_speed：直线速度。
 - track_corner_speed：后续 180°弯线速度。
 - track_entry_angular：入口 90°弯角速度。
@@ -410,7 +414,7 @@ SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相
 | `goal_box_y_min/max` | `0.1 / 0.2` | P 矩形区域 Y 边界 |
 | `goal_box_x_min/max`, `goal_box_y_min/max` | `0.1/0.3`, `0.1/0.2` | 标定 P 矩形；车体 map 位姿进入即完成，不要求航向 |
 
-Phase3 位置与 Stage1 一样直接读取 `map <- base_footprint` TF，确保 A*、黑区地图和车辆位置共用同一坐标原点；TF 短暂不可用时才以 map_overlay 的启动变换换算 `/odom_combined`，Stage3 禁止自行重置 map 原点。S3 的静态禁区不再直接复用地图全部黑像素，只采用 `planner_forbidden_rectangles_json` 定义的下方两块区域：左侧 `[0.00,2.09) x [1.96,2.97)`，右侧 `[2.92,5.00) x [1.96,2.97)`；U 形外框和中部横条不参与 S3 规划。生产配置禁用前置通道 YOLO，`map_y >= 2.0m` 时只有 A* 可以驱动；地图粗导航只跟踪从当前位置直连仍处于 A* 自由栅格内的前视点，若当前位置进入黑区或其膨胀安全边界则以负速度后退回自由区再重规划。P YOLO 仅在 `map_y < 2.0m` 时推理，但只有 `map_x < 1.0m && map_y < 1.0m` 的近终点区域才允许视觉接管，此时才暂停通用避障。无论由地图还是 P YOLO 接近，车辆的 `map <- base_footprint` 位姿进入 `goal_box_*` 标定 P 矩形即完成，不要求航向。P 接管后丢帧先停车等待 `p_loss_hold_sec` 重识别，超时才回 A* 搜索；视觉预测轨迹碰到禁区仍须停车退出接管。
+Phase3 不继承 `map <- base_footprint` TF 的绝对位置：比赛中 S2 在 `y < 2.0m` 交权时通过 transient-local `stage3_entry_anchor` 发布实际 map 入口，S3 记录收到 phase=3 时的 `/odom_combined` xy，并只按 `entry_map + (odom_xy - entry_odom_xy)` 更新；静态 `stage3_entry_map_x/y` 仅保留给独立测试回退。IMU 是唯一航向来源，任何 odom orientation 都不参与计算。S3 的静态禁区不再直接复用地图全部黑像素，只采用 `planner_forbidden_rectangles_json` 定义的下方两块区域：左侧 `[0.00,2.09) x [1.96,2.97)`，右侧 `[2.92,5.00) x [1.96,2.97)`；U 形外框和中部横条不参与 S3 规划。生产配置禁用前置通道 YOLO，`map_y >= 2.0m` 时只有 A* 可以驱动；地图粗导航只跟踪从当前位置直连仍处于 A* 自由栅格内的前视点。若当前位置进入黑区或其膨胀安全边界，固定倒车 `planner_forbidden_reverse_distance_m` 后重新规划；该恢复状态独占 `/cmd_vel`，仅紧急停车可打断，避免普通避障的位移被误算为倒车距离。连续超过 `planner_forbidden_reverse_max_attempts` 次仍命中时停止并发布 `planner_forbidden_recovery_failed`，日志输出锚点、odom 增量、map 位姿和占据层来源。P YOLO 仅在 `map_y < 2.0m` 时推理，但只有 `map_x < 1.0m && map_y < 1.0m` 的近终点区域才允许视觉接管，此时才暂停通用避障。无论由地图还是 P YOLO 接近，车辆的推导 map 位姿进入 `goal_box_*` 标定 P 矩形即完成，不要求航向。P 接管后丢帧先停车等待 `p_loss_hold_sec` 重识别，超时才回 A* 搜索；视觉预测轨迹碰到禁区仍须停车退出接管。
 
 ### 4.2 核心参数
 

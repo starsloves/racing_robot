@@ -99,6 +99,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('back_target_x', 2.0)
         self.declare_parameter('back_linear_speed', -0.15)
         self.declare_parameter('back_angular_kp', 1.8)
+        self.declare_parameter('back_max_angular_speed', 0.60)
+        self.declare_parameter('back_angular_slew_rate', 1.50)
         self.declare_parameter('back_position_tolerance', 0.15)
         self.declare_parameter('back_path_sample_distance', 0.20)
         self.declare_parameter('back_lookahead_m', 0.25)
@@ -261,6 +263,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.back_target_x = float(self.get_parameter('back_target_x').value)
         self.back_linear_speed = float(self.get_parameter('back_linear_speed').value)
         self.back_angular_kp = float(self.get_parameter('back_angular_kp').value)
+        self.back_max_angular_speed = max(
+            0.0, float(self.get_parameter('back_max_angular_speed').value)
+        )
+        self.back_angular_slew_rate = max(
+            0.0, float(self.get_parameter('back_angular_slew_rate').value)
+        )
         self.back_position_tolerance = float(self.get_parameter('back_position_tolerance').value)
         self.back_path_sample_distance = float(self.get_parameter('back_path_sample_distance').value)
         self.back_lookahead_m = max(
@@ -487,6 +495,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.last_recorded_position = None
         self.backing_started_time = None
         self.backing_path_index = -1
+        self.backing_last_angular_z = 0.0
+        self.backing_last_command_time = None
         self.aligning_started_time = None
         self.latest_map = None
         self.tf_buffer = Buffer()
@@ -1991,6 +2001,8 @@ class CompetitionController(Stage1VisionMixin, Node):
                     self.log.warn('VISION', f'关闭 YOLO 推理失败: {e}')
             self.phase1_motion_state = 'backing'
             self.backing_started_time = self.get_clock().now()
+            self.backing_last_angular_z = 0.0
+            self.backing_last_command_time = self.backing_started_time
             # 最后一个采样点通常就在扫码位置；从它的前一个点开始，
             # 避免倒车控制先追逐当前位置而错过真正的回程轨迹。
             self.backing_path_index = max(0, len(self.path_record) - 2)
@@ -2215,11 +2227,30 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.start_corridor_navigation(f'qr task={self.qr_task}, backing path exhausted')
             return
         
-        # 先消化已经到达的倒序路点。循环可避免采样间隔小于到点容差时
-        # 每个控制周期只跨一个点、控制目标滞后的问题。
+        # 先消化已经到达或已经越过的倒序路点。仅按圆形到点容差会在高速
+        # 倒车时漏过采样点：车已跨过路点后距离又变大，旧前瞻点随即落到
+        # 车头前方，导致反向航向目标翻转。投影判定保证索引只沿倒序路径
+        # 单调推进，不依赖恰好命中路点附近的小圆。
         while self.backing_path_index >= 0:
             waypoint_x, waypoint_y, _ = self.path_record[self.backing_path_index]
-            if math.hypot(odom_x - waypoint_x, odom_y - waypoint_y) >= self.back_position_tolerance:
+            reached_waypoint = (
+                math.hypot(odom_x - waypoint_x, odom_y - waypoint_y)
+                < self.back_position_tolerance
+            )
+            passed_waypoint = False
+            if self.backing_path_index > 0:
+                previous_x, previous_y, _ = self.path_record[self.backing_path_index - 1]
+                segment_x = previous_x - waypoint_x
+                segment_y = previous_y - waypoint_y
+                segment_length_sq = segment_x * segment_x + segment_y * segment_y
+                if segment_length_sq > 1e-8:
+                    # >= 0 表示当前位置已越过该路点所在的法线平面，进入了
+                    # 倒序路径的下一段；无需再回头追逐这个旧点。
+                    passed_waypoint = (
+                        (odom_x - waypoint_x) * segment_x
+                        + (odom_y - waypoint_y) * segment_y
+                    ) >= 0.0
+            if not reached_waypoint and not passed_waypoint:
                 break
             self.backing_path_index -= 1
 
@@ -2246,11 +2277,29 @@ class CompetitionController(Stage1VisionMixin, Node):
         target_yaw = self.normalize_angle(travel_yaw + math.pi)
         heading_error = self.angle_error(target_yaw, self.current_yaw)
         
-        angular_z = self.back_angular_kp * heading_error
-        angular_z = self.clamp(angular_z, 1.0)
-        
-        # 倒车（负速度），车头保持来时方向
-        self.cmd_pub.publish(self.create_twist(self.back_linear_speed, angular_z))
+        requested_angular_z = self.clamp(
+            self.back_angular_kp * heading_error,
+            self.back_max_angular_speed,
+        )
+        now = self.get_clock().now()
+        if self.backing_last_command_time is not None:
+            elapsed = max(
+                0.0,
+                (now - self.backing_last_command_time).nanoseconds / 1e9,
+            )
+            max_delta = self.back_angular_slew_rate * elapsed
+            angular_z = max(
+                self.backing_last_angular_z - max_delta,
+                min(self.backing_last_angular_z + max_delta, requested_angular_z),
+            )
+        else:
+            angular_z = requested_angular_z
+        self.backing_last_angular_z = angular_z
+        self.backing_last_command_time = now
+
+        # 倒车始终沿记录轨迹后退，航向误差仅通过角速度闭环修正。
+        linear_x = self.back_linear_speed
+        self.cmd_pub.publish(self.create_twist(linear_x, angular_z))
         
         self.log.progress(
             f'backing: wp={self.backing_path_index}, lookahead_wp={target_index}, '
@@ -2258,7 +2307,9 @@ class CompetitionController(Stage1VisionMixin, Node):
             f'odom_x={odom_x:.2f}m, '
             f'dist={dist_to_target:.2f}m, '
             f'target_yaw={math.degrees(target_yaw):.1f}°, '
-            f'yaw_error={math.degrees(heading_error):.1f}°'
+            f'yaw_error={math.degrees(heading_error):.1f}°, '
+            f'mode=reverse, '
+            f'cmd=({linear_x:.2f},{angular_z:.2f})'
         )
     
     def handle_backing_align(self):

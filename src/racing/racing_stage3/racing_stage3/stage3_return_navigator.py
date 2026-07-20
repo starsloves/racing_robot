@@ -12,7 +12,7 @@ import threading
 import time
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PointStamped, Twist
 from nav_msgs.msg import Odometry
 from racing_common.racing_logger import RacingLogger
 from racing_common.yolo_bbox_detector import YoloBBoxDetector
@@ -61,12 +61,16 @@ class Stage3ReturnNavigator(Node):
         self.mission_finished = False
         self.start_after_time = None
 
-        # 位姿：位置必须与 Stage1 使用同一 map<-base TF；航向只来自 IMU。
+        # Phase3 position is anchored once at entry then follows odom xy deltas.
+        # Heading always comes from IMU, never odometry orientation.
         self.current_position = None
         self.current_yaw = None
         self.odom_frame_id = 'odom'
         self._last_raw_odom_xy = None
         self._last_raw_odom_yaw = None
+        self._stage3_entry_odom_xy = None
+        self._stage3_entry_map_xy = None
+        self._stage3_handoff_map_xy = None
         self._imu_yaw = None
         self._imu_yaw_offset = 0.0
 
@@ -77,6 +81,7 @@ class Stage3ReturnNavigator(Node):
         self._filtered_heading_err = 0.0
         self._planner_reverse_start = None
         self._planner_reverse_started_at = None
+        self._planner_forbidden_reverse_attempts = 0
         self._map_pose_warned = False
 
         # P 视觉最终接管：地图只用于粗导航，P 视觉决定最终到达。
@@ -117,6 +122,9 @@ class Stage3ReturnNavigator(Node):
 
         self.create_subscription(Int32, self.phase_topic, self._phase_cb, qos_latched)
         self.create_subscription(String, self.direction_topic, self._direction_cb, qos_latched)
+        self.create_subscription(
+            PointStamped, self.stage3_entry_anchor_topic, self._stage3_entry_anchor_cb, qos_latched
+        )
         self.create_subscription(Odometry, self.odom_topic, self._odom_cb, 10)
         self.create_subscription(Imu, self.imu_topic, self._imu_cb, 10)
         self.create_subscription(LaserScan, self.scan_topic, self._scan_cb, 10)
@@ -252,8 +260,15 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('planner_forbidden_reverse_speed', 0.10)
         self.declare_parameter('planner_forbidden_reverse_distance_m', 0.30)
         self.declare_parameter('planner_forbidden_reverse_timeout_sec', 5.0)
+        self.declare_parameter('planner_forbidden_reverse_max_attempts', 3)
 
-        # ── map→odom 后备变换（标准路径直接查询 map<-base TF）──
+        # ── Phase3 entry position anchor ──
+        self.declare_parameter('stage3_entry_anchor_enabled', True)
+        self.declare_parameter('stage3_entry_map_x', 2.80)
+        self.declare_parameter('stage3_entry_map_y', 3.25)
+        self.declare_parameter('stage3_entry_anchor_topic', 'stage3_entry_anchor')
+
+        # ── Legacy map→odom fallback for disabled entry anchoring ──
         self.declare_parameter('test_direction', 'clockwise')
         self.declare_parameter('map_to_odom_x', 0.0)
         self.declare_parameter('map_to_odom_y', 0.0)
@@ -388,6 +403,19 @@ class Stage3ReturnNavigator(Node):
         self.planner_forbidden_reverse_timeout = max(0.1, float(
             self.get_parameter('planner_forbidden_reverse_timeout_sec').value
         ))
+        self.planner_forbidden_reverse_max_attempts = max(1, int(
+            self.get_parameter('planner_forbidden_reverse_max_attempts').value
+        ))
+        self.stage3_entry_anchor_enabled = bool(
+            self.get_parameter('stage3_entry_anchor_enabled').value
+        )
+        self.stage3_entry_map_xy = (
+            float(self.get_parameter('stage3_entry_map_x').value),
+            float(self.get_parameter('stage3_entry_map_y').value),
+        )
+        self.stage3_entry_anchor_topic = str(
+            self.get_parameter('stage3_entry_anchor_topic').value
+        )
 
         self.test_direction = str(self.get_parameter('test_direction').value)
         self.return_direction = self._normalize_direction(self.test_direction)
@@ -667,15 +695,35 @@ class Stage3ReturnNavigator(Node):
         self._last_raw_odom_xy = (raw_x, raw_y)
         self._last_raw_odom_yaw = raw_yaw
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
-        map_xy = self._lookup_map_xy_from_tf()
-        if map_xy is not None:
-            self.current_position = map_xy
+        if self.stage3_entry_anchor_enabled and self._stage3_entry_odom_xy is not None:
+            self.current_position = self._position_from_entry_anchor(
+                self._stage3_entry_map_xy, self._stage3_entry_odom_xy, (raw_x, raw_y)
+            )
         else:
-            # TF 短暂不可用时，使用与 map_overlay 相同的启动变换后备；
-            # 禁止在 Stage3 内重写此变换。
-            self._set_map_position_from_static_transform(raw_x, raw_y)
+            map_xy = self._lookup_map_xy_from_tf()
+            if map_xy is not None:
+                self.current_position = map_xy
+            else:
+                self._set_map_position_from_static_transform(raw_x, raw_y)
         if self._imu_yaw is None:
             self.current_yaw = self._normalize_angle(raw_yaw + self.map_odom_yaw)
+
+    def _stage3_entry_anchor_cb(self, msg):
+        if msg.header.frame_id and msg.header.frame_id != self.map_frame:
+            self.log.warn('POSE', f'ignoring Stage2 entry anchor in frame={msg.header.frame_id}')
+            return
+        self._stage3_handoff_map_xy = (float(msg.point.x), float(msg.point.y))
+        self.log.mission(
+            f'Stage2 handoff anchor received: map={self._stage3_handoff_map_xy}'
+        )
+
+    @staticmethod
+    def _position_from_entry_anchor(entry_map_xy, entry_odom_xy, current_odom_xy):
+        """Map position from a fixed entry anchor and odometry translation only."""
+        return (
+            entry_map_xy[0] + current_odom_xy[0] - entry_odom_xy[0],
+            entry_map_xy[1] + current_odom_xy[1] - entry_odom_xy[1],
+        )
 
     def _lookup_map_xy_from_tf(self):
         """Use the Stage1-owned map transform so A* and the map share one origin."""
@@ -731,6 +779,16 @@ class Stage3ReturnNavigator(Node):
         self._settled_start = None
         self._planner_reverse_start = None
         self._planner_reverse_started_at = None
+        self._planner_forbidden_reverse_attempts = 0
+        self._stage3_entry_odom_xy = None
+        self._stage3_entry_map_xy = None
+        if self.stage3_entry_anchor_enabled:
+            if self._last_raw_odom_xy is None:
+                self.log.warn('POSE', 'phase=3 waiting for /odom_combined before entry anchor')
+            else:
+                self._stage3_entry_odom_xy = self._last_raw_odom_xy
+                self._stage3_entry_map_xy = self._configured_or_handoff_entry_anchor()
+                self.current_position = self._stage3_entry_map_xy
         self.avoid_state = 'forward'
         self.start_after_time = self._now_sec() + self.start_delay_sec
         self._p_approaching = False
@@ -747,7 +805,8 @@ class Stage3ReturnNavigator(Node):
         self._channel_offset_filtered = 0.0
         self._publish_state('armed')
         self.log.mission(
-            f'phase=3 detected, direction={self.return_direction}, map pose inherits Stage1 TF, '
+            f'phase=3 detected, direction={self.return_direction}, '
+            f'entry_anchor={self._stage3_entry_map_xy} odom_reference={self._stage3_entry_odom_xy}; '
             'starting A* return; P YOLO remains gated by the configured Y threshold'
         )
 
@@ -762,6 +821,9 @@ class Stage3ReturnNavigator(Node):
         self._settled_start = None
         self._planner_reverse_start = None
         self._planner_reverse_started_at = None
+        self._planner_forbidden_reverse_attempts = 0
+        self._stage3_entry_odom_xy = None
+        self._stage3_entry_map_xy = None
         self.avoid_state = 'forward'
         self._p_approaching = False
         self._p_consecutive_hits = 0
@@ -775,6 +837,17 @@ class Stage3ReturnNavigator(Node):
         self._publish_state('idle')
 
     def _start_mission(self):
+        if self.stage3_entry_anchor_enabled and self._stage3_entry_odom_xy is None:
+            if self._last_raw_odom_xy is None:
+                self.log.warn('ODOM', 'no /odom_combined yet, cannot establish phase3 entry anchor')
+                return
+            self._stage3_entry_odom_xy = self._last_raw_odom_xy
+            self._stage3_entry_map_xy = self._configured_or_handoff_entry_anchor()
+            self.current_position = self._stage3_entry_map_xy
+            self.log.mission(
+                f'phase3 entry anchor established late: map={self._stage3_entry_map_xy} '
+                f'odom={self._stage3_entry_odom_xy}'
+            )
         if self.current_position is None or self.current_yaw is None:
             self.log.warn('ODOM', 'no odom yet, cannot start (waiting for /odom_combined)')
             return
@@ -793,6 +866,9 @@ class Stage3ReturnNavigator(Node):
             f'yaw={math.degrees(self.current_yaw):.1f}°'
         )
         self.get_logger().info(f'mission_active=True, will publish cmd_vel now')
+
+    def _configured_or_handoff_entry_anchor(self):
+        return self._stage3_handoff_map_xy or self.stage3_entry_map_xy
 
     def _finish_mission(self, feedback_text='return complete, reached P point'):
         self.cmd_pub.publish(Twist())
@@ -905,6 +981,11 @@ class Stage3ReturnNavigator(Node):
 
         # 1. 紧急停止
         if self._check_emergency_stop():
+            return
+
+        # 禁区恢复必须独占底盘控制。若普通避障在倒车期间接管，绕障产生的
+        # 位移会被误计为倒车距离，导致仍在禁区内就提前重规划并最终耗尽次数。
+        if self._run_planner_forbidden_reverse():
             return
 
         # 2. P 已确认后由视觉完全接管；不再使用 map 位置判定到达。
@@ -1035,16 +1116,34 @@ class Stage3ReturnNavigator(Node):
 
     def _start_planner_forbidden_reverse(self):
         if self.current_position is None:
-            return
+            return True
+        self._planner_forbidden_reverse_attempts += 1
+        if self._planner_forbidden_reverse_attempts > self.planner_forbidden_reverse_max_attempts:
+            self.stop_robot()
+            self._publish_state('planner_forbidden_recovery_failed')
+            self._publish_feedback('planner forbidden recovery failed: repeated forbidden position')
+            self.log.warn(
+                'PLANNER',
+                f'forbidden recovery exhausted attempts={self._planner_forbidden_reverse_attempts - 1}/'
+                f'{self.planner_forbidden_reverse_max_attempts}; {self._planner_pose_diagnostic()}'
+            )
+            self.mission_active = False
+            self.mission_finished = True
+            return True
         self._planner_reverse_start = self.current_position
         self._planner_reverse_started_at = self._now_sec()
         self._filtered_heading_err = 0.0
+        # 禁区恢复只允许急停打断，不能与通用避障状态机并发控制 cmd_vel。
+        self.avoid_state = 'forward'
         self._publish_state('planner_forbidden_reverse')
         self.log.warn(
             'PLANNER',
             f'position in forbidden planner cell at ({self.current_position[0]:.2f},'
-            f'{self.current_position[1]:.2f}); reversing {self.planner_forbidden_reverse_distance:.2f}m',
+            f'{self.current_position[1]:.2f}); reversing {self.planner_forbidden_reverse_distance:.2f}m; '
+            f'attempt={self._planner_forbidden_reverse_attempts}/'
+            f'{self.planner_forbidden_reverse_max_attempts}; {self._planner_pose_diagnostic()}',
         )
+        return False
 
     def _run_planner_forbidden_reverse(self):
         if self._planner_reverse_start is None or self._planner_reverse_started_at is None:
@@ -1060,7 +1159,8 @@ class Stage3ReturnNavigator(Node):
         if moved >= self.planner_forbidden_reverse_distance:
             self.stop_robot()
             self.log.mission(
-                f'planner forbidden reverse complete: moved={moved:.2f}m; replanning'
+                f'planner forbidden reverse complete: moved={moved:.2f}m; replanning; '
+                f'{self._planner_pose_diagnostic()}'
             )
             self._planner_reverse_start = None
             self._planner_reverse_started_at = None
@@ -1071,6 +1171,18 @@ class Stage3ReturnNavigator(Node):
             return True
         self.cmd_pub.publish(self._twist(-self.planner_forbidden_reverse_speed, 0.0))
         return True
+
+    def _planner_pose_diagnostic(self):
+        """Describe the anchored pose calculation used by forbidden-zone recovery."""
+        occupancy = 'planner_unavailable'
+        if self.global_planner is not None and self.current_position is not None:
+            occupancy = self.global_planner.describe_world_occupancy(self.current_position)
+        return (
+            f'anchor_map={self._stage3_entry_map_xy} '
+            f'anchor_odom={self._stage3_entry_odom_xy} '
+            f'odom_now={self._last_raw_odom_xy} '
+            f'map_now={self.current_position} occupancy={occupancy}'
+        )
 
     def _select_safe_lookahead_point(self, path_points):
         """Choose the furthest A* point reachable by a straight free segment."""
@@ -1133,7 +1245,8 @@ class Stage3ReturnNavigator(Node):
                     self.current_position, self.current_position
                 )
                 if position_is_free is False:
-                    self._start_planner_forbidden_reverse()
+                    if self._start_planner_forbidden_reverse():
+                        return
                     self._run_planner_forbidden_reverse()
                     return
                 self.log.warn(
@@ -1144,6 +1257,7 @@ class Stage3ReturnNavigator(Node):
                 self._publish_state('planner_blocked')
                 self.stop_robot()
                 return
+            self._planner_forbidden_reverse_attempts = 0
             lookahead_point = self._select_safe_lookahead_point(planned_points)
             if lookahead_point is None:
                 self.log.warn('PLANNER', 'no collision-free local segment on A* path')
