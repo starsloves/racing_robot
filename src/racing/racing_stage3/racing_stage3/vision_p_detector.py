@@ -447,7 +447,8 @@ setInterval(health, 500); health();
                     idxs = np.array([], dtype=int)
 
                 if len(idxs) > 0:
-                    best_i = idxs[0]
+                    # NMS output order is not a target-selection policy.
+                    best_i = int(max(idxs, key=lambda index: scores[int(index)]))
                     box = bboxes[best_i]
                     confidence = float(scores[best_i])
                     x1 = max(0, min(w_crop-1, box[0]/scale))
@@ -473,9 +474,8 @@ setInterval(health, 500); health();
                     cv2.line(frame_after, (cx, cy), (w_crop//2, h_crop//2), (255, 0, 0), 2)
 
                     offset = cx / (w_crop / 2) - 1.0
-                    bbox_area = (x2 - x1) * (y2 - y1)
-                    image_area = w_crop * h_crop
-                    fill_ratio = bbox_area / image_area if image_area > 0 else 0.0
+                    # Completion configuration is expressed as bbox width / image width.
+                    fill_ratio = (x2 - x1) / w_crop if w_crop > 0 else 0.0
 
                     cv2.putText(frame_after, f'P conf={confidence:.2f} off={offset:+.2f} fill={fill_ratio:.2%}',
                                (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX,

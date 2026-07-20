@@ -1,5 +1,7 @@
 import os
 
+import yaml
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, RegisterEventHandler
@@ -36,6 +38,13 @@ def _emergency_stop_action():
     )
 
 
+def _stage1_map_to_odom_defaults(config_path):
+    """Read the Stage1-owned static TF translation from its ROS parameter YAML."""
+    with open(config_path, 'r', encoding='utf-8') as config_file:
+        params = yaml.safe_load(config_file)['competition_controller']['ros__parameters']
+    return str(params['map_to_odom_x']), str(params['map_to_odom_y'])
+
+
 def generate_launch_description():
     bno055_dir = get_package_share_directory('bno055')
     lidar_dir = get_package_share_directory('lslidar_driver')
@@ -46,8 +55,10 @@ def generate_launch_description():
     lidar_launch_dir = os.path.join(lidar_dir, 'launch')
     qr_launch_dir = os.path.join(qr_dir, 'launch')
     stage1_config_dir = os.path.join(stage1_dir, 'config')
+    stage1_config_path = os.path.join(stage1_config_dir, 'stage1_controller.yaml')
     bringup_launch_dir = os.path.join(bringup_dir, 'launch')
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
+    map_to_odom_x_default, map_to_odom_y_default = _stage1_map_to_odom_defaults(stage1_config_path)
 
     device_arg = DeclareLaunchArgument('device', default_value='/dev/video0')
     include_camera_arg = DeclareLaunchArgument('include_camera', default_value='true')
@@ -79,12 +90,12 @@ def generate_launch_description():
     )
     map_to_odom_x_arg = DeclareLaunchArgument(
         'map_to_odom_x',
-        default_value='0.50',
+        default_value=map_to_odom_x_default,
         description='Stage1 start X position in map frame'
     )
     map_to_odom_y_arg = DeclareLaunchArgument(
         'map_to_odom_y',
-        default_value='0.20',
+        default_value=map_to_odom_y_default,
         description='Stage1 start Y position in map frame'
     )
     map_to_odom_yaw_arg = DeclareLaunchArgument(
@@ -168,7 +179,7 @@ def generate_launch_description():
         executable='competition_controller',
         name='competition_controller',
         parameters=[
-            os.path.join(stage1_config_dir, 'stage1_controller.yaml'),  # 统一配置文件
+            stage1_config_path,  # 统一配置文件
             {
                 'stage2_cmd_topic': LaunchConfiguration('stage2_cmd_topic'),
                 'imu_topic': LaunchConfiguration('imu_topic'),

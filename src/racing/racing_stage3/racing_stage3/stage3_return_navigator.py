@@ -29,6 +29,7 @@ from .cmd_vel_stop import (
     publish_stop,
     spin_until_stop,
 )
+from .global_path_planner import GlobalPathPlanner
 from .vision_p_detector import VisionPDetector
 
 
@@ -72,11 +73,15 @@ class Stage3ReturnNavigator(Node):
         self.path_index = 0
         self._settled_start = None
         self._filtered_heading_err = 0.0
+        self._planner_reverse_start = None
+        self._planner_reverse_started_at = None
+        self._entry_map_reset_done = False
 
         # P 视觉最终接管：地图只用于粗导航，P 视觉决定最终到达。
         self._p_detector = None
         self._p_approaching = False
         self._p_consecutive_hits = 0
+        self._p_complete_hits = 0
         self._p_offset_filtered = 0.0
 
         # 激光扫描
@@ -107,9 +112,27 @@ class Stage3ReturnNavigator(Node):
         self.feedback_pub = self.create_publisher(String, self.feedback_topic, 10)
 
         self.create_subscription(Int32, self.phase_topic, self._phase_cb, qos_latched)
+        self.create_subscription(String, self.direction_topic, self._direction_cb, qos_latched)
         self.create_subscription(Odometry, self.odom_topic, self._odom_cb, 10)
         self.create_subscription(Imu, self.imu_topic, self._imu_cb, 10)
         self.create_subscription(LaserScan, self.scan_topic, self._scan_cb, 10)
+
+        self.global_planner = None
+        if self.use_global_planner:
+            self.global_planner = GlobalPathPlanner(self, {
+                'map_topic': self.map_topic,
+                'scan_topic': self.scan_topic,
+                'global_frame_id': self.global_frame_id,
+                'planner_downsample': self.planner_downsample,
+                'planner_occupied_threshold': self.planner_occupied_threshold,
+                'planner_unknown_is_occupied': self.planner_unknown_is_occupied,
+                'planner_obstacle_inflation_m': self.planner_obstacle_inflation_m,
+                'planner_dynamic_obstacle_box_size_m': self.planner_dynamic_obstacle_box_size_m,
+                'planner_dynamic_obstacle_inflation_m': self.planner_dynamic_obstacle_inflation_m,
+                'planner_dynamic_obstacle_range_m': self.planner_dynamic_obstacle_range_m,
+                'planner_replan_period_sec': self.planner_replan_period_sec,
+            })
+            self.log.startup('A* global planner enabled: black map cells are forbidden')
 
         self._init_p_detector()
         self._init_channel_detector()
@@ -131,6 +154,7 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('cmd_topic', '/cmd_vel')
         self.declare_parameter('state_topic', 'stage3_state')
         self.declare_parameter('feedback_topic', 'competition_feedback')
+        self.declare_parameter('direction_topic', 'competition_qr_task')
         self.declare_parameter('control_rate_hz', 20.0)
         self.declare_parameter('start_delay_sec', 0.5)
 
@@ -153,6 +177,11 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_approach_consecutive_hits', 3)
         self.declare_parameter('p_approach_linear_speed', 0.50)
         self.declare_parameter('p_approach_angular_kp', 0.8)
+        self.declare_parameter('p_visual_takeover_max_y', 2.0)
+        self.declare_parameter('p_complete_bbox_fill_ratio', 0.35)
+        self.declare_parameter('p_complete_offset_tolerance', 0.12)
+        self.declare_parameter('p_complete_consecutive_hits', 3)
+        self.declare_parameter('p_visual_safety_lookahead_m', 0.20)
         self.declare_parameter('p_web_port', 8083)
         self.declare_parameter('p_detection_timeout_sec', 0.35)
 
@@ -213,6 +242,9 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('planner_dynamic_obstacle_inflation_m', 0.04)
         self.declare_parameter('planner_dynamic_obstacle_range_m', 0.7)
         self.declare_parameter('planner_replan_period_sec', 0.25)
+        self.declare_parameter('planner_forbidden_reverse_speed', 0.10)
+        self.declare_parameter('planner_forbidden_reverse_distance_m', 0.30)
+        self.declare_parameter('planner_forbidden_reverse_timeout_sec', 5.0)
 
         # ── map→odom 偏移参数（同 Stage2 map_overlay，直接传参避免 TF 依赖）──
         self.declare_parameter('test_direction', 'clockwise')
@@ -220,7 +252,7 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('map_to_odom_y', 0.0)
         self.declare_parameter('map_to_odom_yaw', 0.0)
 
-        # ── Stage3 前置通道 YOLO 对中 + 内部 map 初始值重置 ──
+        # ── Stage3 前置通道 YOLO 对中（入场 map 原点另行按方向重置）──
         self.declare_parameter('stage3_channel_yolo_enabled', True)
         self.declare_parameter('stage3_channel_model_path', '/home/sunrise/dev_ws/best_rdk_tongdao.bin')
         self.declare_parameter('stage3_channel_camera_topic', '/aurora/rgb/image_raw')
@@ -229,9 +261,9 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('stage3_channel_preview_path', '/tmp/stage3_channel_yolo.jpg')
         self.declare_parameter('stage3_channel_yaw_deg', -90.0)
         self.declare_parameter('stage3_channel_yaw_tolerance_deg', 5.0)
-        self.declare_parameter('stage3_channel_reset_map_x', 2.5)
-        self.declare_parameter('stage3_channel_reset_map_y', 2.5)
-        self.declare_parameter('stage3_channel_reset_yaw_deg', -90.0)
+        self.declare_parameter('stage3_entry_map_x_clockwise', 2.6)
+        self.declare_parameter('stage3_entry_map_x_counterclockwise', 2.4)
+        self.declare_parameter('stage3_entry_map_y', 3.0)
         self.declare_parameter('stage3_channel_linear_speed', 0.10)
         self.declare_parameter('stage3_channel_angular_kp', 0.55)
         self.declare_parameter('stage3_channel_max_angular', 0.25)
@@ -249,6 +281,7 @@ class Stage3ReturnNavigator(Node):
         self.cmd_topic = str(self.get_parameter('cmd_topic').value)
         self.state_topic = str(self.get_parameter('state_topic').value)
         self.feedback_topic = str(self.get_parameter('feedback_topic').value)
+        self.direction_topic = str(self.get_parameter('direction_topic').value)
         self.control_rate_hz = float(self.get_parameter('control_rate_hz').value)
         self.start_delay_sec = float(self.get_parameter('start_delay_sec').value)
 
@@ -273,6 +306,13 @@ class Stage3ReturnNavigator(Node):
         )
         self.p_approach_linear = float(self.get_parameter('p_approach_linear_speed').value)
         self.p_approach_angular_kp = float(self.get_parameter('p_approach_angular_kp').value)
+        self.p_visual_takeover_max_y = float(self.get_parameter('p_visual_takeover_max_y').value)
+        self.p_complete_fill_ratio = float(self.get_parameter('p_complete_bbox_fill_ratio').value)
+        self.p_complete_offset_tolerance = float(self.get_parameter('p_complete_offset_tolerance').value)
+        self.p_complete_hits_required = max(1, int(self.get_parameter('p_complete_consecutive_hits').value))
+        self.p_visual_safety_lookahead = float(
+            self.get_parameter('p_visual_safety_lookahead_m').value
+        )
         self.p_web_port = int(self.get_parameter('p_web_port').value)
         self.p_detection_timeout = max(
             0.0, float(self.get_parameter('p_detection_timeout_sec').value)
@@ -331,8 +371,18 @@ class Stage3ReturnNavigator(Node):
         self.planner_dynamic_obstacle_inflation_m = float(self.get_parameter('planner_dynamic_obstacle_inflation_m').value)
         self.planner_dynamic_obstacle_range_m = float(self.get_parameter('planner_dynamic_obstacle_range_m').value)
         self.planner_replan_period_sec = float(self.get_parameter('planner_replan_period_sec').value)
+        self.planner_forbidden_reverse_speed = abs(float(
+            self.get_parameter('planner_forbidden_reverse_speed').value
+        ))
+        self.planner_forbidden_reverse_distance = max(0.0, float(
+            self.get_parameter('planner_forbidden_reverse_distance_m').value
+        ))
+        self.planner_forbidden_reverse_timeout = max(0.1, float(
+            self.get_parameter('planner_forbidden_reverse_timeout_sec').value
+        ))
 
         self.test_direction = str(self.get_parameter('test_direction').value)
+        self.return_direction = self._normalize_direction(self.test_direction)
         self.map_odom_x = float(self.get_parameter('map_to_odom_x').value)
         self.map_odom_y = float(self.get_parameter('map_to_odom_y').value)
         self.map_odom_yaw = float(self.get_parameter('map_to_odom_yaw').value)
@@ -350,11 +400,13 @@ class Stage3ReturnNavigator(Node):
         self.stage3_channel_yaw_tolerance = math.radians(
             float(self.get_parameter('stage3_channel_yaw_tolerance_deg').value)
         )
-        self.stage3_channel_reset_map_x = float(self.get_parameter('stage3_channel_reset_map_x').value)
-        self.stage3_channel_reset_map_y = float(self.get_parameter('stage3_channel_reset_map_y').value)
-        self.stage3_channel_reset_yaw = math.radians(
-            float(self.get_parameter('stage3_channel_reset_yaw_deg').value)
+        self.stage3_entry_map_x_clockwise = float(
+            self.get_parameter('stage3_entry_map_x_clockwise').value
         )
+        self.stage3_entry_map_x_counterclockwise = float(
+            self.get_parameter('stage3_entry_map_x_counterclockwise').value
+        )
+        self.stage3_entry_map_y = float(self.get_parameter('stage3_entry_map_y').value)
         self.stage3_channel_linear_speed = float(self.get_parameter('stage3_channel_linear_speed').value)
         self.stage3_channel_angular_kp = float(self.get_parameter('stage3_channel_angular_kp').value)
         self.stage3_channel_max_angular = float(self.get_parameter('stage3_channel_max_angular').value)
@@ -536,7 +588,7 @@ class Stage3ReturnNavigator(Node):
             self._set_channel_inference_active(False)
             self.log.startup(
                 f'Stage3 channel YOLO enabled model={self.stage3_channel_model_path} '
-                f'reset=({self.stage3_channel_reset_map_x:.2f},{self.stage3_channel_reset_map_y:.2f})'
+                '(visual alignment only; map entry reset is direction-based)'
             )
         except Exception as e:
             self.stage3_channel_yolo_enabled = False
@@ -564,8 +616,27 @@ class Stage3ReturnNavigator(Node):
             detector.set_inference_active(active)
 
     def _update_p_inference_gate(self):
-        # map 位置存在偏移；Phase3 全程启用 P 检测，由视觉决定最终到达。
-        self._set_p_inference_active(self.phase == 3 and not self.mission_finished)
+        in_visual_area = (
+            self.current_position is not None
+            and self.current_position[1] < self.p_visual_takeover_max_y
+        )
+        self._set_p_inference_active(
+            self.phase == 3 and not self.mission_finished and in_visual_area
+        )
+
+    @staticmethod
+    def _normalize_direction(value):
+        text = str(value).strip().lower()
+        if text in ('counterclockwise', 'counter_clockwise', 'ccw', '逆时针'):
+            return 'counterclockwise'
+        return 'clockwise'
+
+    def _direction_cb(self, msg):
+        direction = self._normalize_direction(msg.data)
+        if direction == self.return_direction:
+            return
+        self.return_direction = direction
+        self.log.mission(f'Stage3 direction updated from QR: {self.return_direction}')
 
     def _phase_cb(self, msg):
         prev = self.phase
@@ -627,6 +698,29 @@ class Stage3ReturnNavigator(Node):
 
     # ══════════════ 任务生命周期 ══════════════
 
+    def _reset_entry_map_position(self):
+        """Anchor the Phase3 entry position without changing the IMU heading basis."""
+        if self._last_raw_odom_xy is None:
+            return False
+        target_x = (
+            self.stage3_entry_map_x_counterclockwise
+            if self.return_direction == 'counterclockwise'
+            else self.stage3_entry_map_x_clockwise
+        )
+        target_y = self.stage3_entry_map_y
+        raw_x, raw_y = self._last_raw_odom_xy
+        cos_y = math.cos(self.map_odom_yaw)
+        sin_y = math.sin(self.map_odom_yaw)
+        self.map_odom_x = target_x - (cos_y * raw_x - sin_y * raw_y)
+        self.map_odom_y = target_y - (sin_y * raw_x + cos_y * raw_y)
+        self.current_position = (target_x, target_y)
+        self.log.mission(
+            f'Stage3 entry map reset: direction={self.return_direction} '
+            f'odom=({raw_x:.3f},{raw_y:.3f}) -> map=({target_x:.2f},{target_y:.2f}); '
+            'IMU yaw basis unchanged'
+        )
+        return True
+
     def _arm_mission(self):
         self.mission_active = False
         self.mission_finished = False
@@ -637,10 +731,14 @@ class Stage3ReturnNavigator(Node):
         self.path_started_at = None
         self.path_index = 0
         self._settled_start = None
+        self._planner_reverse_start = None
+        self._planner_reverse_started_at = None
+        self._entry_map_reset_done = False
         self.avoid_state = 'forward'
         self.start_after_time = self._now_sec() + self.start_delay_sec
         self._p_approaching = False
         self._p_consecutive_hits = 0
+        self._p_complete_hits = 0
         self._p_offset_filtered = 0.0
         self._set_p_inference_active(False)
         self._set_channel_inference_active(False)
@@ -648,9 +746,12 @@ class Stage3ReturnNavigator(Node):
         self._pre_return_started_at = self._now_sec()
         self._channel_hits = 0
         self._channel_offset_filtered = 0.0
+        self._entry_map_reset_done = self._reset_entry_map_position()
+        if not self._entry_map_reset_done:
+            self.log.warn('ODOM', 'Stage3 entry map reset deferred: waiting for /odom_combined')
         self._publish_state('armed')
         self.log.mission(
-            f'phase=3 detected, direction={self.test_direction}, '
+            f'phase=3 detected, direction={self.return_direction}, '
             f'pre_return={self._pre_return_state}'
         )
 
@@ -666,9 +767,13 @@ class Stage3ReturnNavigator(Node):
         self.path_started_at = None
         self.path_index = 0
         self._settled_start = None
+        self._planner_reverse_start = None
+        self._planner_reverse_started_at = None
+        self._entry_map_reset_done = False
         self.avoid_state = 'forward'
         self._p_approaching = False
         self._p_consecutive_hits = 0
+        self._p_complete_hits = 0
         self._p_offset_filtered = 0.0
         self._pre_return_state = 'idle'
         self._channel_hits = 0
@@ -719,47 +824,6 @@ class Stage3ReturnNavigator(Node):
 
     # ══════════════ Stage3 前置通道重定位 ══════════════
 
-    def _reset_stage3_map_origin_to_channel(self):
-        if self._last_raw_odom_xy is None:
-            return False
-        raw_x, raw_y = self._last_raw_odom_xy
-        yaw_now = self._imu_yaw
-        if yaw_now is None:
-            yaw_now = self.current_yaw
-        if yaw_now is None:
-            yaw_now = (
-                self._normalize_angle(self._last_raw_odom_yaw + self.map_odom_yaw)
-                if self._last_raw_odom_yaw is not None else self.stage3_channel_reset_yaw
-            )
-        yaw_offset = self._normalize_angle(self.stage3_channel_reset_yaw - yaw_now)
-        cos_y = math.cos(yaw_offset)
-        sin_y = math.sin(yaw_offset)
-        self.map_odom_x = self.stage3_channel_reset_map_x - (cos_y * raw_x - sin_y * raw_y)
-        self.map_odom_y = self.stage3_channel_reset_map_y - (sin_y * raw_x + cos_y * raw_y)
-        self.map_odom_yaw = yaw_offset
-        self._imu_yaw_offset = yaw_offset
-        self.current_position = (
-            self.stage3_channel_reset_map_x,
-            self.stage3_channel_reset_map_y,
-        )
-        self.current_yaw = self.stage3_channel_reset_yaw
-        self.path_index = 0
-        self.path_started_at = None
-        self._filtered_heading_err = 0.0
-        self.avoid_state = 'forward'
-        self._p_approaching = False
-        self._p_consecutive_hits = 0
-        self._p_offset_filtered = 0.0
-        self._p_extra_forward_active = False
-        self.log.mission(
-            f'Stage3 local map origin reset: odom=({raw_x:.3f},{raw_y:.3f}) '
-            f'imu_yaw={math.degrees(yaw_now):.1f}deg -> '
-            f'map=({self.stage3_channel_reset_map_x:.2f},{self.stage3_channel_reset_map_y:.2f}) '
-            f'map_odom=({self.map_odom_x:.3f},{self.map_odom_y:.3f},'
-            f'{math.degrees(self.map_odom_yaw):.1f}deg)'
-        )
-        return True
-
     def _run_pre_return_handoff(self):
         if not self.stage3_channel_yolo_enabled or self._channel_detector is None:
             self._pre_return_state = 'done'
@@ -767,9 +831,8 @@ class Stage3ReturnNavigator(Node):
         now = self._now_sec()
         started = self._pre_return_started_at or now
         if now - started > self.stage3_channel_timeout_sec:
-            self.log.warn('CHANNEL_YOLO', 'pre-return timeout, resetting local map and starting return')
+            self.log.warn('CHANNEL_YOLO', 'pre-return timeout, preserving entry map reset and starting return')
             self._set_channel_inference_active(False)
-            self._reset_stage3_map_origin_to_channel()
             self._pre_return_state = 'done'
             return True
 
@@ -830,11 +893,10 @@ class Stage3ReturnNavigator(Node):
         if self._channel_hits >= self.stage3_channel_consecutive_hits:
             self.stop_robot()
             self._set_channel_inference_active(False)
-            self._reset_stage3_map_origin_to_channel()
             self._pre_return_state = 'done'
             self.log.mission(
                 f'pre-return channel center reached conf={conf:.2f} off={filt:+.3f} '
-                f'fill={fill_ratio:.2%}; start return'
+                f'fill={fill_ratio:.2%}; preserving entry map reset and starting return'
             )
             return True
 
@@ -869,6 +931,11 @@ class Stage3ReturnNavigator(Node):
         if not self.mission_active:
             if self.start_after_time is None or now < self.start_after_time:
                 return
+            if not self._entry_map_reset_done:
+                self._entry_map_reset_done = self._reset_entry_map_position()
+                if not self._entry_map_reset_done:
+                    self.stop_robot()
+                    return
             if self._pre_return_state != 'done':
                 if not self._run_pre_return_handoff():
                     return
@@ -885,6 +952,7 @@ class Stage3ReturnNavigator(Node):
             return
 
         # 3. 地图仅用于粗导航和搜索 P；检测到 P 后立即切入视觉终段。
+        self._update_p_inference_gate()
         self._update_p_detection()
         if self._p_approaching:
             self._run_p_approach()
@@ -931,11 +999,16 @@ class Stage3ReturnNavigator(Node):
 
     def _update_p_detection(self):
         detected, conf, _bbox, _stamp, offset, _fill = self._p_detection()
-        confirmed = detected and conf >= self.p_approach_conf
+        in_visual_takeover_area = (
+            self.current_position is not None
+            and self.current_position[1] < self.p_visual_takeover_max_y
+        )
+        confirmed = in_visual_takeover_area and detected and conf >= self.p_approach_conf
         self._p_consecutive_hits = self._p_consecutive_hits + 1 if confirmed else 0
         if self._p_consecutive_hits < self.p_approach_hits_required:
             return
         self._p_approaching = True
+        self._p_complete_hits = 0
         self._p_offset_filtered = float(offset)
         self._publish_state('p_approach')
         self.log.segment(
@@ -948,13 +1021,35 @@ class Stage3ReturnNavigator(Node):
         detected, conf, _bbox, _stamp, offset, fill = self._p_detection()
         if not detected or conf < self.p_approach_conf:
             self.cmd_pub.publish(Twist())
-            self.log.segment('P lost after visual acquisition: v=0, complete and coast into P')
-            self._finish_mission('P lost after acquisition: v=0, inertial coast into P')
+            self._p_approaching = False
+            self._p_consecutive_hits = 0
+            self._p_complete_hits = 0
+            self.log.warn('P_DETECTION', 'P lost after acquisition: stopped and returning to A* search')
+            self._publish_feedback('P lost: stopped, returning to map path search')
             return
 
         alpha = 0.35
         self._p_offset_filtered = alpha * float(offset) + (1.0 - alpha) * self._p_offset_filtered
         angular = self._clamp(-self.p_approach_angular_kp * self._p_offset_filtered, self.max_angular)
+        if not self._visual_trajectory_is_free(angular):
+            self.stop_robot()
+            self._p_approaching = False
+            self._p_consecutive_hits = 0
+            self._p_complete_hits = 0
+            self.log.warn('P_DETECTION', 'visual trajectory blocked by map/scan: returning to A* search')
+            self._publish_feedback('P approach blocked: returning to map path search')
+            return
+        centered_and_close = (
+            fill >= self.p_complete_fill_ratio
+            and abs(self._p_offset_filtered) <= self.p_complete_offset_tolerance
+        )
+        self._p_complete_hits = self._p_complete_hits + 1 if centered_and_close else 0
+        if self._p_complete_hits >= self.p_complete_hits_required:
+            self.stop_robot()
+            self._finish_mission(
+                f'P visually reached: fill={fill:.2%}, offset={self._p_offset_filtered:+.3f}'
+            )
+            return
         self._publish_state('p_approach')
         self.log.telemetry(
             'P_APPROACH',
@@ -962,6 +1057,76 @@ class Stage3ReturnNavigator(Node):
             f'spd={self.p_approach_linear:.2f} ang={angular:.2f}',
         )
         self.cmd_pub.publish(self._twist(self.p_approach_linear, angular))
+
+    def _visual_trajectory_is_free(self, angular):
+        """Keep visual servo motion within the same map safety boundary as A*."""
+        if not self.use_global_planner or self.global_planner is None:
+            return False
+        if self.current_position is None or self.current_yaw is None:
+            return False
+        lookahead = max(0.05, self.p_visual_safety_lookahead)
+        predicted_yaw = self.current_yaw + angular * lookahead / max(self.p_approach_linear, 0.05)
+        end = (
+            self.current_position[0] + lookahead * math.cos(predicted_yaw),
+            self.current_position[1] + lookahead * math.sin(predicted_yaw),
+        )
+        return self.global_planner.is_world_segment_free(self.current_position, end) is True
+
+    def _start_planner_forbidden_reverse(self):
+        if self.current_position is None:
+            return
+        self._planner_reverse_start = self.current_position
+        self._planner_reverse_started_at = self._now_sec()
+        self._filtered_heading_err = 0.0
+        self._publish_state('planner_forbidden_reverse')
+        self.log.warn(
+            'PLANNER',
+            f'position in forbidden planner cell at ({self.current_position[0]:.2f},'
+            f'{self.current_position[1]:.2f}); reversing {self.planner_forbidden_reverse_distance:.2f}m',
+        )
+
+    def _run_planner_forbidden_reverse(self):
+        if self._planner_reverse_start is None or self._planner_reverse_started_at is None:
+            return False
+        if self.current_position is None:
+            self.stop_robot()
+            return True
+        moved = math.hypot(
+            self.current_position[0] - self._planner_reverse_start[0],
+            self.current_position[1] - self._planner_reverse_start[1],
+        )
+        elapsed = self._now_sec() - self._planner_reverse_started_at
+        if moved >= self.planner_forbidden_reverse_distance:
+            self.stop_robot()
+            self.log.mission(
+                f'planner forbidden reverse complete: moved={moved:.2f}m; replanning'
+            )
+            self._planner_reverse_start = None
+            self._planner_reverse_started_at = None
+            return False
+        if elapsed >= self.planner_forbidden_reverse_timeout:
+            self.stop_robot()
+            self._fail_mission('planner forbidden reverse timeout')
+            return True
+        self.cmd_pub.publish(self._twist(-self.planner_forbidden_reverse_speed, 0.0))
+        return True
+
+    def _select_safe_lookahead_point(self, path_points):
+        """Choose the furthest A* point reachable by a straight free segment."""
+        if self.current_position is None or self.global_planner is None:
+            return None
+        selected = None
+        traveled = 0.0
+        previous = path_points[0]
+        for point in path_points[1:]:
+            traveled += math.hypot(point[0] - previous[0], point[1] - previous[1])
+            if traveled > self.pursuit_lookahead:
+                break
+            if not self.global_planner.is_world_segment_free(self.current_position, point):
+                break
+            selected = point
+            previous = point
+        return selected
 
 
     def _advance_waypoint(self, pose):
@@ -984,8 +1149,52 @@ class Stage3ReturnNavigator(Node):
             self.log.warn('ODOM', 'no pose, waiting for odom')
             return
 
-        # P 尚未识别时用地图目标作粗导航；地图坐标不参与最终完成判定。
+        if self._run_planner_forbidden_reverse():
+            return
+
+        # P 尚未稳定识别时，A* 将车辆带到 P 区附近；黑色 map 栅格不可穿越。
         target_x, target_y = self._goal_center()
+        if self.use_global_planner:
+            if self.global_planner is None:
+                self.log.warn('PLANNER', 'global planner requested but unavailable')
+                self._publish_state('planner_unavailable')
+                self.stop_robot()
+                return
+            planned_points = self.global_planner.plan_path(
+                self.current_position, (target_x, target_y), now
+            )
+            if planned_points is None:
+                self._publish_state('planner_waiting_for_map')
+                self.stop_robot()
+                return
+            if not planned_points:
+                position_is_free = self.global_planner.is_world_segment_free(
+                    self.current_position, self.current_position
+                )
+                if position_is_free is False:
+                    self._start_planner_forbidden_reverse()
+                    self._run_planner_forbidden_reverse()
+                    return
+                self.log.warn(
+                    'PLANNER',
+                    f'blocked: no free path from ({self.current_position[0]:.2f},'
+                    f'{self.current_position[1]:.2f}) to ({target_x:.2f},{target_y:.2f})'
+                )
+                self._publish_state('planner_blocked')
+                self.stop_robot()
+                return
+            lookahead_point = self._select_safe_lookahead_point(planned_points)
+            if lookahead_point is None:
+                self.log.warn('PLANNER', 'no collision-free local segment on A* path')
+                self._publish_state('planner_local_segment_blocked')
+                self.stop_robot()
+                return
+            if lookahead_point is not None:
+                target_x, target_y = lookahead_point
+            self.log.telemetry(
+                'ASTAR',
+                f'path_pts={len(planned_points)} lookahead=({target_x:.2f},{target_y:.2f})'
+            )
 
         # ── 计算目标相对车体坐标 ──
         dx = target_x - self.current_position[0]

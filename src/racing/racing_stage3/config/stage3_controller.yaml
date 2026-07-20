@@ -19,6 +19,9 @@ stage3_return_navigator:
     # 赛程阶段订阅话题（监听 Phase 切换）
     phase_topic: competition_phase
 
+    # 二维码确定的绕行方向；用于 Phase3 入场 map 坐标重置
+    direction_topic: competition_qr_task
+
     # 里程计话题（位姿定位，map 坐标系通过 TF 查询）
     odom_topic: /odom_combined
 
@@ -148,6 +151,16 @@ stage3_return_navigator:
 
     # 接近角速度增益 — bbox 中心 offset → 角速度增益
     p_approach_angular_kp: 0.8
+
+    # P YOLO 只允许在返程终段接管；此前始终由 A* 绕开黑色禁区导航
+    p_visual_takeover_max_y: 2.0
+
+    # 视觉完成必须满足：P 框宽度达到画面宽度比例且水平居中，连续命中后停车
+    p_complete_offset_tolerance: 0.12
+    p_complete_consecutive_hits: 3
+
+    # 视觉伺服每周期均验证此前视距离仍处于地图自由栅格，黑区立即退回 A*
+    p_visual_safety_lookahead_m: 0.20
 
     # Stage3 专用 Web 端口 — HTTP 实时预览端口（避免与 Stage2 冲突）
     p_web_port: 8083
@@ -289,11 +302,21 @@ stage3_return_navigator:
     # 重规划周期 (s) — 每隔此时间重规划一次路径
     planner_replan_period_sec: 0.50
 
+    # 当前位置落入黑区/膨胀安全边界时，沿当前航向负速度退回自由区后重新 A*
+    planner_forbidden_reverse_speed: 0.10
+    planner_forbidden_reverse_distance_m: 0.30
+    planner_forbidden_reverse_timeout_sec: 5.0
+
     # ────────────────────────────────────────────────────────────────────────
-    # Stage3 前置通道 YOLO 重定位 (Before Return-to-P)
+    # Stage3 入场定位与前置通道 YOLO 对中 (Before Return-to-P)
     # ────────────────────────────────────────────────────────────────────────
 
-    # phase=3 后先左转/对齐到 -90°，再通道 YOLO 对中，重置 Stage3 内部 map 初始值
+    # Phase3 入场时按二维码方向将当前 /odom_combined 投影到指定 map 点；保持 IMU 航向不变
+    stage3_entry_map_x_clockwise: 2.6
+    stage3_entry_map_x_counterclockwise: 2.4
+    stage3_entry_map_y: 3.0
+
+    # 入场定位完成后，先对齐到 -90°，再由通道 YOLO 做视觉对中；YOLO 不再改写 map 原点
     stage3_channel_yolo_enabled: true
     stage3_channel_model_path: /home/sunrise/dev_ws/best_rdk_tongdao.bin
     stage3_channel_camera_topic: /aurora/rgb/image_raw
@@ -304,11 +327,6 @@ stage3_return_navigator:
     # 先对准绝对 IMU 航向 yaw=-90°，再用 YOLO bbox 中心微调
     stage3_channel_yaw_deg: -90.0
     stage3_channel_yaw_tolerance_deg: 5.0
-
-    # YOLO 中心到达后，让当前 odom/IMU 等价于此 map 位姿；不发布/覆盖 /odom_combined
-    stage3_channel_reset_map_x: 2.5
-    stage3_channel_reset_map_y: 2.5
-    stage3_channel_reset_yaw_deg: -90.0
 
     # YOLO 中心接近控制与到达判据
     stage3_channel_linear_speed: 0.10

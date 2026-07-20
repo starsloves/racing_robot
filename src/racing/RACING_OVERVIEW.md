@@ -32,7 +32,7 @@ competition_controller.py（Stage1 主控）
   │
   └── phase=3 ──── Stage3: 返程导航
                    │ 官方包：racing_stage3
-                   ├── Stage3ReturnNavigator — 通道对中 + 地图粗导航 + P 视觉最终到达
+                   ├── Stage3ReturnNavigator — 通道对中 + A* 黑区禁入导航 + P 视觉安全终段
                    ├── Stage1 4态避障复用
                    └── 终点 P 点区域
 ```
@@ -66,7 +66,7 @@ competition_controller.py（Stage1 主控）
 |---|---|---|
 | `/odom` | 局部里程计 | 轮速编码器积分，仅用于 Stage2 启动静止判定和诊断 |
 | `/odom_combined` | 局部里程计 | EKF 融合 IMU+轮速；Stage2 仅使用相邻 xy 的欧氏距离，不使用其 orientation |
-| `/map` | 全局地图 | 全局地图坐标系；`map→odom_combined` 静态变换由 launch 参数注入（默认 0.50, 0.20 @ ~10°） |
+| `/map` | 全局地图 | 全局地图坐标系；`map→odom_combined` 静态变换由 Stage1 YAML 的 `map_to_odom_x/y` 注入（默认 0.30, 0.15 @ 10°） |
 
 ### 1.5 位姿源规则
 
@@ -152,7 +152,7 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 - 跟踪：Pure Pursuit 跟踪规划路径（可斜穿）；`left_recover` 仅在 map_x 过大时介入
 - 地图通道视觉居中：倒退结束进入 A* + Pure Pursuit 后，YOLO 保持推理；仅对新鲜且置信度达标的 bbox 水平偏移叠加死区、低通和限幅后的微小角速度。路径、速度和门线交权仍完全由地图 + IMU 决定，视觉不能单独切 Stage2。
 - 通道 YOLO 交接：二维码触发后，倒退阶段立即启用 YOLO；连续 `channel_yolo_confirm_frames` 个有效框后才接管，防止单帧误检。接管先以 `channel_yolo_align_speed` 和 IMU 对齐 `channel_handoff_yaw_deg`，误差小于 `channel_yolo_align_tolerance_deg` 后才以 `channel_yolo_chase_speed` 快速沿 +Y 接近；YOLO 仅提供水平误差，IMU 是唯一 yaw 来源。
-- 末端交接：通道导航先满足 `corridor_entry_region_radius_m` 圆形区域，再要求 `map_y >= corridor_release_min_y_m` 才允许交给 Stage2；这条 Y 门线防止圆形半径在目标前提前触发交权。航向是否参与交权由 `corridor_require_yaw_for_release` 控制，坐标和门限均以 `stage1_controller.yaml` 为唯一来源。
+- 末端交接：接近 Y 门线前 `corridor_terminal_start_y_margin_m` 时，若 X 与 IMU yaw 已进入容差，锁存 `terminal_approach`，停止 A* 重规划和 Pure Pursuit 前瞻点切换；之后以固定正线速度、带死区和小角速度限幅的横向修正沿 +Y 逼近。只有终端状态已锁存且 `map_y >= corridor_release_min_y_m`、X/yaw 均满足交权容差才交给 Stage2。所有门限以 `stage1_controller.yaml` 为唯一来源。
 - 倒退：二维码回调后立即进入记录路径倒退，不再先发送零速度制动。路径记录和倒序路径前瞻追踪均使用 `/odom_combined` 的位置；车尾追踪来时轨迹上的前瞻点，IMU 仅计算该几何目标对应的车头反向航向，禁止直接锁定历史记录 yaw。`back_target_x` 的截止坐标系以 `stage1_controller.yaml` 和运行日志为准。
 - 图像监控：通道 YOLO 在且仅在 `competition_phase=1` 时绑定 YAML `channel_yolo_http_port`（默认 8081）；离开 Stage1 立即关闭服务并释放端口。`/channel_raw.jpg`、`/channel_yolo.jpg` 为单帧，`/stream_raw.mjpg`、`/stream.mjpg` 为实时流，`/health` 提供帧数、帧龄和推理状态。根路径网页同时显示原图与检测流。旧分割模块不再抢占 8081。模型、速度、门线、容差和图像路径均以 `stage1_controller.yaml` 为唯一来源。
 - 相机信息话题、停车距离、位置容差、速度、角速度和航向增益均以 `stage1_controller.yaml` 为准。
@@ -410,7 +410,7 @@ SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相
 | `goal_box_y_min/max` | `0.1 / 0.2` | P 矩形区域 Y 边界 |
 | `goal_center_stop_distance_m` | `0.10` | 保留历史参数；生产 Stage3 不再使用地图中心判定完成 |
 
-Phase3 启动后先执行前置通道 YOLO 对中并重置内部 map 初始值，再以地图目标 `0.35 m/s` 粗导航并全程检测 P。连续确认 P 后切入视觉伺服，以 `0.50 m/s` 和 bbox 水平偏差控制；视觉接管后 P 丢失或检测超时即发布 `v=0`、完成 Stage3，让底盘惯性自然滑入 P，不再以 map 位姿结束。
+Phase3 入场先按二维码方向重置内部 map 位置：顺时针 `(2.6, 3.0)`、逆时针 `(2.4, 3.0)`，保持 IMU 航向基准不变。前置通道 YOLO 仅做视觉对中，不再伪造 map 重定位；超时后保留入场坐标继续返程。地图粗导航只跟踪从当前位置直连仍处于 A* 自由栅格内的前视点，若当前位置进入黑区或其膨胀安全边界则以负速度后退回自由区再重规划。P YOLO 仅在 `map_y < 2.0m` 时启用并允许接管；连续确认后切入视觉伺服，以 `0.50 m/s` 和 bbox 水平偏差控制。视觉接管后 P 丢失或预测轨迹碰到禁区即停车并返回 A* 搜索，不得以丢框完成。
 
 ### 4.2 核心参数
 

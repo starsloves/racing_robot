@@ -1,5 +1,7 @@
 import os
 
+import yaml
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -7,6 +9,13 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+
+def _stage1_map_to_odom_defaults(config_path):
+    """Read the Stage1-owned static TF translation from its ROS parameter YAML."""
+    with open(config_path, 'r', encoding='utf-8') as config_file:
+        params = yaml.safe_load(config_file)['competition_controller']['ros__parameters']
+    return str(params['map_to_odom_x']), str(params['map_to_odom_y'])
 
 
 def generate_launch_description():
@@ -18,6 +27,8 @@ def generate_launch_description():
     voice_driver_dir = get_package_share_directory('voice_driver')
 
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
+    stage1_config_path = os.path.join(stage1_dir, 'config', 'stage1_controller.yaml')
+    map_to_odom_x_default, map_to_odom_y_default = _stage1_map_to_odom_defaults(stage1_config_path)
     stage1_launch_path = os.path.join(stage1_dir, 'launch', 'competition_stage1.launch.py')
     stage2_launch_path = os.path.join(stage2_dir, 'launch', 'competition_stage2.launch.py')
     stage3_launch_path = os.path.join(stage3_dir, 'launch', 'competition_stage3.launch.py')
@@ -37,8 +48,8 @@ def generate_launch_description():
         'map_yaml',
         default_value=os.path.join(bringup_dir, 'map', 'map_restricted.yaml'),
     )
-    map_to_odom_x_arg = DeclareLaunchArgument('map_to_odom_x', default_value='0.50')
-    map_to_odom_y_arg = DeclareLaunchArgument('map_to_odom_y', default_value='0.20')
+    map_to_odom_x_arg = DeclareLaunchArgument('map_to_odom_x', default_value=map_to_odom_x_default)
+    map_to_odom_y_arg = DeclareLaunchArgument('map_to_odom_y', default_value=map_to_odom_y_default)
     map_to_odom_yaw_arg = DeclareLaunchArgument('map_to_odom_yaw', default_value='0.1745329252')
 
     map_overlay_stack = IncludeLaunchDescription(

@@ -131,18 +131,17 @@ class GlobalPathPlanner:
             goal_position[0], goal_position[1], resolution, origin_x, origin_y, width, height
         )
 
-        start_cell = self._nearest_free_planner_cell(occupied, start_cell)
-        goal_cell = self._nearest_free_planner_cell(occupied, goal_cell)
-
         if start_cell is None or goal_cell is None:
             self.last_plan_points = []
             self.last_plan_signature = None
             return []
 
-        # 
-        occupied = occupied.copy()
-        occupied[start_cell[1], start_cell[0]] = False
-        occupied[goal_cell[1], goal_cell[0]] = False
+        # A black map pixel is a hard forbidden area. Do not silently move an
+        # occupied start/goal to a nearby free cell or clear the occupied bit.
+        if occupied[start_cell[1], start_cell[0]] or occupied[goal_cell[1], goal_cell[0]]:
+            self.last_plan_points = []
+            self.last_plan_signature = None
+            return []
 
         signature = (start_cell, goal_cell)
         if (
@@ -171,6 +170,33 @@ class GlobalPathPlanner:
         self.last_plan_signature = signature
         self.last_plan_at = now_sec
         return world_points
+
+    def is_world_segment_free(self, start_position, end_position):
+        """Return whether a world-space segment stays in free planner cells."""
+        planner_grid = self._build_static_planner_grid()
+        if planner_grid is None:
+            return None
+
+        occupied, resolution, origin_x, origin_y = planner_grid
+        occupied = self._overlay_scan_obstacles(occupied, resolution, origin_x, origin_y)
+        height, width = occupied.shape
+        start = self._world_to_planner_cell(
+            start_position[0], start_position[1], resolution, origin_x, origin_y, width, height
+        )
+        end = self._world_to_planner_cell(
+            end_position[0], end_position[1], resolution, origin_x, origin_y, width, height
+        )
+        if start is None or end is None:
+            return False
+
+        steps = max(abs(end[0] - start[0]), abs(end[1] - start[1]), 1)
+        for index in range(steps + 1):
+            ratio = index / steps
+            cell_x = round(start[0] + (end[0] - start[0]) * ratio)
+            cell_y = round(start[1] + (end[1] - start[1]) * ratio)
+            if occupied[cell_y, cell_x]:
+                return False
+        return True
 
     def _build_static_planner_grid(self):
         """build static planner grid"""
@@ -313,6 +339,9 @@ class GlobalPathPlanner:
                 if next_x < 0 or next_y < 0 or next_x >= width or next_y >= height:
                     continue
                 if occupied[next_y, next_x]:
+                    continue
+                # Do not squeeze diagonally through two obstacle corners.
+                if dx and dy and (occupied[current[1], next_x] or occupied[next_y, current[0]]):
                     continue
 
                 next_cell = (next_x, next_y)

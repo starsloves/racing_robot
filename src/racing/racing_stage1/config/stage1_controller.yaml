@@ -66,6 +66,10 @@ competition_controller:
     # 里程计坐标系（odom_combined 对应的 TF 坐标系）
     odom_frame: odom_combined
 
+    # map -> odom_combined 静态变换平移 (m)。由 Stage1/总启动读取后发布 TF。
+    map_to_odom_x: 0.30
+    map_to_odom_y: 0.15
+
     # ────────────────────────────────────────────────────────────────────────
     # 控制频率 (Control Rate)
     # ────────────────────────────────────────────────────────────────────────
@@ -217,7 +221,7 @@ competition_controller:
     back_target_x: 2.0
 
     # 后退线速度 (m/s) — 负值表示倒车；速度须低于 0.05m 轨迹采样的可跟踪范围
-    back_linear_speed: -0.18
+    back_linear_speed: -0.35
 
     # 后退航向修正增益 — 航向误差 → 角速度增益
     back_angular_kp: 1.8
@@ -226,13 +230,13 @@ competition_controller:
     back_position_tolerance: 0.15
 
     # 路径采样间隔 (m) — 前进时每隔此距离记录一个路点
-    back_path_sample_distance: 0.05
+    back_path_sample_distance: 0.02
 
     # 倒序路径前瞻距离 (m) — 车尾追踪该距离后的来时轨迹点
-    back_lookahead_m: 0.25
+    back_lookahead_m: 0.05
 
     # 后退超时 (s) — 后退超过此时长则跳过后退，直接通道导航
-    back_timeout_sec: 10.0
+    back_timeout_sec: 20.0
 
     # 对齐目标航向 (°) — 后退完成后对齐到此航向（通常 90°）
     back_align_yaw_deg: 90.0
@@ -256,7 +260,7 @@ competition_controller:
     # --- 通道路点 (Waypoints in map frame) ---
     # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
     # 先贴 x=2.50 再收 y，避免单点 LOS 中段漂移
-    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.70,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.60,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
 
     # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
     corridor_waypoint_tolerance: 0.25
@@ -273,18 +277,52 @@ competition_controller:
     corridor_goal_yaw_tolerance_deg: 15.0
 
     # --- 区域进入判据 (Region Entry Criteria) ---
-    # 进入区域判定半径 (m) — 距离终点 ≤ 此半径时判定进入区域
+    # 旧版圆形进入判定半径 (m) — 仅 terminal_enabled=false 时使用
     corridor_entry_region_radius_m: 0.10
 
     # Stage1 -> Stage2 交权的最小 map Y (m) — 即使已进入圆形区域，也必须到达该 Y 门线后才放行
-    # 入口目标 y=2.30；防止在目标前约 0.10m 时由圆形区域判据提前交权
-    corridor_release_min_y_m: 2.60
+    # 终端逼近持续到该门线，防止目标前提前交权
+    corridor_release_min_y_m: 2.50
 
-    # 进入区域航向容差 (°) — 进入区域时航向误差容差
+    # 旧版进入区域航向容差 (°) — 仅 terminal_enabled=false 时使用
     corridor_entry_yaw_tolerance_deg: 15.0
 
-    # 是否要求航向满足才放行 — false: 只要进入区域即可切 Stage2
+    # 旧版是否要求航向满足才放行 — 仅 terminal_enabled=false 时使用
     corridor_require_yaw_for_release: false
+
+    # --- 终端逼近 (Terminal Approach) ---
+    # 近 Y 门线且 X/yaw 已进入容差时锁存；锁存后不再重规划，稳定小角速度沿 +Y 逼近
+    corridor_terminal_enabled: true
+
+    # 从 Y 门线前多远开始允许切入终端逼近 (m)
+    corridor_terminal_start_y_margin_m: 0.45
+
+    # 切入终端逼近和交权所需的横向 X 误差容差 (m)
+    corridor_terminal_x_tolerance_m: 0.12
+
+    # 终端逼近退出回 Pure Pursuit 的横向误差阈值 (m)，必须大于切入阈值以避免抖动
+    corridor_terminal_x_exit_tolerance_m: 0.18
+
+    # 切入终端逼近所需的 IMU 航向误差容差 (°)
+    corridor_terminal_yaw_tolerance_deg: 8.0
+
+    # Stage1 放权 Stage2 所需的 IMU 航向误差容差 (°)
+    corridor_terminal_release_yaw_tolerance_deg: 10.0
+
+    # 终端逼近固定正线速度 (m/s)，正常导航中绝不为 0
+    corridor_terminal_linear_speed: 0.15
+
+    # 横向 X 误差映射到期望航向的增益 (1/m)
+    corridor_terminal_lateral_gain: 2.0
+
+    # 期望航向误差到角速度的比例增益
+    corridor_terminal_heading_kp: 1.0
+
+    # 航向死区 (°) — 死区内 w=0，防止持续反复打舵
+    corridor_terminal_yaw_deadband_deg: 1.0
+
+    # 终端逼近角速度绝对上限 (rad/s)
+    corridor_terminal_max_angular_speed: 0.12
 
     # 通道导航超时 (s) — 超时后强制切 Stage2
     corridor_timeout_sec: 45.0

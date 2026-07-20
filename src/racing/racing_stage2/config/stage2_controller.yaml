@@ -67,7 +67,7 @@ stage2_inertial_navigator:
     track_max_speed: 0.70
 
     # 后续 180° 弯线速度：left_side_arc / right_side_arc
-    track_corner_speed: 0.70
+    track_corner_speed: 0.40
 
     # 全局角速度限幅
     track_max_angular: 0.75
@@ -77,7 +77,7 @@ stage2_inertial_navigator:
     track_entry_angular: 0.75
 
     # 后续 180° 弯：角速度
-    track_corner_angular: 0.75
+    track_corner_angular: 0.80
 
     # 第一个 180° 触发点：entry_arc 后走多远开始 left_side_arc。
     # 最新日志约在 0.45m 后切入；现场要求再提前约 10cm，因此由 0.50m 收到 0.40m。

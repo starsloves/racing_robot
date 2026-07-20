@@ -110,6 +110,9 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'base_footprint')
         self.declare_parameter('odom_frame', 'odom_combined')
+        # 静态 map->odom TF 的默认平移由 Stage1 YAML 统一保存，供 launch 读取。
+        self.declare_parameter('map_to_odom_x', 0.30)
+        self.declare_parameter('map_to_odom_y', 0.15)
         self.declare_parameter('corridor_path_topic', '/stage1_corridor_path')
         self.declare_parameter('enable_corridor_navigation', True)
         self.declare_parameter('corridor_waypoints_json', '[{"x":2.80,"y":3.10}]')
@@ -166,6 +169,17 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_release_min_y_m', float('-inf'))
         self.declare_parameter('corridor_entry_yaw_tolerance_deg', 30.0)
         self.declare_parameter('corridor_require_yaw_for_release', False)
+        self.declare_parameter('corridor_terminal_enabled', True)
+        self.declare_parameter('corridor_terminal_start_y_margin_m', 0.45)
+        self.declare_parameter('corridor_terminal_x_tolerance_m', 0.12)
+        self.declare_parameter('corridor_terminal_x_exit_tolerance_m', 0.18)
+        self.declare_parameter('corridor_terminal_yaw_tolerance_deg', 8.0)
+        self.declare_parameter('corridor_terminal_release_yaw_tolerance_deg', 10.0)
+        self.declare_parameter('corridor_terminal_linear_speed', 0.09)
+        self.declare_parameter('corridor_terminal_lateral_gain', 2.0)
+        self.declare_parameter('corridor_terminal_heading_kp', 1.0)
+        self.declare_parameter('corridor_terminal_yaw_deadband_deg', 1.0)
+        self.declare_parameter('corridor_terminal_max_angular_speed', 0.12)
         self.declare_parameter('corridor_path_follow_mode', 'pure_pursuit')  # pure_pursuit | stanley
         self.declare_parameter('corridor_force_reorient_enabled', False)
         self.declare_parameter('corridor_pp_min_lookahead_m', 0.25)
@@ -336,6 +350,40 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_require_yaw_for_release = bool(
             self.get_parameter('corridor_require_yaw_for_release').value
         )
+        self.corridor_terminal_enabled = bool(
+            self.get_parameter('corridor_terminal_enabled').value
+        )
+        self.corridor_terminal_start_y_margin = max(
+            0.0, float(self.get_parameter('corridor_terminal_start_y_margin_m').value)
+        )
+        self.corridor_terminal_x_tolerance = max(
+            0.0, float(self.get_parameter('corridor_terminal_x_tolerance_m').value)
+        )
+        self.corridor_terminal_x_exit_tolerance = max(
+            self.corridor_terminal_x_tolerance,
+            float(self.get_parameter('corridor_terminal_x_exit_tolerance_m').value),
+        )
+        self.corridor_terminal_yaw_tolerance = math.radians(float(
+            self.get_parameter('corridor_terminal_yaw_tolerance_deg').value
+        ))
+        self.corridor_terminal_release_yaw_tolerance = math.radians(float(
+            self.get_parameter('corridor_terminal_release_yaw_tolerance_deg').value
+        ))
+        self.corridor_terminal_linear_speed = max(
+            0.01, float(self.get_parameter('corridor_terminal_linear_speed').value)
+        )
+        self.corridor_terminal_lateral_gain = max(
+            0.0, float(self.get_parameter('corridor_terminal_lateral_gain').value)
+        )
+        self.corridor_terminal_heading_kp = max(
+            0.0, float(self.get_parameter('corridor_terminal_heading_kp').value)
+        )
+        self.corridor_terminal_yaw_deadband = math.radians(float(
+            self.get_parameter('corridor_terminal_yaw_deadband_deg').value
+        ))
+        self.corridor_terminal_max_angular_speed = max(
+            0.0, float(self.get_parameter('corridor_terminal_max_angular_speed').value)
+        )
         self.corridor_path_follow_mode = str(
             self.get_parameter('corridor_path_follow_mode').value
         ).strip().lower()
@@ -427,6 +475,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self._map_pose_warned = False
         self.corridor_active = False
         self.corridor_nav_mode = 'idle'  # path_follow | left_recover | idle
+        self.corridor_terminal_active = False
         self.corridor_capture_active = False
         self.corridor_align_active = False
         self._node_start_time = self.get_clock().now()
@@ -778,6 +827,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             return
         self.corridor_active = True
         self.corridor_nav_mode = 'path_follow'
+        self.corridor_terminal_active = False
         self.corridor_capture_active = False
         self.corridor_align_active = False
         self.corridor_entry_reorient_active = False
@@ -1160,13 +1210,17 @@ class CompetitionController(Stage1VisionMixin, Node):
         yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
         radius_ok = rho <= self.corridor_entry_region_radius
         y_gate_ok = pose_xy[1] >= self.corridor_release_min_y
-        pos_ok = radius_ok and y_gate_ok
-        yaw_ok = abs(yaw_error) <= self.corridor_entry_yaw_tolerance
-        if self.corridor_require_yaw_for_release:
-            ready = pos_ok and yaw_ok
+        x_error = goal_xy[0] - pose_xy[0]
+        x_ok = abs(x_error) <= self.corridor_terminal_x_tolerance
+        if self.corridor_terminal_enabled:
+            pos_ok = x_ok and y_gate_ok
+            yaw_ok = abs(yaw_error) <= self.corridor_terminal_release_yaw_tolerance
+            ready = self.corridor_terminal_active and pos_ok and yaw_ok
         else:
-            ready = pos_ok
-        return ready, rho, yaw_error, pos_ok, yaw_ok, radius_ok, y_gate_ok
+            pos_ok = radius_ok and y_gate_ok
+            yaw_ok = abs(yaw_error) <= self.corridor_entry_yaw_tolerance
+            ready = pos_ok and (yaw_ok if self.corridor_require_yaw_for_release else True)
+        return ready, rho, yaw_error, pos_ok, yaw_ok, radius_ok, y_gate_ok, x_error, x_ok
 
     def handle_corridor_navigation(self):
         """
@@ -1194,6 +1248,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.corridor_nav_mode = 'idle'
             self.corridor_capture_active = False
             self.corridor_align_active = False
+            self.corridor_terminal_active = False
             self.corridor_entry_reorient_active = False
             self.corridor_entry_reorient_started_at = None
             self.phase1_motion_state = 'forward'
@@ -1223,7 +1278,39 @@ class CompetitionController(Stage1VisionMixin, Node):
         goal_xy = (float(goal_xy[0]), float(goal_xy[1]))
         self.corridor_index = max(0, len(self.corridor_waypoints) - 1)
 
-        ready, rho, yaw_error, pos_ok, yaw_ok, radius_ok, y_gate_ok = self._corridor_region_release_ready(
+        # 终端状态只在靠近 Y 门线、横向和航向均已收敛时锁存一次。
+        # 锁存后不再随 A* 重规划切换前瞻点，避免末段反复打舵。
+        x_error = goal_xy[0] - pose_xy[0]
+        yaw_to_goal_error = self.angle_error(self.corridor_goal_yaw, yaw)
+        terminal_start_y = self.corridor_release_min_y - self.corridor_terminal_start_y_margin
+        terminal_entry_ok = (
+            self.corridor_terminal_enabled
+            and pose_xy[1] >= terminal_start_y
+            and abs(x_error) <= self.corridor_terminal_x_tolerance
+            and abs(yaw_to_goal_error) <= self.corridor_terminal_yaw_tolerance
+        )
+        if terminal_entry_ok and not self.corridor_terminal_active:
+            self.corridor_terminal_active = True
+            self.corridor_nav_mode = 'terminal_approach'
+            self.log.mission(
+                f'terminal approach latched map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                f'xerr={x_error:.3f}m yaw_err={math.degrees(yaw_to_goal_error):.1f}deg '
+                f'release_y={self.corridor_release_min_y:.2f}'
+            )
+        elif (
+            self.corridor_terminal_active
+            and pose_xy[1] < self.corridor_release_min_y
+            and abs(x_error) > self.corridor_terminal_x_exit_tolerance
+        ):
+            self.corridor_terminal_active = False
+            self.corridor_nav_mode = 'path_follow'
+            self.log.warn(
+                'CORRIDOR',
+                f'terminal approach released: xerr={x_error:.3f}m exceeds '
+                f'exit tolerance {self.corridor_terminal_x_exit_tolerance:.3f}m'
+            )
+
+        ready, rho, yaw_error, pos_ok, yaw_ok, radius_ok, y_gate_ok, x_error, x_ok = self._corridor_region_release_ready(
             pose_xy, goal_xy, yaw
         )
         if ready:
@@ -1240,7 +1327,7 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f'({goal_xy[0]:.2f},{goal_xy[1]:.2f}) rho={rho:.2f}m '
                 f'yaw={math.degrees(yaw):.1f}deg err={math.degrees(yaw_error):.1f}deg '
                 f'pos_ok={pos_ok} radius_ok={radius_ok} y_gate_ok={y_gate_ok} '
-                f'min_y={self.corridor_release_min_y:.2f} yaw_ok={yaw_ok} '
+                f'xerr={x_error:.3f}m x_ok={x_ok} min_y={self.corridor_release_min_y:.2f} yaw_ok={yaw_ok} '
                 f'require_yaw={self.corridor_require_yaw_for_release} '
                 f'plans={getattr(self, "_corridor_plan_count", 0)} last_plan={self.corridor_last_plan_reason or "none"}'
             )
@@ -1252,7 +1339,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         need_replan, replan_why = self._should_refresh_corridor_path(
             pose_xy, now_ts, force=not self.corridor_planned_path, reason='empty'
         )
-        if need_replan:
+        if need_replan and not self.corridor_terminal_active:
             self.refresh_corridor_planned_path(pose_xy, goal_xy, reason=replan_why)
             self.publish_corridor_path(pose_xy)
         elif now_ts - self._corridor_last_detail_log_time >= max(1.0, self.corridor_log_period_sec * 2.0):
@@ -1274,6 +1361,35 @@ class CompetitionController(Stage1VisionMixin, Node):
                 self.log.progress(
                     f'left_recover during region entry ρ={rho:.2f}m '
                     f'map=({pose_xy[0]:.2f},{pose_xy[1]:.2f})'
+                )
+            return
+
+        if self.corridor_terminal_active:
+            self.corridor_nav_mode = 'terminal_approach'
+            desired_yaw = self.normalize_angle(
+                self.corridor_goal_yaw - math.atan(self.corridor_terminal_lateral_gain * x_error)
+            )
+            terminal_yaw_error = self.angle_error(desired_yaw, yaw)
+            if abs(terminal_yaw_error) <= self.corridor_terminal_yaw_deadband:
+                angular = 0.0
+            else:
+                angular = self.clamp(
+                    self.corridor_terminal_heading_kp * terminal_yaw_error,
+                    self.corridor_terminal_max_angular_speed,
+                )
+            linear = self.corridor_terminal_linear_speed
+            self.corridor_desired_heading = desired_yaw
+            self.cmd_pub.publish(self.create_twist(linear, angular))
+
+            if now_ts - self._corridor_last_log_time >= self.corridor_log_period_sec:
+                self._corridor_last_log_time = now_ts
+                elapsed = now_ts - self.corridor_started_at if self.corridor_started_at else 0.0
+                self.log.segment(
+                    f'terminal_approach map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                    f'xerr={x_error:.3f}m y_gate={y_gate_ok} '
+                    f'yaw={math.degrees(yaw):.1f}deg desired={math.degrees(desired_yaw):.1f}deg '
+                    f'err={math.degrees(terminal_yaw_error):.1f}deg '
+                    f'v={linear:.2f} w={angular:.2f} t={elapsed:.1f}s'
                 )
             return
 
@@ -1346,6 +1462,7 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f'plan={self.corridor_last_plan_reason} pts={len(path)} cursor={cursor} '
                 f'plans={getattr(self, "_corridor_plan_count", 0)} '
                 f'pos_ok={pos_ok} radius_ok={radius_ok} y_gate_ok={y_gate_ok} '
+                f'xerr={x_error:.3f}m x_ok={x_ok} terminal={self.corridor_terminal_active} '
                 f'min_y={self.corridor_release_min_y:.2f} yaw_ok={yaw_ok} t={elapsed:.1f}s'
             )
             print(
