@@ -79,9 +79,6 @@ stage3_return_navigator:
     # 矩形区域 Y 最大值 (m)
     goal_box_y_max: 0.2
 
-    # 距 P 矩形中心的提前停车距离 (m) — 0.10 表示距离中心 10cm 即完成 Stage3
-    goal_center_stop_distance_m: 0.10
-
     # 路径超时 (s) — 超过此时长未到达则任务失败
     path_timeout_sec: 60.0
 
@@ -134,9 +131,6 @@ stage3_return_navigator:
     # 连续检测次数阈值 — 连续检测到 P 点此帧数后触发接近（抗抖动）
     p_approach_consecutive_hits: 3
 
-    # 完成条件 bbox 填充比例 — bbox 宽度占画面比例 > 此值判定到达；降低阈值用于提前刹停
-    p_complete_bbox_fill_ratio: 0.35
-
     # 接近线速度 (m/s) — 连续识别到 P 后由视觉接管并直接高速接近
     p_approach_linear_speed: 0.50
 
@@ -161,10 +155,6 @@ stage3_return_navigator:
     # 即使 YOLO 已在 y<2 推理，也必须驶入该近终点区域才允许视觉接管并关闭通用避障
     p_visual_terminal_max_x: 1.0
     p_visual_terminal_max_y: 1.0
-
-    # 视觉完成必须满足：P 框宽度达到画面宽度比例且水平居中，连续命中后停车
-    p_complete_offset_tolerance: 0.12
-    p_complete_consecutive_hits: 3
 
     # 视觉伺服每周期均验证此前视距离仍处于地图自由栅格，黑区立即退回 A*
     p_visual_safety_lookahead_m: 0.20
@@ -309,17 +299,21 @@ stage3_return_navigator:
     # 重规划周期 (s) — 每隔此时间重规划一次路径
     planner_replan_period_sec: 0.50
 
+    # S3 只将这两个下方黑区作为静态禁区；范围为左闭右开 [min,max)。
+    # U 形外框和中部横条仅为地图图案，不参与 S3 规划。
+    planner_forbidden_rectangles_json: '[{"x_min":0.00,"x_max":2.09,"y_min":1.96,"y_max":2.97},{"x_min":2.92,"x_max":5.00,"y_min":1.96,"y_max":2.97}]'
+
     # 当前位置落入黑区/膨胀安全边界时，沿当前航向负速度退回自由区后重新 A*
     planner_forbidden_reverse_speed: 0.10
     planner_forbidden_reverse_distance_m: 0.30
     planner_forbidden_reverse_timeout_sec: 5.0
 
     # ────────────────────────────────────────────────────────────────────────
-    # Stage3 入场定位与前置通道 YOLO 对中 (Before Return-to-P)
+    # Stage3 通道 YOLO（生产返程禁用）
     # ────────────────────────────────────────────────────────────────────────
 
     # Stage3 继承 Stage1/map_overlay 发布的 map<-base TF，禁止在本节点重置 map 原点。
-    # 生产返程在 y>=2 时只允许 A* 控制；前置通道 YOLO 禁用，避免脱离黑区约束自行驱动。
+    # 生产返程切入 phase=3 后立即由 A* 控制；禁止前置通道 YOLO 阻塞或自行驱动。
     # P YOLO 仅由 p_visual_takeover_max_y (2.0m) 后接管。
     stage3_channel_yolo_enabled: false
     stage3_channel_model_path: /home/sunrise/dev_ws/best_rdk_tongdao.bin
@@ -328,11 +322,7 @@ stage3_return_navigator:
     stage3_channel_iou_thres: 0.45
     stage3_channel_preview_path: /tmp/stage3_channel_yolo.jpg
 
-    # 先对准绝对 IMU 航向 yaw=-90°，再用 YOLO bbox 中心微调
-    stage3_channel_yaw_deg: -90.0
-    stage3_channel_yaw_tolerance_deg: 5.0
-
-    # YOLO 中心接近控制与到达判据
+    # YOLO 中心接近控制与到达判据；不要求固定 IMU 航向
     stage3_channel_linear_speed: 0.10
     stage3_channel_angular_kp: 0.55
     stage3_channel_max_angular: 0.25

@@ -83,7 +83,6 @@ class Stage3ReturnNavigator(Node):
         self._p_detector = None
         self._p_approaching = False
         self._p_consecutive_hits = 0
-        self._p_complete_hits = 0
         self._p_offset_filtered = 0.0
         self._p_lost_since = None
 
@@ -100,7 +99,7 @@ class Stage3ReturnNavigator(Node):
         self.counter_steer_deadline = None
         self.recovery_deadline = None
 
-        # ── Stage3 前置通道 YOLO 重定位 ──
+        # 保留旧通道 YOLO 对象，仅用于诊断；它不允许阻塞生产返程。
         self._pre_return_state = 'idle'
         self._pre_return_started_at = None
         self._channel_detector = None
@@ -136,8 +135,9 @@ class Stage3ReturnNavigator(Node):
                 'planner_dynamic_obstacle_inflation_m': self.planner_dynamic_obstacle_inflation_m,
                 'planner_dynamic_obstacle_range_m': self.planner_dynamic_obstacle_range_m,
                 'planner_replan_period_sec': self.planner_replan_period_sec,
+                'planner_forbidden_rectangles_json': self.planner_forbidden_rectangles_json,
             })
-            self.log.startup('A* global planner enabled: black map cells are forbidden')
+            self.log.startup('A* global planner enabled: configured static zones are forbidden')
 
         self._init_p_detector()
         self._init_channel_detector()
@@ -172,7 +172,6 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('goal_box_x_max', 0.3)
         self.declare_parameter('goal_box_y_min', 0.1)
         self.declare_parameter('goal_box_y_max', 0.2)
-        self.declare_parameter('goal_center_stop_distance_m', 0.10)
         self.declare_parameter('path_timeout_sec', 60.0)
 
         # ── P 点视觉最终到达 ──
@@ -187,9 +186,6 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_visual_takeover_max_y', 2.0)
         self.declare_parameter('p_visual_terminal_max_x', 1.0)
         self.declare_parameter('p_visual_terminal_max_y', 1.0)
-        self.declare_parameter('p_complete_bbox_fill_ratio', 0.35)
-        self.declare_parameter('p_complete_offset_tolerance', 0.12)
-        self.declare_parameter('p_complete_consecutive_hits', 3)
         self.declare_parameter('p_visual_safety_lookahead_m', 0.20)
         self.declare_parameter('p_web_port', 8083)
         self.declare_parameter('p_detection_timeout_sec', 0.35)
@@ -252,6 +248,7 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('planner_dynamic_obstacle_inflation_m', 0.04)
         self.declare_parameter('planner_dynamic_obstacle_range_m', 0.7)
         self.declare_parameter('planner_replan_period_sec', 0.25)
+        self.declare_parameter('planner_forbidden_rectangles_json', '[]')
         self.declare_parameter('planner_forbidden_reverse_speed', 0.10)
         self.declare_parameter('planner_forbidden_reverse_distance_m', 0.30)
         self.declare_parameter('planner_forbidden_reverse_timeout_sec', 5.0)
@@ -262,15 +259,13 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('map_to_odom_y', 0.0)
         self.declare_parameter('map_to_odom_yaw', 0.0)
 
-        # ── Stage3 前置通道 YOLO 对中 ──
-        self.declare_parameter('stage3_channel_yolo_enabled', True)
+        # ── Stage3 通道 YOLO（生产返程不使用）──
+        self.declare_parameter('stage3_channel_yolo_enabled', False)
         self.declare_parameter('stage3_channel_model_path', '/home/sunrise/dev_ws/best_rdk_tongdao.bin')
         self.declare_parameter('stage3_channel_camera_topic', '/aurora/rgb/image_raw')
         self.declare_parameter('stage3_channel_conf_thres', 0.25)
         self.declare_parameter('stage3_channel_iou_thres', 0.45)
         self.declare_parameter('stage3_channel_preview_path', '/tmp/stage3_channel_yolo.jpg')
-        self.declare_parameter('stage3_channel_yaw_deg', -90.0)
-        self.declare_parameter('stage3_channel_yaw_tolerance_deg', 5.0)
         self.declare_parameter('stage3_channel_linear_speed', 0.10)
         self.declare_parameter('stage3_channel_angular_kp', 0.55)
         self.declare_parameter('stage3_channel_max_angular', 0.25)
@@ -300,9 +295,6 @@ class Stage3ReturnNavigator(Node):
         self.goal_box_x_max = float(self.get_parameter('goal_box_x_max').value)
         self.goal_box_y_min = float(self.get_parameter('goal_box_y_min').value)
         self.goal_box_y_max = float(self.get_parameter('goal_box_y_max').value)
-        self.goal_center_stop_distance_m = max(
-            0.0, float(self.get_parameter('goal_center_stop_distance_m').value)
-        )
         self.path_timeout_sec = float(self.get_parameter('path_timeout_sec').value)
 
         self.p_model_path = str(self.get_parameter('p_model_path').value)
@@ -322,9 +314,6 @@ class Stage3ReturnNavigator(Node):
         self.p_visual_terminal_max_y = float(
             self.get_parameter('p_visual_terminal_max_y').value
         )
-        self.p_complete_fill_ratio = float(self.get_parameter('p_complete_bbox_fill_ratio').value)
-        self.p_complete_offset_tolerance = float(self.get_parameter('p_complete_offset_tolerance').value)
-        self.p_complete_hits_required = max(1, int(self.get_parameter('p_complete_consecutive_hits').value))
         self.p_visual_safety_lookahead = float(
             self.get_parameter('p_visual_safety_lookahead_m').value
         )
@@ -387,6 +376,9 @@ class Stage3ReturnNavigator(Node):
         self.planner_dynamic_obstacle_inflation_m = float(self.get_parameter('planner_dynamic_obstacle_inflation_m').value)
         self.planner_dynamic_obstacle_range_m = float(self.get_parameter('planner_dynamic_obstacle_range_m').value)
         self.planner_replan_period_sec = float(self.get_parameter('planner_replan_period_sec').value)
+        self.planner_forbidden_rectangles_json = str(
+            self.get_parameter('planner_forbidden_rectangles_json').value
+        )
         self.planner_forbidden_reverse_speed = abs(float(
             self.get_parameter('planner_forbidden_reverse_speed').value
         ))
@@ -409,10 +401,6 @@ class Stage3ReturnNavigator(Node):
         self.stage3_channel_conf_thres = float(self.get_parameter('stage3_channel_conf_thres').value)
         self.stage3_channel_iou_thres = float(self.get_parameter('stage3_channel_iou_thres').value)
         self.stage3_channel_preview_path = str(self.get_parameter('stage3_channel_preview_path').value)
-        self.stage3_channel_yaw = math.radians(float(self.get_parameter('stage3_channel_yaw_deg').value))
-        self.stage3_channel_yaw_tolerance = math.radians(
-            float(self.get_parameter('stage3_channel_yaw_tolerance_deg').value)
-        )
         self.stage3_channel_linear_speed = float(self.get_parameter('stage3_channel_linear_speed').value)
         self.stage3_channel_angular_kp = float(self.get_parameter('stage3_channel_angular_kp').value)
         self.stage3_channel_max_angular = float(self.get_parameter('stage3_channel_max_angular').value)
@@ -438,33 +426,19 @@ class Stage3ReturnNavigator(Node):
             (self.goal_box_y_min + self.goal_box_y_max) / 2.0,
         )
 
-    def _distance_to_goal_center(self):
+    def _check_goal_region_reached(self):
+        """车辆进入标定 P 矩形区域即完成；不要求特定航向。"""
         if self.current_position is None:
-            return None
-        goal_x, goal_y = self._goal_center()
-        return math.hypot(
-            self.current_position[0] - goal_x,
-            self.current_position[1] - goal_y,
-        )
-
-    def _check_goal_center_stop(self):
-        """到 P 矩形中心前按配置提前停车并完成 Stage3。"""
-        dist = self._distance_to_goal_center()
-        if dist is None:
             return False
-        if dist > self.goal_center_stop_distance_m:
+        x, y = self.current_position
+        if not self._in_goal_region(x, y):
             return False
-        goal_x, goal_y = self._goal_center()
         self.log.segment(
-            f'goal center early stop: dist={dist:.2f}/'
-            f'{self.goal_center_stop_distance_m:.2f}m '
-            f'center=({goal_x:.2f},{goal_y:.2f}) '
-            f'pos=({self.current_position[0]:.2f},{self.current_position[1]:.2f})'
+            f'goal region reached: pos=({x:.2f},{y:.2f}) '
+            f'box=([{self.goal_box_x_min:.2f},{self.goal_box_x_max:.2f}], '
+            f'[{self.goal_box_y_min:.2f},{self.goal_box_y_max:.2f}])'
         )
-        self._finish_mission(
-            f'return complete, stopped {dist:.2f}m from P center '
-            f'(target early stop {self.goal_center_stop_distance_m:.2f}m)'
-        )
+        self._finish_mission('return complete, entered calibrated P region')
         return True
 
     def _in_p_visual_terminal_area(self):
@@ -761,19 +735,20 @@ class Stage3ReturnNavigator(Node):
         self.start_after_time = self._now_sec() + self.start_delay_sec
         self._p_approaching = False
         self._p_consecutive_hits = 0
-        self._p_complete_hits = 0
         self._p_offset_filtered = 0.0
         self._p_lost_since = None
         self._set_p_inference_active(False)
+        # Phase3 必须直接进入地图返程。通道 YOLO 不得在入口处抢占或等待，
+        # P YOLO 仅在 _update_p_inference_gate 的 Y 门限内开启。
         self._set_channel_inference_active(False)
-        self._pre_return_state = 'turn_to_channel_yaw' if self.stage3_channel_yolo_enabled else 'done'
+        self._pre_return_state = 'done'
         self._pre_return_started_at = self._now_sec()
         self._channel_hits = 0
         self._channel_offset_filtered = 0.0
         self._publish_state('armed')
         self.log.mission(
             f'phase=3 detected, direction={self.return_direction}, map pose inherits Stage1 TF, '
-            f'pre_return={self._pre_return_state}'
+            'starting A* return; P YOLO remains gated by the configured Y threshold'
         )
 
     def _reset_mission(self):
@@ -790,7 +765,6 @@ class Stage3ReturnNavigator(Node):
         self.avoid_state = 'forward'
         self._p_approaching = False
         self._p_consecutive_hits = 0
-        self._p_complete_hits = 0
         self._p_offset_filtered = 0.0
         self._p_lost_since = None
         self._pre_return_state = 'idle'
@@ -854,39 +828,15 @@ class Stage3ReturnNavigator(Node):
             self._pre_return_state = 'done'
             return True
 
-        if self.current_yaw is None:
-            self.cmd_pub.publish(self._twist(0.0, 0.0))
-            return False
-
-        if self._pre_return_state in ('idle', 'turn_to_channel_yaw'):
-            self._pre_return_state = 'turn_to_channel_yaw'
-            self._publish_state('pre_return_turn_to_channel')
-            err = self._angle_error(self.stage3_channel_yaw, self.current_yaw)
-            if abs(err) <= self.stage3_channel_yaw_tolerance:
-                self._pre_return_state = 'yolo_centering'
-                self._channel_hits = 0
-                self._channel_offset_filtered = 0.0
-                self._set_channel_inference_active(True)
-                self.stop_robot()
-                self.log.mission(
-                    f'pre-return channel yaw aligned yaw={math.degrees(self.current_yaw):.1f}deg, YOLO on'
-                )
-                return False
-            angular = self._clamp(2.0 * err, self.max_angular)
-            if abs(angular) < self.min_angular:
-                angular = math.copysign(self.min_angular, err)
-            linear = self.pursuit_turn_linear
-            self.cmd_pub.publish(self._twist(linear, angular))
-            if now - getattr(self, '_pre_return_log_time', 0.0) >= 0.5:
-                self._pre_return_log_time = now
-                self.log.segment(
-                    f'pre_return_turn yaw={math.degrees(self.current_yaw):.1f}deg '
-                    f'target={math.degrees(self.stage3_channel_yaw):.1f}deg '
-                    f'err={math.degrees(err):.1f}deg v={linear:.2f} w={angular:.2f}'
-                )
-            return False
-
         self._publish_state('pre_return_channel_yolo')
+        if self._pre_return_state != 'yolo_centering':
+            self._pre_return_state = 'yolo_centering'
+            self._channel_hits = 0
+            self._channel_offset_filtered = 0.0
+            self._set_channel_inference_active(True)
+            self.stop_robot()
+            self.log.mission('pre-return channel YOLO started without IMU yaw alignment')
+            return False
         detected, conf, bbox, ts, offset, fill_ratio = self._channel_detector.get_detection()
         age = now - float(ts or 0.0)
         if not detected or bbox is None or age > 0.8:
@@ -901,11 +851,9 @@ class Stage3ReturnNavigator(Node):
             alpha * float(offset) + (1.0 - alpha) * self._channel_offset_filtered
         )
         filt = self._channel_offset_filtered
-        yaw_err = self._angle_error(self.stage3_channel_yaw, self.current_yaw)
         centered = (
             abs(filt) <= self.stage3_channel_offset_tolerance
             and fill_ratio >= self.stage3_channel_fill_ratio
-            and abs(yaw_err) <= self.stage3_channel_yaw_tolerance
         )
         self._channel_hits = self._channel_hits + 1 if centered else 0
         if self._channel_hits >= self.stage3_channel_consecutive_hits:
@@ -923,7 +871,6 @@ class Stage3ReturnNavigator(Node):
         else:
             effective = math.copysign(abs(filt) - self.stage3_channel_offset_deadband, filt)
             angular = -self.stage3_channel_angular_kp * effective
-        angular += 0.4 * yaw_err
         angular = self._clamp(angular, self.stage3_channel_max_angular)
         speed = self.stage3_channel_linear_speed
         if abs(filt) > 0.30:
@@ -934,7 +881,7 @@ class Stage3ReturnNavigator(Node):
             self.log.segment(
                 f'pre_return_yolo conf={conf:.2f} off={offset:+.3f} filt={filt:+.3f} '
                 f'fill={fill_ratio:.2%} hits={self._channel_hits}/'
-                f'{self.stage3_channel_consecutive_hits} yaw_err={math.degrees(yaw_err):.1f}deg '
+                f'{self.stage3_channel_consecutive_hits} '
                 f'v={speed:.2f} w={angular:.2f}'
             )
         return False
@@ -949,14 +896,11 @@ class Stage3ReturnNavigator(Node):
         if not self.mission_active:
             if self.start_after_time is None or now < self.start_after_time:
                 return
-            if self._pre_return_state != 'done':
-                if not self._run_pre_return_handoff():
-                    return
             self._start_mission()
             return
 
-        # A* 已到达地图终点时停车完成；此时 P 位于相机近盲区，不能因无框继续越过终点。
-        if not self._p_approaching and self._check_goal_center_stop():
+        # 只要 map 位姿进入标定 P 矩形即完成，不要求航向或视觉框。
+        if self._check_goal_region_reached():
             return
 
         # 1. 紧急停止
@@ -1030,7 +974,6 @@ class Stage3ReturnNavigator(Node):
         if self._p_consecutive_hits < self.p_approach_hits_required:
             return
         self._p_approaching = True
-        self._p_complete_hits = 0
         self._p_offset_filtered = float(offset)
         self._p_lost_since = None
         self._publish_state('p_approach')
@@ -1052,7 +995,6 @@ class Stage3ReturnNavigator(Node):
             elif now - self._p_lost_since >= self.p_loss_hold_sec:
                 self._p_approaching = False
                 self._p_consecutive_hits = 0
-                self._p_complete_hits = 0
                 self._p_lost_since = None
                 self.log.warn('P_DETECTION', 'P reacquisition timeout: returning to A* search without avoidance')
                 self._publish_feedback('P reacquisition timeout: returning to map path search')
@@ -1066,20 +1008,8 @@ class Stage3ReturnNavigator(Node):
             self.stop_robot()
             self._p_approaching = False
             self._p_consecutive_hits = 0
-            self._p_complete_hits = 0
             self.log.warn('P_DETECTION', 'visual trajectory blocked by map/scan: returning to A* search')
             self._publish_feedback('P approach blocked: returning to map path search')
-            return
-        centered_and_close = (
-            fill >= self.p_complete_fill_ratio
-            and abs(self._p_offset_filtered) <= self.p_complete_offset_tolerance
-        )
-        self._p_complete_hits = self._p_complete_hits + 1 if centered_and_close else 0
-        if self._p_complete_hits >= self.p_complete_hits_required:
-            self.stop_robot()
-            self._finish_mission(
-                f'P visually reached: fill={fill:.2%}, offset={self._p_offset_filtered:+.3f}'
-            )
             return
         self._publish_state('p_approach')
         self.log.telemetry(

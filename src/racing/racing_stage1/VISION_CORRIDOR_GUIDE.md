@@ -22,7 +22,7 @@ src/racing/racing_stage1/racing_stage1/
 └── competition_controller.py       # 修改：集成视觉导航状态机
 
 config/
-└── stage1_controller.yaml          # 新增：20个视觉导航参数
+└── config/stage1_controller.yaml   # 新增：20个视觉导航参数
 
 /home/sunrise/dev_ws/
 └── vision_viewer.html              # 更新：支持三路显示（8081/8082/8083）

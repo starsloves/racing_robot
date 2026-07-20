@@ -67,7 +67,7 @@ stage2_inertial_navigator:
     track_max_speed: 0.70
 
     # 后续 180° 弯线速度：left_side_arc / right_side_arc
-    track_corner_speed: 0.40
+    track_corner_speed: 0.42
 
     # 全局角速度限幅
     track_max_angular: 0.75
@@ -81,11 +81,11 @@ stage2_inertial_navigator:
 
     # 第一个 180° 触发点：entry_arc 后走多远开始 left_side_arc。
     # 最新日志约在 0.45m 后切入；现场要求再提前约 10cm，因此由 0.50m 收到 0.40m。
-    track_entry_medium_distance_m: 0.55
+    track_entry_medium_distance_m: 0.65
 
     # 第二个 180° 触发点：top_long 走多远开始 right_side_arc。
     # 最新日志约在 2.50m 后切入；现场要求再提前约 10cm，因此由 2.59m 收到 2.49m。
-    track_top_long_distance_m: 2.40
+    track_top_long_distance_m: 2.45
 
     # 出口最后直线长度：right_side_arc 后走多远判定 Stage2 完成。
     # 最新实车反馈最后一段偏长，缩短 20cm：1.49m -> 1.29m。

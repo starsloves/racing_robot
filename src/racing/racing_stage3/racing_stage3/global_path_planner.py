@@ -10,6 +10,7 @@ Features:
 """
 
 import heapq
+import json
 import math
 
 import cv2
@@ -51,6 +52,9 @@ class GlobalPathPlanner:
         self.planner_dynamic_obstacle_range_m = config.get('planner_dynamic_obstacle_range_m', 0.7)
         self.planner_replan_period_sec = config.get('planner_replan_period_sec', 0.25)
         self.global_frame_id = config.get('global_frame_id', 'map')
+        self.forbidden_rectangles = self._parse_forbidden_rectangles(
+            config.get('planner_forbidden_rectangles_json', '[]')
+        )
 
         # Map cache
         self.latest_map = None
@@ -217,10 +221,22 @@ class GlobalPathPlanner:
         if width <= 0 or height <= 0:
             return None
 
-        raw = np.asarray(self.latest_map.data, dtype=np.int16).reshape((height, width))
-        occupied = raw >= self.planner_occupied_threshold
-        if self.planner_unknown_is_occupied:
-            occupied |= raw < 0
+        if self.forbidden_rectangles:
+            # Stage3 only treats the explicitly configured competition zones as
+            # static forbidden space. The remaining black artwork in /map is
+            # visual reference, not a navigation obstacle.
+            x_centers = float(info.origin.position.x) + (np.arange(width) + 0.5) * float(info.resolution)
+            y_centers = float(info.origin.position.y) + (np.arange(height) + 0.5) * float(info.resolution)
+            occupied = np.zeros((height, width), dtype=bool)
+            for x_min, x_max, y_min, y_max in self.forbidden_rectangles:
+                x_mask = (x_centers >= x_min) & (x_centers < x_max)
+                y_mask = (y_centers >= y_min) & (y_centers < y_max)
+                occupied |= y_mask[:, np.newaxis] & x_mask[np.newaxis, :]
+        else:
+            raw = np.asarray(self.latest_map.data, dtype=np.int16).reshape((height, width))
+            occupied = raw >= self.planner_occupied_threshold
+            if self.planner_unknown_is_occupied:
+                occupied |= raw < 0
 
         stride = self.planner_downsample
         padded_height = int(math.ceil(height / stride) * stride)
@@ -403,6 +419,31 @@ class GlobalPathPlanner:
                         return (x_index, y_index)
 
         return None
+
+    @staticmethod
+    def _parse_forbidden_rectangles(raw):
+        """Parse half-open [x_min, x_max) x [y_min, y_max) static zones."""
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+
+        rectangles = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                x_min = float(item['x_min'])
+                x_max = float(item['x_max'])
+                y_min = float(item['y_min'])
+                y_max = float(item['y_max'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if x_max > x_min and y_max > y_min:
+                rectangles.append((x_min, x_max, y_min, y_max))
+        return rectangles
 
     def _inflate_binary_grid(self, grid, radius_cells):
         """inflate binary grid"""

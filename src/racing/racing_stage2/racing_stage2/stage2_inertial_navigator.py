@@ -1038,6 +1038,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._track_mission_active = True
         self.mission_active = True
         self.current_segment = {'type': 'track', 'description': 'rounded_track'}
+        self.publish_state('running')
         self._log_session(
             'TRACK_START',
             f'direction={self.direction} local=(0.000,0.000) '
