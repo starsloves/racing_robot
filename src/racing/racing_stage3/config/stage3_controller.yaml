@@ -4,7 +4,7 @@
 # 功能模块：
 #   1. A* 全局路径规划（避开地图禁区）
 #   2. Pure Pursuit 路径跟踪
-#   3. 激光聚类避障（4状态：forward → avoiding → countersteering → recovering）
+#   3. S1 风格激光聚类避障（固定首次右转，4状态：forward → avoiding → countersteering → recovering）
 #   4. P 点视觉检测与伺服接近（可选）
 #   5. 矩形区域到达判定
 # ================================================================================
@@ -19,10 +19,16 @@ stage3_return_navigator:
     # 赛程阶段订阅话题（监听 Phase 切换）
     phase_topic: competition_phase
 
-    # 二维码确定的绕行方向；用于 Phase3 入场 map 坐标重置
+    # 二维码确定的绕行方向；用于 Phase3 入场导航配置选择
     direction_topic: competition_qr_task
 
-    # 里程计话题（位姿定位，map 坐标系通过 TF 查询）
+    # S2 在交权时发布的 map 锚点。S3 锁存交接时 map<-odom 的旋转，
+    # 再以该锚点加旋转后的 /odom_combined 平移增量定位；不在运行中重用 map TF 位姿。
+    stage3_entry_anchor_topic: stage3_entry_anchor
+    require_stage3_entry_anchor: true
+    stage3_entry_anchor_max_age_sec: 3.0
+
+    # 里程计话题（仅用于 S2 锚点后的 xy 位移增量；不使用 orientation）
     odom_topic: /odom_combined
 
     # 激光雷达扫描话题（激光避障）
@@ -47,17 +53,10 @@ stage3_return_navigator:
     # 主控制循环频率 (Hz)
     control_rate_hz: 20.0
 
-    # 启动延迟 (s) — Phase3 进入后等待此时长确保位姿就绪
-    start_delay_sec: 0.5
+    # S2 放权后立即继承 S2 发布的 map 锚点和原始 IMU 航向接管，不停车、不重新对齐。
+    start_delay_sec: 0.0
 
-    # Phase3 入场位置锚定：切到 phase=3 时将当前 /odom_combined xy 记为参考原点，
-    # 后续 map 位置只叠加 odom xy 平移增量；不得使用 odom orientation。
-    # 坐标为 Stage2 正常完赛出口的实际 map 位置，日志中的 odom 值不可填入此处。
-    stage3_entry_anchor_enabled: true
-    stage3_entry_map_x: 2.80
-    stage3_entry_map_y: 3.25
-    # 生产比赛由 S2 在 y<2 的交权瞬间发布实际 map 入口；此静态值仅作独立 S3 测试回退。
-    stage3_entry_anchor_topic: stage3_entry_anchor
+    # 生产 S3 必须等到新鲜 S2 锚点；实时 map TF 只记录为交接诊断，不参与控制。
 
     # ────────────────────────────────────────────────────────────────────────
     # 路点与目标区域 (Waypoints and Goal Region)
@@ -65,28 +64,15 @@ stage3_return_navigator:
 
     # --- 路径规划起终点 (map 全局坐标系) ---
     # Stage2 结束位置约 (2.80, 3.25)
-    # P 点目标区域: x ∈ [0.1, 0.3], y ∈ [0.1, 0.2]
-    # 路径：起点 → P 点名义中心 (0.20, 0.15)
+    # P 点停车矩形: 0.20 < x < 0.45, 0.00 < y < 0.20
+    # 路径：起点 → P 点名义中心 (0.325, 0.10)
 
     # 途经路点列表（JSON 格式）
     # [{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
-    return_waypoints_json: '[{"x":0.20,"y":0.15,"speed":0.15,"description":"P_region_center"}]'
+    return_waypoints_json: '[{"x":0.325,"y":0.10,"speed":0.15,"description":"P_region_center"}]'
 
     # 路点容差 (m) — 距离途经点 < 此值时推进到下一路点
     waypoint_tolerance: 0.18
-
-    # --- P 点矩形目标区域 (map 坐标系) ---
-    # 矩形区域 X 最小值 (m)
-    goal_box_x_min: 0.1
-
-    # 矩形区域 X 最大值 (m)
-    goal_box_x_max: 0.3
-
-    # 矩形区域 Y 最小值 (m)
-    goal_box_y_min: 0.1
-
-    # 矩形区域 Y 最大值 (m)
-    goal_box_y_max: 0.2
 
     # 路径超时 (s) — 超过此时长未到达则任务失败
     path_timeout_sec: 60.0
@@ -141,13 +127,23 @@ stage3_return_navigator:
     p_approach_consecutive_hits: 3
 
     # 接近线速度 (m/s) — 连续识别到 P 后由视觉接管并直接高速接近
-    p_approach_linear_speed: 0.50
+    p_approach_linear_speed: 0.30
 
     # P 检测结果的最大有效年龄 (s)
     p_detection_timeout_sec: 0.35
 
-    # P 已接管后短暂丢帧，先停车等待重识别；超时后才回到 A* 搜索
-    p_loss_hold_sec: 1.0
+    # P 框内 Aurora 对齐深度。有效 P 帧深度小于终停阈值时立即完成。
+    # Aurora /aurora/depth/image_raw 为 16UC1 毫米值，故比例为 0.001 m/unit。
+    p_depth_logging_enabled: true
+    p_depth_topic: /aurora/depth/image_raw
+    p_depth_unit_scale_m: 0.001
+    p_depth_max_age_sec: 0.25
+    p_depth_min_m: 0.10
+    p_depth_max_m: 4.00
+    # 仅取 P bbox 中心区域，降低边缘背景、空洞和 P 边框的影响。
+    p_depth_roi_fraction: 0.50
+    # P 框内有效深度中位数 < 此值时，发布零速度和 stage3_state=complete。
+    p_depth_stop_distance_m: 0.50
 
     # P 点视觉到达后额外前进距离 (m) — 0 表示达到视觉阈值即刹停
     p_extra_forward_distance_m: 0.00
@@ -158,15 +154,8 @@ stage3_return_navigator:
     # 接近角速度增益 — bbox 中心 offset → 角速度增益
     p_approach_angular_kp: 0.8
 
-    # P YOLO 只允许在返程终段接管；此前始终由 A* 绕开黑色禁区导航
-    p_visual_takeover_max_y: 2.0
-
-    # 即使 YOLO 已在 y<2 推理，也必须驶入该近终点区域才允许视觉接管并关闭通用避障
-    p_visual_terminal_max_x: 1.0
-    p_visual_terminal_max_y: 1.0
-
-    # 视觉伺服每周期均验证此前视距离仍处于地图自由栅格，黑区立即退回 A*
-    p_visual_safety_lookahead_m: 0.20
+    # P 接管后只由 bbox 水平偏差转向、对齐深度决定终停；不再使用 map 判据。
+    # 雷达避障仍处于更高优先级；P 丢帧时停车等待重识别，不回退 A*。
 
     # Stage3 专用 Web 端口 — HTTP 实时预览端口（避免与 Stage2 冲突）
     p_web_port: 8083
@@ -238,6 +227,9 @@ stage3_return_navigator:
     # 原地转向角度阈值 (°) — 航向误差 < 此值时边走边转，否则原地转
     recovery_in_place_angle_deg: 8.0
 
+    # 恢复到原始 IMU 航向的完成容差，与 S1 保持一致
+    heading_tolerance_deg: 6.0
+
     # 恢复超时 (s) — 恢复阶段最长时间
     recovery_timeout: 2.5
 
@@ -257,6 +249,12 @@ stage3_return_navigator:
     # 窗口半宽 (m) — Y 方向±半宽，形成矩形检测区域
     window_half_width: 0.22
 
+    # 避障转向期间使用 S1 的近场紧急窗口
+    emergency_window_min_x: 0.08
+    emergency_window_max_x: 0.45
+    emergency_window_half_width: 0.12
+    emergency_min_cluster_points: 2
+
     # 聚类间隙容差 (m) — 点云间距 < 此值视为同一障碍物
     cluster_gap_tolerance: 0.12
 
@@ -266,8 +264,8 @@ stage3_return_navigator:
     # 最小聚类宽度 (m) — 宽度 < 此值的聚类被过滤（噪声）
     min_cluster_width: 0.06
 
-    # 最大聚类宽度 (m) — 宽度 > 此值的聚类被过滤（墙体）
-    max_cluster_width: 0.40
+    # 最大聚类宽度 (m) — 与 S1 保持一致
+    max_cluster_width: 0.55
 
     # 最小有效量程 (m) — 激光点距离 < 此值视为无效
     min_valid_range: 0.15
@@ -295,22 +293,16 @@ stage3_return_navigator:
     # 静态障碍物膨胀半径 (m)
     planner_obstacle_inflation_m: 0.14
 
-    # --- 动态障碍物参数 (Dynamic Obstacle Injection) ---
-    # 动态障碍物框大小 (m) — 激光检测到的障碍物映射为此大小的方框
-    planner_dynamic_obstacle_box_size_m: 0.25
+    # A* 只使用静态地图；雷达仅进入下方聚类避障状态机，不注入全局栅格。
+    # 固定路径明显偏离后才重新规划，避免每周期改变前视点。
+    planner_path_deviation_replan_m: 0.35
 
-    # 动态障碍物膨胀半径 (m)
-    planner_dynamic_obstacle_inflation_m: 0.04
+    # 空值表示直接使用 /map 的真实黑色占据栅格，禁止用粗略矩形替代地图。
+    planner_forbidden_rectangles_json: '[]'
 
-    # 动态障碍物检测范围 (m) — 激光点距离 < 此值才注入动态障碍
-    planner_dynamic_obstacle_range_m: 0.7
-
-    # 重规划周期 (s) — 每隔此时间重规划一次路径
-    planner_replan_period_sec: 0.50
-
-    # S3 只将这两个下方黑区作为静态禁区；范围为左闭右开 [min,max)。
-    # U 形外框和中部横条仅为地图图案，不参与 S3 规划。
-    planner_forbidden_rectangles_json: '[{"x_min":0.00,"x_max":2.09,"y_min":1.96,"y_max":2.97},{"x_min":2.92,"x_max":5.00,"y_min":1.96,"y_max":2.97}]'
+    # /map 中仅供视觉参考、不参与 S3 规划的图案。坐标为 map 半开矩形。
+    # 此区域覆盖上方 U 形外框及中部横条；下方两块真实黑区仍由原始地图保留。
+    planner_clear_rectangles_json: '[{"x_min":0.45,"x_max":4.60,"y_min":2.90,"y_max":4.80}]'
 
     # 当前位置落入黑区/膨胀安全边界时，沿当前航向负速度退回自由区后重新 A*
     planner_forbidden_reverse_speed: 0.10
@@ -326,7 +318,7 @@ stage3_return_navigator:
 
     # Stage3 继承 Stage1/map_overlay 发布的 map<-base TF，禁止在本节点重置 map 原点。
     # 生产返程切入 phase=3 后立即由 A* 控制；禁止前置通道 YOLO 阻塞或自行驱动。
-    # P YOLO 仅由 p_visual_takeover_max_y (2.0m) 后接管。
+    # P YOLO 从 phase=3 开始即可接管，但雷达避障始终拥有更高控制优先级。
     stage3_channel_yolo_enabled: false
     stage3_channel_model_path: /home/sunrise/dev_ws/best_rdk_tongdao.bin
     stage3_channel_camera_topic: /aurora/rgb/image_raw

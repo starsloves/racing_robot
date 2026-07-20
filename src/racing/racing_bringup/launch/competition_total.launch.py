@@ -39,7 +39,7 @@ def generate_launch_description():
     include_stage3_arg = DeclareLaunchArgument('include_stage3', default_value='true')
     include_vision_ai_arg = DeclareLaunchArgument('include_vision_ai', default_value='true')
     include_voice_arg = DeclareLaunchArgument('include_voice', default_value='true')
-    include_depth_arg = DeclareLaunchArgument('include_depth', default_value='false')
+    include_depth_arg = DeclareLaunchArgument('include_depth', default_value='true')
     include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
     include_obstacle_markers_arg = DeclareLaunchArgument('include_obstacle_markers', default_value='true')
     imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/imu/data')

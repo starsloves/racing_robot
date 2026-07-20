@@ -9,7 +9,9 @@ from nav_msgs.msg import Odometry
 from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import PointStamped
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
 from std_msgs.msg import Empty
+from tf2_ros import TransformException
 
 from racing_stage2.stage2_inertial_base import Stage2InertialBase
 from racing_stage2.avoid_controller import AvoidConfig, AvoidController, NavState
@@ -79,10 +81,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_heading_slowdown_deg', 10.0)
         self.declare_parameter('track_finish_tolerance_m', 0.10)
         self.declare_parameter('track_odom_combined_step_max_m', 0.12)
-        self.declare_parameter('track_entry_map_x', 2.80)
-        self.declare_parameter('track_entry_map_y', 3.10)
         self.declare_parameter('track_stage3_handoff_map_y', 2.0)
         self.declare_parameter('stage3_entry_anchor_topic', 'stage3_entry_anchor')
+        self.declare_parameter('stage3_entry_anchor_base_frame', 'base_footprint')
         self.declare_parameter('stage2_ai_capture_enabled', True)
         self.declare_parameter('stage2_ai_capture_lead_m', 0.50)
         self.declare_parameter('stage2_ai_trigger_topic', 'stage2_ai_capture')
@@ -296,13 +297,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             str(self.get_parameter('stage3_entry_anchor_topic').value),
             anchor_qos,
         )
-        self._track_entry_map_xy = (
-            float(self.get_parameter('track_entry_map_x').value),
-            float(self.get_parameter('track_entry_map_y').value),
-        )
         self._track_stage3_handoff_map_y = float(
             self.get_parameter('track_stage3_handoff_map_y').value
         )
+        self._stage3_entry_anchor_base_frame = str(
+            self.get_parameter('stage3_entry_anchor_base_frame').value
+        ).strip() or 'base_footprint'
         # The track controller works in an IMU-aligned local frame.  The EKF
         # odometry contributes only travelled distance; its orientation is
         # deliberately never used by Stage2 navigation.
@@ -1179,23 +1179,31 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self._track_mission_active = False
             self.mission_active = False
         elif command.complete:
-            self._publish_stage3_entry_anchor()
+            if not self._publish_stage3_entry_anchor():
+                return
             self._track_mission_active = False
             self.finish_mission()
 
     def _track_map_position(self):
-        """Convert the IMU-aligned Stage2 local integration to map xy."""
-        if self._track_pose is None:
+        """Return the current map <- base_footprint translation, or None."""
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.global_frame_id,
+                self._stage3_entry_anchor_base_frame,
+                Time(),
+            )
+            translation = transform.transform.translation
+            return float(translation.x), float(translation.y)
+        except TransformException:
             return None
-        return (
-            self._track_entry_map_xy[0] + self._track_pose[0],
-            self._track_entry_map_xy[1] + self._track_pose[1],
-        )
 
     def _publish_stage3_entry_anchor(self):
         map_xy = self._track_map_position()
         if map_xy is None:
-            return
+            self.get_logger().warning(
+                '[STAGE3_HANDOFF] waiting for map<-base_footprint TF before publishing entry anchor'
+            )
+            return False
         msg = PointStamped()
         msg.header.frame_id = 'map'
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -1205,12 +1213,13 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._log_session(
             'STAGE3_HANDOFF',
             f'map=({map_xy[0]:.3f},{map_xy[1]:.3f}) threshold_y='
-            f'{self._track_stage3_handoff_map_y:.3f}',
+            f'{self._track_stage3_handoff_map_y:.3f} source=tf_map',
         )
         self.get_logger().info(
             f'[STAGE3_HANDOFF] map anchor=({map_xy[0]:.2f},{map_xy[1]:.2f}), '
-            f'y<{self._track_stage3_handoff_map_y:.2f}'
+            f'y<{self._track_stage3_handoff_map_y:.2f}, source=tf_map'
         )
+        return True
 
     def start_mode_text(self):
         if self.nav_succeeded_for_test_start():

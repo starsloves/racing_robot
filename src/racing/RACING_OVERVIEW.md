@@ -33,6 +33,7 @@ competition_controller.py（Stage1 主控）
   └── phase=3 ──── Stage3: 返程导航
                    │ 官方包：racing_stage3
                    ├── Stage3ReturnNavigator — phase=3 直接 A* 黑区禁入导航 + P 视觉安全终段
+                   │   └── P 框内 Aurora 对齐深度 < 0.50m 时终停；雷达避障优先
                    ├── Stage1 4态避障复用
                    └── 终点 P 点区域
 ```
@@ -44,13 +45,14 @@ competition_controller.py（Stage1 主控）
 | `/cmd_vel` | Twist | competition_controller (phase1) / Stage3 / twist_cmd_relay | phase1/3 控制输出 |
 | `/stage2_cmd_vel` | Twist | Stage2InertialNavigator | phase2 独立控制 → Stage1 转发 /cmd_vel |
 | `/odom` | Odometry | origincar_base | 轮速里程计；Stage2 仅用于启动静止判定和诊断 |
-| `/odom_combined` | Odometry | robot_localization EKF | Stage2 里程距离源；Stage3 仅叠加入场锚点后的 xy 平移增量 |
+| `/odom_combined` | Odometry | robot_localization EKF | Stage2 里程距离源；Stage3 以 S2 锚点后的 xy 位移增量更新 map 位置 |
 | `/map` | OccupancyGrid | map_overlay | 全局地图 — Stage3 使用 |
 | `/scan` | LaserScan | 激光雷达 | 避障输入 |
 | `/imu/data` | Imu | BNO055 | **航向角（yaw）来源** — Stage2 角度基准 |
 | `competition_phase` | Int32 | competition_controller | 阶段序号（1/2/3） |
 | `stage2_state` | String | Stage2InertialNavigator | Stage2 内部状态 |
 | `stage3_state` | String | Stage3ReturnNavigator | Stage3 内部状态 |
+| `stage3_entry_anchor` | PointStamped | Stage2InertialNavigator | S2 交权瞬间的 map 坐标，S3 返程定位锚点 |
 | `stage2_ai_capture` | Empty | Stage2InertialNavigator | 长直道末端图像分析一次性触发 |
 | `ai_description` | String | racing_vision_ai | 云端图生文结果，供语音节点异步播报 |
 | `stage2_ai_status` | String | racing_vision_ai | 截帧/请求/结果状态诊断 |
@@ -217,8 +219,7 @@ Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + �
 | `vision_length_correction_enabled` | false | 当前先不启用 SEG 纵向定长/剩余距离修正 |
 | `vision_turn_assist_enabled` | false | 当前先不启用 SEG 拐弯完成辅助 |
 | `fusion_mode_enabled` | true | 保留 IMU 航向修正链路，视觉关闭时为 IMU-only |
-| `fusion_weight_imu` | 0.75 | IMU/惯导主控权重 |
-| `fusion_weight_vision` | 0.25 | 视觉轻量修正权重 |
+| `track_vision_lateral_weight` | 0.35 | 生产长直线视觉横向修正权重；与 IMU 航向保持直接叠加 |
 | `vision_model_path` | models/bset.bin | BPU 模型路径 |
 
 #### direct_inertial_test.yaml — 测试覆盖参数
@@ -265,7 +266,7 @@ entry_arc → entry_medium → left_side_arc → top_long → right_side_arc →
 - track_top_long_distance_m：第二个 180° 前长直距离，控制 top_long → right_side_arc 的触发点。
 - track_exit_medium_distance_m：第二个 180° 后的出口短直线距离。
 - exit_turn_90：出口短直线后顺时针左转 / 逆时针右转 90°；复用入口 90° 的线速度、角速度和半径配置。
-- stage3_handoff_line：转完后沿 -Y 直行，推导 map `y < track_stage3_handoff_map_y`（默认 2.0）时交权 Stage3。
+- stage3_handoff_line：转完后沿 -Y 直行；交接线判断与发布给 S3 的锚点只使用实时 TF `map <- base_footprint` 的 xy。TF 暂时不可用时停留在 Stage2，绝不使用惯性推导坐标交权。map `y < track_stage3_handoff_map_y`（默认 2.0）时交权 Stage3。
 - track_max_speed：直线速度。
 - track_corner_speed：后续 180°弯线速度。
 - track_entry_angular：入口 90°弯角速度。
@@ -382,7 +383,7 @@ SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相
 | 转弯不足 | `turn_kp` / `turn_angle_compensation_deg` | ↑ |
 | 某角欠转 | `stage2_controller.yaml` 中对应 `track_*_complete_lead_deg` 或角速度 | 提前角↓ / 角速度↑ |
 | 转弯后加速突兀 | `move_accel_ramp_sec` | ↑ |
-| 视觉修正打晃 | `vision_offset_kp` / `fusion_weight_imu` | ↓ / ↑ |
+| 视觉修正打晃 | `track_vision_lateral_weight` / `track_vision_correction_max_angular` | ↓ / ↓ |
 | 视觉检测 timeout | `vision_timeout_sec` | ↑ |
 | IMU 漂移误检 | `imu_heading_deadzone_deg` | ↑ |
 | 避障不足 | `avoid_leg1/2_distance_m` | ↑ |
@@ -409,12 +410,9 @@ SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相
 
 | 参数 | 当前值 | 说明 |
 |---|---|---|
-| `return_waypoints_json` | `[{"x":0.20,"y":0.15,"speed":0.15,"description":"P_region_center"}]` | 搜索 P 的地图粗导航目标，不作最终完成判据 |
-| `goal_box_x_min/max` | `0.1 / 0.3` | P 矩形区域 X 边界 |
-| `goal_box_y_min/max` | `0.1 / 0.2` | P 矩形区域 Y 边界 |
-| `goal_box_x_min/max`, `goal_box_y_min/max` | `0.1/0.3`, `0.1/0.2` | 标定 P 矩形；车体 map 位姿进入即完成，不要求航向 |
+| `return_waypoints_json` | `[{"x":0.325,"y":0.10,"speed":0.15,"description":"P_region_center"}]` | 搜索 P 的地图粗导航目标，不作最终完成判据 |
 
-Phase3 不继承 `map <- base_footprint` TF 的绝对位置：比赛中 S2 在 `y < 2.0m` 交权时通过 transient-local `stage3_entry_anchor` 发布实际 map 入口，S3 记录收到 phase=3 时的 `/odom_combined` xy，并只按 `entry_map + (odom_xy - entry_odom_xy)` 更新；静态 `stage3_entry_map_x/y` 仅保留给独立测试回退。IMU 是唯一航向来源，任何 odom orientation 都不参与计算。S3 的静态禁区不再直接复用地图全部黑像素，只采用 `planner_forbidden_rectangles_json` 定义的下方两块区域：左侧 `[0.00,2.09) x [1.96,2.97)`，右侧 `[2.92,5.00) x [1.96,2.97)`；U 形外框和中部横条不参与 S3 规划。生产配置禁用前置通道 YOLO，`map_y >= 2.0m` 时只有 A* 可以驱动；地图粗导航只跟踪从当前位置直连仍处于 A* 自由栅格内的前视点。若当前位置进入黑区或其膨胀安全边界，固定倒车 `planner_forbidden_reverse_distance_m` 后重新规划；该恢复状态独占 `/cmd_vel`，仅紧急停车可打断，避免普通避障的位移被误算为倒车距离。连续超过 `planner_forbidden_reverse_max_attempts` 次仍命中时停止并发布 `planner_forbidden_recovery_failed`，日志输出锚点、odom 增量、map 位姿和占据层来源。P YOLO 仅在 `map_y < 2.0m` 时推理，但只有 `map_x < 1.0m && map_y < 1.0m` 的近终点区域才允许视觉接管，此时才暂停通用避障。无论由地图还是 P YOLO 接近，车辆的推导 map 位姿进入 `goal_box_*` 标定 P 矩形即完成，不要求航向。P 接管后丢帧先停车等待 `p_loss_hold_sec` 重识别，超时才回 A* 搜索；视觉预测轨迹碰到禁区仍须停车退出接管。
+S2 在完成时通过 transient-local `stage3_entry_anchor` 发布交权瞬间 map 坐标；S3 收到新鲜锚点时锁存同一时刻的 `/odom_combined` xy 及 `map <- odom_combined` TF 的旋转角，后续 map 位置固定按 `anchor_map + R(map<-odom) * (current_odom_xy - anchor_odom_xy)` 计算。运行中不再把实时 `map <- base_footprint` TF 写入控制位置，以防重复或跳变 TF 改写整条 A* 坐标；只在锚点绑定时读取静态坐标轴旋转，缺少该变换时停车等待。航向继续使用原始 IMU yaw，任何 odom orientation 都不参与计算。生产 S3 未收到新鲜 S2 锚点时停车等待，不允许以 TF 后备位置出车。S3 静态占据层默认以 `/map` 的真实黑色栅格为准，`planner_clear_rectangles_json` 只清除已确认不参与规划的视觉图案（当前为上方 U 形外框及中部横条）；`planner_forbidden_rectangles_json` 仅保留为特殊场地的兼容覆盖模式。A* 只读取静态地图，不订阅或注入激光点；雷达仅交给局部避障。首次规划出的 A* 路径会被固定缓存，跟踪游标只向前推进，只有车辆偏离路径超过 `planner_path_deviation_replan_m` 才重新规划，避免等价路径和前视点抖动。S1 风格避障固定首次向右，按 avoiding → countersteering → recovering 闭环独占控制；普通窗口负责触发，转向中使用近场紧急窗口判定可进入反舵，恢复到入避障 IMU 航向后才归还控制权。雷达避障优先级高于 P YOLO 和 A* 跟踪，避障后由路径偏差决定是否重规划。若当前位置进入静态黑区或其膨胀安全边界，固定倒车 `planner_forbidden_reverse_distance_m` 后重新规划；该恢复状态独占 `/cmd_vel`，仅紧急停车可打断。P YOLO 在 phase=3 启动即推理，满足连续置信度门限即可接管；雷达避障仍可打断视觉接管。P 接管后仅以 P bbox 的水平偏差计算转向、以 P 框内对齐深度判断 `<0.50m` 终停；不再检查 map 坐标、终点矩形、地图前视轨迹或回退 A*。P 丢帧时发布零速度并等待重识别。
 
 ### 4.2 核心参数
 
@@ -432,7 +430,7 @@ Phase3 不继承 `map <- base_footprint` TF 的绝对位置：比赛中 S2 在 `
 
 ```
 phase=3 收到
-  └─ start_delay_sec 后 → running / map_search_p（直接启动 A*）
+  └─ 等待新鲜 stage3_entry_anchor → running / map_search_p（沿用 S2 锚点 + odom xy 增量、原始 IMU，直接启动 A*）
       ├─ emergency_stop
       ├─ [避障] Stage1 4态聚类避障（仅地图粗导航态）
       └─ map_search_p：地图粗导航 + P 检测连续确认

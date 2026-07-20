@@ -5,8 +5,7 @@ Features:
 - Reads /map occupancy grid
 - A* planning from start to goal
 - Obstacle inflation
-- Dynamic obstacle overlay (from lidar scan)
-- Path caching and periodic replanning
+- Static-map collision checks
 """
 
 import heapq
@@ -17,9 +16,6 @@ import cv2
 import numpy as np
 from nav_msgs.msg import OccupancyGrid
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rclpy.time import Time
-from sensor_msgs.msg import LaserScan
-from tf2_ros import Buffer, TransformException, TransformListener
 
 
 class GlobalPathPlanner:
@@ -34,10 +30,6 @@ class GlobalPathPlanner:
                 - planner_occupied_threshold: int, obstacle threshold (0-100)
                 - planner_unknown_is_occupied: bool, treat unknown as obstacle
                 - planner_obstacle_inflation_m: float, obstacle inflation radius (m)
-                - planner_dynamic_obstacle_box_size_m: float, dynamic obstacle box size (m)
-                - planner_dynamic_obstacle_inflation_m: float, dynamic obstacle inflation radius (m)
-                - planner_dynamic_obstacle_range_m: float, dynamic obstacle detection range (m)
-                - planner_replan_period_sec: float, replanning period (s)
                 - global_frame_id: str, global coordinate frame name (usually 'map')
         """
         self.node = node
@@ -47,13 +39,12 @@ class GlobalPathPlanner:
         self.planner_occupied_threshold = config.get('planner_occupied_threshold', 50)
         self.planner_unknown_is_occupied = config.get('planner_unknown_is_occupied', False)
         self.planner_obstacle_inflation_m = config.get('planner_obstacle_inflation_m', 0.14)
-        self.planner_dynamic_obstacle_box_size_m = config.get('planner_dynamic_obstacle_box_size_m', 0.25)
-        self.planner_dynamic_obstacle_inflation_m = config.get('planner_dynamic_obstacle_inflation_m', 0.04)
-        self.planner_dynamic_obstacle_range_m = config.get('planner_dynamic_obstacle_range_m', 0.7)
-        self.planner_replan_period_sec = config.get('planner_replan_period_sec', 0.25)
         self.global_frame_id = config.get('global_frame_id', 'map')
         self.forbidden_rectangles = self._parse_forbidden_rectangles(
             config.get('planner_forbidden_rectangles_json', '[]')
+        )
+        self.clear_rectangles = self._parse_forbidden_rectangles(
+            config.get('planner_clear_rectangles_json', '[]')
         )
 
         # Map cache
@@ -62,21 +53,12 @@ class GlobalPathPlanner:
         self.static_planner_resolution = None
         self.static_planner_origin = None
 
-        # Laser scan cache
-        self.latest_scan = None
-        self.scan_frame_id = None
-
         # Path cache
         self.last_plan_points = []
         self.last_plan_signature = None
         self.last_plan_at = 0.0
 
-        # TF cache
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, node)
-        self.cached_2d_transforms = {}
-
-# Subscribe to map and laser scan
+        # Subscribe to the static map only. Lidar belongs to local avoidance.
         qos_latched = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -88,12 +70,6 @@ class GlobalPathPlanner:
             self._map_callback,
             qos_latched,
         )
-        self.node.create_subscription(
-            LaserScan,
-            config.get('scan_topic', '/scan'),
-            self._scan_callback,
-            10,
-        )
 
     def _map_callback(self, msg):
         """map callback"""
@@ -101,12 +77,6 @@ class GlobalPathPlanner:
         self.static_planner_grid = None
         self.static_planner_resolution = None
         self.static_planner_origin = None
-
-    def _scan_callback(self, msg):
-        """scan callback"""
-        self.latest_scan = msg
-        if msg.header.frame_id:
-            self.scan_frame_id = msg.header.frame_id
 
     def plan_path(self, start_position, goal_position, now_sec):
         """
@@ -125,7 +95,6 @@ class GlobalPathPlanner:
             return None
 
         occupied, resolution, origin_x, origin_y = planner_grid
-        occupied = self._overlay_scan_obstacles(occupied, resolution, origin_x, origin_y)
         height, width = occupied.shape
 
         start_cell = self._world_to_planner_cell(
@@ -148,12 +117,6 @@ class GlobalPathPlanner:
             return []
 
         signature = (start_cell, goal_cell)
-        if (
-            self.last_plan_points
-            and self.last_plan_signature == signature
-            and now_sec - self.last_plan_at < self.planner_replan_period_sec
-        ):
-            return list(self.last_plan_points)
 
         # A* 
         cell_path = self._a_star_grid_path(occupied, start_cell, goal_cell)
@@ -182,7 +145,6 @@ class GlobalPathPlanner:
             return None
 
         occupied, resolution, origin_x, origin_y = planner_grid
-        occupied = self._overlay_scan_obstacles(occupied, resolution, origin_x, origin_y)
         height, width = occupied.shape
         start = self._world_to_planner_cell(
             start_position[0], start_position[1], resolution, origin_x, origin_y, width, height
@@ -217,11 +179,6 @@ class GlobalPathPlanner:
             return 'outside_planner_grid'
         if static_occupied[cell[1], cell[0]]:
             return 'static_forbidden_rectangle_or_inflation'
-        occupied = self._overlay_scan_obstacles(
-            static_occupied, resolution, origin_x, origin_y
-        )
-        if occupied[cell[1], cell[0]]:
-            return 'dynamic_scan_obstacle'
         return 'free'
 
     def _build_static_planner_grid(self):
@@ -260,6 +217,22 @@ class GlobalPathPlanner:
             if self.planner_unknown_is_occupied:
                 occupied |= raw < 0
 
+            # Only explicitly reviewed visual artwork may be removed from the
+            # real map occupancy layer used by Stage3.
+            if self.clear_rectangles:
+                x_centers = (
+                    float(info.origin.position.x)
+                    + (np.arange(width) + 0.5) * float(info.resolution)
+                )
+                y_centers = (
+                    float(info.origin.position.y)
+                    + (np.arange(height) + 0.5) * float(info.resolution)
+                )
+                for x_min, x_max, y_min, y_max in self.clear_rectangles:
+                    x_mask = (x_centers >= x_min) & (x_centers < x_max)
+                    y_mask = (y_centers >= y_min) & (y_centers < y_max)
+                    occupied[y_mask[:, np.newaxis] & x_mask[np.newaxis, :]] = False
+
         stride = self.planner_downsample
         padded_height = int(math.ceil(height / stride) * stride)
         padded_width = int(math.ceil(width / stride) * stride)
@@ -291,60 +264,6 @@ class GlobalPathPlanner:
             self.static_planner_origin[0],
             self.static_planner_origin[1],
         )
-
-    def _overlay_scan_obstacles(self, occupied, resolution, origin_x, origin_y):
-        """overlay scan obstacles"""
-        if self.latest_scan is None or not self.scan_frame_id:
-            return occupied
-
-        transform = self._lookup_2d_transform(self.global_frame_id, self.scan_frame_id)
-        if transform is None:
-            return occupied
-
-        height, width = occupied.shape
-        dynamic_mask = np.zeros((height, width), dtype=np.uint8)
-        trans_x, trans_y, trans_yaw = transform
-        cos_yaw = math.cos(trans_yaw)
-        sin_yaw = math.sin(trans_yaw)
-        dynamic_box_cells = max(
-            1,
-            int(math.ceil(self.planner_dynamic_obstacle_box_size_m / max(resolution, 1e-6))),
-        )
-
-        max_scan_range = self.latest_scan.range_max
-        if (
-            math.isfinite(self.planner_dynamic_obstacle_range_m)
-            and self.planner_dynamic_obstacle_range_m > 0.0
-        ):
-            max_scan_range = min(max_scan_range, self.planner_dynamic_obstacle_range_m)
-
-        for index, distance in enumerate(self.latest_scan.ranges):
-            if math.isinf(distance) or math.isnan(distance) or distance <= 0.0:
-                continue
-            if distance > max_scan_range:
-                continue
-
-            angle = self.latest_scan.angle_min + index * self.latest_scan.angle_increment
-            scan_x = distance * math.cos(angle)
-            scan_y = distance * math.sin(angle)
-            world_x = trans_x + cos_yaw * scan_x - sin_yaw * scan_y
-            world_y = trans_y + sin_yaw * scan_x + cos_yaw * scan_y
-            cell = self._world_to_planner_cell(
-                world_x, world_y, resolution, origin_x, origin_y, width, height
-            )
-            if cell is None:
-                continue
-            self._stamp_square_cells(dynamic_mask, cell[0], cell[1], dynamic_box_cells)
-
-        inflation_cells = int(
-            math.ceil(self.planner_dynamic_obstacle_inflation_m / max(resolution, 1e-6))
-        )
-        if inflation_cells > 0:
-            dynamic_mask = self._inflate_binary_grid(
-                dynamic_mask > 0, inflation_cells
-            ).astype(np.uint8)
-
-        return occupied | (dynamic_mask > 0)
 
     def _a_star_grid_path(self, occupied, start_cell, goal_cell):
         """a star grid path"""
@@ -475,46 +394,3 @@ class GlobalPathPlanner:
         kernel_size = radius_cells * 2 + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
         return cv2.dilate(grid.astype(np.uint8), kernel) > 0
-
-    def _stamp_square_cells(self, grid, center_x, center_y, box_cells):
-        """stamp square cells"""
-        if box_cells <= 1:
-            if 0 <= center_y < grid.shape[0] and 0 <= center_x < grid.shape[1]:
-                grid[center_y, center_x] = 1
-            return
-
-        if box_cells % 2 == 0:
-            box_cells += 1
-
-        half_cells = box_cells // 2
-        min_x = max(0, center_x - half_cells)
-        max_x = min(grid.shape[1], center_x + half_cells + 1)
-        min_y = max(0, center_y - half_cells)
-        max_y = min(grid.shape[0], center_y + half_cells + 1)
-        grid[min_y:max_y, min_x:max_x] = 1
-
-    def _lookup_2d_transform(self, target_frame, source_frame):
-        """lookup two d transform"""
-        if not target_frame or not source_frame:
-            return None
-        if target_frame == source_frame:
-            return (0.0, 0.0, 0.0)
-
-        cache_key = (target_frame, source_frame)
-        try:
-            transform = self.tf_buffer.lookup_transform(target_frame, source_frame, Time())
-        except TransformException:
-            return self.cached_2d_transforms.get(cache_key)
-
-        translation = transform.transform.translation
-        yaw = self._quaternion_to_yaw(transform.transform.rotation)
-        transform_2d = (float(translation.x), float(translation.y), yaw)
-        self.cached_2d_transforms[cache_key] = transform_2d
-        return transform_2d
-
-    @staticmethod
-    def _quaternion_to_yaw(q):
-        """quat to yaw"""
-        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        return math.atan2(siny_cosp, cosy_cosp)

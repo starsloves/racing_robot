@@ -11,7 +11,9 @@ import sys
 import threading
 import time
 
+import numpy as np
 import rclpy
+from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped, Twist
 from nav_msgs.msg import Odometry
 from racing_common.racing_logger import RacingLogger
@@ -20,7 +22,7 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
-from sensor_msgs.msg import Imu, LaserScan
+from sensor_msgs.msg import Image, Imu, LaserScan
 from std_msgs.msg import Int32, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -61,28 +63,36 @@ class Stage3ReturnNavigator(Node):
         self.mission_finished = False
         self.start_after_time = None
 
-        # Phase3 position is anchored once at entry then follows odom xy deltas.
+        # Position is anchored by the Stage2 handoff map pose, then propagated
+        # by the /odom_combined displacement rotated into the map frame. This
+        # prevents a later map TF jump from moving Stage3's whole A* frame.
         # Heading always comes from IMU, never odometry orientation.
         self.current_position = None
         self.current_yaw = None
         self.odom_frame_id = 'odom'
         self._last_raw_odom_xy = None
         self._last_raw_odom_yaw = None
-        self._stage3_entry_odom_xy = None
-        self._stage3_entry_map_xy = None
-        self._stage3_handoff_map_xy = None
         self._imu_yaw = None
         self._imu_yaw_offset = 0.0
+        self._entry_anchor_map = None
+        self._entry_anchor_odom = None
+        self._entry_anchor_map_from_odom_yaw = None
+        self._pending_entry_anchor_map = None
+        self._entry_anchor_stamp_sec = None
+        self._last_tf_position = None
 
         # 路径状态
         self.path_started_at = None
         self.path_index = 0
         self._settled_start = None
         self._filtered_heading_err = 0.0
+        self._active_planned_path = []
+        self._active_path_cursor = 0
         self._planner_reverse_start = None
         self._planner_reverse_started_at = None
         self._planner_forbidden_reverse_attempts = 0
         self._map_pose_warned = False
+        self._entry_anchor_tf_warned = False
 
         # P 视觉最终接管：地图只用于粗导航，P 视觉决定最终到达。
         self._p_detector = None
@@ -90,6 +100,13 @@ class Stage3ReturnNavigator(Node):
         self._p_consecutive_hits = 0
         self._p_offset_filtered = 0.0
         self._p_lost_since = None
+
+        # P 终段深度当前仅用于实车标定日志，不参与控制或完成判定。
+        self._depth_bridge = CvBridge()
+        self._depth_lock = threading.Lock()
+        self._last_depth_image = None
+        self._last_depth_received_at = 0.0
+        self._last_depth_encoding = ''
 
         # 激光扫描
         self.latest_scan = None
@@ -123,29 +140,31 @@ class Stage3ReturnNavigator(Node):
         self.create_subscription(Int32, self.phase_topic, self._phase_cb, qos_latched)
         self.create_subscription(String, self.direction_topic, self._direction_cb, qos_latched)
         self.create_subscription(
-            PointStamped, self.stage3_entry_anchor_topic, self._stage3_entry_anchor_cb, qos_latched
+            PointStamped, self.stage3_entry_anchor_topic,
+            self._stage3_entry_anchor_cb, qos_latched,
         )
         self.create_subscription(Odometry, self.odom_topic, self._odom_cb, 10)
         self.create_subscription(Imu, self.imu_topic, self._imu_cb, 10)
         self.create_subscription(LaserScan, self.scan_topic, self._scan_cb, 10)
+        if self.p_depth_logging_enabled:
+            self.create_subscription(
+                Image, self.p_depth_topic, self._depth_cb,
+                QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT),
+            )
 
         self.global_planner = None
         if self.use_global_planner:
             self.global_planner = GlobalPathPlanner(self, {
                 'map_topic': self.map_topic,
-                'scan_topic': self.scan_topic,
                 'global_frame_id': self.global_frame_id,
                 'planner_downsample': self.planner_downsample,
                 'planner_occupied_threshold': self.planner_occupied_threshold,
                 'planner_unknown_is_occupied': self.planner_unknown_is_occupied,
                 'planner_obstacle_inflation_m': self.planner_obstacle_inflation_m,
-                'planner_dynamic_obstacle_box_size_m': self.planner_dynamic_obstacle_box_size_m,
-                'planner_dynamic_obstacle_inflation_m': self.planner_dynamic_obstacle_inflation_m,
-                'planner_dynamic_obstacle_range_m': self.planner_dynamic_obstacle_range_m,
-                'planner_replan_period_sec': self.planner_replan_period_sec,
                 'planner_forbidden_rectangles_json': self.planner_forbidden_rectangles_json,
+                'planner_clear_rectangles_json': self.planner_clear_rectangles_json,
             })
-            self.log.startup('A* global planner enabled: configured static zones are forbidden')
+            self.log.startup('A* global planner enabled: static map only; lidar reserved for avoidance')
 
         self._init_p_detector()
         self._init_channel_detector()
@@ -156,6 +175,11 @@ class Stage3ReturnNavigator(Node):
             f'enhanced return navigator ready | waypoints={len(self.return_waypoints)} '
             f'cmd={self.cmd_topic} odom={self.odom_topic}'
         )
+        if self.p_depth_logging_enabled:
+            self.log.startup(
+                f'P depth logging enabled: topic={self.p_depth_topic} '
+                f'scale={self.p_depth_unit_scale_m:.6f}m/unit'
+            )
 
     # ══════════════ 参数 ══════════════
 
@@ -168,18 +192,17 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('state_topic', 'stage3_state')
         self.declare_parameter('feedback_topic', 'competition_feedback')
         self.declare_parameter('direction_topic', 'competition_qr_task')
+        self.declare_parameter('stage3_entry_anchor_topic', 'stage3_entry_anchor')
+        self.declare_parameter('require_stage3_entry_anchor', True)
+        self.declare_parameter('stage3_entry_anchor_max_age_sec', 3.0)
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'base_footprint')
         self.declare_parameter('control_rate_hz', 20.0)
-        self.declare_parameter('start_delay_sec', 0.5)
+        self.declare_parameter('start_delay_sec', 0.0)
 
         # ── 路点 ──
         self.declare_parameter('return_waypoints_json', '[]')
         self.declare_parameter('waypoint_tolerance', 0.18)
-        self.declare_parameter('goal_box_x_min', 0.1)
-        self.declare_parameter('goal_box_x_max', 0.3)
-        self.declare_parameter('goal_box_y_min', 0.1)
-        self.declare_parameter('goal_box_y_max', 0.2)
         self.declare_parameter('path_timeout_sec', 60.0)
 
         # ── P 点视觉最终到达 ──
@@ -191,13 +214,16 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_approach_consecutive_hits', 3)
         self.declare_parameter('p_approach_linear_speed', 0.50)
         self.declare_parameter('p_approach_angular_kp', 0.8)
-        self.declare_parameter('p_visual_takeover_max_y', 2.0)
-        self.declare_parameter('p_visual_terminal_max_x', 1.0)
-        self.declare_parameter('p_visual_terminal_max_y', 1.0)
-        self.declare_parameter('p_visual_safety_lookahead_m', 0.20)
         self.declare_parameter('p_web_port', 8083)
         self.declare_parameter('p_detection_timeout_sec', 0.35)
-        self.declare_parameter('p_loss_hold_sec', 1.0)
+        self.declare_parameter('p_depth_logging_enabled', True)
+        self.declare_parameter('p_depth_topic', '/aurora/depth/image_raw')
+        self.declare_parameter('p_depth_unit_scale_m', 0.001)
+        self.declare_parameter('p_depth_max_age_sec', 0.25)
+        self.declare_parameter('p_depth_min_m', 0.10)
+        self.declare_parameter('p_depth_max_m', 4.00)
+        self.declare_parameter('p_depth_roi_fraction', 0.50)
+        self.declare_parameter('p_depth_stop_distance_m', 0.50)
 
         # ── Pure Pursuit ──
         self.declare_parameter('pursuit_linear_speed', 0.18)
@@ -225,6 +251,7 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('recovery_max_angular_speed', 1.1)
         self.declare_parameter('recovery_min_angular_speed', 0.5)
         self.declare_parameter('recovery_in_place_angle_deg', 8.0)
+        self.declare_parameter('heading_tolerance_deg', 6.0)
         self.declare_parameter('recovery_timeout', 2.5)
         self.declare_parameter('recovery_duration_scale', 0.9)
 
@@ -238,10 +265,14 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('window_min_x', 0.18)
         self.declare_parameter('window_max_x', 0.85)
         self.declare_parameter('window_half_width', 0.22)
+        self.declare_parameter('emergency_window_min_x', 0.08)
+        self.declare_parameter('emergency_window_max_x', 0.45)
+        self.declare_parameter('emergency_window_half_width', 0.12)
+        self.declare_parameter('emergency_min_cluster_points', 2)
         self.declare_parameter('cluster_gap_tolerance', 0.12)
         self.declare_parameter('min_cluster_points', 3)
         self.declare_parameter('min_cluster_width', 0.06)
-        self.declare_parameter('max_cluster_width', 0.40)
+        self.declare_parameter('max_cluster_width', 0.55)
         self.declare_parameter('min_valid_range', 0.15)
 
         # ── A* 全局路径规划（避开地图禁区）──
@@ -252,27 +283,15 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('planner_occupied_threshold', 50)
         self.declare_parameter('planner_unknown_is_occupied', False)
         self.declare_parameter('planner_obstacle_inflation_m', 0.14)
-        self.declare_parameter('planner_dynamic_obstacle_box_size_m', 0.25)
-        self.declare_parameter('planner_dynamic_obstacle_inflation_m', 0.04)
-        self.declare_parameter('planner_dynamic_obstacle_range_m', 0.7)
-        self.declare_parameter('planner_replan_period_sec', 0.25)
+        self.declare_parameter('planner_path_deviation_replan_m', 0.35)
         self.declare_parameter('planner_forbidden_rectangles_json', '[]')
+        self.declare_parameter('planner_clear_rectangles_json', '[]')
         self.declare_parameter('planner_forbidden_reverse_speed', 0.10)
         self.declare_parameter('planner_forbidden_reverse_distance_m', 0.30)
         self.declare_parameter('planner_forbidden_reverse_timeout_sec', 5.0)
         self.declare_parameter('planner_forbidden_reverse_max_attempts', 3)
 
-        # ── Phase3 entry position anchor ──
-        self.declare_parameter('stage3_entry_anchor_enabled', True)
-        self.declare_parameter('stage3_entry_map_x', 2.80)
-        self.declare_parameter('stage3_entry_map_y', 3.25)
-        self.declare_parameter('stage3_entry_anchor_topic', 'stage3_entry_anchor')
-
-        # ── Legacy map→odom fallback for disabled entry anchoring ──
         self.declare_parameter('test_direction', 'clockwise')
-        self.declare_parameter('map_to_odom_x', 0.0)
-        self.declare_parameter('map_to_odom_y', 0.0)
-        self.declare_parameter('map_to_odom_yaw', 0.0)
 
         # ── Stage3 通道 YOLO（生产返程不使用）──
         self.declare_parameter('stage3_channel_yolo_enabled', False)
@@ -299,6 +318,15 @@ class Stage3ReturnNavigator(Node):
         self.state_topic = str(self.get_parameter('state_topic').value)
         self.feedback_topic = str(self.get_parameter('feedback_topic').value)
         self.direction_topic = str(self.get_parameter('direction_topic').value)
+        self.stage3_entry_anchor_topic = str(
+            self.get_parameter('stage3_entry_anchor_topic').value
+        )
+        self.require_stage3_entry_anchor = bool(
+            self.get_parameter('require_stage3_entry_anchor').value
+        )
+        self.stage3_entry_anchor_max_age = float(
+            self.get_parameter('stage3_entry_anchor_max_age_sec').value
+        )
         self.map_frame = str(self.get_parameter('map_frame').value)
         self.base_frame = str(self.get_parameter('base_frame').value)
         self.control_rate_hz = float(self.get_parameter('control_rate_hz').value)
@@ -306,10 +334,6 @@ class Stage3ReturnNavigator(Node):
 
         self.return_waypoints_json = self.get_parameter('return_waypoints_json').value
         self.waypoint_tolerance = float(self.get_parameter('waypoint_tolerance').value)
-        self.goal_box_x_min = float(self.get_parameter('goal_box_x_min').value)
-        self.goal_box_x_max = float(self.get_parameter('goal_box_x_max').value)
-        self.goal_box_y_min = float(self.get_parameter('goal_box_y_min').value)
-        self.goal_box_y_max = float(self.get_parameter('goal_box_y_max').value)
         self.path_timeout_sec = float(self.get_parameter('path_timeout_sec').value)
 
         self.p_model_path = str(self.get_parameter('p_model_path').value)
@@ -322,21 +346,29 @@ class Stage3ReturnNavigator(Node):
         )
         self.p_approach_linear = float(self.get_parameter('p_approach_linear_speed').value)
         self.p_approach_angular_kp = float(self.get_parameter('p_approach_angular_kp').value)
-        self.p_visual_takeover_max_y = float(self.get_parameter('p_visual_takeover_max_y').value)
-        self.p_visual_terminal_max_x = float(
-            self.get_parameter('p_visual_terminal_max_x').value
-        )
-        self.p_visual_terminal_max_y = float(
-            self.get_parameter('p_visual_terminal_max_y').value
-        )
-        self.p_visual_safety_lookahead = float(
-            self.get_parameter('p_visual_safety_lookahead_m').value
-        )
         self.p_web_port = int(self.get_parameter('p_web_port').value)
         self.p_detection_timeout = max(
             0.0, float(self.get_parameter('p_detection_timeout_sec').value)
         )
-        self.p_loss_hold_sec = max(0.0, float(self.get_parameter('p_loss_hold_sec').value))
+        self.p_depth_logging_enabled = bool(
+            self.get_parameter('p_depth_logging_enabled').value
+        )
+        self.p_depth_topic = str(self.get_parameter('p_depth_topic').value)
+        self.p_depth_unit_scale_m = float(
+            self.get_parameter('p_depth_unit_scale_m').value
+        )
+        self.p_depth_max_age = max(
+            0.0, float(self.get_parameter('p_depth_max_age_sec').value)
+        )
+        self.p_depth_min_m = float(self.get_parameter('p_depth_min_m').value)
+        self.p_depth_max_m = float(self.get_parameter('p_depth_max_m').value)
+        self.p_depth_roi_fraction = min(
+            1.00,
+            max(0.10, float(self.get_parameter('p_depth_roi_fraction').value)),
+        )
+        self.p_depth_stop_distance = max(
+            0.0, float(self.get_parameter('p_depth_stop_distance_m').value)
+        )
 
         self.pursuit_linear_speed = float(self.get_parameter('pursuit_linear_speed').value)
         self.pursuit_lookahead = float(self.get_parameter('pursuit_lookahead_m').value)
@@ -362,6 +394,9 @@ class Stage3ReturnNavigator(Node):
         self.recovery_max_angular = float(self.get_parameter('recovery_max_angular_speed').value)
         self.recovery_min_angular = float(self.get_parameter('recovery_min_angular_speed').value)
         self.recovery_in_place = math.radians(float(self.get_parameter('recovery_in_place_angle_deg').value))
+        self.heading_tolerance = math.radians(
+            float(self.get_parameter('heading_tolerance_deg').value)
+        )
         self.recovery_timeout = float(self.get_parameter('recovery_timeout').value)
         self.recovery_duration_scale = float(self.get_parameter('recovery_duration_scale').value)
 
@@ -374,6 +409,12 @@ class Stage3ReturnNavigator(Node):
         self.window_min_x = float(self.get_parameter('window_min_x').value)
         self.window_max_x = float(self.get_parameter('window_max_x').value)
         self.window_half_width = float(self.get_parameter('window_half_width').value)
+        self.emergency_window_min_x = float(self.get_parameter('emergency_window_min_x').value)
+        self.emergency_window_max_x = float(self.get_parameter('emergency_window_max_x').value)
+        self.emergency_window_half_width = float(self.get_parameter('emergency_window_half_width').value)
+        self.emergency_min_cluster_pts = int(
+            self.get_parameter('emergency_min_cluster_points').value
+        )
         self.cluster_gap = float(self.get_parameter('cluster_gap_tolerance').value)
         self.min_cluster_pts = int(self.get_parameter('min_cluster_points').value)
         self.min_cluster_w = float(self.get_parameter('min_cluster_width').value)
@@ -387,12 +428,14 @@ class Stage3ReturnNavigator(Node):
         self.planner_occupied_threshold = int(self.get_parameter('planner_occupied_threshold').value)
         self.planner_unknown_is_occupied = bool(self.get_parameter('planner_unknown_is_occupied').value)
         self.planner_obstacle_inflation_m = float(self.get_parameter('planner_obstacle_inflation_m').value)
-        self.planner_dynamic_obstacle_box_size_m = float(self.get_parameter('planner_dynamic_obstacle_box_size_m').value)
-        self.planner_dynamic_obstacle_inflation_m = float(self.get_parameter('planner_dynamic_obstacle_inflation_m').value)
-        self.planner_dynamic_obstacle_range_m = float(self.get_parameter('planner_dynamic_obstacle_range_m').value)
-        self.planner_replan_period_sec = float(self.get_parameter('planner_replan_period_sec').value)
+        self.planner_path_deviation_replan = max(0.05, float(
+            self.get_parameter('planner_path_deviation_replan_m').value
+        ))
         self.planner_forbidden_rectangles_json = str(
             self.get_parameter('planner_forbidden_rectangles_json').value
+        )
+        self.planner_clear_rectangles_json = str(
+            self.get_parameter('planner_clear_rectangles_json').value
         )
         self.planner_forbidden_reverse_speed = abs(float(
             self.get_parameter('planner_forbidden_reverse_speed').value
@@ -406,22 +449,8 @@ class Stage3ReturnNavigator(Node):
         self.planner_forbidden_reverse_max_attempts = max(1, int(
             self.get_parameter('planner_forbidden_reverse_max_attempts').value
         ))
-        self.stage3_entry_anchor_enabled = bool(
-            self.get_parameter('stage3_entry_anchor_enabled').value
-        )
-        self.stage3_entry_map_xy = (
-            float(self.get_parameter('stage3_entry_map_x').value),
-            float(self.get_parameter('stage3_entry_map_y').value),
-        )
-        self.stage3_entry_anchor_topic = str(
-            self.get_parameter('stage3_entry_anchor_topic').value
-        )
-
         self.test_direction = str(self.get_parameter('test_direction').value)
         self.return_direction = self._normalize_direction(self.test_direction)
-        self.map_odom_x = float(self.get_parameter('map_to_odom_x').value)
-        self.map_odom_y = float(self.get_parameter('map_to_odom_y').value)
-        self.map_odom_yaw = float(self.get_parameter('map_to_odom_yaw').value)
 
         self.stage3_channel_yolo_enabled = bool(self.get_parameter('stage3_channel_yolo_enabled').value)
         self.stage3_channel_model_path = str(self.get_parameter('stage3_channel_model_path').value)
@@ -442,40 +471,10 @@ class Stage3ReturnNavigator(Node):
 
     # ══════════════ 工具 ══════════════
 
-    def _in_goal_region(self, x, y):
-        """判断 (x,y) 是否在目标矩形区域内"""
-        return (self.goal_box_x_min <= x <= self.goal_box_x_max and
-                self.goal_box_y_min <= y <= self.goal_box_y_max)
-
     def _goal_center(self):
-        """返回 P 矩形区域中心点（map 坐标系）。"""
-        return (
-            (self.goal_box_x_min + self.goal_box_x_max) / 2.0,
-            (self.goal_box_y_min + self.goal_box_y_max) / 2.0,
-        )
-
-    def _check_goal_region_reached(self):
-        """车辆进入标定 P 矩形区域即完成；不要求特定航向。"""
-        if self.current_position is None:
-            return False
-        x, y = self.current_position
-        if not self._in_goal_region(x, y):
-            return False
-        self.log.segment(
-            f'goal region reached: pos=({x:.2f},{y:.2f}) '
-            f'box=([{self.goal_box_x_min:.2f},{self.goal_box_x_max:.2f}], '
-            f'[{self.goal_box_y_min:.2f},{self.goal_box_y_max:.2f}])'
-        )
-        self._finish_mission('return complete, entered calibrated P region')
-        return True
-
-    def _in_p_visual_terminal_area(self):
-        """Only the close P terminal area may hand motion authority to vision."""
-        return (
-            self.current_position is not None
-            and self.current_position[0] < self.p_visual_terminal_max_x
-            and self.current_position[1] < self.p_visual_terminal_max_y
-        )
+        """Return the last map waypoint used only while searching for P."""
+        waypoint = self.return_waypoints[-1]
+        return waypoint['x'], waypoint['y']
 
     @staticmethod
     def _normalize_angle(a):
@@ -632,18 +631,14 @@ class Stage3ReturnNavigator(Node):
             detector.set_inference_active(active)
 
     def _update_p_inference_gate(self):
-        in_visual_area = (
-            self.current_position is not None
-            and self.current_position[1] < self.p_visual_takeover_max_y
-        )
         self._set_p_inference_active(
-            self.phase == 3 and not self.mission_finished and in_visual_area
+            self.phase == 3 and not self.mission_finished
         )
 
     @staticmethod
     def _normalize_direction(value):
         text = str(value).strip().lower()
-        if text in ('counterclockwise', 'counter_clockwise', 'ccw', '逆时针'):
+        if any(token in text for token in ('counterclockwise', 'counter_clockwise', 'ccw', '逆时针')):
             return 'counterclockwise'
         return 'clockwise'
 
@@ -695,35 +690,102 @@ class Stage3ReturnNavigator(Node):
         self._last_raw_odom_xy = (raw_x, raw_y)
         self._last_raw_odom_yaw = raw_yaw
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
-        if self.stage3_entry_anchor_enabled and self._stage3_entry_odom_xy is not None:
+        if self._pending_entry_anchor_map is not None:
+            pending_anchor = self._pending_entry_anchor_map
+            self._pending_entry_anchor_map = None
+            self._bind_stage3_entry_anchor(pending_anchor)
+        if self._entry_anchor_map is not None and self._entry_anchor_odom is not None:
             self.current_position = self._position_from_entry_anchor(
-                self._stage3_entry_map_xy, self._stage3_entry_odom_xy, (raw_x, raw_y)
+                self._entry_anchor_map, self._entry_anchor_odom, self._last_raw_odom_xy,
+                self._entry_anchor_map_from_odom_yaw,
             )
         else:
-            map_xy = self._lookup_map_xy_from_tf()
-            if map_xy is not None:
-                self.current_position = map_xy
-            else:
-                self._set_map_position_from_static_transform(raw_x, raw_y)
-        if self._imu_yaw is None:
-            self.current_yaw = self._normalize_angle(raw_yaw + self.map_odom_yaw)
+            # Only diagnostic/fallback before a Stage2 handoff anchor arrives.
+            self.current_position = self._lookup_map_xy_from_tf()
+
+    @staticmethod
+    def _position_from_entry_anchor(
+        entry_map, entry_odom, current_odom, map_from_odom_yaw,
+    ):
+        """Propagate the map anchor using an odometry delta rotated into map."""
+        dx_odom = current_odom[0] - entry_odom[0]
+        dy_odom = current_odom[1] - entry_odom[1]
+        cos_yaw = math.cos(map_from_odom_yaw)
+        sin_yaw = math.sin(map_from_odom_yaw)
+        return (
+            entry_map[0] + cos_yaw * dx_odom - sin_yaw * dy_odom,
+            entry_map[1] + sin_yaw * dx_odom + cos_yaw * dy_odom,
+        )
 
     def _stage3_entry_anchor_cb(self, msg):
         if msg.header.frame_id and msg.header.frame_id != self.map_frame:
-            self.log.warn('POSE', f'ignoring Stage2 entry anchor in frame={msg.header.frame_id}')
+            self.log.warn(
+                'ENTRY_ANCHOR',
+                f'ignored anchor frame={msg.header.frame_id}, expected={self.map_frame}',
+            )
             return
-        self._stage3_handoff_map_xy = (float(msg.point.x), float(msg.point.y))
-        self.log.mission(
-            f'Stage2 handoff anchor received: map={self._stage3_handoff_map_xy}'
-        )
+        stamp_sec = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
+        if stamp_sec > 0.0 and self._now_sec() - stamp_sec > self.stage3_entry_anchor_max_age:
+            self.log.warn(
+                'ENTRY_ANCHOR',
+                f'ignored stale anchor age={self._now_sec() - stamp_sec:.2f}s '
+                f'max={self.stage3_entry_anchor_max_age:.2f}s',
+            )
+            return
+        anchor_map = (float(msg.point.x), float(msg.point.y))
+        self._entry_anchor_stamp_sec = stamp_sec if stamp_sec > 0.0 else self._now_sec()
+        if self._last_raw_odom_xy is None:
+            self._pending_entry_anchor_map = anchor_map
+            self.log.mission(
+                f'Stage2 entry anchor received map={anchor_map}; waiting for {self.odom_topic}'
+            )
+            return
+        self._bind_stage3_entry_anchor(anchor_map)
 
-    @staticmethod
-    def _position_from_entry_anchor(entry_map_xy, entry_odom_xy, current_odom_xy):
-        """Map position from a fixed entry anchor and odometry translation only."""
-        return (
-            entry_map_xy[0] + current_odom_xy[0] - entry_odom_xy[0],
-            entry_map_xy[1] + current_odom_xy[1] - entry_odom_xy[1],
+    def _bind_stage3_entry_anchor(self, anchor_map):
+        map_from_odom_yaw = self._lookup_map_from_odom_yaw()
+        if map_from_odom_yaw is None:
+            self._pending_entry_anchor_map = anchor_map
+            if not self._entry_anchor_tf_warned:
+                self._entry_anchor_tf_warned = True
+                self.log.warn(
+                    'ENTRY_ANCHOR',
+                    f'waiting for TF {self.map_frame}->{self.odom_frame_id} to bind Stage2 anchor',
+                )
+            return False
+
+        self._entry_anchor_tf_warned = False
+        self._entry_anchor_map = anchor_map
+        self._entry_anchor_odom = self._last_raw_odom_xy
+        self._entry_anchor_map_from_odom_yaw = map_from_odom_yaw
+        self.current_position = anchor_map
+        tf_position = self._lookup_map_xy_from_tf()
+        self._last_tf_position = tf_position
+        if tf_position is None:
+            tf_text = 'tf=unavailable'
+        else:
+            tf_text = (
+                f'tf=({tf_position[0]:.3f},{tf_position[1]:.3f}) '
+                f'delta=({tf_position[0] - anchor_map[0]:+.3f},'
+                f'{tf_position[1] - anchor_map[1]:+.3f})'
+            )
+        self.log.mission(
+            f'Stage2 entry anchor bound map=({anchor_map[0]:.3f},{anchor_map[1]:.3f}) '
+            f'odom=({self._entry_anchor_odom[0]:.3f},{self._entry_anchor_odom[1]:.3f}) '
+            f'map_from_odom_yaw={math.degrees(map_from_odom_yaw):+.2f}deg '
+            f'{tf_text}'
         )
+        return True
+
+    def _lookup_map_from_odom_yaw(self):
+        """Lock map<-odom rotation at handoff; do not use odometry orientation."""
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.map_frame, self.odom_frame_id, Time(), timeout=Duration(seconds=0.05)
+            )
+        except TransformException:
+            return None
+        return self._quat_to_yaw(transform.transform.rotation)
 
     def _lookup_map_xy_from_tf(self):
         """Use the Stage1-owned map transform so A* and the map share one origin."""
@@ -749,21 +811,37 @@ class Stage3ReturnNavigator(Node):
             self._map_pose_warned = True
             self.log.warn(
                 'POSE',
-                f'cannot get TF {self.map_frame}->base; using configured map->odom fallback',
+                f'cannot get TF {self.map_frame}->base; Stage3 position is unavailable',
             )
         return None
 
-    def _set_map_position_from_static_transform(self, raw_x, raw_y):
-        cos_y = math.cos(self.map_odom_yaw)
-        sin_y = math.sin(self.map_odom_yaw)
-        self.current_position = (
-            cos_y * raw_x - sin_y * raw_y + self.map_odom_x,
-            sin_y * raw_x + cos_y * raw_y + self.map_odom_y,
+    def _position_source_text(self):
+        if self._entry_anchor_map is None or self._entry_anchor_odom is None:
+            return 'source=tf_fallback'
+        return (
+            'source=s2_anchor '
+            f'anchor=({self._entry_anchor_map[0]:.2f},{self._entry_anchor_map[1]:.2f}) '
+            f'odom0=({self._entry_anchor_odom[0]:.2f},{self._entry_anchor_odom[1]:.2f}) '
+            f'odom=({self._last_raw_odom_xy[0]:.2f},{self._last_raw_odom_xy[1]:.2f}) '
+            f'odom_to_map={math.degrees(self._entry_anchor_map_from_odom_yaw):+.1f}deg'
         )
 
     def _imu_cb(self, msg):
         self._imu_yaw = self._quat_to_yaw(msg.orientation)
         self.current_yaw = self._normalize_angle(self._imu_yaw + self._imu_yaw_offset)
+
+    def _depth_cb(self, msg):
+        """Cache the newest RGB-aligned Aurora depth frame for P diagnostics."""
+        try:
+            depth = self._depth_bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+            if depth is None or depth.ndim != 2:
+                return
+            with self._depth_lock:
+                self._last_depth_image = np.asarray(depth).copy()
+                self._last_depth_received_at = time.time()
+                self._last_depth_encoding = str(msg.encoding)
+        except Exception as exc:
+            self.log.warn('P_DEPTH', f'cannot decode depth frame: {exc}')
 
     def _scan_cb(self, msg):
         self.latest_scan = msg
@@ -780,24 +858,25 @@ class Stage3ReturnNavigator(Node):
         self._planner_reverse_start = None
         self._planner_reverse_started_at = None
         self._planner_forbidden_reverse_attempts = 0
-        self._stage3_entry_odom_xy = None
-        self._stage3_entry_map_xy = None
-        if self.stage3_entry_anchor_enabled:
-            if self._last_raw_odom_xy is None:
-                self.log.warn('POSE', 'phase=3 waiting for /odom_combined before entry anchor')
-            else:
-                self._stage3_entry_odom_xy = self._last_raw_odom_xy
-                self._stage3_entry_map_xy = self._configured_or_handoff_entry_anchor()
-                self.current_position = self._stage3_entry_map_xy
+        self._active_planned_path = []
+        self._active_path_cursor = 0
+        if self._entry_anchor_map is not None and self._entry_anchor_odom is not None:
+            self.current_position = self._position_from_entry_anchor(
+                self._entry_anchor_map, self._entry_anchor_odom, self._last_raw_odom_xy,
+                self._entry_anchor_map_from_odom_yaw,
+            )
+        else:
+            self.current_position = self._lookup_map_xy_from_tf()
+        if self.current_position is None:
+            self.log.warn('POSE', 'phase=3 waiting for map<-base_footprint TF')
         self.avoid_state = 'forward'
         self.start_after_time = self._now_sec() + self.start_delay_sec
         self._p_approaching = False
         self._p_consecutive_hits = 0
         self._p_offset_filtered = 0.0
         self._p_lost_since = None
-        self._set_p_inference_active(False)
-        # Phase3 必须直接进入地图返程。通道 YOLO 不得在入口处抢占或等待，
-        # P YOLO 仅在 _update_p_inference_gate 的 Y 门限内开启。
+        self._set_p_inference_active(True)
+        # Phase3 直接进入返程；P YOLO 从本阶段开始即可确认并接管。
         self._set_channel_inference_active(False)
         self._pre_return_state = 'done'
         self._pre_return_started_at = self._now_sec()
@@ -806,8 +885,8 @@ class Stage3ReturnNavigator(Node):
         self._publish_state('armed')
         self.log.mission(
             f'phase=3 detected, direction={self.return_direction}, '
-            f'entry_anchor={self._stage3_entry_map_xy} odom_reference={self._stage3_entry_odom_xy}; '
-            'starting A* return; P YOLO remains gated by the configured Y threshold'
+            f'tf_map={self.current_position}; '
+            'starting return; P YOLO may take over immediately after confirmation'
         )
 
     def _reset_mission(self):
@@ -822,8 +901,8 @@ class Stage3ReturnNavigator(Node):
         self._planner_reverse_start = None
         self._planner_reverse_started_at = None
         self._planner_forbidden_reverse_attempts = 0
-        self._stage3_entry_odom_xy = None
-        self._stage3_entry_map_xy = None
+        self._active_planned_path = []
+        self._active_path_cursor = 0
         self.avoid_state = 'forward'
         self._p_approaching = False
         self._p_consecutive_hits = 0
@@ -837,19 +916,14 @@ class Stage3ReturnNavigator(Node):
         self._publish_state('idle')
 
     def _start_mission(self):
-        if self.stage3_entry_anchor_enabled and self._stage3_entry_odom_xy is None:
-            if self._last_raw_odom_xy is None:
-                self.log.warn('ODOM', 'no /odom_combined yet, cannot establish phase3 entry anchor')
-                return
-            self._stage3_entry_odom_xy = self._last_raw_odom_xy
-            self._stage3_entry_map_xy = self._configured_or_handoff_entry_anchor()
-            self.current_position = self._stage3_entry_map_xy
-            self.log.mission(
-                f'phase3 entry anchor established late: map={self._stage3_entry_map_xy} '
-                f'odom={self._stage3_entry_odom_xy}'
-            )
+        if self.require_stage3_entry_anchor and (
+            self._entry_anchor_map is None or self._entry_anchor_odom is None
+        ):
+            self.stop_robot()
+            self._publish_state('waiting_for_stage2_anchor')
+            return
         if self.current_position is None or self.current_yaw is None:
-            self.log.warn('ODOM', 'no odom yet, cannot start (waiting for /odom_combined)')
+            self.log.warn('POSE', 'cannot start: waiting for map TF and IMU yaw')
             return
         if not self.return_waypoints:
             self._publish_feedback('no waypoints configured, cannot start')
@@ -863,12 +937,9 @@ class Stage3ReturnNavigator(Node):
         self.log.mission(
             f'return started, {len(self.return_waypoints)} waypoints (map coords), '
             f'current=({self.current_position[0]:.2f},{self.current_position[1]:.2f}) '
-            f'yaw={math.degrees(self.current_yaw):.1f}°'
+            f'yaw={math.degrees(self.current_yaw):.1f}° {self._position_source_text()}'
         )
         self.get_logger().info(f'mission_active=True, will publish cmd_vel now')
-
-    def _configured_or_handoff_entry_anchor(self):
-        return self._stage3_handoff_map_xy or self.stage3_entry_map_xy
 
     def _finish_mission(self, feedback_text='return complete, reached P point'):
         self.cmd_pub.publish(Twist())
@@ -975,41 +1046,32 @@ class Stage3ReturnNavigator(Node):
             self._start_mission()
             return
 
-        # 只要 map 位姿进入标定 P 矩形即完成，不要求航向或视觉框。
-        if self._check_goal_region_reached():
-            return
-
         # 1. 紧急停止
         if self._check_emergency_stop():
             return
 
-        # 禁区恢复必须独占底盘控制。若普通避障在倒车期间接管，绕障产生的
-        # 位移会被误计为倒车距离，导致仍在禁区内就提前重规划并最终耗尽次数。
-        if self._run_planner_forbidden_reverse():
+        # 2. 雷达避障高于 P 视觉和 A* 导航。
+        if self.avoid_state == 'forward' and self.latest_scan is not None:
+            self._check_obstacle()
+
+        if self.avoid_state != 'forward':
+            self._run_avoidance()
             return
 
-        # 2. P 已确认后由视觉完全接管；不再使用 map 位置判定到达。
-        if self._p_approaching:
-            self._run_p_approach()
-            return
-
-        # 3. 地图仅用于粗导航和搜索 P；检测到 P 后立即切入视觉终段。
+        # 3. Phase3 开始即允许 P YOLO 确认并接管。
         self._update_p_inference_gate()
         self._update_p_detection()
         if self._p_approaching:
             self._run_p_approach()
             return
 
-        # 4. A* 全程运行避障；只有上方的 P 视觉接管分支才绕过本状态机。
-        if self.avoid_state == 'forward' and self.latest_scan is not None:
-            self._check_obstacle()
-
-        # 5. 若在避障状态，运行避障
-        if self.avoid_state != 'forward':
-            self._run_avoidance()
+        # 4. 尚未识别 P，才允许使用漂移敏感的 map/A* 粗导航。
+        if self.current_position is None:
+            self.stop_robot()
+            self._publish_state('waiting_for_map_tf')
             return
-
-        # 6. 尚未识别 P，继续地图粗导航。
+        if self._run_planner_forbidden_reverse():
+            return
         self._run_center_drive()
 
     def _check_emergency_stop(self):
@@ -1039,15 +1101,57 @@ class Stage3ReturnNavigator(Node):
         fresh = time.time() - float(stamp or 0.0) <= self.p_detection_timeout
         return bool(detected and bbox is not None and fresh), conf, bbox, stamp, offset, fill
 
+    def _p_depth_measurement(self, bbox):
+        """Return a robust depth median from the center of the detected P box."""
+        if not self.p_depth_logging_enabled:
+            return None, 0, 'disabled'
+        if bbox is None:
+            return None, 0, 'no_bbox'
+        with self._depth_lock:
+            depth = self._last_depth_image
+            received_at = self._last_depth_received_at
+            encoding = self._last_depth_encoding
+            if depth is not None:
+                depth = depth.copy()
+        if depth is None:
+            return None, 0, 'no_depth_frame'
+        age = time.time() - received_at
+        if age > self.p_depth_max_age:
+            return None, 0, f'stale:{age:.2f}s'
+
+        # P detector currently uses the complete RGB frame. Aurora aligned
+        # depth has the same 640x400 geometry, so index it directly.
+        height, width = depth.shape
+        x1, y1, x2, y2 = bbox
+        box_w = max(1, x2 - x1)
+        box_h = max(1, y2 - y1)
+        inset_x = int(box_w * (1.0 - self.p_depth_roi_fraction) / 2.0)
+        inset_y = int(box_h * (1.0 - self.p_depth_roi_fraction) / 2.0)
+        left = max(0, min(width, x1 + inset_x))
+        right = max(0, min(width, x2 - inset_x))
+        top = max(0, min(height, y1 + inset_y))
+        bottom = max(0, min(height, y2 - inset_y))
+        if right <= left or bottom <= top:
+            return None, 0, f'bad_roi:{encoding}'
+
+        values_m = depth[top:bottom, left:right].astype(np.float32).reshape(-1)
+        values_m *= self.p_depth_unit_scale_m
+        valid = values_m[np.isfinite(values_m)]
+        valid = valid[(valid >= self.p_depth_min_m) & (valid <= self.p_depth_max_m)]
+        if valid.size == 0:
+            return None, 0, f'no_valid:{encoding},age={age:.2f}s'
+        return float(np.median(valid)), int(valid.size), f'{encoding},age={age:.2f}s'
+
+    def _p_depth_text(self, bbox):
+        depth_m, samples, status = self._p_depth_measurement(bbox)
+        if depth_m is None:
+            return f'depth=invalid samples={samples} ({status})'
+        return f'depth={depth_m:.3f}m samples={samples} ({status})'
+
     def _update_p_detection(self):
-        detected, conf, _bbox, _stamp, offset, _fill = self._p_detection()
-        in_visual_takeover_area = (
-            self.current_position is not None
-            and self.current_position[1] < self.p_visual_takeover_max_y
-        )
+        detected, conf, bbox, _stamp, offset, _fill = self._p_detection()
         confirmed = (
-            in_visual_takeover_area
-            and self._in_p_visual_terminal_area()
+            self.phase == 3
             and detected
             and conf >= self.p_approach_conf
         )
@@ -1058,14 +1162,20 @@ class Stage3ReturnNavigator(Node):
         self._p_offset_filtered = float(offset)
         self._p_lost_since = None
         self._publish_state('p_approach')
+        map_pos = self.current_position
+        map_text = (
+            f'map=({map_pos[0]:.2f},{map_pos[1]:.2f})'
+            if map_pos is not None else 'map=unavailable'
+        )
         self.log.segment(
             f'P acquired conf={conf:.2f} offset={offset:+.3f}; '
-            f'visual approach v={self.p_approach_linear:.2f}'
+            f'visual approach v={self.p_approach_linear:.2f} {map_text} '
+            f'{self._position_source_text()} {self._p_depth_text(bbox)}'
         )
         self._publish_feedback('P acquired, visual final approach started')
 
     def _run_p_approach(self):
-        detected, conf, _bbox, _stamp, offset, fill = self._p_detection()
+        detected, conf, bbox, _stamp, offset, fill = self._p_detection()
         if not detected or conf < self.p_approach_conf:
             self.cmd_pub.publish(Twist())
             now = self._now_sec()
@@ -1073,46 +1183,28 @@ class Stage3ReturnNavigator(Node):
                 self._p_lost_since = now
                 self.log.warn('P_DETECTION', 'P lost after acquisition: stopped, waiting for reacquisition')
                 self._publish_feedback('P lost: stopped, waiting for visual reacquisition')
-            elif now - self._p_lost_since >= self.p_loss_hold_sec:
-                self._p_approaching = False
-                self._p_consecutive_hits = 0
-                self._p_lost_since = None
-                self.log.warn('P_DETECTION', 'P reacquisition timeout: returning to A* search without avoidance')
-                self._publish_feedback('P reacquisition timeout: returning to map path search')
             return
 
         self._p_lost_since = None
         alpha = 0.35
         self._p_offset_filtered = alpha * float(offset) + (1.0 - alpha) * self._p_offset_filtered
         angular = self._clamp(-self.p_approach_angular_kp * self._p_offset_filtered, self.max_angular)
-        if not self._visual_trajectory_is_free(angular):
-            self.stop_robot()
-            self._p_approaching = False
-            self._p_consecutive_hits = 0
-            self.log.warn('P_DETECTION', 'visual trajectory blocked by map/scan: returning to A* search')
-            self._publish_feedback('P approach blocked: returning to map path search')
+        depth_m, samples, depth_status = self._p_depth_measurement(bbox)
+        if depth_m is not None and depth_m < self.p_depth_stop_distance:
+            self.log.segment(
+                f'P depth stop: depth={depth_m:.3f}m < '
+                f'{self.p_depth_stop_distance:.3f}m samples={samples} ({depth_status})'
+            )
+            self._finish_mission('return complete, P depth stop threshold reached')
             return
         self._publish_state('p_approach')
         self.log.telemetry(
             'P_APPROACH',
             f'conf={conf:.2f} off={self._p_offset_filtered:+.3f} fill={fill:.2%} '
-            f'spd={self.p_approach_linear:.2f} ang={angular:.2f}',
+            f'spd={self.p_approach_linear:.2f} ang={angular:.2f} '
+            f'{self._p_depth_text(bbox)}',
         )
         self.cmd_pub.publish(self._twist(self.p_approach_linear, angular))
-
-    def _visual_trajectory_is_free(self, angular):
-        """Keep visual servo motion within the same map safety boundary as A*."""
-        if not self.use_global_planner or self.global_planner is None:
-            return False
-        if self.current_position is None or self.current_yaw is None:
-            return False
-        lookahead = max(0.05, self.p_visual_safety_lookahead)
-        predicted_yaw = self.current_yaw + angular * lookahead / max(self.p_approach_linear, 0.05)
-        end = (
-            self.current_position[0] + lookahead * math.cos(predicted_yaw),
-            self.current_position[1] + lookahead * math.sin(predicted_yaw),
-        )
-        return self.global_planner.is_world_segment_free(self.current_position, end) is True
 
     def _start_planner_forbidden_reverse(self):
         if self.current_position is None:
@@ -1173,31 +1265,49 @@ class Stage3ReturnNavigator(Node):
         return True
 
     def _planner_pose_diagnostic(self):
-        """Describe the anchored pose calculation used by forbidden-zone recovery."""
+        """Describe the live-TF pose used by forbidden-zone recovery."""
         occupancy = 'planner_unavailable'
         if self.global_planner is not None and self.current_position is not None:
             occupancy = self.global_planner.describe_world_occupancy(self.current_position)
         return (
-            f'anchor_map={self._stage3_entry_map_xy} '
-            f'anchor_odom={self._stage3_entry_odom_xy} '
-            f'odom_now={self._last_raw_odom_xy} '
+            f'pose_source=tf_map odom_now={self._last_raw_odom_xy} '
             f'map_now={self.current_position} occupancy={occupancy}'
         )
 
-    def _select_safe_lookahead_point(self, path_points):
-        """Choose the furthest A* point reachable by a straight free segment."""
-        if self.current_position is None or self.global_planner is None:
+    def _path_deviation(self, path_points):
+        if self.current_position is None or not path_points:
+            return float('inf')
+        start = min(self._active_path_cursor, len(path_points) - 1)
+        return min(
+            math.hypot(point[0] - self.current_position[0], point[1] - self.current_position[1])
+            for point in path_points[start:]
+        )
+
+    def _select_stable_lookahead_point(self, path_points):
+        """Advance monotonically on one cached A* path and select a safe lookahead."""
+        if self.current_position is None or self.global_planner is None or not path_points:
             return None
-        selected = None
+        start = min(self._active_path_cursor, len(path_points) - 1)
+        nearest_index = min(
+            range(start, len(path_points)),
+            key=lambda index: math.hypot(
+                path_points[index][0] - self.current_position[0],
+                path_points[index][1] - self.current_position[1],
+            ),
+        )
+        self._active_path_cursor = max(self._active_path_cursor, nearest_index)
+
+        selected = path_points[nearest_index]
         traveled = 0.0
-        previous = path_points[0]
-        for point in path_points[1:]:
+        previous = selected
+        for index in range(nearest_index + 1, len(path_points)):
+            point = path_points[index]
             traveled += math.hypot(point[0] - previous[0], point[1] - previous[1])
-            if traveled > self.pursuit_lookahead:
-                break
             if not self.global_planner.is_world_segment_free(self.current_position, point):
                 break
             selected = point
+            if traveled >= self.pursuit_lookahead:
+                break
             previous = point
         return selected
 
@@ -1233,9 +1343,22 @@ class Stage3ReturnNavigator(Node):
                 self._publish_state('planner_unavailable')
                 self.stop_robot()
                 return
-            planned_points = self.global_planner.plan_path(
-                self.current_position, (target_x, target_y), now
-            )
+            deviation = self._path_deviation(self._active_planned_path)
+            if self._active_planned_path and deviation > self.planner_path_deviation_replan:
+                self.log.warn(
+                    'PLANNER',
+                    f'path deviation {deviation:.2f}m exceeds '
+                    f'{self.planner_path_deviation_replan:.2f}m; replanning',
+                )
+                self._active_planned_path = []
+                self._active_path_cursor = 0
+                self._filtered_heading_err = 0.0
+
+            planned_points = self._active_planned_path
+            if not planned_points:
+                planned_points = self.global_planner.plan_path(
+                    self.current_position, (target_x, target_y), now
+                )
             if planned_points is None:
                 self._publish_state('planner_waiting_for_map')
                 self.stop_robot()
@@ -1257,8 +1380,16 @@ class Stage3ReturnNavigator(Node):
                 self._publish_state('planner_blocked')
                 self.stop_robot()
                 return
+            if not self._active_planned_path:
+                self._active_planned_path = list(planned_points)
+                self._active_path_cursor = 0
+                self.log.mission(
+                    f'stable A* path accepted: points={len(planned_points)} '
+                    f'start=({self.current_position[0]:.2f},{self.current_position[1]:.2f}) '
+                    f'goal=({target_x:.2f},{target_y:.2f})'
+                )
             self._planner_forbidden_reverse_attempts = 0
-            lookahead_point = self._select_safe_lookahead_point(planned_points)
+            lookahead_point = self._select_stable_lookahead_point(self._active_planned_path)
             if lookahead_point is None:
                 self.log.warn('PLANNER', 'no collision-free local segment on A* path')
                 self._publish_state('planner_local_segment_blocked')
@@ -1268,7 +1399,8 @@ class Stage3ReturnNavigator(Node):
                 target_x, target_y = lookahead_point
             self.log.telemetry(
                 'ASTAR',
-                f'path_pts={len(planned_points)} lookahead=({target_x:.2f},{target_y:.2f})'
+                f'path_pts={len(self._active_planned_path)} cursor={self._active_path_cursor} '
+                f'lookahead=({target_x:.2f},{target_y:.2f})'
             )
 
         # ── 计算目标相对车体坐标 ──
@@ -1303,129 +1435,90 @@ class Stage3ReturnNavigator(Node):
             f'err={math.degrees(heading_err):.1f}° '
             f'spd={speed:.2f} ang={angular:.2f} '
             f'pos=({self.current_position[0]:.2f},{self.current_position[1]:.2f}) '
-            f'center=({target_x:.2f},{target_y:.2f})'
+            f'center=({target_x:.2f},{target_y:.2f}) {self._position_source_text()}'
         )
         self.cmd_pub.publish(self._twist(speed, angular))
 
     # ══════════════ 避障状态（同 Stage1）═════════════
     def _clusters_in_window(self, scan_msg):
-        clusters = []
-        cur = []
-        prev_pt = None
-        for i, d in enumerate(scan_msg.ranges):
-            if math.isinf(d) or math.isnan(d) or d < self.min_range:
-                if cur:
-                    clusters.append(cur)
-                    cur = []
-                prev_pt = None
-                continue
-            angle = scan_msg.angle_min + i * scan_msg.angle_increment
-            x = d * math.cos(angle)
-            y = d * math.sin(angle)
-            if x < self.window_min_x or x > self.window_max_x or abs(y) > self.window_half_width:
-                if cur:
-                    clusters.append(cur)
-                    cur = []
-                prev_pt = None
-                continue
-            pt = (x, y, d)
-            if prev_pt is None or math.hypot(prev_pt[0] - pt[0], prev_pt[1] - pt[1]) <= self.cluster_gap:
-                cur.append(pt)
-            else:
-                if cur:
-                    clusters.append(cur)
-                cur = [pt]
-            prev_pt = pt
-        if cur:
-            clusters.append(cur)
-        return clusters
+        return self._clusters_in_window_with_limits(
+            scan_msg,
+            self.window_min_x,
+            self.window_max_x,
+            self.window_half_width,
+        )
 
-    def _classify_cluster(self, cluster):
-        """
-        分类聚类：'obstacle' 或 'wall'
+    def _find_nearest_obstacle(self, scan_msg, emergency=False):
+        """S1-style nearest cluster detection; static walls are valid obstacles."""
+        if emergency:
+            clusters = self._clusters_in_window_with_limits(
+                scan_msg,
+                self.emergency_window_min_x,
+                self.emergency_window_max_x,
+                self.emergency_window_half_width,
+            )
+            min_points = self.emergency_min_cluster_pts
+        else:
+            clusters = self._clusters_in_window(scan_msg)
+            min_points = self.min_cluster_pts
 
-        墙壁特征（根据实测数据调整）：
-        - 点数 > 40（实测墙壁 50-60 点）
-        - 角度跨度 > 30度（实测墙壁 39-42度）
-        - 点密集连续（相邻点平均间距 < 0.012 m，实测墙壁 0.007-0.010m）
-        Returns:
-            str: 'obstacle' 或 'wall'
-        """
-        if len(cluster) < 40:
-            return 'obstacle'
-        
-        # 角度跨度
-        angles = [math.atan2(pt[1], pt[0]) for pt in cluster]
-        angle_span = max(angles) - min(angles)
-        if angle_span < math.radians(30.0):
-            return 'obstacle'
-        
-        distances = []
-        for i in range(len(cluster) - 1):
-            d = math.hypot(cluster[i+1][0] - cluster[i][0], 
-                           cluster[i+1][1] - cluster[i][1])
-            distances.append(d)
-        
-        if distances:
-            avg_gap = sum(distances) / len(distances)
-            if avg_gap > 0.012:
-                return 'obstacle'
-        
-        return 'wall'
-
-    def _find_nearest_obstacle(self, scan_msg):
-        """返回最近的障碍物（墙壁已过滤）"""
-        clusters = self._clusters_in_window(scan_msg)
         best = None
-        wall_count = 0
-        obstacle_count = 0
-        
-        for c in clusters:
-            if len(c) < self.min_cluster_pts:
+        for cluster in clusters:
+            if len(cluster) < min_points:
                 continue
-            
-            # 计算聚类属性用于分类和日志
-            nearest = min(p[2] for p in c)
-            angles = [math.atan2(pt[1], pt[0]) for pt in c]
-            angle_span = max(angles) - min(angles)
-            angle_span_deg = math.degrees(angle_span)
-            xs = [pt[0] for pt in c]
-            ys = [pt[1] for pt in c]
-            width = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
-            
-            # 计算平均间距
-            distances = []
-            for i in range(len(c) - 1):
-                d = math.hypot(c[i+1][0] - c[i][0], c[i+1][1] - c[i][1])
-                distances.append(d)
-            avg_gap = sum(distances) / len(distances) if distances else 0.0
-            
-            # 分类聚类
-            cluster_type = self._classify_cluster(c)
-            
-            if cluster_type == 'obstacle':
-                obstacle_count += 1
-                if best is None or nearest < best['dist']:
-                    nearest_pt = min(c, key=lambda p: p[2])
-                    danger_angle = math.atan2(nearest_pt[1], nearest_pt[0])
-                    danger_deg = math.degrees(danger_angle)
-                    best = {
-                        'dist': nearest,
-                        'danger_deg': danger_deg,
-                        'width': width,
-                        'pts': len(c),
-                    }
-            else:
-                wall_count += 1
-            
-            self.log.telemetry('CLUSTER',
-                f'type={cluster_type} dist={nearest:.2f} span={angle_span_deg:.1f} '
-                f'pts={len(c)} w={width:.2f} gap={avg_gap:.3f}')
-        
-        self.log.telemetry('FILTER_SUMMARY',
-            f'walls={wall_count} obstacles={obstacle_count}')
-        
+            nearest = min(cluster, key=lambda point: point[2])
+            span = math.hypot(
+                cluster[0][0] - cluster[-1][0],
+                cluster[0][1] - cluster[-1][1],
+            )
+            if not emergency and (span < self.min_cluster_w or span > self.max_cluster_w):
+                continue
+            center_x = sum(point[0] for point in cluster) / len(cluster)
+            center_y = sum(point[1] for point in cluster) / len(cluster)
+            candidate = {
+                'dist': float(nearest[2]),
+                'danger_deg': math.degrees(math.atan2(center_y, max(center_x, 1e-6))),
+                'width': span,
+                'pts': len(cluster),
+            }
+            if best is None or candidate['dist'] < best['dist']:
+                best = candidate
         return best
+
+    def _clusters_in_window_with_limits(self, scan_msg, min_x, max_x, half_width):
+        """Collect scan clusters using the requested S1 detection window."""
+        clusters = []
+        current = []
+        previous = None
+        for index, distance in enumerate(scan_msg.ranges):
+            if math.isinf(distance) or math.isnan(distance) or distance < self.min_range:
+                if current:
+                    clusters.append(current)
+                current = []
+                previous = None
+                continue
+            angle = scan_msg.angle_min + index * scan_msg.angle_increment
+            point = (
+                distance * math.cos(angle),
+                distance * math.sin(angle),
+                distance,
+            )
+            if point[0] < min_x or point[0] > max_x or abs(point[1]) > half_width:
+                if current:
+                    clusters.append(current)
+                current = []
+                previous = None
+                continue
+            if previous is None or math.hypot(point[0] - previous[0], point[1] - previous[1]) <= self.cluster_gap:
+                current.append(point)
+            else:
+                if current:
+                    clusters.append(current)
+                current = [point]
+            previous = point
+        if current:
+            clusters.append(current)
+        return clusters
 
     def _check_obstacle(self):
         obs = self._find_nearest_obstacle(self.latest_scan)
@@ -1434,7 +1527,8 @@ class Stage3ReturnNavigator(Node):
 
     def _begin_avoidance(self, danger_deg):
         self.avoid_state = 'avoiding'
-        self.avoid_turn_direction = -1.0 if danger_deg > 0.0 else 1.0
+        # S1 strategy: the first avoidance turn is always to the right.
+        self.avoid_turn_direction = -1.0
         self.avoid_started_time = self.get_clock().now()
         self.avoid_clear_since = None
         self.avoid_entry_yaw = self.current_yaw
@@ -1458,9 +1552,10 @@ class Stage3ReturnNavigator(Node):
 
             cone_clear = True
             if self.latest_scan is not None:
-                obs = self._find_nearest_obstacle(self.latest_scan)
-                if obs is not None and obs['dist'] < self.avoid_clear_dist:
-                    cone_clear = False
+                # S1 switches to a tighter emergency window while turning;
+                # once that window is clear, the fixed maneuver can progress.
+                obs = self._find_nearest_obstacle(self.latest_scan, emergency=True)
+                cone_clear = obs is None
 
             if cone_clear and self.avoid_clear_since is None:
                 self.avoid_clear_since = now
@@ -1528,7 +1623,7 @@ class Stage3ReturnNavigator(Node):
     def _recovery_complete(self):
         now = self.get_clock().now()
         if self.current_yaw is not None and self.avoid_entry_yaw is not None:
-            if abs(self._angle_error(self.avoid_entry_yaw, self.current_yaw)) <= self.recovery_in_place:
+            if abs(self._angle_error(self.avoid_entry_yaw, self.current_yaw)) <= self.heading_tolerance:
                 return True
         if self.recovery_deadline is not None and now >= self.recovery_deadline:
             return True

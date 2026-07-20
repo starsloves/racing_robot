@@ -74,8 +74,8 @@ stage2_inertial_navigator:
     track_max_angular: 0.75
 
     # 入口 90° 弯：线速度 + 角速度
-    track_entry_linear: 0.24
-    track_entry_angular: 0.75
+    track_entry_linear: 0.30
+    track_entry_angular: 0.77
 
     # 后续 180° 弯：角速度
     track_corner_angular: 0.80
@@ -87,17 +87,17 @@ stage2_inertial_navigator:
     # 第一个 180°：在 0.65m ± 0.15m 窗口内由前方正对边界触发。
     # 到达窗口上限仍未连续确认视觉边界时，按距离保护强制进入 left_side_arc。
     track_entry_boundary_trigger_enabled: true
-    track_entry_boundary_guard_half_width_m: 0.15
+    track_entry_boundary_guard_half_width_m: 0.50 # 让纯视觉
     # 前方横边在分割 ROI 中自顶部向下的位置比例；值越大代表边界越靠近车头。
-    track_entry_boundary_top_y_ratio: 0.25
+    track_entry_boundary_top_y_ratio: 0.23
     # 只接受近似水平、正对车头的横向边界。
     track_entry_boundary_max_angle_deg: 20.0
     # 连续有效视觉帧数；现场试跑先用 1，支持改为 2 或 3 抑制误检。
-    track_entry_boundary_confirm_frames: 2
+    track_entry_boundary_confirm_frames: 1
 
     # 第二个 180° 触发点：top_long 走多远开始 right_side_arc。
     # 最新日志约在 2.50m 后切入；现场要求再提前约 10cm，因此由 2.59m 收到 2.49m。
-    track_top_long_distance_m: 2.45
+    track_top_long_distance_m: 2.47
 
     # 出口最后直线长度：right_side_arc 后走多远判定 Stage2 完成。
     # 最新实车反馈最后一段偏长，缩短 20cm：1.49m -> 1.29m。
@@ -105,11 +105,11 @@ stage2_inertial_navigator:
 
     # 两个 180° 和出口短直线完成后，按方向执行 90°：顺时针左转、逆时针右转。
     # 该段复用入口 90° 的 track_entry_linear / track_entry_angular / radius 配置，
-    # 随后沿 -Y 直行；估计 map_y 严格小于此值时交权给 Stage3。
-    track_entry_map_x: 2.80
-    track_entry_map_y: 3.10
-    track_stage3_handoff_map_y: 2.80
+    # 随后沿 -Y 直行；实时 TF map_y 严格小于此值时交权给 Stage3。
+    track_stage3_handoff_map_y: 2.10
     stage3_entry_anchor_topic: stage3_entry_anchor
+    # S3 交接锚点只取 map <- base_footprint 的实时 TF xy；TF 不可用时暂停交权。
+    stage3_entry_anchor_base_frame: base_footprint
 
     # 名义半径：用于日志/弧长诊断，实际切段以 IMU 相对角为准
     track_entry_radius: 0.40
@@ -140,12 +140,9 @@ stage2_inertial_navigator:
     vision_turn_assist_enabled: false
     imu_heading_correction_enabled: true
     fusion_mode_enabled: true
-    fusion_weight_imu: 1.0
-    fusion_weight_vision: 0.0
-    # 长直线视觉横向纠偏：当前实车测试将有效修正强度提高四倍。
-    # weight 是归一化权重（0~1），因此通过 scale 放大实际修正量。
+    # 长直线视觉横向纠偏：实车越线后将视觉权重减半，降低与 IMU 航向保持对抗。
     track_vision_lateral_scale_m: 2.40
-    track_vision_lateral_weight: 0.70
+    track_vision_lateral_weight: 0.35
     # 视觉修正本身的角速度限幅，同步由 0.10 提高四倍至 0.40rad/s；
     # 总输出仍受 track_max_angular=0.75rad/s 限制。
     track_vision_correction_max_angular: 0.40
