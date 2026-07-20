@@ -1,9 +1,12 @@
 import math
 
 import os
+import threading
+import time
 
 import rclpy
 from nav_msgs.msg import Odometry
+from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import Empty
 
 from racing_stage2.stage2_inertial_base import Stage2InertialBase
@@ -95,6 +98,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('turn_angle_compensation_deg', 0.0)  # 每次转弯额外补偿角度
         # 加速渐变参数（转弯后平滑过渡）
         self.declare_parameter('move_accel_ramp_sec', 0.5)  # 转弯后加速渐变时长（秒）
+        self.declare_parameter('command_heartbeat_rate_hz', 20.0)
 
         self.test_direction_raw = str(self.get_parameter('test_direction').value).strip()
         self.test_direction = self.resolve_test_direction(self.test_direction_raw)
@@ -280,6 +284,16 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._map_origin_x = 2.50  # map→odom 变换参数（从 launch 传入）
         self._map_origin_y = 2.80
         self._map_origin_yaw = math.radians(90.0)
+        self._command_lock = threading.Lock()
+        self._last_command_at = time.monotonic()
+        self._heartbeat_stale_reported = False
+        heartbeat_hz = max(5.0, float(self.get_parameter('command_heartbeat_rate_hz').value))
+        self._command_heartbeat_group = ReentrantCallbackGroup()
+        self._command_heartbeat_timer = self.create_timer(
+            1.0 / heartbeat_hz,
+            self._command_heartbeat,
+            callback_group=self._command_heartbeat_group,
+        )
 
         self.get_logger().info(
             f'{self.test_feedback_prefix}导航节点已就绪，方向={self.direction_text()}，'
@@ -377,9 +391,28 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._log_session('FEEDBACK', text)
 
     def create_twist(self, linear_x=0.0, angular_z=0.0):
-        self._last_cmd_linear = float(linear_x)
-        self._last_cmd_angular = float(angular_z)
+        with getattr(self, '_command_lock', threading.Lock()):
+            self._last_cmd_linear = float(linear_x)
+            self._last_cmd_angular = float(angular_z)
+            self._last_command_at = time.monotonic()
+            self._heartbeat_stale_reported = False
         return super().create_twist(linear_x, angular_z)
+
+    def _command_heartbeat(self) -> None:
+        """Keep command output continuous while track control is active."""
+        if not getattr(self, '_track_mission_active', False):
+            return
+        with self._command_lock:
+            age = time.monotonic() - self._last_command_at
+            linear = self._last_cmd_linear
+            angular = self._last_cmd_angular
+        if age > self._control_gap_warn_sec and not self._heartbeat_stale_reported:
+            self._heartbeat_stale_reported = True
+            self._log_session(
+                'CMD_HEARTBEAT_HOLD',
+                f'control_age={age:.3f}s -> holding last command',
+            )
+        self.cmd_pub.publish(super().create_twist(linear, angular))
 
     def _log_control_timing(self, now_sec: float, tag: str, will_publish: bool = True) -> None:
         last_loop = getattr(self, '_last_control_loop_sec', None)
@@ -1812,32 +1845,41 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 def main(args=None):
     import threading
     import traceback
+    from rclpy.executors import MultiThreadedExecutor
 
     from racing_stage2.cmd_vel_stop import (
         init_without_ros_signal_handler,
         install_stop_event,
         publish_stop,
-        spin_until_stop,
     )
 
     init_without_ros_signal_handler(args)
     node = None
+    executor = None
     stop_event = threading.Event()
     request_stop = None
     try:
         node = Stage2InertialNavigator()
+        executor = MultiThreadedExecutor(num_threads=3)
+        executor.add_node(node)
         request_stop = install_stop_event(
             stop_event,
             lambda: publish_stop(node.cmd_pub),
             cli_topics=['/cmd_vel', '/stage2_cmd_vel'],
         )
         node._request_stop = request_stop
-        spin_until_stop(node, stop_event)
+        while rclpy.ok() and not stop_event.is_set():
+            executor.spin_once(timeout_sec=0.05)
     except KeyboardInterrupt:
         if request_stop is not None:
             request_stop()
     except Exception as exc:
         tb = traceback.format_exc()
+        try:
+            if executor is not None:
+                executor.shutdown()
+        except Exception:
+            pass
         try:
             if node is not None:
                 node.get_logger().error(f'Stage2 crashed: {exc}\n{tb}')

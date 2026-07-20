@@ -28,10 +28,6 @@ competition_controller:
     # IMU 九轴数据话题（用于航向控制）
     imu_topic: /imu/data
 
-    # 初始静止时的赛场 map 航向 (°)。首帧原始 IMU yaw 映射到该值，
-    # 后续仅叠加 IMU 的相对转角，供 Stage1 全部状态使用。
-    imu_initial_map_yaw_deg: 10.0
-
     # 里程计话题（EKF 融合后的位姿，用于路径记录和后退）
     odom_topic: /odom_combined
 
@@ -167,7 +163,7 @@ competition_controller:
     counter_steer_angular_speed: 0.50
 
     # 反舵持续时间缩放系数 — 反舵时长 = 避障时长 × 此系数
-    counter_steer_duration_scale: 0.6
+    counter_steer_duration_scale: 1.35
 
     # 反舵最小持续时间 (s)
     counter_steer_min_duration_sec: 0.45
@@ -182,17 +178,17 @@ competition_controller:
     # 恢复转弯线速度 (m/s) — 转弯修正时的前进速度
     recovery_turn_linear_speed: 0.08
 
-    # 恢复角速度 (rad/s) — 基于时间的恢复转向速度（减小避免回正过冲）
-    recovery_angular_speed: 0.40
+    # 恢复角速度 (rad/s) — 基于时间的恢复转向速度
+    recovery_angular_speed: 0.75
 
-    # 恢复航向比例增益 — 航向误差 → 角速度修正增益（减小避免回正过冲）
-    recovery_heading_kp: 1.5
+    # 恢复航向比例增益 — 航向误差 → 角速度修正增益
+    recovery_heading_kp: 2.4
 
     # 恢复最大角速度 (rad/s)
-    recovery_max_angular_speed: 0.6
+    recovery_max_angular_speed: 1.1
 
     # 恢复最小角速度 (rad/s) — 防止微小误差时转速过低
-    recovery_min_angular_speed: 0.3
+    recovery_min_angular_speed: 0.5
 
     # 原地转向角度阈值 (°) — 航向误差小于此值时边走边转，否则原地转
     recovery_in_place_angle_deg: 8.0
@@ -216,8 +212,8 @@ competition_controller:
     # 后退目标 X (m, map 坐标系) — 后退到 map_x ≤ 此值时停止
     back_target_x: 2.0
 
-    # 后退线速度 (m/s) — 负值表示倒车；速度须低于 0.05m 轨迹采样的可跟踪范围
-    back_linear_speed: -0.18
+    # 后退线速度 (m/s) — 负值表示倒车
+    back_linear_speed: -0.35
 
     # 后退航向修正增益 — 航向误差 → 角速度增益
     back_angular_kp: 1.8
@@ -227,9 +223,6 @@ competition_controller:
 
     # 路径采样间隔 (m) — 前进时每隔此距离记录一个路点
     back_path_sample_distance: 0.05
-
-    # 倒序路径前瞻距离 (m) — 车尾追踪该距离后的来时轨迹点
-    back_lookahead_m: 0.25
 
     # 后退超时 (s) — 后退超过此时长则跳过后退，直接通道导航
     back_timeout_sec: 10.0
@@ -256,7 +249,7 @@ competition_controller:
     # --- 通道路点 (Waypoints in map frame) ---
     # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
     # 先贴 x=2.50 再收 y，避免单点 LOS 中段漂移
-    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.70,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.30,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
 
     # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
     corridor_waypoint_tolerance: 0.25
@@ -275,10 +268,6 @@ competition_controller:
     # --- 区域进入判据 (Region Entry Criteria) ---
     # 进入区域判定半径 (m) — 距离终点 ≤ 此半径时判定进入区域
     corridor_entry_region_radius_m: 0.10
-
-    # Stage1 -> Stage2 交权的最小 map Y (m) — 即使已进入圆形区域，也必须到达该 Y 门线后才放行
-    # 入口目标 y=2.30；防止在目标前约 0.10m 时由圆形区域判据提前交权
-    corridor_release_min_y_m: 2.60
 
     # 进入区域航向容差 (°) — 进入区域时航向误差容差
     corridor_entry_yaw_tolerance_deg: 15.0

@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from hobot_dnn import pyeasy_dnn as dnn
@@ -154,11 +155,14 @@ class VisionLaneCentering:
         
         # ROS 订阅
         self.bridge = CvBridge()
-        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        # Keep inference independent from navigation and discard stale frames.
+        qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self._image_callback_group = MutuallyExclusiveCallbackGroup()
         
         # 订阅原始相机图像
         self._node.create_subscription(
-            Image, '/aurora/rgb/image_raw', self._image_callback, qos
+            Image, '/aurora/rgb/image_raw', self._image_callback, qos,
+            callback_group=self._image_callback_group,
         )
         
         # 统计

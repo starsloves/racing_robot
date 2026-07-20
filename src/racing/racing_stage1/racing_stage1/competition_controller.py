@@ -1,7 +1,6 @@
 import math
 import heapq
 import json
-import time
 import numpy as np
 import threading
 
@@ -33,7 +32,6 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 from racing_common.racing_logger import RacingLogger
-from racing_common.yolo_bbox_detector import YoloBBoxDetector
 from racing_stage1.stage1_vision_mixin import Stage1VisionMixin
 
 
@@ -45,6 +43,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('stage2_cmd_topic', '/stage2_cmd_vel')
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('imu_topic', '/imu/data')
+        self.declare_parameter('imu_yaw_offset_deg', 0.0)
+        self.declare_parameter('imu_initial_map_yaw_deg', 10.0)
         self.declare_parameter('odom_topic', '/odom_combined')  # map 坐标系
         self.declare_parameter('qr_result_topic', 'qr_scan_result')
         self.declare_parameter('phase_topic', 'competition_phase')
@@ -54,9 +54,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('control_rate_hz', 20.0)
         self.declare_parameter('blind_linear_speed', 0.2)
         self.declare_parameter('blind_angular_speed', 0.0)
-        self.declare_parameter('blind_left_search_x', 3.5)
-        self.declare_parameter('blind_left_search_linear_speed', 0.12)
-        self.declare_parameter('blind_left_search_angular_speed', 0.55)
         self.declare_parameter('avoid_linear_speed', 0.1)
         self.declare_parameter('avoid_angular_speed', 0.8)
         self.declare_parameter('avoid_min_duration_sec', 0.7)
@@ -101,11 +98,10 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('enable_backing', True)
         self.declare_parameter('back_target_x', 2.0)
         self.declare_parameter('back_linear_speed', -0.15)
-        self.declare_parameter('back_turn_linear_speed', -0.12)
-        self.declare_parameter('back_turn_slowdown_angle_deg', 18.0)
         self.declare_parameter('back_angular_kp', 1.8)
         self.declare_parameter('back_position_tolerance', 0.15)
         self.declare_parameter('back_path_sample_distance', 0.20)
+        self.declare_parameter('back_lookahead_m', 0.25)
         self.declare_parameter('back_timeout_sec', 10.0)
         self.declare_parameter('back_align_yaw_deg', 90.0)
         self.declare_parameter('back_align_tolerance_deg', 5.0)
@@ -116,7 +112,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('odom_frame', 'odom_combined')
         self.declare_parameter('corridor_path_topic', '/stage1_corridor_path')
         self.declare_parameter('enable_corridor_navigation', True)
-        self.declare_parameter('corridor_waypoints_json', '[{"x":2.50,"y":2.50}]')
+        self.declare_parameter('corridor_waypoints_json', '[{"x":2.80,"y":3.10}]')
         self.declare_parameter('corridor_waypoint_tolerance', 0.15)
         self.declare_parameter('corridor_goal_tolerance', 0.10)
         self.declare_parameter('corridor_goal_yaw_deg', 90.0)
@@ -165,28 +161,11 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('planner_unknown_is_occupied', True)
         self.declare_parameter('planner_obstacle_inflation_m', 0.14)
         self.declare_parameter('planner_replan_period_sec', 2.5)
-        # 区域进入：不要求精准到点/精准航向，进入入口区域即可切 Stage2
+        # 区域进入：圆形区域命中后仍须越过最小 map Y 门线，防止入口前提前交权。
         self.declare_parameter('corridor_entry_region_radius_m', 0.35)
+        self.declare_parameter('corridor_release_min_y_m', float('-inf'))
         self.declare_parameter('corridor_entry_yaw_tolerance_deg', 30.0)
-        self.declare_parameter('corridor_require_yaw_for_release', True)
-        self.declare_parameter('corridor_final_align_start_distance_m', 0.65)
-        self.declare_parameter('corridor_final_align_min_speed', 0.16)
-        self.declare_parameter('corridor_final_align_max_speed', 0.24)
-        self.declare_parameter('corridor_final_align_heading_kp', 1.0)
-        self.declare_parameter('corridor_final_align_lateral_kp', 0.15)
-        self.declare_parameter('corridor_final_align_stable_sec', 0.12)
-        self.declare_parameter('corridor_final_gate_x_tolerance_m', 0.45)
-        self.declare_parameter('corridor_final_gate_y_before_m', 0.12)
-        self.declare_parameter('corridor_final_gate_y_after_m', 0.16)
-        self.declare_parameter('corridor_final_gate_yaw_tolerance_deg', 8.0)
-        self.declare_parameter('corridor_final_overshoot_y_m', 0.22)
-        self.declare_parameter('corridor_final_overshoot_yaw_tolerance_deg', 12.0)
-        # 角速度死区 + 低通，抑制接近终点时频繁左右修角
-        self.declare_parameter('corridor_angular_deadband', 0.06)
-        self.declare_parameter('corridor_angular_filter_alpha', 0.30)
-        self.declare_parameter('corridor_heading_hold_deg', 4.0)
-        # 通道导航接近目标时禁用避障的距离阈值 (m)
-        self.declare_parameter('corridor_disable_avoidance_distance_m', 0.60)
+        self.declare_parameter('corridor_require_yaw_for_release', False)
         self.declare_parameter('corridor_path_follow_mode', 'pure_pursuit')  # pure_pursuit | stanley
         self.declare_parameter('corridor_force_reorient_enabled', False)
         self.declare_parameter('corridor_pp_min_lookahead_m', 0.25)
@@ -196,55 +175,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_replan_offpath_m', 0.28)
         self.declare_parameter('corridor_min_cruise_speed', 0.10)
         self.declare_parameter('corridor_max_turn_linear_speed', 0.08)
-        # 地图通道导航仍由 A* + Pure Pursuit 主控；YOLO 只提供受限居中微调。
-        self.declare_parameter('corridor_vision_centering_enabled', True)
-        self.declare_parameter('corridor_vision_centering_min_confidence', 0.35)
-        self.declare_parameter('corridor_vision_centering_timeout_sec', 0.25)
-        self.declare_parameter('corridor_vision_centering_deadband', 0.08)
-        self.declare_parameter('corridor_vision_centering_kp', 0.20)
-        self.declare_parameter('corridor_vision_centering_max_angular', 0.10)
-        self.declare_parameter('corridor_vision_centering_filter_alpha', 0.35)
-        # 通道 YOLO 中心对齐 + 阶段内 map 初始值重置（不发布/覆盖 /odom_combined）
-        self.declare_parameter('channel_yolo_enabled', True)
-        self.declare_parameter('channel_yolo_model_path', '/home/sunrise/dev_ws/best_rdk_tongdao.bin')
-        self.declare_parameter('channel_yolo_camera_topic', '/aurora/rgb/image_raw')
-        self.declare_parameter('channel_yolo_camera_info_topic', '/aurora/rgb/camera_info')
-        self.declare_parameter('channel_yolo_camera_frame', 'camera')
-        self.declare_parameter('channel_yolo_camera_frame_is_optical', True)
-        self.declare_parameter('channel_yolo_bbox_anchor_v_ratio', 1.0)
-        self.declare_parameter('channel_yolo_conf_thres', 0.25)
-        self.declare_parameter('channel_yolo_iou_thres', 0.45)
-        self.declare_parameter('channel_yolo_preview_path', '/tmp/stage1_channel_yolo.jpg')
-        self.declare_parameter('channel_yolo_raw_path', '/tmp/stage1_channel_raw.jpg')
-        self.declare_parameter('channel_yolo_http_port', 8081)
-        self.declare_parameter('channel_yolo_trigger_y', 1.5)
-        self.declare_parameter('channel_handoff_yaw_deg', 90.0)
-        self.declare_parameter('channel_handoff_yaw_tolerance_deg', 5.0)
-        self.declare_parameter('channel_reset_map_x', 2.5)
-        self.declare_parameter('channel_reset_map_y', 2.5)
-        self.declare_parameter('channel_reset_yaw_deg', 90.0)
-        self.declare_parameter('channel_handoff_position_tolerance_m', 0.10)
-        self.declare_parameter('channel_handoff_advance_m', 0.10)
-        self.declare_parameter('channel_yolo_fallback_enabled', True)
-        self.declare_parameter('channel_handoff_lateral_kp', 1.2)
-        self.declare_parameter('channel_yolo_linear_speed', 0.18)
-        self.declare_parameter('channel_yolo_chase_speed', 0.35)
-        self.declare_parameter('channel_yolo_finish_speed', 0.08)
-        self.declare_parameter('channel_yolo_max_angular', 0.35)
-        self.declare_parameter('channel_yolo_yaw_correction_gain', 1.0)
-        self.declare_parameter('channel_yolo_timeout_sec', 12.0)
-        self.declare_parameter('channel_yolo_lost_timeout_sec', 0.30)
-        self.declare_parameter('channel_yolo_finish_yaw_tolerance_deg', 3.0)
-        # Visual handoff state machine: align to +Y, approach, then release at a map-Y gate.
-        self.declare_parameter('channel_yolo_confirm_frames', 3)
-        self.declare_parameter('channel_yolo_align_tolerance_deg', 8.0)
-        self.declare_parameter('channel_yolo_align_speed', 0.08)
-        self.declare_parameter('channel_yolo_lost_continue_sec', 6.0)
-        self.declare_parameter('channel_handoff_release_y', 2.60)
-        self.declare_parameter('channel_handoff_release_x', 2.50)
-        self.declare_parameter('channel_handoff_release_x_tolerance_m', 0.35)
-        self.declare_parameter('channel_handoff_release_yaw_tolerance_deg', 5.0)
-        self.declare_parameter('channel_yolo_approach_max_distance_m', 2.40)
 
         self.output_cmd_topic = self.get_parameter('output_cmd_topic').value
         self.stage2_cmd_topic = self.get_parameter('stage2_cmd_topic').value
@@ -256,16 +186,15 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.task_topic = self.get_parameter('task_topic').value
         self.stage2_state_topic = self.get_parameter('stage2_state_topic').value
         self.stage3_state_topic = self.get_parameter('stage3_state_topic').value
+        self.imu_yaw_offset_rad = math.radians(
+            float(self.get_parameter('imu_yaw_offset_deg').value)
+        )
+        self.imu_initial_map_yaw_rad = math.radians(
+            float(self.get_parameter('imu_initial_map_yaw_deg').value)
+        )
         control_rate_hz = float(self.get_parameter('control_rate_hz').value)
         self.blind_linear_speed = float(self.get_parameter('blind_linear_speed').value)
         self.blind_angular_speed = float(self.get_parameter('blind_angular_speed').value)
-        self.blind_left_search_x = float(self.get_parameter('blind_left_search_x').value)
-        self.blind_left_search_linear_speed = float(
-            self.get_parameter('blind_left_search_linear_speed').value
-        )
-        self.blind_left_search_angular_speed = float(
-            self.get_parameter('blind_left_search_angular_speed').value
-        )
         self.avoid_linear_speed = float(self.get_parameter('avoid_linear_speed').value)
         self.avoid_angular_speed = float(self.get_parameter('avoid_angular_speed').value)
         self.avoid_min_duration_sec = float(self.get_parameter('avoid_min_duration_sec').value)
@@ -314,13 +243,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.enable_backing = bool(self.get_parameter('enable_backing').value)
         self.back_target_x = float(self.get_parameter('back_target_x').value)
         self.back_linear_speed = float(self.get_parameter('back_linear_speed').value)
-        self.back_turn_linear_speed = float(self.get_parameter('back_turn_linear_speed').value)
-        self.back_turn_slowdown_angle_rad = math.radians(
-            float(self.get_parameter('back_turn_slowdown_angle_deg').value)
-        )
         self.back_angular_kp = float(self.get_parameter('back_angular_kp').value)
         self.back_position_tolerance = float(self.get_parameter('back_position_tolerance').value)
         self.back_path_sample_distance = float(self.get_parameter('back_path_sample_distance').value)
+        self.back_lookahead_m = max(
+            0.0, float(self.get_parameter('back_lookahead_m').value)
+        )
         self.back_timeout_sec = float(self.get_parameter('back_timeout_sec').value)
         self.back_align_yaw_rad = math.radians(float(self.get_parameter('back_align_yaw_deg').value))
         self.back_align_tolerance_rad = math.radians(float(self.get_parameter('back_align_tolerance_deg').value))
@@ -399,62 +327,14 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_entry_region_radius = float(
             self.get_parameter('corridor_entry_region_radius_m').value
         )
+        self.corridor_release_min_y = float(
+            self.get_parameter('corridor_release_min_y_m').value
+        )
         self.corridor_entry_yaw_tolerance = math.radians(
             float(self.get_parameter('corridor_entry_yaw_tolerance_deg').value)
         )
         self.corridor_require_yaw_for_release = bool(
             self.get_parameter('corridor_require_yaw_for_release').value
-        )
-        self.corridor_final_align_start_distance = float(
-            self.get_parameter('corridor_final_align_start_distance_m').value
-        )
-        self.corridor_final_align_min_speed = float(
-            self.get_parameter('corridor_final_align_min_speed').value
-        )
-        self.corridor_final_align_max_speed = float(
-            self.get_parameter('corridor_final_align_max_speed').value
-        )
-        self.corridor_final_align_heading_kp = float(
-            self.get_parameter('corridor_final_align_heading_kp').value
-        )
-        self.corridor_final_align_lateral_kp = float(
-            self.get_parameter('corridor_final_align_lateral_kp').value
-        )
-        self.corridor_final_align_stable_sec = float(
-            self.get_parameter('corridor_final_align_stable_sec').value
-        )
-        self.corridor_final_gate_x_tolerance = float(
-            self.get_parameter('corridor_final_gate_x_tolerance_m').value
-        )
-        self.corridor_final_gate_y_before = float(
-            self.get_parameter('corridor_final_gate_y_before_m').value
-        )
-        self.corridor_final_gate_y_after = float(
-            self.get_parameter('corridor_final_gate_y_after_m').value
-        )
-        self.corridor_final_gate_yaw_tolerance = math.radians(
-            float(self.get_parameter('corridor_final_gate_yaw_tolerance_deg').value)
-        )
-        self.corridor_final_overshoot_y = float(
-            self.get_parameter('corridor_final_overshoot_y_m').value
-        )
-        self.corridor_final_overshoot_yaw_tolerance = math.radians(
-            float(self.get_parameter('corridor_final_overshoot_yaw_tolerance_deg').value)
-        )
-        self.corridor_angular_deadband = float(
-            self.get_parameter('corridor_angular_deadband').value
-        )
-        self.corridor_angular_filter_alpha = float(
-            self.get_parameter('corridor_angular_filter_alpha').value
-        )
-        self.corridor_angular_filter_alpha = min(
-            1.0, max(0.05, self.corridor_angular_filter_alpha)
-        )
-        self.corridor_heading_hold = math.radians(
-            float(self.get_parameter('corridor_heading_hold_deg').value)
-        )
-        self.corridor_disable_avoidance_distance = float(
-            self.get_parameter('corridor_disable_avoidance_distance_m').value
         )
         self.corridor_path_follow_mode = str(
             self.get_parameter('corridor_path_follow_mode').value
@@ -482,109 +362,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         )
         self.corridor_max_turn_linear_speed = float(
             self.get_parameter('corridor_max_turn_linear_speed').value
-        )
-        self.corridor_vision_centering_enabled = bool(
-            self.get_parameter('corridor_vision_centering_enabled').value
-        )
-        self.corridor_vision_centering_min_confidence = float(
-            self.get_parameter('corridor_vision_centering_min_confidence').value
-        )
-        self.corridor_vision_centering_timeout_sec = float(
-            self.get_parameter('corridor_vision_centering_timeout_sec').value
-        )
-        self.corridor_vision_centering_deadband = float(
-            self.get_parameter('corridor_vision_centering_deadband').value
-        )
-        self.corridor_vision_centering_kp = float(
-            self.get_parameter('corridor_vision_centering_kp').value
-        )
-        self.corridor_vision_centering_max_angular = float(
-            self.get_parameter('corridor_vision_centering_max_angular').value
-        )
-        self.corridor_vision_centering_filter_alpha = min(1.0, max(0.05, float(
-            self.get_parameter('corridor_vision_centering_filter_alpha').value
-        )))
-        self.channel_yolo_enabled = bool(self.get_parameter('channel_yolo_enabled').value)
-        self.channel_yolo_model_path = str(self.get_parameter('channel_yolo_model_path').value)
-        self.channel_yolo_camera_topic = str(self.get_parameter('channel_yolo_camera_topic').value)
-        self.channel_yolo_camera_info_topic = str(
-            self.get_parameter('channel_yolo_camera_info_topic').value
-        )
-        self.channel_yolo_camera_frame = str(
-            self.get_parameter('channel_yolo_camera_frame').value
-        ).strip()
-        self.channel_yolo_camera_frame_is_optical = bool(
-            self.get_parameter('channel_yolo_camera_frame_is_optical').value
-        )
-        self.channel_yolo_bbox_anchor_v_ratio = float(
-            self.get_parameter('channel_yolo_bbox_anchor_v_ratio').value
-        )
-        self.channel_yolo_conf_thres = float(self.get_parameter('channel_yolo_conf_thres').value)
-        self.channel_yolo_iou_thres = float(self.get_parameter('channel_yolo_iou_thres').value)
-        self.channel_yolo_preview_path = str(self.get_parameter('channel_yolo_preview_path').value)
-        self.channel_yolo_raw_path = str(self.get_parameter('channel_yolo_raw_path').value)
-        self.channel_yolo_http_port = int(self.get_parameter('channel_yolo_http_port').value)
-        self.channel_yolo_trigger_y = float(self.get_parameter('channel_yolo_trigger_y').value)
-        self.channel_handoff_yaw = math.radians(float(self.get_parameter('channel_handoff_yaw_deg').value))
-        self.channel_handoff_yaw_tolerance = math.radians(
-            float(self.get_parameter('channel_handoff_yaw_tolerance_deg').value)
-        )
-        self.channel_reset_map_x = float(self.get_parameter('channel_reset_map_x').value)
-        self.channel_reset_map_y = float(self.get_parameter('channel_reset_map_y').value)
-        self.channel_reset_yaw = math.radians(float(self.get_parameter('channel_reset_yaw_deg').value))
-        self.channel_handoff_position_tolerance = float(
-            self.get_parameter('channel_handoff_position_tolerance_m').value
-        )
-        self.channel_handoff_advance = float(
-            self.get_parameter('channel_handoff_advance_m').value
-        )
-        self.channel_yolo_fallback_enabled = bool(
-            self.get_parameter('channel_yolo_fallback_enabled').value
-        )
-        self.channel_handoff_lateral_kp = float(
-            self.get_parameter('channel_handoff_lateral_kp').value
-        )
-        self.channel_yolo_linear_speed = float(self.get_parameter('channel_yolo_linear_speed').value)
-        self.channel_yolo_chase_speed = float(self.get_parameter('channel_yolo_chase_speed').value)
-        self.channel_yolo_finish_speed = float(self.get_parameter('channel_yolo_finish_speed').value)
-        self.channel_yolo_max_angular = float(self.get_parameter('channel_yolo_max_angular').value)
-        self.channel_yolo_yaw_correction_gain = float(
-            self.get_parameter('channel_yolo_yaw_correction_gain').value
-        )
-        self.channel_yolo_timeout_sec = float(self.get_parameter('channel_yolo_timeout_sec').value)
-        self.channel_yolo_lost_timeout_sec = float(
-            self.get_parameter('channel_yolo_lost_timeout_sec').value
-        )
-        self.channel_yolo_finish_advance = self.channel_handoff_advance
-        self.channel_yolo_finish_yaw_tolerance = math.radians(
-            float(self.get_parameter('channel_yolo_finish_yaw_tolerance_deg').value)
-        )
-        self.channel_yolo_confirm_frames = max(
-            1, int(self.get_parameter('channel_yolo_confirm_frames').value)
-        )
-        self.channel_yolo_align_tolerance = math.radians(
-            float(self.get_parameter('channel_yolo_align_tolerance_deg').value)
-        )
-        self.channel_yolo_align_speed = float(
-            self.get_parameter('channel_yolo_align_speed').value
-        )
-        self.channel_yolo_lost_continue_sec = float(
-            self.get_parameter('channel_yolo_lost_continue_sec').value
-        )
-        self.channel_handoff_release_y = float(
-            self.get_parameter('channel_handoff_release_y').value
-        )
-        self.channel_handoff_release_x = float(
-            self.get_parameter('channel_handoff_release_x').value
-        )
-        self.channel_handoff_release_x_tolerance = float(
-            self.get_parameter('channel_handoff_release_x_tolerance_m').value
-        )
-        self.channel_handoff_release_yaw_tolerance = math.radians(
-            float(self.get_parameter('channel_handoff_release_yaw_tolerance_deg').value)
-        )
-        self.channel_yolo_approach_max_distance = float(
-            self.get_parameter('channel_yolo_approach_max_distance_m').value
         )
 
         latched_qos = QoSProfile(
@@ -618,6 +395,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.avoid_cmd = Twist()
         self.phase1_motion_state = 'forward'
         self.current_yaw = None
+        self._imu_initial_raw_yaw = None
         self.desired_heading = None
         self.avoid_turn_direction = 0.0
         self.avoid_started_time = None
@@ -630,8 +408,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.warned_missing_heading = False
         self.latest_stage2_cmd = Twist()
         self.latest_stage2_cmd_time = None
-        self._stage2_cmd_timeout_active = False
-        self._last_stage2_timeout_log_sec = 0.0
         self.transition_end_time = None
         self.qr_task = ''
         self.stage2_state = 'idle'
@@ -661,8 +437,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_resume_after_avoidance = False
         self.corridor_entry_reorient_active = False
         self.corridor_entry_reorient_started_at = None
-        self.corridor_final_align_active = False
-        self.corridor_final_align_since = None
         self.corridor_desired_heading = None
         self.corridor_planned_path = []
         self.corridor_path_cursor = 0
@@ -675,30 +449,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self._corridor_occ_cache = None
         self._corridor_last_plan_pose = None
         self._corridor_plan_count = 0
-        self._corridor_angular_cmd_filtered = 0.0
-        self._corridor_visual_angular_cmd_filtered = 0.0
-        self._channel_yolo_detector = None
-        self._channel_handoff_step = 'idle'
-        self._channel_handoff_started_at = None
-        self._channel_map_target = None
-        self._channel_visual_target_map = None
-        self._channel_yolo_fallback_active = False
-        self._channel_yolo_timeout_logged = False
-        self._channel_yolo_lost_since = None
-        self._channel_yolo_finish_start_pose = None
-        self._channel_yolo_finish_aligned = False
-        self._channel_yolo_chase_step = 'idle'
-        self._channel_yolo_confirm_count = 0
-        self._channel_yolo_confirm_timestamp = 0.0
-        self._channel_yolo_last_detection_timestamp = 0.0
-        self._map_pose_ready_logged = False
-        self._channel_yolo_approach_start_odom = None
-        self._channel_yolo_resume_state = None
-        self._avoid_resume_state = None
-        self._stage1_manual_map_active = False
-        self._stage1_map_odom_x = 0.0
-        self._stage1_map_odom_y = 0.0
-        self._stage1_map_odom_yaw = 0.0
         path_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -734,8 +484,6 @@ class CompetitionController(Stage1VisionMixin, Node):
 
         # 视觉通道导航初始化
         self._setup_vision_corridor()
-        self._setup_channel_yolo_detector()
-        self._set_stage1_http_active(True)
 
         # 初始化时立即发布 phase=1，覆盖可能存在的旧 TRANSIENT_LOCAL 消息
         self.publish_phase()
@@ -807,8 +555,6 @@ class CompetitionController(Stage1VisionMixin, Node):
     def finish_corridor_entry_reorient(self, reason):
         self.corridor_entry_reorient_active = False
         self.corridor_entry_reorient_started_at = None
-        self.corridor_final_align_active = False
-        self.corridor_final_align_since = None
         if self.corridor_nav_mode == 'reorient':
             self.corridor_nav_mode = 'centerline'
         yaw = self.current_yaw if self.current_yaw is not None else 0.0
@@ -831,7 +577,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             target_heading = self.update_corridor_desired_heading(pose_xy=pose_xy, goal_xy=goal_xy)
 
         yaw = float(self.current_yaw)
-        # 始终走最短角；即使大角度也保持低速正向，不允许 v=0 时转向。
+        # 始终最短角原地拧，禁止大角度边走边拧把车甩出通道
         heading_error = self.angle_error(target_heading, yaw)
         started = self.corridor_entry_reorient_started_at
         elapsed = (now_ts - started) if started is not None else 0.0
@@ -849,11 +595,10 @@ class CompetitionController(Stage1VisionMixin, Node):
         if abs_err > self.corridor_entry_reorient_done and abs(angular) < self.turn_min_angular_speed:
             angular = math.copysign(self.turn_min_angular_speed, heading_error if heading_error != 0.0 else 1.0)
 
-        # 大角度用极低速圆弧修正，误差收敛后提高到蠕行速度。
+        # 大角度只原地转；误差 <45° 后再极慢前进
+        linear = 0.0
         if abs_err < math.radians(45.0):
-            linear = max(self.corridor_creep_speed, self.corridor_final_align_min_speed)
-        else:
-            linear = max(self.corridor_final_align_min_speed, min(self.corridor_creep_speed, 0.06))
+            linear = min(self.corridor_creep_speed, max(0.02, self.turn_linear_speed * 0.5))
 
         if now_ts - getattr(self, '_reorient_log_time', 0.0) >= 0.5:
             self._reorient_log_time = now_ts
@@ -874,7 +619,6 @@ class CompetitionController(Stage1VisionMixin, Node):
             return
 
         self.phase = target_phase
-        self._set_stage1_http_active(target_phase == 1)
         self.publish_phase()
         self.log.mission(f'✓ Phase切换执行: {self.phase-1} → {target_phase}, 原因: {reason}')
         self.stop_robot()
@@ -885,51 +629,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         else:
             self.transition_end_time = None
 
-    def _smooth_corridor_angular(self, angular, heading_error=None):
-        """死区 + 一阶低通，避免接近终点时角速度频繁左右抖动。"""
-        cmd = float(angular)
-        if heading_error is not None and abs(heading_error) <= self.corridor_heading_hold:
-            cmd = 0.0
-        if abs(cmd) < self.corridor_angular_deadband:
-            cmd = 0.0
-        alpha = self.corridor_angular_filter_alpha
-        self._corridor_angular_cmd_filtered = (
-            (1.0 - alpha) * self._corridor_angular_cmd_filtered + alpha * cmd
-        )
-        # 死区后滤波结果若仍极小，直接置 0，避免“微抖转向”
-        if abs(self._corridor_angular_cmd_filtered) < 0.5 * self.corridor_angular_deadband:
-            self._corridor_angular_cmd_filtered = 0.0
-        return self._corridor_angular_cmd_filtered
-
-    def _corridor_visual_centering_angular(self):
-        """Return a bounded YOLO center correction for map path following only."""
-        detector = getattr(self, '_channel_yolo_detector', None)
-        if not self.corridor_vision_centering_enabled or detector is None:
-            self._corridor_visual_angular_cmd_filtered = 0.0
-            return 0.0, False, 0.0, 0.0
-
-        detected, confidence, _bbox, timestamp, offset, _fill = detector.get_detection()
-        fresh = (
-            detected
-            and timestamp > 0.0
-            and time.time() - timestamp <= self.corridor_vision_centering_timeout_sec
-            and confidence >= self.corridor_vision_centering_min_confidence
-        )
-        if not fresh:
-            self._corridor_visual_angular_cmd_filtered = 0.0
-            return 0.0, False, float(offset), float(confidence)
-
-        error = float(offset)
-        raw = 0.0 if abs(error) <= self.corridor_vision_centering_deadband else (
-            -self.corridor_vision_centering_kp * error
-        )
-        raw = self.clamp(raw, self.corridor_vision_centering_max_angular)
-        alpha = self.corridor_vision_centering_filter_alpha
-        self._corridor_visual_angular_cmd_filtered = (
-            (1.0 - alpha) * self._corridor_visual_angular_cmd_filtered + alpha * raw
-        )
-        return self._corridor_visual_angular_cmd_filtered, True, error, float(confidence)
-
     def clamp(self, value, limit):
         return max(-limit, min(limit, value))
 
@@ -937,30 +636,36 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.cmd_pub.publish(Twist())
 
     def imu_callback(self, msg):
-        self.current_yaw = self.quaternion_to_yaw(msg.orientation)
+        raw_yaw = self.quaternion_to_yaw(msg.orientation)
+        if self._imu_initial_raw_yaw is None:
+            self._imu_initial_raw_yaw = raw_yaw
+            self.log.config(
+                f'IMU yaw initialized: raw_start={math.degrees(raw_yaw):.1f}° '
+                f'-> map_start={math.degrees(self.imu_initial_map_yaw_rad):.1f}°'
+            )
+
+        # 只用 IMU 的相对转角，首帧显式对齐到赛场 map 航向。
+        # 不读取 /odom 或 /odom_combined 的 orientation。
+        raw_delta = self.normalize_angle(raw_yaw - self._imu_initial_raw_yaw)
+        self.current_yaw = self.normalize_angle(
+            self.imu_initial_map_yaw_rad + raw_delta
+        )
         if self.phase == 1 and self.desired_heading is None:
             self.desired_heading = self.current_yaw
-            self.log.config(f'phase1 heading locked at {math.degrees(self.desired_heading):.1f} deg')
+            self.log.config(
+                f'phase1 heading locked at {math.degrees(self.desired_heading):.1f} deg '
+                f'(initial map yaw={math.degrees(self.imu_initial_map_yaw_rad):.1f} deg)'
+            )
 
     def odom_callback(self, msg):
-        """接收里程消息；倒退路径只记录 map 位姿，IMU 只提供航向。"""
+        """订阅 /odom_combined 用于路径记录（位置）"""
         self.current_odom = msg
         
         # Phase 1 前进时记录路径（只在 forward/avoiding/countersteering/recovering 时记录）
-        # 位置统一为 map (x, y)，角度统一为 IMU (self.current_yaw)。
+        # 位置用 odom (x, y)，角度用 IMU (self.current_yaw)
         if self.phase == 1 and self.enable_backing and self.phase1_motion_state in ('forward', 'avoiding', 'countersteering', 'recovering'):
-            map_xy = self._get_strict_map_position()
-            if map_xy is None:
-                return
-            x, y = map_xy
-            if not self._map_pose_ready_logged:
-                raw = self.current_odom.pose.pose.position
-                self._map_pose_ready_logged = True
-                self.log.startup(
-                    f'map pose ready: odom=({float(raw.x):.2f},{float(raw.y):.2f}) '
-                    f'-> map=({x:.2f},{y:.2f}); '
-                    'Stage1 path recording uses map only'
-                )
+            x = msg.pose.pose.position.x
+            y = msg.pose.pose.position.y
             # 使用纯 IMU 角度，而不是 odom 的 orientation（避免融合后角度不一致）
             yaw = self.current_yaw if self.current_yaw is not None else 0.0
             
@@ -1016,19 +721,6 @@ class CompetitionController(Stage1VisionMixin, Node):
             y + sin_yaw * point_x + cos_yaw * point_y,
         )
 
-    def _manual_map_xy_from_odom(self):
-        """阶段内 map 初始值覆盖：只影响本节点的 map xy 计算。"""
-        if not self._stage1_manual_map_active or self.current_odom is None:
-            return None
-        pos = self.current_odom.pose.pose.position
-        return self._transform_xy(
-            self._stage1_map_odom_x,
-            self._stage1_map_odom_y,
-            self._stage1_map_odom_yaw,
-            float(pos.x),
-            float(pos.y),
-        )
-
     def _lookup_map_xy_from_tf(self):
         """优先查 TF: map <- base_frame。"""
         candidates = []
@@ -1047,619 +739,39 @@ class CompetitionController(Stage1VisionMixin, Node):
         return None
 
     def get_map_position(self):
-        """Return map xy only; raw odometry must never be treated as map."""
-        map_xy = self._get_strict_map_position()
+        """通道导航统一使用 map 坐标；失败时用 odom+静态 TF 兜底。"""
+        map_xy = self._lookup_map_xy_from_tf()
         if map_xy is not None:
             return map_xy
+
+        if self.current_odom is None:
+            return None
+
+        # 兜底：用 map->odom 静态变换把 odom 位姿转到 map
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.map_frame, self.odom_frame, Time(), timeout=Duration(seconds=0.05)
+            )
+            t = transform.transform.translation
+            q = transform.transform.rotation
+            yaw = self.quaternion_to_yaw(q)
+            ox = float(self.current_odom.pose.pose.position.x)
+            oy = float(self.current_odom.pose.pose.position.y)
+            return self._transform_xy(float(t.x), float(t.y), yaw, ox, oy)
+        except TransformException:
+            pass
 
         if not self._map_pose_warned:
             self._map_pose_warned = True
             self.log.warn(
                 'POSE',
-                f'map pose unavailable; holding map-dependent control until TF '
-                f'{self.map_frame}->{self.odom_frame}->{self.base_frame} is ready. '
-                f'Raw {self.odom_topic} coordinates are not used as map.',
+                f'无法获取 map 位姿，临时退回 {self.odom_topic} 原始坐标；'
+                f'请检查 TF {self.map_frame}->{self.odom_frame}->{self.base_frame}'
             )
-        return None
-
-    def _get_strict_map_position(self):
-        """Return map xy for backing; never fall back to raw odom coordinates."""
-        manual_xy = self._manual_map_xy_from_odom()
-        if manual_xy is not None:
-            return manual_xy
-        map_xy = self._lookup_map_xy_from_tf()
-        if map_xy is not None:
-            return map_xy
-        if self.current_odom is None:
-            return None
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                self.map_frame, self.odom_frame, Time(), timeout=Duration(seconds=0.05)
-            )
-        except TransformException:
-            return None
-        t = transform.transform.translation
-        q = transform.transform.rotation
-        yaw = self.quaternion_to_yaw(q)
         pos = self.current_odom.pose.pose.position
-        return self._transform_xy(float(t.x), float(t.y), yaw, float(pos.x), float(pos.y))
-
-    def _setup_channel_yolo_detector(self):
-        if not self.channel_yolo_enabled:
-            self.log.startup('Stage1 channel YOLO handoff disabled')
-            return
-        try:
-            if not os.path.exists(self.channel_yolo_model_path):
-                self.channel_yolo_enabled = False
-                self.log.warn('CHANNEL_YOLO', f'model not found: {self.channel_yolo_model_path}')
-                return
-            self._channel_yolo_detector = YoloBBoxDetector(
-                self,
-                model_path=self.channel_yolo_model_path,
-                camera_topic=self.channel_yolo_camera_topic,
-                camera_info_topic=self.channel_yolo_camera_info_topic,
-                target_name='stage1_channel',
-                conf_thres=self.channel_yolo_conf_thres,
-                iou_thres=self.channel_yolo_iou_thres,
-                jpeg_output_path=self.channel_yolo_preview_path,
-                raw_output_path=self.channel_yolo_raw_path,
-                http_port=self.channel_yolo_http_port,
-            )
-            self._channel_yolo_detector.set_inference_active(False)
-            self.log.startup(
-                f'Stage1 channel YOLO enabled model={self.channel_yolo_model_path} '
-                f'trigger_y={self.channel_yolo_trigger_y:.2f} reset='
-                f'({self.channel_reset_map_x:.2f},{self.channel_reset_map_y:.2f})'
-            )
-        except Exception as e:
-            self.channel_yolo_enabled = False
-            self._channel_yolo_detector = None
-            self.log.warn('CHANNEL_YOLO', f'init failed, disabled: {e}')
-
-    def _set_channel_yolo_active(self, active):
-        detector = getattr(self, '_channel_yolo_detector', None)
-        if detector is not None:
-            detector.set_inference_active(active)
-
-    def _set_stage1_http_active(self, active):
-        detector = getattr(self, '_channel_yolo_detector', None)
-        if detector is None:
-            return
-        method = getattr(detector, 'start_http_server' if active else 'stop_http_server', None)
-        if method is not None:
-            method()
-
-    def _channel_yolo_has_fresh_detection(self, now_ts):
-        detector = getattr(self, '_channel_yolo_detector', None)
-        if detector is None:
-            return False
-        geometry = detector.get_detection_geometry()
-        timestamp = float(geometry.get('timestamp') or 0.0)
-        return bool(geometry.get('detected')) and timestamp > 0.0 and (
-            now_ts - timestamp <= self.channel_yolo_lost_timeout_sec
-        )
-
-    def _channel_yolo_detection_confirmed(self, now_ts):
-        """Require distinct positive inference frames before interrupting backing."""
-        detector = getattr(self, '_channel_yolo_detector', None)
-        if detector is None:
-            return False
-        geometry = detector.get_detection_geometry()
-        timestamp = float(geometry.get('timestamp') or 0.0)
-        if not geometry.get('detected') or timestamp <= 0.0 or (
-            now_ts - timestamp > self.channel_yolo_lost_timeout_sec
-        ):
-            self._channel_yolo_confirm_count = 0
-            return False
-        if timestamp != self._channel_yolo_confirm_timestamp:
-            self._channel_yolo_confirm_timestamp = timestamp
-            self._channel_yolo_confirm_count += 1
-        return self._channel_yolo_confirm_count >= self.channel_yolo_confirm_frames
-
-    def begin_channel_yolo_chase(self, reason):
-        if self.phase1_motion_state == 'channel_yolo_chase':
-            return
-        self.phase1_motion_state = 'channel_yolo_chase'
-        self._channel_yolo_lost_since = None
-        self._channel_yolo_chase_step = 'align_yaw'
-        self._channel_yolo_approach_start_odom = None
-        self._set_channel_yolo_active(True)
-        self.log.mission(
-            f'channel YOLO confirmed: {reason}, align to '
-            f'{math.degrees(self.channel_handoff_yaw):.1f}deg before fast approach'
-        )
-
-    def _channel_forward_progress(self, pose_xy):
-        if self.current_odom is None or self._channel_yolo_finish_start_pose is None:
-            return 0.0
-        pos = self.current_odom.pose.pose.position
-        dx = float(pos.x) - self._channel_yolo_finish_start_pose[0]
-        dy = float(pos.y) - self._channel_yolo_finish_start_pose[1]
-        # /odom_combined 只用于位移计数；不使用其 orientation。
-        return math.hypot(dx, dy)
-
-    def _begin_channel_yolo_finish(self, now_ts):
-        if self.phase1_motion_state == 'channel_yolo_finish':
-            return
-        self.phase1_motion_state = 'channel_yolo_finish'
-        self._channel_yolo_lost_since = now_ts
-        self._channel_yolo_finish_aligned = False
-        if self.current_odom is not None:
-            pos = self.current_odom.pose.pose.position
-            self._channel_yolo_finish_start_pose = (float(pos.x), float(pos.y))
-        else:
-            self._channel_yolo_finish_start_pose = None
-        self.log.mission(
-            'channel YOLO lost: finish with forward motion, '
-            f'advance={self.channel_yolo_finish_advance:.2f}m '
-            f'yaw_tol={math.degrees(self.channel_yolo_finish_yaw_tolerance):.1f}deg'
-        )
-
-    def handle_channel_yolo_chase(self):
-        now_ts = self.get_clock().now().nanoseconds / 1e9
-        yaw = self.current_yaw
-        if yaw is None:
-            self.stop_robot()
-            return
-        pose_xy = self.get_map_position()
-        if pose_xy is None:
-            self.stop_robot()
-            return
-
-        yaw_error = self.angle_error(self.channel_handoff_yaw, yaw)
-        x_error = pose_xy[0] - self.channel_handoff_release_x
-        release_ready = (
-            pose_xy[1] >= self.channel_handoff_release_y
-            and abs(x_error) <= self.channel_handoff_release_x_tolerance
-            and abs(yaw_error) <= self.channel_handoff_release_yaw_tolerance
-        )
-        if release_ready:
-            self._set_channel_yolo_active(False)
-            self.stop_robot()
-            self._finish_corridor_release(
-                pose_xy,
-                (self.channel_handoff_release_x, self.channel_handoff_release_y),
-                yaw,
-                f'channel Y gate reached map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                f'x_err={x_error:+.2f}m yaw_err={math.degrees(yaw_error):+.1f}deg',
-            )
-            return
-
-        if self._channel_yolo_chase_step == 'align_yaw':
-            angular = self.clamp(
-                self.channel_yolo_yaw_correction_gain * yaw_error,
-                self.channel_yolo_max_angular,
-            )
-            if abs(yaw_error) <= self.channel_yolo_align_tolerance:
-                self._channel_yolo_chase_step = 'approach'
-                if self.current_odom is not None:
-                    pos = self.current_odom.pose.pose.position
-                    self._channel_yolo_approach_start_odom = (float(pos.x), float(pos.y))
-                self.log.mission(
-                    f'channel YOLO yaw aligned={math.degrees(yaw):.1f}deg; '
-                    f'fast approach to map_y={self.channel_handoff_release_y:.2f}'
-                )
-            else:
-                self.cmd_pub.publish(self.create_twist(self.channel_yolo_align_speed, angular))
-                return
-
-        approach_distance = None
-        if self.current_odom is not None and self._channel_yolo_approach_start_odom is not None:
-            pos = self.current_odom.pose.pose.position
-            approach_distance = math.hypot(
-                float(pos.x) - self._channel_yolo_approach_start_odom[0],
-                float(pos.y) - self._channel_yolo_approach_start_odom[1],
-            )
-            if approach_distance >= self.channel_yolo_approach_max_distance:
-                self.stop_robot()
-                self._set_channel_yolo_active(False)
-                self.log.warn(
-                    'CHANNEL_YOLO',
-                    f'fast approach distance limit {approach_distance:.2f}/'
-                    f'{self.channel_yolo_approach_max_distance:.2f}m before Y gate; '
-                    'falling back to corridor navigation',
-                )
-                self.start_corridor_navigation('channel YOLO approach distance limit')
-                return
-
-        detector = self._channel_yolo_detector
-        geometry = detector.get_detection_geometry() if detector is not None else {}
-        timestamp = float(geometry.get('timestamp') or 0.0)
-        fresh = bool(geometry.get('detected')) and timestamp > 0.0 and (
-            now_ts - timestamp <= self.channel_yolo_lost_timeout_sec
-        )
-        if not fresh:
-            if self._channel_yolo_lost_since is None:
-                self._channel_yolo_lost_since = now_ts
-                self.log.warn('CHANNEL_YOLO', 'bbox lost during approach; holding IMU +Y')
-            if now_ts - self._channel_yolo_lost_since >= self.channel_yolo_lost_continue_sec:
-                self.log.warn(
-                    'CHANNEL_YOLO',
-                    f'bbox lost for {self.channel_yolo_lost_continue_sec:.1f}s before Y gate; '
-                    'falling back to corridor navigation',
-                )
-                self._set_channel_yolo_active(False)
-                self.start_corridor_navigation('channel YOLO lost before Y-gate release')
-                return
-            angular = self.clamp(
-                self.channel_yolo_yaw_correction_gain * yaw_error,
-                self.channel_yolo_max_angular,
-            )
-            self.cmd_pub.publish(self.create_twist(self.channel_yolo_chase_speed, angular))
-            return
-
-        self._channel_yolo_lost_since = None
-        offset = float(getattr(detector, 'get_detection', lambda: (False, 0, None, 0, 0, 0))()[4])
-        angular = (
-            self.channel_yolo_yaw_correction_gain * yaw_error
-            - self.channel_handoff_lateral_kp * offset
-        )
-        angular = self.clamp(angular, self.channel_yolo_max_angular)
-        self.cmd_pub.publish(self.create_twist(self.channel_yolo_chase_speed, angular))
-        if now_ts - getattr(self, '_channel_chase_log_time', 0.0) >= 0.5:
-            self._channel_chase_log_time = now_ts
-            self.log.segment(
-                f'channel chase bbox_offset={offset:+.3f} '
-                f'yaw_err={math.degrees(yaw_error):+.1f}deg '
-                f'map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                f'y_gate={self.channel_handoff_release_y:.2f} '
-                f'approach={(approach_distance if approach_distance is not None else float("nan")):.2f}m '
-                f'v={self.channel_yolo_chase_speed:.2f} w={angular:+.2f}'
-            )
-
-    def handle_channel_yolo_finish(self):
-        # Compatibility for an interrupted legacy state: finish now uses the
-        # same bounded Y-gate controller rather than a blind distance segment.
-        self.handle_channel_yolo_chase()
-
-    def begin_channel_yolo_handoff(self, pose_xy, reason):
-        if self.phase1_motion_state == 'channel_yolo_handoff':
-            return
-        self.phase1_motion_state = 'channel_yolo_handoff'
-        self.corridor_active = False
-        self.corridor_nav_mode = 'channel_yolo'
-        self.corridor_final_align_active = False
-        self.corridor_final_align_since = None
-        self._channel_handoff_step = 'align_yaw'
-        self._channel_handoff_started_at = self.get_clock().now().nanoseconds / 1e9
-        self._channel_map_target = None
-        self._channel_visual_target_map = None
-        self._channel_yolo_fallback_active = False
-        self._channel_yolo_timeout_logged = False
-        self._set_channel_yolo_active(False)
-        self.stop_robot()
-        self.log.mission(
-            f'channel YOLO handoff start: {reason}, map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-            f'target_yaw={math.degrees(self.channel_handoff_yaw):.1f}deg'
-        )
-
-    def _reset_stage1_local_map_origin(self):
-        if self.current_odom is None:
-            return False
-        pos = self.current_odom.pose.pose.position
-        raw_x = float(pos.x)
-        raw_y = float(pos.y)
-        # 只重置本节点的 map 初始值；不发布 /odom_combined，不改全局 TF。
-        yaw_offset = self.normalize_angle(self.channel_reset_yaw - (self.current_yaw or self.channel_reset_yaw))
-        cos_y = math.cos(yaw_offset)
-        sin_y = math.sin(yaw_offset)
-        self._stage1_map_odom_x = self.channel_reset_map_x - (cos_y * raw_x - sin_y * raw_y)
-        self._stage1_map_odom_y = self.channel_reset_map_y - (sin_y * raw_x + cos_y * raw_y)
-        self._stage1_map_odom_yaw = yaw_offset
-        self._stage1_manual_map_active = True
-        self.corridor_path_points = []
-        self.corridor_planned_path = []
-        self.corridor_path_cursor = 0
-        self.corridor_path_updated_at = 0.0
-        self.log.mission(
-            f'Stage1 local map origin reset: odom=({raw_x:.3f},{raw_y:.3f}) '
-            f'imu_yaw={(math.degrees(self.current_yaw) if self.current_yaw is not None else float("nan")):.1f}deg '
-            f'-> map=({self.channel_reset_map_x:.2f},{self.channel_reset_map_y:.2f}) '
-            f'yaw_offset={math.degrees(yaw_offset):.1f}deg'
-        )
-        return True
-
-    @staticmethod
-    def _rotate_vector_by_quaternion(vector, rotation):
-        """Rotate a 3D vector by a geometry_msgs Quaternion."""
-        qx = float(rotation.x)
-        qy = float(rotation.y)
-        qz = float(rotation.z)
-        qw = float(rotation.w)
-        vx, vy, vz = (float(value) for value in vector)
-        tx = 2.0 * (qy * vz - qz * vy)
-        ty = 2.0 * (qz * vx - qx * vz)
-        tz = 2.0 * (qx * vy - qy * vx)
-        return (
-            vx + qw * tx + qy * tz - qz * ty,
-            vy + qw * ty + qz * tx - qx * tz,
-            vz + qw * tz + qx * ty - qy * tx,
-        )
-
-    def _channel_target_base_from_detection(self, geometry):
-        """Project a configurable bbox vertical anchor onto the ground plane.
-
-        The bbox center describes the object, not a point on the floor.  For a
-        ground intersection the default anchor is the bottom-center of the
-        detection; the anchor ratio remains configurable for camera/model
-        calibration.
-        """
-        bbox = geometry.get('bbox')
-        camera_info = geometry.get('camera_info')
-        reported_frame = geometry.get('frame_id') or (
-            camera_info or {}
-        ).get('frame_id', '')
-        if bbox is None or camera_info is None:
-            self._channel_geometry_error = 'missing bbox or camera_info'
-            return None
-        candidates = []
-        for frame in (reported_frame, self.channel_yolo_camera_frame):
-            frame = str(frame).strip()
-            if frame and frame not in candidates:
-                candidates.append(frame)
-        if not candidates:
-            self._channel_geometry_error = 'camera frame_id is empty'
-            return None
-        fx = float(camera_info['fx'])
-        fy = float(camera_info['fy'])
-        cx = float(camera_info['cx'])
-        cy = float(camera_info['cy'])
-        if fx <= 0.0 or fy <= 0.0:
-            return None
-
-        x1, y1, x2, y2 = bbox
-        pixel_u = 0.5 * (float(x1) + float(x2))
-        anchor_ratio = self.clamp(self.channel_yolo_bbox_anchor_v_ratio, 0.0, 1.0)
-        pixel_v = float(y1) + anchor_ratio * (float(y2) - float(y1))
-        normalized_x = (pixel_u - cx) / fx
-        normalized_y = (pixel_v - cy) / fy
-        transform = None
-        camera_frame = ''
-        errors = []
-        for candidate in candidates:
-            try:
-                transform = self.tf_buffer.lookup_transform(
-                    self.base_frame,
-                    candidate,
-                    Time(),
-                    timeout=Duration(seconds=0.05),
-                )
-                camera_frame = candidate
-                break
-            except TransformException as exc:
-                errors.append(f'{candidate}: {exc}')
-        if transform is None:
-            self._channel_geometry_error = (
-                f'TF {self.base_frame}<-{", ".join(candidates)} unavailable; '
-                f'configured_frame={self.channel_yolo_camera_frame or "<empty>"}'
-            )
-            return None
-
-        # URDF's `camera` link uses the robot convention (+X forward, +Y left,
-        # +Z up), while CameraInfo rays use optical convention (+Z forward,
-        # +X right, +Y down).  Optical frames need no conversion here.
-        camera_is_optical = self.channel_yolo_camera_frame_is_optical
-        if camera_frame in ('camera', 'camera_link', 'base_link'):
-            camera_is_optical = False
-        if camera_is_optical:
-            ray_camera = (normalized_x, normalized_y, 1.0)
-        else:
-            ray_camera = (1.0, -normalized_x, -normalized_y)
-
-        translation = transform.transform.translation
-        direction = self._rotate_vector_by_quaternion(
-            ray_camera, transform.transform.rotation
-        )
-        origin = (float(translation.x), float(translation.y), float(translation.z))
-        if direction[2] >= -1e-4:
-            self._channel_geometry_error = (
-                f'ground ray points upward frame={camera_frame} '
-                f'direction=({direction[0]:.3f},{direction[1]:.3f},{direction[2]:.3f})'
-            )
-            return None
-        scale = -origin[2] / direction[2]
-        if scale <= 0.0:
-            self._channel_geometry_error = f'ground intersection is behind camera frame={camera_frame}'
-            return None
-        point = tuple(origin[index] + scale * direction[index] for index in range(3))
-        self._channel_geometry_error = f'using camera frame={camera_frame}'
-        return point[0], point[1]
-
-    def _channel_target_map_from_base(self, target_base):
-        """Transform a detected base-frame point into map using the full TF."""
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                self.map_frame,
-                self.base_frame,
-                Time(),
-                timeout=Duration(seconds=0.05),
-            )
-        except TransformException:
-            return None
-        translation = transform.transform.translation
-        point_map = self._rotate_vector_by_quaternion(
-            (target_base[0], target_base[1], 0.0),
-            transform.transform.rotation,
-        )
-        return (
-            float(translation.x) + point_map[0],
-            float(translation.y) + point_map[1],
-        )
-
-    def _drive_to_channel_map_target(self, pose_xy, yaw, now_ts):
-        visual_x, visual_y = self._channel_visual_target_map
-        target_x, target_y = self._channel_map_target
-        target_dx = visual_x - pose_xy[0]
-        target_dy = visual_y - pose_xy[1]
-        heading = self.channel_handoff_yaw
-        cos_heading = math.cos(heading)
-        sin_heading = math.sin(heading)
-        # advance_progress is traveled distance after the locked visual
-        # center.  Keep the target-to-vehicle vector separate for lateral
-        # steering so the release test cannot fire before the 10 cm advance.
-        advance_progress = (
-            (pose_xy[0] - visual_x) * cos_heading
-            + (pose_xy[1] - visual_y) * sin_heading
-        )
-        lateral_error = -sin_heading * target_dx + cos_heading * target_dy
-        yaw_error = self.angle_error(self.channel_handoff_yaw, yaw)
-        if (
-            advance_progress >= self.channel_handoff_advance
-            and abs(lateral_error) <= self.channel_handoff_position_tolerance
-            and abs(yaw_error) <= self.channel_handoff_yaw_tolerance
-        ):
-            self.stop_robot()
-            self._set_channel_yolo_active(False)
-            self._reset_stage1_local_map_origin()
-            self._finish_corridor_release(
-                pose_xy,
-                (target_x, target_y),
-                yaw,
-                f'channel map target reached map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                f'target=({target_x:.2f},{target_y:.2f}) '
-                f'advance={advance_progress:.2f}m lateral={lateral_error:.2f}m '
-                f'yaw_err={math.degrees(yaw_error):.1f}deg',
-            )
-            return
-
-        # Drive only toward the fixed map heading.  Once the visual target is
-        # passed, longitudinal error no longer changes the steering command,
-        # so the controller cannot turn around and orbit the target.
-        angular = (
-            self.channel_yolo_yaw_correction_gain * yaw_error
-            + self.channel_handoff_lateral_kp * lateral_error
-        )
-        angular = self.clamp(angular, self.channel_yolo_max_angular)
-        speed = self.channel_yolo_linear_speed
-        self.cmd_pub.publish(self.create_twist(speed, angular))
-        if now_ts - getattr(self, '_channel_yolo_log_time', 0.0) >= 0.5:
-            self._channel_yolo_log_time = now_ts
-            self.log.segment(
-                f'channel_map_target map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                f'target=({target_x:.2f},{target_y:.2f}) '
-                f'advance={advance_progress:.2f}/{self.channel_handoff_advance:.2f}m '
-                f'lateral={lateral_error:.2f}m yaw_err={math.degrees(yaw_error):.1f}deg '
-                f'v={speed:.2f} w={angular:.2f}'
-            )
-
-    def _start_channel_map_fallback(self, now_ts):
-        """Use the configured map handoff when visual detection is unavailable."""
-        heading = self.channel_handoff_yaw
-        self._channel_visual_target_map = (
-            self.channel_reset_map_x - self.channel_handoff_advance * math.cos(heading),
-            self.channel_reset_map_y - self.channel_handoff_advance * math.sin(heading),
-        )
-        self._channel_map_target = (self.channel_reset_map_x, self.channel_reset_map_y)
-        self._channel_handoff_step = 'forward_to_handoff'
-        self._channel_yolo_fallback_active = True
-        elapsed = now_ts - (self._channel_handoff_started_at or now_ts)
-        self.log.warn(
-            'CHANNEL_YOLO',
-            f'no bbox after {elapsed:.1f}s; fallback to YAML map handoff '
-            f'({self.channel_reset_map_x:.2f},{self.channel_reset_map_y:.2f})',
-        )
-
-    def handle_channel_yolo_handoff(self):
-        now_ts = self.get_clock().now().nanoseconds / 1e9
-        started = self._channel_handoff_started_at or now_ts
-        timed_out = now_ts - started > self.channel_yolo_timeout_sec
-        if timed_out:
-            if not self._channel_yolo_timeout_logged:
-                self._channel_yolo_timeout_logged = True
-                self.log.warn('CHANNEL_YOLO', 'handoff timeout: detector has no valid bbox')
-
-        yaw = self.current_yaw
-        if yaw is None:
-            self.stop_robot()
-            return
-
-        if (
-            timed_out
-            and self.channel_yolo_fallback_enabled
-            and self._channel_map_target is None
-            and not self._channel_yolo_fallback_active
-        ):
-            self._start_channel_map_fallback(now_ts)
-
-        if self._channel_handoff_step == 'align_yaw':
-            err = self.angle_error(self.channel_handoff_yaw, yaw)
-            if abs(err) <= self.channel_handoff_yaw_tolerance:
-                self._channel_handoff_step = 'detect_and_lock'
-                self._set_channel_yolo_active(True)
-                self.log.mission(
-                    f'channel yaw aligned yaw={math.degrees(yaw):.1f}deg, enabling YOLO'
-                )
-                return
-            angular = self.clamp(self.recovery_heading_kp * err, self.recovery_max_angular_speed)
-            if abs(angular) < self.recovery_min_angular_speed:
-                angular = math.copysign(self.recovery_min_angular_speed, err)
-            linear = self.recovery_turn_linear_speed if abs(err) > self.recovery_in_place_angle_rad else self.recovery_linear_speed
-            self.cmd_pub.publish(self.create_twist(linear, angular))
-            if now_ts - getattr(self, '_channel_yaw_log_time', 0.0) >= 0.5:
-                self._channel_yaw_log_time = now_ts
-                self.log.progress(
-                    f'channel_yaw_align yaw={math.degrees(yaw):.1f}deg '
-                    f'target={math.degrees(self.channel_handoff_yaw):.1f}deg '
-                    f'err={math.degrees(err):.1f}deg v={linear:.2f} w={angular:.2f}'
-                )
-            return
-
-        pose_xy = self.get_map_position()
-        if pose_xy is None:
-            self.stop_robot()
-            return
-        if self._channel_map_target is not None:
-            self._drive_to_channel_map_target(pose_xy, yaw, now_ts)
-            return
-
-        detector = self._channel_yolo_detector
-        if detector is None:
-            self.stop_robot()
-            return
-        geometry = detector.get_detection_geometry()
-        age = now_ts - float(geometry.get('timestamp') or 0.0)
-        if not geometry.get('detected') or geometry.get('bbox') is None or age > self.channel_yolo_timeout_sec:
-            self.stop_robot()
-            if now_ts - getattr(self, '_channel_yolo_log_time', 0.0) >= 0.5:
-                self._channel_yolo_log_time = now_ts
-                self.log.progress(
-                    f'channel_yolo waiting bbox detected={geometry.get("detected")} '
-                    f'age={age:.2f}s camera_info={geometry.get("camera_info") is not None}'
-                )
-            return
-
-        target_base = self._channel_target_base_from_detection(geometry)
-        if target_base is None:
-            self.stop_robot()
-            if now_ts - getattr(self, '_channel_geometry_log_time', 0.0) >= 0.5:
-                self._channel_geometry_log_time = now_ts
-                self.log.warn(
-                    'CHANNEL_YOLO',
-                    f'camera geometry unavailable, waiting: '
-                    f'{getattr(self, "_channel_geometry_error", "unknown")}',
-                )
-            return
-        target_map = self._channel_target_map_from_base(target_base)
-        if target_map is None:
-            self.stop_robot()
-            return
-        advance_x = self.channel_handoff_advance * math.cos(self.channel_handoff_yaw)
-        advance_y = self.channel_handoff_advance * math.sin(self.channel_handoff_yaw)
-        handoff_target = (target_map[0] + advance_x, target_map[1] + advance_y)
-        self._channel_visual_target_map = target_map
-        self._channel_map_target = handoff_target
-        self._channel_handoff_step = 'forward_to_handoff'
-        self.log.mission(
-            f'channel geometry target base=({target_base[0]:.2f},{target_base[1]:.2f}) '
-            f'visual_map=({target_map[0]:.2f},{target_map[1]:.2f}) '
-            f'handoff_map=({handoff_target[0]:.2f},{handoff_target[1]:.2f}) '
-            f'advance={self.channel_handoff_advance:.2f}m'
-        )
-        self._drive_to_channel_map_target(pose_xy, yaw, now_ts)
+        return float(pos.x), float(pos.y)
 
     def start_corridor_navigation(self, reason):
-        # 地图路径仍是主控；通道 YOLO 保持推理，为路径跟踪提供受限居中微调。
-        self._set_channel_yolo_active(True)
         if not self.enable_corridor_navigation or not self.corridor_waypoints:
             self.phase1_motion_state = 'forward'
             self.begin_phase_transition(2, reason)
@@ -1670,11 +782,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_align_active = False
         self.corridor_entry_reorient_active = False
         self.corridor_entry_reorient_started_at = None
-        self.corridor_final_align_active = False
-        self.corridor_final_align_since = None
         self._corridor_timeout_logged = False
-        self._corridor_angular_cmd_filtered = 0.0
-        self._corridor_visual_angular_cmd_filtered = 0.0
         self.corridor_index = max(0, len(self.corridor_waypoints) - 1)
         self.corridor_started_at = self.get_clock().now().nanoseconds / 1e9
         self.corridor_path_points = []
@@ -1688,14 +796,13 @@ class CompetitionController(Stage1VisionMixin, Node):
         self._corridor_vision_handoff_done = False
         self.phase1_motion_state = 'corridor'
 
-        # 先使用地图/A* 导航到通道口，进入口子后直接放行 Stage2；
-        # 视觉修正交给 Stage2 惯导融合，不在 Stage1 抢控制权。
+        # 导航阶段启用 YOLO 视觉推理，辅助通道识别
         if hasattr(self, '_enable_vision_corridor'):
             try:
-                self._enable_vision_corridor(False)
+                self._enable_vision_corridor(True)
             except Exception as e:
-                self.log.warn('VISION', f'关闭 Stage1 视觉导航失败，继续地图导航: {e}')
-        self.log.mission(f'后退完成，先地图导航到通道口，随后切 Stage2 惯导+视觉修正: {reason}')
+                self.log.warn('VISION', f'启用 Stage1 YOLO 视觉推理失败，继续地图导航: {e}')
+        self.log.mission(f'后退完成，地图导航到通道口 + YOLO 视觉辅助，随后切 Stage2 惯导+视觉修正: {reason}')
 
         self.stop_robot()
         map_xy = self.get_map_position()
@@ -2042,163 +1149,31 @@ class CompetitionController(Stage1VisionMixin, Node):
         now_ts = self.get_clock().now().nanoseconds / 1e9
         if now_ts - getattr(self, '_left_recover_log_time', 0.0) >= 1.0:
             self._left_recover_log_time = now_ts
-            self.log.progress(
+            self.log.mission(
                 f'{reason_tag}: map_x={map_x:.2f}>{self.corridor_left_recover_x:.2f} '
-                f'v={linear:.2f} w={angular:.2f}'
+                f'v={linear:.2f} w={angular:.2f} 降速运行'
             )
         return self.create_twist(linear, angular)
-
-    def maybe_blind_left_search_cmd(self):
-        """二维码未识别且 odom_x 超过阈值时，低速向左搜索二维码。"""
-        if self.qr_processed or self.phase1_motion_state != 'forward':
-            return None
-
-        # 与 back_target_x 使用同一个 /odom_combined 坐标源，不能混用 map_x。
-        if self.current_odom is None:
-            return None
-        odom_x = float(self.current_odom.pose.pose.position.x)
-        if odom_x <= self.blind_left_search_x:
-            return None
-
-        now_ts = self.get_clock().now().nanoseconds / 1e9
-        if now_ts - getattr(self, '_blind_left_search_log_time', 0.0) >= 1.0:
-            self._blind_left_search_log_time = now_ts
-            self.log.progress(
-                f'blind_left_search: qr未识别, odom_x={odom_x:.2f}>'
-                f'{self.blind_left_search_x:.2f} '
-                f'v={self.blind_left_search_linear_speed:.2f} '
-                f'w={self.blind_left_search_angular_speed:.2f}'
-            )
-        return self.create_twist(
-            self.blind_left_search_linear_speed,
-            abs(self.blind_left_search_angular_speed),
-        )
 
     def _corridor_region_release_ready(self, pose_xy, goal_xy, yaw):
         rho = math.hypot(goal_xy[0] - pose_xy[0], goal_xy[1] - pose_xy[1])
         yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
-        pos_ok = rho <= self.corridor_entry_region_radius
+        radius_ok = rho <= self.corridor_entry_region_radius
+        y_gate_ok = pose_xy[1] >= self.corridor_release_min_y
+        pos_ok = radius_ok and y_gate_ok
         yaw_ok = abs(yaw_error) <= self.corridor_entry_yaw_tolerance
         if self.corridor_require_yaw_for_release:
             ready = pos_ok and yaw_ok
         else:
             ready = pos_ok
-        return ready, rho, yaw_error, pos_ok, yaw_ok
-
-    def _finish_corridor_release(self, pose_xy, goal_xy, yaw, reason):
-        self.corridor_active = False
-        self.corridor_nav_mode = 'idle'
-        self.corridor_capture_active = False
-        self.corridor_align_active = False
-        self.corridor_entry_reorient_active = False
-        self.corridor_entry_reorient_started_at = None
-        self.corridor_final_align_active = False
-        self.corridor_final_align_since = None
-        self._corridor_angular_cmd_filtered = 0.0
-        self._corridor_visual_angular_cmd_filtered = 0.0
-        self.phase1_motion_state = 'forward'
-        self._set_channel_yolo_active(False)
-        self.stop_robot()
-        self.log.mission(reason)
-        self.begin_phase_transition(2, reason)
-
-    def _handle_corridor_final_align(self, pose_xy, goal_xy, yaw, rho, now_ts):
-        """末端锁定到入口门线：对准 90° 正向穿线，不再追车后的目标点。"""
-        x_error = goal_xy[0] - pose_xy[0]
-        y_to_gate = goal_xy[1] - pose_xy[1]
-        yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
-        abs_yaw_error = abs(yaw_error)
-        self.corridor_final_align_active = True
-
-        # 小航向误差时优先直行，避免门口来回拧
-        if abs_yaw_error <= self.corridor_heading_hold:
-            angular = 0.0
-            target_y = 0.0
-        else:
-            angular = self.corridor_final_align_heading_kp * yaw_error
-            # 仅在航向已较正时再补横向，且横向贡献限幅
-            if abs_yaw_error <= math.radians(12.0):
-                target_y = -math.sin(yaw) * x_error + math.cos(yaw) * y_to_gate
-                # 横向死区：5cm 内不修，减少噪声驱动转向
-                if abs(target_y) < 0.05:
-                    target_y = 0.0
-                angular += self.corridor_final_align_lateral_kp * target_y
-            else:
-                target_y = 0.0
-        angular = self.clamp(angular, self.max_angular_speed)
-        angular = self._smooth_corridor_angular(angular, heading_error=yaw_error)
-
-        # 接近终点提速：按到门线距离平滑降速，尽量保持冲门速度
-        speed_ref_distance = max(y_to_gate, 0.10)
-        linear = min(
-            self.corridor_final_align_max_speed,
-            max(self.corridor_final_align_min_speed, 0.75 * speed_ref_distance),
-        )
-        # 任何末端修角指令都保持非零正向速度。
-        linear = max(linear, self.corridor_final_align_min_speed)
-        # 大航向误差时略降速，但不要掉到爬行
-        if abs_yaw_error > math.radians(25.0):
-            linear = min(linear, max(self.corridor_final_align_min_speed, 0.16))
-        self.corridor_nav_mode = 'final_align'
-
-        x_ok = abs(x_error) <= self.corridor_final_gate_x_tolerance
-        y_ok = -self.corridor_final_gate_y_after <= y_to_gate <= self.corridor_final_gate_y_before
-        yaw_ok = abs_yaw_error <= self.corridor_final_gate_yaw_tolerance
-        if x_ok and y_ok and yaw_ok:
-            if self.corridor_final_align_since is None:
-                self.corridor_final_align_since = now_ts
-        else:
-            self.corridor_final_align_since = None
-
-        stable = (
-            self.corridor_final_align_since is not None
-            and now_ts - self.corridor_final_align_since >= self.corridor_final_align_stable_sec
-        )
-        if stable:
-            reason = (
-                f'final gate OK map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                f'xerr={x_error:+.2f}m ygate={y_to_gate:+.2f}m '
-                f'yaw={math.degrees(yaw):.1f}deg err={math.degrees(yaw_error):.1f}deg '
-                f'stable={self.corridor_final_align_stable_sec:.2f}s'
-            )
-            self._finish_corridor_release(pose_xy, goal_xy, yaw, reason)
-            return True
-
-        if (
-            x_ok
-            and y_to_gate < -self.corridor_final_overshoot_y
-            and abs_yaw_error <= self.corridor_final_overshoot_yaw_tolerance
-        ):
-            reason = (
-                f'final gate overshoot release map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                f'xerr={x_error:+.2f}m ygate={y_to_gate:+.2f}m '
-                f'yaw={math.degrees(yaw):.1f}deg err={math.degrees(yaw_error):.1f}deg'
-            )
-            self._finish_corridor_release(pose_xy, goal_xy, yaw, reason)
-            return True
-
-        self.cmd_pub.publish(self.create_twist(linear, angular))
-        if now_ts - self._corridor_last_log_time >= self.corridor_log_period_sec:
-            self._corridor_last_log_time = now_ts
-            stable_for = (
-                now_ts - self.corridor_final_align_since
-                if self.corridor_final_align_since is not None else 0.0
-            )
-            self.log.segment(
-                f'final_align map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                f'xerr={x_error:+.2f}m ygate={y_to_gate:+.2f}m rho={rho:.2f}m '
-                f'yaw={math.degrees(yaw):.1f}deg err={math.degrees(yaw_error):.1f}deg '
-                f'gate(x={x_ok},y={y_ok},yaw={yaw_ok}) '
-                f'lat={target_y:+.2f} v={linear:.2f} w={angular:.2f} stable={stable_for:.2f}s'
-            )
-        return False
+        return ready, rho, yaw_error, pos_ok, yaw_ok, radius_ok, y_gate_ok
 
     def handle_corridor_navigation(self):
         """
         Stage1 通道导航（区域进入）：
           1) A* 规划自由空间路径（失败则直线 fallback）
           2) Pure Pursuit 跟踪路径（允许斜穿）
-          3) 进入末端区域后保持正向速度收敛到 90°，稳定后切 Stage2
+          3) 进入入口区域即切 Stage2；默认不强制精准航向
           4) 超时策略放行
         """
         now_ts = self.get_clock().now().nanoseconds / 1e9
@@ -2215,6 +1190,13 @@ class CompetitionController(Stage1VisionMixin, Node):
             return
 
         if self.corridor_started_at is not None and now_ts - self.corridor_started_at > self.corridor_timeout_sec:
+            self.corridor_active = False
+            self.corridor_nav_mode = 'idle'
+            self.corridor_capture_active = False
+            self.corridor_align_active = False
+            self.corridor_entry_reorient_active = False
+            self.corridor_entry_reorient_started_at = None
+            self.phase1_motion_state = 'forward'
             if not self._corridor_timeout_logged:
                 self._corridor_timeout_logged = True
                 goal = self.corridor_goal_point()
@@ -2223,27 +1205,47 @@ class CompetitionController(Stage1VisionMixin, Node):
                     rho_txt = f'{math.hypot(map_xy[0]-goal[0], map_xy[1]-goal[1]):.2f}m'
                 self.log.warn(
                     'CORRIDOR',
-                    f'region entry TIMEOUT {self.corridor_timeout_sec:.1f}s, hold at stop | '
+                    f'region entry TIMEOUT {self.corridor_timeout_sec:.1f}s, force Stage2 | '
                     f'map=({map_xy[0]:.2f},{map_xy[1]:.2f}) yaw={math.degrees(self.current_yaw):.1f}deg '
                     f'rho={rho_txt} plans={getattr(self, "_corridor_plan_count", 0)} '
                     f'last_plan={self.corridor_last_plan_reason or "none"}'
                 )
-            self.stop_robot()
+            self.begin_phase_transition(2, '地图通道区域进入超时，按策略放行进入 Stage2')
             return
 
         pose_xy = (float(map_xy[0]), float(map_xy[1]))
         yaw = float(self.current_yaw)
         goal_xy = self.corridor_goal_point()
         if goal_xy is None:
-            self.log.error('CORRIDOR', '无入口目标点，停车等待 YAML 配置')
-            self.stop_robot()
+            self.log.error('CORRIDOR', '无入口目标点，直接放行 Stage2')
+            self.begin_phase_transition(2, '无入口目标点，直接进入 Stage2')
             return
         goal_xy = (float(goal_xy[0]), float(goal_xy[1]))
         self.corridor_index = max(0, len(self.corridor_waypoints) - 1)
 
-        ready, rho, yaw_error, pos_ok, yaw_ok = self._corridor_region_release_ready(pose_xy, goal_xy, yaw)
-        if self.corridor_final_align_active or rho <= self.corridor_final_align_start_distance:
-            self._handle_corridor_final_align(pose_xy, goal_xy, yaw, rho, now_ts)
+        ready, rho, yaw_error, pos_ok, yaw_ok, radius_ok, y_gate_ok = self._corridor_region_release_ready(
+            pose_xy, goal_xy, yaw
+        )
+        if ready:
+            self.corridor_active = False
+            self.corridor_nav_mode = 'idle'
+            self.corridor_capture_active = False
+            self.corridor_align_active = False
+            self.corridor_entry_reorient_active = False
+            self.corridor_entry_reorient_started_at = None
+            self.phase1_motion_state = 'forward'
+            self.stop_robot()
+            reason = (
+                f'region entry OK map({pose_xy[0]:.2f},{pose_xy[1]:.2f})~'
+                f'({goal_xy[0]:.2f},{goal_xy[1]:.2f}) rho={rho:.2f}m '
+                f'yaw={math.degrees(yaw):.1f}deg err={math.degrees(yaw_error):.1f}deg '
+                f'pos_ok={pos_ok} radius_ok={radius_ok} y_gate_ok={y_gate_ok} '
+                f'min_y={self.corridor_release_min_y:.2f} yaw_ok={yaw_ok} '
+                f'require_yaw={self.corridor_require_yaw_for_release} '
+                f'plans={getattr(self, "_corridor_plan_count", 0)} last_plan={self.corridor_last_plan_reason or "none"}'
+            )
+            self.log.mission(reason)
+            self.begin_phase_transition(2, reason)
             return
 
         # 条件重规划：进度/偏航/过期才重算，避免每 0.5s 阻塞 1.7s
@@ -2294,43 +1296,38 @@ class CompetitionController(Stage1VisionMixin, Node):
         target_y = -sin_yaw * dx + cos_yaw * dy
 
         speed_cap = max(self.corridor_min_cruise_speed, self.corridor_linear_speed * self.corridor_pp_speed_scale)
-        heading_scale = max(0.55, abs(math.cos(alpha)))
-        linear = min(speed_cap, max(self.corridor_min_cruise_speed, self.corridor_rho_kp * max(rho, 0.40) * heading_scale))
+        heading_scale = max(0.35, abs(math.cos(alpha)))
+        linear = min(speed_cap, max(self.corridor_min_cruise_speed, self.corridor_rho_kp * max(rho, 0.35) * heading_scale))
 
         if rho < self.corridor_brake_distance:
-            brake_cap = max(self.corridor_creep_speed, self.corridor_brake_kp * max(rho, 0.22))
+            brake_cap = max(self.corridor_creep_speed, self.corridor_brake_kp * max(rho, 0.12))
             linear = min(linear, max(self.corridor_creep_speed, brake_cap))
         if abs(alpha) > math.radians(45.0):
             linear = min(linear, max(self.corridor_creep_speed, self.corridor_max_turn_linear_speed))
         if abs(alpha) > math.radians(70.0):
-            # 大角时仍保持一定前进速度，避免趴地拧
-            linear = min(linear, max(self.corridor_creep_speed, 0.14))
+            # 大角时允许略走一点弧，不要趴在 0.04 蠕行
+            linear = min(linear, max(self.corridor_creep_speed, 0.06))
 
         if self.corridor_path_follow_mode == 'stanley':
-            v_ref = max(abs(linear), 0.12)
+            v_ref = max(abs(linear), 0.08)
             angular = self.corridor_alpha_kp * alpha + math.atan2(self.corridor_stanley_k * target_y, v_ref)
         else:
             # pure pursuit: curvature = 2*y / ld^2
             curvature = 2.0 * target_y / max(ld * ld, 1e-3)
-            angular = self.pure_pursuit_turn_kp * curvature * max(abs(linear), 0.12)
-            # 大航向误差时叠加 LOS P 项，但增益更温和
-            if abs(alpha) > math.radians(30.0):
-                angular += 0.30 * self.corridor_alpha_kp * alpha
+            angular = self.pure_pursuit_turn_kp * curvature * max(abs(linear), 0.08)
+            # 大航向误差时叠加 LOS P 项，避免斜穿时拧不过来
+            if abs(alpha) > math.radians(25.0):
+                angular += 0.55 * self.corridor_alpha_kp * alpha
 
-        visual_angular, vision_valid, vision_offset, vision_confidence = (
-            self._corridor_visual_centering_angular()
-        )
-        angular += visual_angular
         angular = self.clamp(angular, self.max_angular_speed)
-        angular = self._smooth_corridor_angular(angular, heading_error=alpha)
-        if abs(angular) > 0.30:
+        if abs(angular) > 0.25:
             linear = min(linear, max(self.corridor_creep_speed, self.corridor_max_turn_linear_speed))
-        elif abs(angular) > 0.18:
-            linear = min(linear, max(self.corridor_min_cruise_speed * 0.90, 0.16))
+        elif abs(angular) > 0.12:
+            linear = min(linear, max(self.corridor_min_cruise_speed * 0.8, 0.08))
 
-        # 极近区域仍保持较高前进速度，交给 final_align 收门
+        # 极近区域只做缓慢收敛，不再 align_yaw
         if rho < max(0.22, self.corridor_entry_region_radius * 0.75):
-            linear = min(linear, max(self.corridor_creep_speed, 0.16))
+            linear = min(linear, max(self.corridor_creep_speed, 0.08))
 
         self.cmd_pub.publish(self.create_twist(linear, angular))
 
@@ -2346,11 +1343,10 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f'alpha={math.degrees(alpha):.1f}deg look=({look_pt[0]:.2f},{look_pt[1]:.2f}) '
                 f'body=({target_x:.2f},{target_y:.2f}) ld={ld:.2f} offpath={offpath:.2f}m '
                 f'v={linear:.2f} w={angular:.2f} mode={self.corridor_nav_mode} '
-                f'vision(valid={vision_valid},off={vision_offset:+.3f},'
-                f'conf={vision_confidence:.2f},w={visual_angular:+.3f}) '
                 f'plan={self.corridor_last_plan_reason} pts={len(path)} cursor={cursor} '
                 f'plans={getattr(self, "_corridor_plan_count", 0)} '
-                f'pos_ok={pos_ok} yaw_ok={yaw_ok} t={elapsed:.1f}s'
+                f'pos_ok={pos_ok} radius_ok={radius_ok} y_gate_ok={y_gate_ok} '
+                f'min_y={self.corridor_release_min_y:.2f} yaw_ok={yaw_ok} t={elapsed:.1f}s'
             )
             print(
                 f"\r[Stage1区域进入] map({pose_xy[0]:.2f},{pose_xy[1]:.2f}) → "
@@ -2363,12 +1359,10 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.publish_corridor_path(pose_xy)
 
     def begin_avoidance(self, danger_angle):
-        if self.phase1_motion_state in ('backing', 'channel_yolo_chase', 'channel_yolo_finish'):
-            self._avoid_resume_state = self.phase1_motion_state
         if self.phase1_motion_state == 'corridor' or self.corridor_active:
             self.corridor_resume_after_avoidance = True
         self.phase1_motion_state = 'avoiding'
-        self.avoid_turn_direction = -1.0 if danger_angle > 0.0 else 1.0
+        self.avoid_turn_direction = 1.0  # 固定向左转
         self.avoid_started_time = self.get_clock().now()
         self.avoid_clear_since = None
         self.avoid_entry_yaw = self.current_yaw
@@ -2382,8 +1376,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         elif self.desired_heading is None and self.current_yaw is not None:
             self.desired_heading = self.current_yaw
 
-        self.log.feedback(
-            f'avoid start dir={self.avoid_turn_direction:.0f} '
+        self.log.mission(
+            f'AVOID LEFT: dir={self.avoid_turn_direction:.0f} '
             f'danger_angle={danger_angle:.0f}° '
             f'desired_yaw={(math.degrees(self.desired_heading) if self.desired_heading is not None else float("nan")):.1f}°'
         )
@@ -2460,12 +1454,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         return False
 
     def finish_recovery(self):
-        if self._avoid_resume_state in ('backing', 'channel_yolo_chase', 'channel_yolo_finish'):
-            resume_state = self._avoid_resume_state
-            self._avoid_resume_state = None
-            self.phase1_motion_state = resume_state
-            self.log.feedback(f'recovery complete, return to {resume_state}')
-        elif self.corridor_resume_after_avoidance and self.corridor_active:
+        if self.corridor_resume_after_avoidance and self.corridor_active:
             self.phase1_motion_state = 'corridor'
             self.corridor_resume_after_avoidance = False
             map_xy = self.get_map_position()
@@ -2614,17 +1603,9 @@ class CompetitionController(Stage1VisionMixin, Node):
         return nearest_obstacle
 
     def handle_phase1_lidar(self, scan_msg):
-        # 通道导航接近目标点时禁用避障，避免交接时被打断超出 Stage2 入口范围
-        if self.phase1_motion_state == 'corridor':
-            map_xy = self.get_map_position()
-            if map_xy is not None and len(self.corridor_waypoints) > 0:
-                goal_xy = self.corridor_waypoints[-1]
-                dist_to_goal = math.hypot(goal_xy['x'] - map_xy[0], goal_xy['y'] - map_xy[1])
-                if dist_to_goal <= self.corridor_disable_avoidance_distance:
-                    self.obstacle_found = False
-                    self.closest_obstacle_distance = float('inf')
-                    self.avoid_cmd = Twist()
-                    return
+        # 后退阶段完全不处理激光避障，由后退逻辑全权控制
+        if self.phase1_motion_state == 'backing':
+            return
 
         # 通道入口大角度重定向时默认不避障，避免被侧墙二次打断并反向拉航向
         if (
@@ -2797,14 +1778,20 @@ class CompetitionController(Stage1VisionMixin, Node):
 
         # 立即启动后退，不等待播报完成
         if self.enable_backing and len(self.path_record) > 0:
+            # 后退期间禁用 YOLO 推理，避免模型占用 BPU
+            if hasattr(self, '_enable_vision_corridor'):
+                try:
+                    self._enable_vision_corridor(False)
+                except Exception as e:
+                    self.log.warn('VISION', f'关闭 YOLO 推理失败: {e}')
             self.phase1_motion_state = 'backing'
-            self._set_channel_yolo_active(True)
-            now = self.get_clock().now()
-            self.backing_started_time = now
-            self.backing_path_index = len(self.path_record) - 1
+            self.backing_started_time = self.get_clock().now()
+            # 最后一个采样点通常就在扫码位置；从它的前一个点开始，
+            # 避免倒车控制先追逐当前位置而错过真正的回程轨迹。
+            self.backing_path_index = max(0, len(self.path_record) - 2)
             self.log.mission(
-                f'qr detected: {task}, backing immediately, '
-                f'{len(self.path_record)} waypoints recorded, YOLO armed'
+                f'qr detected: {task}, backing mode, '
+                f'{len(self.path_record)} waypoints recorded'
             )
         else:
             self.log.mission(f'qr detected: {task}, starting corridor navigation without backing')
@@ -2831,13 +1818,6 @@ class CompetitionController(Stage1VisionMixin, Node):
     def stage2_cmd_callback(self, msg):
         self.latest_stage2_cmd = msg
         self.latest_stage2_cmd_time = self.get_clock().now()
-        if self._stage2_cmd_timeout_active:
-            self._stage2_cmd_timeout_active = False
-            self.log.info(
-                'STAGE2_CMD_RECOVER',
-                f'received cmd after timeout: '
-                f'v={msg.linear.x:.3f} w={msg.angular.z:.3f}',
-            )
 
     def stage2_cmd_is_fresh(self):
         if self.latest_stage2_cmd_time is None:
@@ -2846,35 +1826,13 @@ class CompetitionController(Stage1VisionMixin, Node):
         age = self.get_clock().now() - self.latest_stage2_cmd_time
         return age.nanoseconds <= int(self.stage2_cmd_timeout * 1e9)
 
-    def stage2_cmd_age_sec(self):
-        if self.latest_stage2_cmd_time is None:
-            return None
-        age = self.get_clock().now() - self.latest_stage2_cmd_time
-        return age.nanoseconds / 1e9
-
-    def log_stage2_cmd_timeout_if_needed(self):
-        now_sec = self.get_clock().now().nanoseconds / 1e9
-        if self._stage2_cmd_timeout_active and now_sec - self._last_stage2_timeout_log_sec < 1.0:
-            return
-        self._stage2_cmd_timeout_active = True
-        self._last_stage2_timeout_log_sec = now_sec
-        age_sec = self.stage2_cmd_age_sec()
-        age_text = 'none' if age_sec is None else f'{age_sec:.3f}s'
-        self.log.warn(
-            'STAGE2_CMD_TIMEOUT',
-            f'phase=2 stop_robot: no fresh /stage2_cmd_vel '
-            f'age={age_text} timeout={self.stage2_cmd_timeout:.3f}s '
-            f'last_cmd=({self.latest_stage2_cmd.linear.x:.3f},'
-            f'{self.latest_stage2_cmd.angular.z:.3f}) '
-            f'stage2_state={self.stage2_state}',
-        )
-
     def control_loop(self):
         if self.mission_finished:
             self.stop_robot()
             return
 
         if self.phase == 1:
+            # backing 状态优先处理
             if self.phase1_motion_state == 'backing':
                 self.handle_backing()
                 return
@@ -2900,8 +1858,6 @@ class CompetitionController(Stage1VisionMixin, Node):
             if self.phase1_motion_state == 'recovering':
                 if self.recovery_complete():
                     self.finish_recovery()
-                    if self.phase1_motion_state in ('backing', 'channel_yolo_chase', 'channel_yolo_finish'):
-                        return
                     self.cmd_pub.publish(self.create_twist(self.blind_linear_speed, self.blind_angular_speed))
                     return
 
@@ -2954,25 +1910,7 @@ class CompetitionController(Stage1VisionMixin, Node):
                 self.handle_corridor_navigation()
                 return
 
-            if self.phase1_motion_state == 'channel_yolo_chase':
-                self.handle_channel_yolo_chase()
-                return
-
-            if self.phase1_motion_state == 'channel_yolo_finish':
-                self.handle_channel_yolo_finish()
-                return
-
-            if self.phase1_motion_state == 'channel_yolo_handoff':
-                self.handle_channel_yolo_handoff()
-                return
-
-            # 二维码在左侧：盲开超过 odom_x 阈值仍未识别时，低速向左搜索。
-            left_search_cmd = self.maybe_blind_left_search_cmd()
-            if left_search_cmd is not None:
-                self.cmd_pub.publish(left_search_cmd)
-                return
-
-            # 兼容通道导航的旧左侧恢复逻辑。
+            # 盲开阶段 map_x 过大：向左旋回，避免贴右墙
             left_cmd = self.maybe_left_recover_cmd('blind_left_recover')
             if left_cmd is not None:
                 self.cmd_pub.publish(left_cmd)
@@ -3008,18 +1946,17 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.cmd_pub.publish(self.latest_stage2_cmd)
             return
 
-        self.log_stage2_cmd_timeout_if_needed()
         self.stop_robot()
+
 
     def handle_backing(self):
         """处理后退逻辑：沿记录路径反向跟踪"""
-        now_ts = self.get_clock().now().nanoseconds / 1e9
-        if self._channel_yolo_detection_confirmed(now_ts):
-            self.begin_channel_yolo_chase(
-                f'{self.channel_yolo_confirm_frames} consecutive bbox frames while backing'
-            )
-            self.handle_channel_yolo_chase()
-            return
+        # 后退期间确保 YOLO 推理已禁用，释放 BPU 资源
+        if hasattr(self, '_enable_vision_corridor'):
+            try:
+                self._enable_vision_corridor(False)
+            except Exception:
+                pass
 
         if self.current_odom is None or self.current_yaw is None:
             self.stop_robot()
@@ -3030,26 +1967,21 @@ class CompetitionController(Stage1VisionMixin, Node):
             elapsed = (self.get_clock().now() - self.backing_started_time).nanoseconds / 1e9
             if elapsed > self.back_timeout_sec:
                 self.log.warn('BACKING', f'timeout after {elapsed:.1f}s, starting corridor navigation')
-                self._set_channel_yolo_active(False)
                 self.start_corridor_navigation(f'qr task={self.qr_task}, backing timeout')
                 return
         
-        # 倒退路点在 map 中跟踪；结束线 X=back_target_x 属于 /odom_combined。
-        # 不能把 map 的平移/旋转后的 X 当成赛程定义的 odom X，否则会多倒一段。
-        map_xy = self._get_strict_map_position()
-        if map_xy is None:
-            self.log.warn('BACKING', 'map pose unavailable, holding position')
-            self.stop_robot()
-            return
-        map_x, map_y = map_xy
+        # 路径跟踪用 odom（与 path_record 同系）；结束判定用 map（与 back_target_x 同系）
         odom_x = float(self.current_odom.pose.pose.position.x)
         odom_y = float(self.current_odom.pose.pose.position.y)
-
-        if odom_x <= self.back_target_x:
+        map_xy = self.get_map_position()
+        map_x = float(map_xy[0]) if map_xy is not None else None
+        map_y = float(map_xy[1]) if map_xy is not None else None
+        
+        # back_target_x 是 map 坐标；禁止再用 odom_x 比较
+        if map_x is not None and map_x <= self.back_target_x:
             self.log.segment(
-                f'backing done at odom_x={odom_x:.2f}m '
-                f'(target={self.back_target_x:.2f}m), '
-                f'map=({map_x:.2f},{map_y:.2f}), odom_y={odom_y:.2f}m, '
+                f'backing done at map_x={map_x:.2f}m '
+                f'(target={self.back_target_x:.2f}m, odom_x={odom_x:.2f}m), '
                 f'starting corridor navigation'
             )
             self.start_corridor_navigation(f'qr task={self.qr_task}, backing complete')
@@ -3061,45 +1993,50 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.start_corridor_navigation(f'qr task={self.qr_task}, backing path exhausted')
             return
         
-        # 获取当前目标路点（包括来时的 yaw）
-        target_x, target_y, target_yaw = self.path_record[self.backing_path_index]
-        
-        # 检查是否接近当前路点，若是则移动到上一个路点（倒序）
-        dist_to_target = math.hypot(map_x - target_x, map_y - target_y)
-        if dist_to_target < self.back_position_tolerance:
+        # 先消化已经到达的倒序路点。循环可避免采样间隔小于到点容差时
+        # 每个控制周期只跨一个点、控制目标滞后的问题。
+        while self.backing_path_index >= 0:
+            waypoint_x, waypoint_y, _ = self.path_record[self.backing_path_index]
+            if math.hypot(odom_x - waypoint_x, odom_y - waypoint_y) >= self.back_position_tolerance:
+                break
             self.backing_path_index -= 1
-            self.log.progress(
-                f'backing wp_index={self.backing_path_index}, '
-                f'map=({map_x:.2f}, {map_y:.2f}), '
-                f'target_yaw={math.degrees(target_yaw):.1f}°'
-            )
-            if self.backing_path_index < 0:
-                self.log.progress('backing reached start, starting corridor navigation')
-                self.start_corridor_navigation(f'qr task={self.qr_task}, backing reached start')
-                return
-            target_x, target_y, target_yaw = self.path_record[self.backing_path_index]
-        
-        # 后退控制：车头朝向 = 路点记录的来时方向（精确复现轨迹）
-        # 不使用实时几何方向 atan2(dy, dx)，而是直接用记录的 target_yaw
+
+        if self.backing_path_index < 0:
+            self.log.progress('backing reached start, starting corridor navigation')
+            self.start_corridor_navigation(f'qr task={self.qr_task}, backing reached start')
+            return
+
+        # 倒序累积前瞻距离，目标点始终位于车辆已经走过的来时轨迹上。
+        # 路点保存的 yaw 只作历史记录；几何回放不能用它直接锁车头，
+        # 否则 IMU 漂移会在倒车时被放大为持续转弯。
+        target_index = self.backing_path_index
+        target_x, target_y, _ = self.path_record[target_index]
+        accumulated = 0.0
+        while target_index > 0 and accumulated < self.back_lookahead_m:
+            next_x, next_y, _ = self.path_record[target_index - 1]
+            accumulated += math.hypot(next_x - target_x, next_y - target_y)
+            target_index -= 1
+            target_x, target_y, _ = self.path_record[target_index]
+
+        dist_to_target = math.hypot(odom_x - target_x, odom_y - target_y)
+        travel_yaw = math.atan2(target_y - odom_y, target_x - odom_x)
+        # linear.x 为负，车尾才是实际行进方向，因此车头期望朝向与轨迹反向。
+        target_yaw = self.normalize_angle(travel_yaw + math.pi)
         heading_error = self.angle_error(target_yaw, self.current_yaw)
         
         angular_z = self.back_angular_kp * heading_error
         angular_z = self.clamp(angular_z, 1.0)
-        linear_speed = self.back_linear_speed
-        if abs(heading_error) >= self.back_turn_slowdown_angle_rad:
-            linear_speed = self.back_turn_linear_speed
         
         # 倒车（负速度），车头保持来时方向
-        self.cmd_pub.publish(self.create_twist(linear_speed, angular_z))
+        self.cmd_pub.publish(self.create_twist(self.back_linear_speed, angular_z))
         
         self.log.progress(
-            f'backing: wp={self.backing_path_index}, '
-            f'map=({map_x:.2f},{map_y:.2f}), '
-            f'odom=({odom_x:.2f},{odom_y:.2f}), '
+            f'backing: wp={self.backing_path_index}, lookahead_wp={target_index}, '
+            f'map_x={map_x if map_x is not None else float("nan"):.2f}m, '
+            f'odom_x={odom_x:.2f}m, '
             f'dist={dist_to_target:.2f}m, '
             f'target_yaw={math.degrees(target_yaw):.1f}°, '
-            f'yaw_error={math.degrees(heading_error):.1f}°, '
-            f'linear={linear_speed:.2f}m/s'
+            f'yaw_error={math.degrees(heading_error):.1f}°'
         )
     
     def handle_backing_align(self):
@@ -3127,15 +2064,18 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.start_corridor_navigation(f'qr task={self.qr_task}, backing+align complete')
             return
 
-        # 对齐转向始终保持正向速度，禁止 v=0 时输出角速度。
+        # 对齐转向：大角度时原地转（linear_x=0），小角度时微速前进配合转向
         angular_z = self.clamp(self.recovery_heading_kp * heading_error, self.recovery_max_angular_speed)
         if abs(angular_z) < self.recovery_min_angular_speed:
             angular_z = math.copysign(self.recovery_min_angular_speed, heading_error)
 
-        if abs(heading_error) <= self.recovery_in_place_angle_rad:
+        # 大角度（>30°）原地转，小角度（<8°）微速前进，中间角度慢速前进
+        if abs(heading_error) > math.radians(30.0):
+            linear_x = 0.0  # 原地转
+        elif abs(heading_error) <= self.recovery_in_place_angle_rad:
             linear_x = self.recovery_linear_speed  # 0.12 m/s
         else:
-            linear_x = max(self.recovery_turn_linear_speed, 0.06)
+            linear_x = self.recovery_turn_linear_speed  # 0.08 m/s
 
         self.log.feedback(
             f'aligning yaw={math.degrees(self.current_yaw):.1f}° '
@@ -3209,8 +2149,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.log.progress(f'QR播报已启动后台线程，车辆开始后退')
 
     def destroy_node(self):
-        self._set_channel_yolo_active(False)
-        self._set_stage1_http_active(False)
         self.log.close()
         super().destroy_node()
 

@@ -72,7 +72,7 @@ competition_controller.py（Stage1 主控）
 
 - **Stage1 通道导航位置使用 TF `map <- base_footprint`**（目标点是 map 坐标，不能直接拿 `/odom_combined` xy）
 - **里程距离（`/odom_combined`）**：仅使用相邻位置的欧氏位移累计距离；不得使用其 orientation
-- **IMU（`/imu/data`）**：用于提供航向角（`yaw`），同时为激光雷达提供角度基准
+- **IMU（`/imu/data`）**：用于提供航向角（`yaw`），同时为激光雷达提供角度基准。Stage1 首帧原始 IMU yaw 映射到 YAML `imu_initial_map_yaw_deg`（当前 10°），后续仅累计原始 IMU 相对转角；所有 Stage1 状态使用此处理后的 yaw。
 - **禁止**使用 `/odom` 的角度参与导航计算，角度来源必须为 IMU
 - `/odom` 的 orientation 与 `/odom_combined` 的 orientation 均不参与 Stage2 导航
 
@@ -147,13 +147,13 @@ FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_
 ### 2.5 通道导航（map 自由空间区域进入）
 
 - 位姿：`TF map <- base_footprint`（xy）+ IMU yaw
-- 目标：Stage1 -> Stage2 交接目标由 YOLO bbox 水平中心和 YAML 垂直锚点通过 `/aurora/rgb/camera_info` 和相机 TF 实时投影到 map；Stage1 的 corridor 起始目标和交接时本地 map 对齐点当前均为 YAML 配置的 `(2.50, 2.50)`。
+- 目标与门线：Stage1 -> Stage2 的交接目标、横向窗口、门线前后范围和航向容差均只读取 `stage1_controller.yaml`；总览不固化具体坐标。相机/YOLO 仅可辅助通道居中，不能替代 YAML 门线交接判定。
 - 规划：默认 `use_corridor_planner=true`，占用膨胀 + A* 规划自由空间路径；失败回退直线
 - 跟踪：Pure Pursuit 跟踪规划路径（可斜穿）；`left_recover` 仅在 map_x 过大时介入
 - 地图通道视觉居中：倒退结束进入 A* + Pure Pursuit 后，YOLO 保持推理；仅对新鲜且置信度达标的 bbox 水平偏移叠加死区、低通和限幅后的微小角速度。路径、速度和门线交权仍完全由地图 + IMU 决定，视觉不能单独切 Stage2。
 - 通道 YOLO 交接：二维码触发后，倒退阶段立即启用 YOLO；连续 `channel_yolo_confirm_frames` 个有效框后才接管，防止单帧误检。接管先以 `channel_yolo_align_speed` 和 IMU 对齐 `channel_handoff_yaw_deg`，误差小于 `channel_yolo_align_tolerance_deg` 后才以 `channel_yolo_chase_speed` 快速沿 +Y 接近；YOLO 仅提供水平误差，IMU 是唯一 yaw 来源。
-- 末端交接：不再以丢框后的里程计距离交权。到达 YAML 门线 `channel_handoff_release_y` 后，必须同时满足 `channel_handoff_release_x_tolerance_m` 和 `channel_handoff_release_yaw_tolerance_deg`，才停车并切 Stage2。丢框期间保持 IMU +Y，超过 `channel_yolo_lost_continue_sec` 仍未过门线则回退已有地图通道导航。激光避障优先打断追踪，恢复后回到被打断状态。
-- 倒退：二维码回调后立即进入记录路径倒退，不再先发送零速度制动。路径记录、路点追踪和 `back_target_x` 截止判定均使用 `/odom_combined` 的位置；满足 `odom_x <= back_target_x` 后立即退出倒退，map 坐标不参与倒退截止。
+- 末端交接：通道导航先满足 `corridor_entry_region_radius_m` 圆形区域，再要求 `map_y >= corridor_release_min_y_m` 才允许交给 Stage2；这条 Y 门线防止圆形半径在目标前提前触发交权。航向是否参与交权由 `corridor_require_yaw_for_release` 控制，坐标和门限均以 `stage1_controller.yaml` 为唯一来源。
+- 倒退：二维码回调后立即进入记录路径倒退，不再先发送零速度制动。路径记录和倒序路径前瞻追踪均使用 `/odom_combined` 的位置；车尾追踪来时轨迹上的前瞻点，IMU 仅计算该几何目标对应的车头反向航向，禁止直接锁定历史记录 yaw。`back_target_x` 的截止坐标系以 `stage1_controller.yaml` 和运行日志为准。
 - 图像监控：通道 YOLO 在且仅在 `competition_phase=1` 时绑定 YAML `channel_yolo_http_port`（默认 8081）；离开 Stage1 立即关闭服务并释放端口。`/channel_raw.jpg`、`/channel_yolo.jpg` 为单帧，`/stream_raw.mjpg`、`/stream.mjpg` 为实时流，`/health` 提供帧数、帧龄和推理状态。根路径网页同时显示原图与检测流。旧分割模块不再抢占 8081。模型、速度、门线、容差和图像路径均以 `stage1_controller.yaml` 为唯一来源。
 - 相机信息话题、停车距离、位置容差、速度、角速度和航向增益均以 `stage1_controller.yaml` 为准。
 - 超时：`corridor_timeout_sec` 到时停车等待，不绕过 map 目标直接放行 Stage2
