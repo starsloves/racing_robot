@@ -1,535 +1,199 @@
 # Racing 三阶段方案总览
 
-> **编辑约束**：本文档位于 `src/racing/RACING_OVERVIEW.md`。
-> Stage 2 / Stage 3 **官方生产代码**在 `racing_stage2` / `racing_stage3`。
-> `racing_stage2_param_test` / `racing_stage3_param_test` 仅用于独立调参，不作为 total 正式入口。
-> **本文档必须随阶段方案变更同步更新。**
+> 本文档描述当前 `competition_total.launch.py` 实际启动的生产流程。
+> 参数、状态和坐标的唯一事实来源仍是对应节点代码和生产 YAML；本文档随实现变更同步维护。
+> `racing_stage2_param_test`、`racing_stage3_param_test` 和 `bak/` 均不属于正式总启动流程。
 
 ---
 
-## 1. 系统架构总览
+## 1. 当前生产架构
 
-### 1.1 HTTP 监控端口互斥规则
+### 1.1 总启动与命令仲裁
 
-三个阶段虽然由总启动常驻加载，但视觉 HTTP 服务严格随 `competition_phase` 互斥：Stage1 仅在 phase=1 绑定 **8081**，Stage2 仅在 phase=2 绑定 **8082**，Stage3 仅在 phase=3 绑定 **8083**。阶段切换时，离开阶段会先停止 HTTP server 并释放其端口；Stage3 的通道 YOLO 只做内部重定位，**不提供 8081 HTTP 服务**。根路径均提供同一 `vision_viewer.html`，页面只轮询当前访问的端口并只显示对应阶段。
+总入口：`racing_bringup/launch/competition_total.launch.py`。
 
-### 1.2 三阶段流转
+总启动同时常驻 Stage1、Stage2、Stage3 节点，Stage1 的 `competition_controller` 是唯一 `/cmd_vel` 发布者：
 
 ```
-competition_controller.py（Stage1 主控）
-  │
-  │  phase=1 ──── Stage1: 通道导航 + QR 扫码
-  │                │
-  │                ├── 盲驱前进 0.2 m/s
-  │                ├── 激光聚类避障（4态状态机）
-  │                └── QR 码扫描 → phase=2
-  │
-  ├── phase=2 ──── Stage2: 矩形赛道惯性导航
-  │                │ 官方包：racing_stage2
-  │                ├── Stage2InertialNavigator — /odom_combined 距离 + IMU 转角轨迹控制
-  │                ├── Stage2VisionMixin — 视觉中线跟随
-  │                └── AvoidController — 独立避障模块
-  │
-  └── phase=3 ──── Stage3: 返程导航
-                   │ 官方包：racing_stage3
-                   ├── Stage3ReturnNavigator — phase=3 直接 A* 黑区禁入导航 + P 视觉安全终段
-                   │   └── P 框内 Aurora 对齐深度 < 0.50m 时终停；雷达避障优先
-                   ├── Stage1 4态避障复用
-                   └── 终点 P 点区域
+Phase 1: competition_controller ──────────────────────────> /cmd_vel
+Phase 2: Stage2 /stage2_cmd_vel ── Stage1 supervisor ────> /cmd_vel
+Phase 3: Stage3 /stage3_cmd_vel ── Stage1 supervisor ────> /cmd_vel
+                           └─ 首条 S3 命令前可短暂沿用 S2 末段命令
 ```
 
-### 1.3 关键 Topic 拓扑
+- `competition_phase` 由 Stage1 以 transient-local QoS 发布，流程为 `1 -> 2 -> 3`。
+- `competition_qr_task` 由 Stage1 从二维码内容解析后发布，值为 `clockwise` 或 `counterclockwise`。
+- Stage2 完成发布 `stage2_state=complete`，Stage1 才切换 Phase 3。
+- Stage2 交权时发布 `stage3_entry_anchor`；Stage3 生产模式必须得到新鲜锚点才允许出车。
+- Stage2 在最后交接直线开始时发布 `stage3_preplan_pose`。该话题仅供 Stage3 的可选后台 A* 预规划；当前生产 YAML 已关闭 A*，因此不影响实际行驶。
 
-| Topic | 类型 | 发布者 | 说明 |
-|---|---|---|---|
-| `/cmd_vel` | Twist | competition_controller (phase1) / Stage3 / twist_cmd_relay | phase1/3 控制输出 |
-| `/stage2_cmd_vel` | Twist | Stage2InertialNavigator | phase2 独立控制 → Stage1 转发 /cmd_vel |
-| `/odom` | Odometry | origincar_base | 轮速里程计；Stage2 仅用于启动静止判定和诊断 |
-| `/odom_combined` | Odometry | robot_localization EKF | Stage2 里程距离源；Stage3 以 S2 锚点后的 xy 位移增量更新 map 位置 |
-| `/map` | OccupancyGrid | map_overlay | 全局地图 — Stage3 使用 |
-| `/scan` | LaserScan | 激光雷达 | 避障输入 |
-| `/imu/data` | Imu | BNO055 | **航向角（yaw）来源** — Stage2 角度基准 |
-| `competition_phase` | Int32 | competition_controller | 阶段序号（1/2/3） |
-| `stage2_state` | String | Stage2InertialNavigator | Stage2 内部状态 |
-| `stage3_state` | String | Stage3ReturnNavigator | Stage3 内部状态 |
-| `stage3_entry_anchor` | PointStamped | Stage2InertialNavigator | S2 交权瞬间的 map 坐标，S3 返程定位锚点 |
-| `stage2_ai_capture` | Empty | Stage2InertialNavigator | 长直道末端图像分析一次性触发 |
-| `ai_description` | String | racing_vision_ai | 云端图生文结果，供语音节点异步播报 |
-| `stage2_ai_status` | String | racing_vision_ai | 截帧/请求/结果状态诊断 |
-| `qr_scan_result` | String | qr_scanner | QR 解码结果 |
-| `competition_qr_task` | String | competition_controller | QR 扫描方向指令 |
-| `sign4return` | Int32 | competition_controller | 返程 AI 触发信号 |
-| `/stage2_obstacle_markers` | MarkerArray | Stage2InertialNavigator | 障碍物聚类可视化（rviz2） |
-| `/vision_debug` | Image | Stage2InertialNavigator | 视觉车道居中矫正图（rviz2） |
+### 1.2 视觉资源与 HTTP 端口
 
-### 1.4 坐标系
+视觉服务按 `competition_phase` 互斥：
 
-| 坐标系 | 类型 | 说明 |
+| 阶段 | 服务端口 | 行为 |
+|---|---:|---|
+| Stage1 | 8081 | 通道 YOLO 只在 Phase 1 启用，离开后释放模型和端口。 |
+| Stage2 | 8082 | SEG 预览只在 Phase 2 提供；二维码任务到达后可预热模型。 |
+| Stage3 | 8083 | P 视觉只在 Phase 3 武装；离开阶段或完成后释放。 |
+
+`/vision_debug` 不受 HTTP 生命周期限制。`racing_vision_ai` 只在 Phase 2 缓存相机帧，收到 `stage2_ai_capture` 后异步图生文；豆包 Ark、已配置的 Qwen 与本地 VLM 并发请求，首个有效流式输出按短句发布到 `ai_description`。该过程不阻塞底盘控制。
+
+### 1.3 关键话题
+
+| Topic | 发布者 | 用途 |
 |---|---|---|
-| `/odom` | 局部里程计 | 轮速编码器积分，仅用于 Stage2 启动静止判定和诊断 |
-| `/odom_combined` | 局部里程计 | EKF 融合 IMU+轮速；Stage2 仅使用相邻 xy 的欧氏距离，不使用其 orientation |
-| `/map` | 全局地图 | 全局地图坐标系；`map→odom_combined` 静态变换由 Stage1 YAML 的 `map_to_odom_x/y` 注入（默认 0.30, 0.15 @ 10°） |
+| `/cmd_vel` | Stage1 主控 | 唯一底盘指令输出 |
+| `/stage2_cmd_vel` | Stage2 | Phase 2 候选控制指令 |
+| `/stage3_cmd_vel` | Stage3 | Phase 3 候选控制指令 |
+| `/odom_combined` | EKF | 三阶段的 xy 位移/位置源 |
+| `/imu/data` | BNO055 | 唯一航向和转角来源 |
+| `/scan` | 雷达 | Stage1/2/3 局部避障 |
+| `/map` | map_overlay | Stage1 通道 A* 与 Stage3 可选 A* 静态地图 |
+| `competition_phase` | Stage1 | 阶段状态（1/2/3） |
+| `competition_qr_task` | Stage1 | QR 解析后的方向 |
+| `qr_scan_result` | qr_scanner | 原始二维码结果 |
+| `stage2_state` / `stage3_state` | Stage2 / Stage3 | 阶段内部状态 |
+| `stage3_entry_anchor` | Stage2 | Stage3 锚定 map 位置 |
 
-### 1.5 位姿源规则
+### 1.4 坐标与位姿强制规则
 
-- **Stage1 通道导航位置使用 TF `map <- base_footprint`**（目标点是 map 坐标，不能直接拿 `/odom_combined` xy）
-- **里程距离（`/odom_combined`）**：仅使用相邻位置的欧氏位移累计距离；不得使用其 orientation
-- **IMU（`/imu/data`）**：用于提供航向角（`yaw`），同时为激光雷达提供角度基准。Stage1 首帧原始 IMU yaw 映射到 YAML `imu_initial_map_yaw_deg`（当前 10°），后续仅累计原始 IMU 相对转角；所有 Stage1 状态使用此处理后的 yaw。
-- **禁止**使用 `/odom` 的角度参与导航计算，角度来源必须为 IMU
-- `/odom` 的 orientation 与 `/odom_combined` 的 orientation 均不参与 Stage2 / Stage3 导航
-
-### 1.6 Package 总览
-
-| 包 | 阶段 | 类型 | 说明 |
-|---|---|---|---|
-| `racing_stage1` | Stage1 | 只读 | 官方通道导航 + QR 扫码 |
-| `racing_stage2` | Stage2 | **官方生产** | 正式惯导+视觉节点（`Stage2InertialNavigator`） |
-| `racing_stage2_seg_follow` | Stage2 | 独立实验 | 一键启动底盘+相机的 SEG 中线跟线包，网页显示裁剪ROI，按左右边线中点发布低速控制 |
-| `racing_stage2_param_test` | Stage2 | 独立调参 | Stage2 参数测试包（非 total 入口） |
-| `racing_stage2_field_record` | Stage2 | 辅助 | 场测数据记录 |
-| `racing_stage2_param_vision_test` | Stage2 | 辅助 | 视觉参数测试 |
-| `racing_stage3` | Stage3 | **官方生产** | 正式返程节点（`Stage3ReturnNavigator`） |
-| `racing_stage3_param_test` | Stage3 | 独立调参 | Stage3 参数测试包（非 total 入口） |
-| `racing_common` | 通用 | 工具 | RacingLogger, ObstacleMarkerPublisher 等 |
-| `racing_tools` | 通用 | 诊断工具 | 数据记录、相机录像、初始 scan-to-map 位姿估计 |
-| `qr_scanner` | Stage1 | 辅助 | WeChat CV 二维码扫描 |
-| `racing_vision_ai` | Stage3 | 辅助 | `sign4return=9` 触发→火山引擎大模型图生文 |
-| `voice_driver` | 通用 | 辅助 | MAE01 模块 + API TTS 语音播报 |
-| `simple_avoidance` | 通用 | 实验 | 简易避障实验包 |
+- `/odom` 仅用于启动诊断和轮速预热，禁止用其 orientation/yaw 导航。
+- `/odom_combined` 只使用 xy。Stage2 对相邻 xy 累计欧氏距离；Stage3 从 S2 锚点起以 xy 增量更新 map 位置。
+- `/imu/data` 是所有航向、转角、激光角度基准的唯一来源，禁止使用 `/odom` 或 `/odom_combined` 的 orientation。
+- Stage1 通道导航目标是 map 坐标，位置由 `map <- base_footprint` TF 获取；其 IMU 首帧映射到 `stage1_controller.yaml` 的 `imu_initial_map_yaw_deg`，以后仅累计原始 IMU 相对转角。
+- map 到 `odom_combined` 的静态变换由 Stage1 YAML 的 `map_to_odom_x/y` 作为总启动默认值注入；总启动目前默认 yaw 为 10 度。
 
 ---
 
-## 2. Stage 1: 通道导航 + QR 扫码
+## 2. Stage1：二维码、倒退与通道交接
 
-**包**：`racing_stage1`（只读）
-**文件**：`racing_stage1/competition_controller.py`（924 行）
+**生产包/配置**：`racing_stage1`，`config/stage1_controller.yaml`。
 
-### 2.1 控制流
-
-```
-timer_callback()
-  ├── update_phase()      # 从 phase_topic 读取当前阶段
-  ├── process_phase()
-  │   ├── phase=1: process_phase1()  ← 盲驱 + 避障
-  │   ├── phase=2: process_phase2_supervisor()  ← 转发 /stage2_cmd_vel
-  │   └── phase=3: process_phase3_supervisor()  ← 转发 Stage3 cmd
-  └── publish_control() + publish_feedback()
-```
-
-### 2.2 盲驱行为
-
-- 默认固定线速度 0.2 m/s、不转向（`blind_angular_speed=0`）盲驱。
-- 若二维码仍未识别且 `/odom_combined` 的 `odom_x > 3.5m`，进入二维码左侧搜索：降速至
-  `0.12m/s` 并以 `+0.55rad/s` 左转；二维码回调后立即退出该搜索分支。
-- 左侧搜索只作用于 Stage1 `forward` 状态，不影响避障、后退和通道导航。
-
-### 2.3 避障状态机（4态）
+### 2.1 状态与流程
 
 ```
-FORWARD → 障碍物 detected → AVOID_START → 达最小转向角 → AVOID_TURN
-  → 窗口无障≥0.25s → AVOID_HOLD → 障碍物清除 → AVOID_RECOVER+counter_steer → FORWARD
+Phase 1 blind drive
+  -> QR result
+  -> recorded-path backing
+  -> map corridor navigation
+  -> terminal handoff alignment
+  -> Phase 2
 ```
 
-**聚类算法**：
-1. 提取 `phase1_window`(x:0.18~0.85m, ±y:0.22m) 内点云
-2. 角度排序，gap > 0.12 rad 切分
-3. 过滤 <3 点 / <0.06m / >0.40m 聚类
-4. 取最近 x 聚类，**固定左转绕行**
+1. Stage1 初始盲驱使用 YAML `blind_linear_speed`（当前 0.45 m/s）和 `blind_angular_speed`。
+2. `qr_scanner` 使用 WeChat CV 发布 `qr_scan_result`；Stage1 解析并锁存方向后发布 `competition_qr_task`，进入记录路径倒退。
+3. 倒退使用 `/odom_combined` 的历史 xy 回放，负线速度追踪倒序路径；角速度以 IMU 和几何目标闭环，不能直接复用历史 yaw。
+4. 倒退完成后，Stage1 在 map 自由空间按 `corridor_waypoints_json` 顺序 A* + Pure Pursuit 导航。雷达避障恢复后也必须回到当前中继点，禁止跳点直冲终点。
+5. 最后路点在进入 Y 门线前先以 IMU 航向预对正，同时以横向误差修正预对正目标航向；该末段控制优先于近距离 Pure Pursuit 几何转向。最后门线满足 YAML 的 Y、X 和 IMU yaw 条件才发布 Phase 2。仅此前向收敛未成功时才低速倒车回正；通道超时会停车等待，不应绕过终端判据直接放行。
 
-**Recovery + Counter-steer**：
-- Recovery：P 控制器（kp=2.4）回正航向，限幅 0.5~1.1 rad/s
-- Counter-steer：反方向短时转向抵消惯性
+### 2.2 Stage1 避障
 
-### 2.4 QR 扫码
+四状态为：
 
-**包**：`qr_scanner`（辅助）
-**后端**：WeChat CV（OpenCV contrib）
-**流程**：车到通道特定位置 → 扫描二维码 → 解析方向指令 → 发布到 `qr_scan_result` → competition_controller 设置 phase=2
+```
+forward -> avoiding -> countersteering -> recovering -> forward
+```
 
-### 2.5 通道导航（map 自由空间区域进入）
+雷达在 `phase1_window` 中聚类，过滤点数、宽度和距离异常。默认左绕；明显左前障碍才右绕。通道状态还会结合当前 YAML 路点选择不朝近障碍切入且更接近目标的一侧，避障期间方向锁定。恢复阶段以 IMU yaw 回到锁存航向。
 
-- 位姿：`TF map <- base_footprint`（xy）+ IMU yaw
-- 目标与门线：Stage1 -> Stage2 的交接目标、横向窗口、门线前后范围和航向容差均只读取 `stage1_controller.yaml`；总览不固化具体坐标。相机/YOLO 仅可辅助通道居中，不能替代 YAML 门线交接判定。
-- 规划：默认 `use_corridor_planner=true`，占用膨胀 + A* 规划自由空间路径；失败回退直线
-- 跟踪：Pure Pursuit 跟踪规划路径（可斜穿），通道中段始终正向跟踪，禁止因前瞻点落到车后而倒车；`left_recover` 仅在 map_x 过大时介入。
-- 地图通道视觉居中：倒退结束进入 A* + Pure Pursuit 后，YOLO 保持推理；仅对新鲜且置信度达标的 bbox 水平偏移叠加死区、低通和限幅后的微小角速度。路径、速度和门线交权仍完全由地图 + IMU 决定，视觉不能单独切 Stage2。
-- 通道 YOLO 交接：二维码触发后，倒退阶段立即启用 YOLO；连续 `channel_yolo_confirm_frames` 个有效框后才接管，防止单帧误检。接管先以 `channel_yolo_align_speed` 和 IMU 对齐 `channel_handoff_yaw_deg`，误差小于 `channel_yolo_align_tolerance_deg` 后才以 `channel_yolo_chase_speed` 快速沿 +Y 接近；YOLO 仅提供水平误差，IMU 是唯一 yaw 来源。
-- 末端交接：A* 先将 X 收敛到最终 `corridor_terminal_x_tolerance_m` 窗口。只有已到达 Y 门线 `map_y >= corridor_release_min_y_m`、X 已到位但 IMU 航向尚未达到 `corridor_terminal_yaw_tolerance_deg` 时，才进入 `terminal_reverse_align`，以低速后退且固定 `corridor_goal_yaw` 回正；通道中段禁止倒车。对齐后锁存终端状态并停止 A* 重规划和 Pure Pursuit 前瞻点切换。锁存后固定正线速度回正到 +Y。仅在门线前 `corridor_terminal_micro_start_y_margin_m` 的最后一段且 X 尚未满足最终容差时，才以更小的角速度限幅微调横向。只有终端状态已锁存且 `map_y >= corridor_release_min_y_m`、X/yaw 均满足交权容差才交给 Stage2。所有门限以 `stage1_controller.yaml` 为唯一来源。
-- 倒退：二维码回调后立即进入记录路径倒退，不再先发送零速度制动或因航向误差原地对齐。路径记录和倒序路径前瞻追踪均使用 `/odom_combined` 的位置；车尾追踪来时轨迹上的前瞻点，以负线速度连续回放，IMU 仅计算该几何目标对应的车头反向航向并闭环修正角速度，禁止直接锁定历史记录 yaw。`back_target_x` 的截止坐标系以 `stage1_controller.yaml` 和运行日志为准。
-- 图像监控：通道 YOLO 在且仅在 `competition_phase=1` 时绑定 YAML `channel_yolo_http_port`（默认 8081）；离开 Stage1 立即关闭服务并释放端口。`/channel_raw.jpg`、`/channel_yolo.jpg` 为单帧，`/stream_raw.mjpg`、`/stream.mjpg` 为实时流，`/health` 提供帧数、帧龄和推理状态。根路径网页同时显示原图与检测流。旧分割模块不再抢占 8081。模型、速度、门线、容差和图像路径均以 `stage1_controller.yaml` 为唯一来源。
-- 相机信息话题、停车距离、位置容差、速度、角速度和航向增益均以 `stage1_controller.yaml` 为准。
-- 超时：`corridor_timeout_sec` 到时停车等待，不绕过 map 目标直接放行 Stage2
-- 日志：`~/dev_ws/log/competition_stage1/latest.log` 输出 plan refresh / region_entry 细节
+### 2.3 Phase2/3 指令转发
 
-### 2.6 阶段切换
-
-- Stage1 完成 → `competition_phase` 发布 phase=2
-- competition_controller 进入 `process_phase2_supervisor()`：监听 `/stage2_cmd_vel` 并转发到 `/cmd_vel`
-- `stage2_cmd_timeout`=0.5s，超时停车
-- Stage2 `start_delay_sec`=0.0s、`start_stationary_hold_sec`=0.0s；phase=2 后输入齐全且底盘未明显运动即启动，不再额外 0.5s 停顿。
-- Stage2 若在 phase=2 已发布后才启动或重启，会从 latched phase=2 进入恢复武装态；仍须等到二维码方向、IMU 和轮速输入齐全才实际出车。
+- Phase 2 只转发新鲜 `/stage2_cmd_vel`，`stage2_cmd_timeout` 当前为 0.5 秒，超时发零速度。
+- Phase 3 优先转发新鲜 `/stage3_cmd_vel`；若 S3 尚未给出首条新鲜命令，可短暂转发 S2 最后一条命令，保证交权连续。二者都失效则停车。
 
 ---
 
-## 3. Stage 2: 矩形赛道惯性导航
+## 3. Stage2：生产弧线赛道惯性导航
 
-**包**：`racing_stage2`（官方生产）
+**生产包/配置**：`racing_stage2`，`config/stage2_controller.yaml`。
 
-Stage 2 为**单一 Stage2InertialNavigator**（继承 `Stage2InertialBase` + 视觉 mixin），通过 `direct_inertial_tester_vision.py` mixin 可选集成视觉车道居中。VisionInertialTester 方案已废弃（代码移入 `bak/`）。
+> 当前生产只有一个统一 YAML。旧 `inertial_stage2.yaml`、矩形 `rect_*` 路点和 `field_track_*.yaml` 已不被生产 launch 使用。
 
-| 模块 | 核心文件 | 功能 |
-|---|---|---|
-| **导航** | stage2_inertial_navigator.py | 主控：生产段序固定在 Stage2TrackController；stage2_controller.yaml 的 track_* 为唯一调参入口 |
-| **避障** | `avoid_controller.py` | 独立 6 态闭环避障控制器 |
-| **避障几何** | `avoid_geometry.py` | 绕行路径规划（转向角 + 两脚距离） |
-| **雷达处理** | `scan_processor.py` | 前方/侧方障碍检测 |
-| **SEG 适配** | `stage2_vision_mixin.py` | BPU 分割模型初始化与中线状态输出 |
-| **生产控制器** | `stage2_hybrid_controller.py` | SEG 连续帧证据 + IMU 相对转角的唯一控制权状态机 |
-| **视觉检测** | `vision_lane_centering.py` | BPU YOLOv8-Seg + 多行中线/前瞻/曲率 |
-| **SEG跟线实验** | `racing_stage2_seg_follow` | 独立包，启动底盘+相机，网页只显示裁剪ROI，用左右赛道边线中点跟线，默认低速发布 `/cmd_vel` |
-| **日志** | `session_file_log.py` | 文件会话日志 |
-| **CSV 记录** | `data_recorder.py` | 遥测 CSV 记录 |
-| **指令中继** | `twist_cmd_relay.py` | `/stage2_cmd_vel` → `/cmd_vel` |
-
-### 3.1 配置参数
-
-参数分散在 **3 个 YAML 文件**（加载顺序：`inertial_stage2.yaml` → `direct_inertial_test.yaml` → `avoid_controller.yaml`，后加载覆盖前）：
-
-#### inertial_stage2.yaml — 基础参数（45+ 项）
-
-| 参数 | 值 | 说明 |
-|---|---|---|
-| `ring_linear_speed` | 0.32 m/s | 环形赛道直行速度（当前降速纯惯导） |
-| `corridor_linear_speed` | 0.14 m/s | 通道段直行速度 |
-| `turn_linear_speed` | 0.07 m/s | 转弯时前向速度 |
-| `entry_45_arc.steering_angle_deg` | 顺时针 +8° / 逆时针 -8° | 通道口先拐入短直道的圆弧舵角 |
-| `entry_45_arc.duration_sec` | 4.0 s | 通道口先拐入短直道的圆弧时间（调成约45°） |
-| `entry_45_arc.speed` | 0.16 m/s | 通道口先拐入短直道的圆弧速度 |
-| `entry_short_straight.distance_m` | 0.25 m | 45°圆弧后短直道距离 |
-| `entry_semicircle.steering_angle_deg` | 顺时针 -8° / 逆时针 +8° | 入口连续半圆弧舵角 |
-| `entry_semicircle.duration_sec` | 8.0 s | 入口连续半圆弧持续时间 |
-| `entry_semicircle.speed` | 0.18 m/s | 入口连续半圆弧速度 |
-| `heading_kp` | 1.0 | 直行航向保持比例增益 |
-| `distance_tolerance` | 0.04 m | 直行到位判据 |
-| `heading_tolerance_deg` | 3.5° | 被 test.yaml 覆盖 |
-| `segment_timeout` | 25.0 s | 单段超时时间 |
-| `corridor_goal` | (2.50, 3.20) @ 90° | 通道终点（入口坐标） |
-| `detour_enabled` | true | 避障开关 |
-| `vision_offset_correction_enabled` | false | 当前先不启用 SEG 中线横向修正 |
-| `vision_length_correction_enabled` | false | 当前先不启用 SEG 纵向定长/剩余距离修正 |
-| `vision_turn_assist_enabled` | false | 当前先不启用 SEG 拐弯完成辅助 |
-| `fusion_mode_enabled` | true | 保留 IMU 航向修正链路，视觉关闭时为 IMU-only |
-| `track_vision_lateral_weight` | 0.35 | 生产长直线视觉横向修正权重；与 IMU 航向保持直接叠加 |
-| `vision_model_path` | models/bset.bin | BPU 模型路径 |
-
-#### direct_inertial_test.yaml — 测试覆盖参数
-
-| 参数 | 值 | 说明 |
-|---|---|---|
-| `navigation_pose_source` | wheel | 位姿源 = 轮速 `/odom` |
-| `wheel_odom_topic` | `/odom` | 轮速里程计话题 |
-| `heading_tolerance_deg` | 3.0° | 转向航向容差（提前停让惯性自然冲到）|
-| `imu_heading_deadzone_deg` | 0.3° | IMU 航向死区 |
-| `move_accel_ramp_sec` | 0.5 s | 转弯后加速渐变时长 |
-
-#### avoid_controller.yaml — 避障参数
-
-| 参数 | 值 | 说明 |
-|---|---|---|
-| `avoid_turn_away_deg` | 30.0° | 从原航向转开角度（第一拐）|
-| `avoid_turn_back_deg` | 40.0° | 回原航向另一侧角度（第二拐）|
-| `avoid_recover_deg` | 40.0° | 回正转角 |
-| `avoid_leg1_distance_m` | 0.22 m | leg1 直行长度 |
-| `avoid_leg2_distance_m` | 0.22 m | leg2 直行长度 |
-| `side_detour_threshold_m` | 0.18 m | 侧边触发阈值 |
-| `avoider_heading_tolerance_deg` | 1.5° | 避障转弯到位精度 |
-| `turn_obstacle_stop_m` | 0.0 m | Stage2 生产轨迹 front_obstacle 硬停车阈值；0 表示关闭，避免圆弧扫边误停 |
-| `detour_obstacle_distance` | 0.52 m | 直行段前方障碍触发距离 |
-
-### 3.2 赛道段序（生产 Stage2TrackController）
-
-Stage2 生产段序固定在 Stage2TrackController 中，所有可调参数统一写在
-src/racing/racing_stage2/config/stage2_controller.yaml 的 track_* 段。
-旧顺/逆时针赛道 YAML 已删除，生产不再读取赛道 YAML。
-
-固定段序：
+### 3.1 固定段序
 
 ```
-entry_arc → entry_medium → left_side_arc → top_long → right_side_arc → exit_medium
-→ exit_turn_90 → stage3_handoff_line
+entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
+-> exit_medium -> exit_turn_90 -> stage3_handoff_line -> complete
 ```
 
-关键调参入口：
-- track_entry_arc_complete_lead_deg：入口 90°弯提前切段角。
-- track_entry_medium_distance_m：第一个 180°前短直距离的标定中心。生产默认由 `track_entry_boundary_*` 在其 `±guard_half_width` 窗口内以分割前方正对边界触发 `entry_medium → left_side_arc`；超过窗口上限仍未确认则按里程保护切段。
-- track_entry_boundary_confirm_frames：首弯边界连续确认次数，当前生产值为 `1` 用于现场观察；可设为 `2` 或 `3` 抑制误检。
-- track_top_long_distance_m：第二个 180° 前长直距离，控制 top_long → right_side_arc 的触发点。
-- track_exit_medium_distance_m：第二个 180° 后的出口短直线距离。
-- exit_turn_90：出口短直线后顺时针左转 / 逆时针右转 90°；复用入口 90° 的线速度、角速度和半径配置。
-- stage3_handoff_line：转完后沿 -Y 直行；交接线判断与发布给 S3 的锚点只使用实时 TF `map <- base_footprint` 的 xy。TF 暂时不可用时停留在 Stage2，绝不使用惯性推导坐标交权。map `y < track_stage3_handoff_map_y`（默认 2.0）时交权 Stage3。
-- track_max_speed：直线速度。
-- track_corner_speed：后续 180°弯线速度。
-- track_entry_angular：入口 90°弯角速度。
-- track_corner_angular：后续 180°弯角速度。
-- track_corner_arc_complete_lead_deg：后续 180°弯提前切段角。
+- `entry_arc` 是入口 90 度弧；随后两个 `*_side_arc` 是 180 度弧。
+- 方向由 QR 决定：入口及出口 90 度和两次 180 度的转向符号按 `clockwise/counterclockwise` 镜像。
+- `entry_medium -> left_side_arc` 与 `top_long -> right_side_arc` 优先由 SEG 前方横边确认；未确认时由 `map <- base_footprint` 的 `track_turn_force_min/max_map_x` 强制切段。TF 缺失才回退里程保护窗口。
+- 直线完成距离用 `/odom_combined` xy 累计，弧线完成以 IMU 相对转角为主；弧长仅作下限和失配保护。
+- 进入 `stage3_handoff_line` 后，S2 以实时 map TF 发布预测起点；当 map Y 小于 `track_stage3_handoff_map_y`（当前 2.40）时发布交接锚点和 `stage2_state=complete`。
 
-导航方式：
-- 距离：/odom_combined 相邻 xy 欧氏位移累计。
-- 转角：/imu/data 相对 yaw 累计。
-- 禁止使用 /odom 或 /odom_combined 的 orientation 参与航向控制。
+### 3.2 控制与安全
 
-### 3.3 转弯系统
+- 生产速度、弧线角速度、提前切段角、视觉修正和交权门限全部在 `stage2_controller.yaml` 的 `track_*` 参数中；入口和出口 90 度弯分别用各自提前切段角，当前均为 52 度；当前直线最大速度为 0.65 m/s。
+- 直线段由 IMU 航向保持为主，可信 SEG 中线只作小幅横向修正；SEG 不可单独结束转弯。
+- `StraightAvoidanceController` 只在直线段接管，按 IMU 依次偏离 10 度、反向 10 度、回到原直线航向。弧线段关闭前方硬停车，避免扫到赛道边界误停。
+- 两个 180 度弯前的 `stage2_turn_precheck_*` 当前只写诊断日志，不停车、不减速、不改变切段。
+- 控制循环超过 `control_gap_stop_sec`（当前 1.0 秒）未刷新时，命令心跳发布零速度；控制循环恢复后从当前段继续。
+- `top_long` 距离末端 `stage2_ai_capture_lead_m`（当前 0.50 m）时只发一次异步图像分析触发，不等待云端或语音；图生文三模型并发竞速，语音从胜出模型的第一条完整短句开始播报。
 
-**闭环 P 控制**：
-```
-angular = clamp(turn_kp * error, turn_angular_speed)
-if abs(error) < turn_min_angular_speed:
-    angular = copysign(turn_min_angular_speed, error)
-```
+### 3.3 启动模式
 
-**转弯减速**（避免过冲）：
-- 剩余角度 < `turn_slowdown_threshold_deg`（10°）时线性衰减至 `turn_min_speed_ratio`（50%）
-
-**加速渐变**（转弯后平滑过渡）：
-- 转弯完成 → 0.5s 内线速度从 `turn_linear_speed` 线性渐变到目标速度
-
-**转弯障碍检测**：
-- `turn_obstacle_stop_m`（0.25m）：前方过近 → 蠕行转弯（0.02 m/s）
-- `corner_approach_m`（0.15m）：段末接近拐角时切换探测距离，避免雷达扫边误触发
-
-**转角补偿**：
-- `turn_inertia_compensation_deg`：惯性补偿（提前停）
-- `turn_angle_compensation_deg`：系统性转角补偿（IMU/机械零点偏差）
-
-**TrackController 圆弧结束判据（当前生产实现）**：
-- 转弯完成以 IMU 相对转角为主判据；`/odom_combined` 相邻 xy 累计弧长只作为“已走过足够距离”和“严重失配”保护，不要求弧长与角度在同一采样点同时命中。
-- 当弧长达到目标弧长的 `track_arc_min_completion_ratio`（默认 70%）后，若 IMU 相对转角已进入容差，或按当前 yaw-rate 预判 `track_arc_finish_predict_sec`（默认 0.18s）内会越过目标角，即立即移交下一段。
-- 若弧长超过目标弧长 + overrun，但 IMU 角度仍落后超过 `track_arc_mismatch_angle_deg`（默认 14°），才判定 `*_distance_yaw_mismatch` 停车；否则切入下一段并由直线航向/yaw-rate 阻尼吸收余摆。
-- `entry_align` 是非零速度的短距离视觉参考校正段；视觉不能在距离上限内完全居中时，使用最佳视觉误差对应的 IMU 航向继续进入 `entry_medium`，不再因为未居中而长时间卡住。
-
-### 3.4 避障控制器（AvoidController）
-
-**独立模块**，6 态闭环：
-
-```
-idle → turn_away(转α, 30°) → leg1(直行0.22m) → turn_back(转β, 40°)
-  → leg2(直行0.22m) → turn_recover(回正γ, 40°) → fine_align → idle
-```
-
-**触发条件**（在 move 段）：
-1. 前方障碍 < `detour_obstacle_distance`（0.52m）
-2. 侧边空间 < `side_detour_threshold_m`（0.18m）→ 自动触发侧边避障
-3. 航向与段航向差 ≤ 12°（否则认为是转弯段不触发）
-4. 冷却时间 `detour_cooldown_sec`（3.0s）内不重复触发
-
-**绕行方向**：根据 `front_angle_deg` + 侧边空间选择左/右绕
-
-**leg2 视觉修正**：leg2 直行段全程启用视觉车道居中修正（`_get_vision_angular_for_avoider`）
-
-| 问题 | 参数 | 方向 |
-|---|---|---|
-| 避障触过早 | `detour_obstacle_distance` | ↓ |
-| 绕行幅度不够 | `avoid_leg1/2_distance_m` | ↑ |
-| 绕行角度不够 | `avoid_turn_away/back_deg` | ↑ |
-| 转弯到位不准 | `avoider_heading_tolerance_deg` | ↑ 放宽 / ↓ 收窄 |
-| 侧边误触发 | `side_detour_threshold_m` | ↓ |
-| 避障频繁触发 | `detour_cooldown_sec` | ↑ |
-
-### 3.5 SEG-IMU 混合闭环过角（生产策略）
-
-**文件**：
-- `stage2_hybrid_controller.py` — 生产唯一控制权状态机
-- `stage2_vision_mixin.py` / `vision_lane_centering.py` — BPU Seg + 多行中线状态输出
-- `stage2_controller.yaml` — Stage2 生产唯一参数源，`track_*` 段控制赛道速度、距离、角速度和提前切段
-
-#### 状态机与职责
-
-```
-ENTRY_COMMIT → EXIT_CAPTURE → STRAIGHT_TRACK → PRETURN → TURN_COMMIT
-       ↑             │                             │            │
-       └─────────────┴─────────────────────────────┴────────────┘
-                                      │
-                               VISION_HOLD → SAFE_STOP
-```
-
-1. `STRAIGHT_TRACK`：SEG 多行中线的误差/曲率只做小幅跟踪，保持巡航速度。
-2. `PRETURN`：远端截断、前边界或曲率证据连续 `hybrid_turn_confirm_frames` 帧才提前掺入固定环向前馈；证据消失立即撤销。
-3. `TURN_COMMIT`：以入口或环弯的相对 IMU 转角为硬界限。SEG 不能单独结束转弯；到 `hybrid_brake_start_deg` 后按 yaw-rate 主动减角速度，抑制惯性过冲。
-4. `EXIT_CAPTURE`：达到最小转角后，必须连续 `hybrid_exit_confirm_frames` 帧捕获新直道，且 IMU 误差进入窗口才恢复巡航。
-5. `VISION_HOLD`：短时丢线仅低速保持，不发起/结束转弯；直道或弯道超过对应丢线时限进入 `SAFE_STOP`。
-6. `SAFE_STOP`：IMU 未到、弯中 IMU 不更新、出弯长期未重新捕获赛道或任务超时均停车，禁止盲走。
-
-SEG 的作用是提前看见路线和回收新直线，IMU 的作用是约束相对转角；轮速 `/odom` 仅累计路径长度和最短直线距离，符合位姿源规则。
-
-#### 日志排查
-- Stage2 会话日志：`~/dev_ws/log/competition_stage2/latest.log`
-- 关键 tag：`HYBRID_START` / `HYBRID_STATE` / `HYBRID_CTRL` / `HYBRID_SAFE_STOP` / `HYBRID_DONE` / `TELEM`
-- 视觉预览：仅在 `competition_phase=2` 时提供 HTTP `:8082`；切离 Stage2 即关闭。`/vision_debug` 话题不受 HTTP 生命周期影响。
-
-#### 长直道异步图生文与语音
-
-- 触发点：`top_long` 段距离终点默认剩余 `0.50m`，顺逆时针共用该判定；方向只影响弯道转向符号。
-- Stage2 只发布 `stage2_ai_capture`（`std_msgs/Empty`），不等待摄像头、云端 API 或语音。
-- `racing_vision_ai` 缓存 `/aurora/rgb/image_raw` 最新帧，在后台线程调用 Ark，发布 `ai_description`。
-- `voice_broadcast_node` 异步订阅 `ai_description` 并播报；相关日志包含 `[AI_CAPTURE]`、`[VISION_AI]` 和 `[VOICE_BROADCAST]`。
-- 配置参数：`stage2_ai_capture_enabled`、`stage2_ai_capture_lead_m`、`stage2_ai_trigger_topic`。
-
-### 3.6 调参速查
-
-| 问题 | 参数 | 方向 |
-|---|---|---|
-| 直行不到位 | `distance_tolerance` | ↑ |
-| 转弯过冲 | `heading_tolerance_deg` / `turn_min_speed_ratio` | ↑（提前停） |
-| 转弯不足 | `turn_kp` / `turn_angle_compensation_deg` | ↑ |
-| 某角欠转 | `stage2_controller.yaml` 中对应 `track_*_complete_lead_deg` 或角速度 | 提前角↓ / 角速度↑ |
-| 转弯后加速突兀 | `move_accel_ramp_sec` | ↑ |
-| 视觉修正打晃 | `track_vision_lateral_weight` / `track_vision_correction_max_angular` | ↓ / ↓ |
-| 视觉检测 timeout | `vision_timeout_sec` | ↑ |
-| IMU 漂移误检 | `imu_heading_deadzone_deg` | ↑ |
-| 避障不足 | `avoid_leg1/2_distance_m` | ↑ |
-| 避障抖动 | `avoider_heading_tolerance_deg` | ↑ 放宽 |
+`competition_stage2.launch.py` 单独启动时默认可启动底盘/雷达支持栈、隔离测试 phase 及 `/stage2_cmd_vel -> /cmd_vel` relay。总启动显式关闭这些支持栈、测试发布者和 relay，由 Stage1 统一仲裁指令。
 
 ---
 
-## 4. Stage 3: 返程导航
+## 4. Stage3：单目标搜索 + P 视觉终停
 
-**包**：`racing_stage3`（官方生产）
+**生产包/配置**：`racing_stage3`，`config/stage3_controller.yaml`。
 
-| 核心文件 | 行数 | 说明 |
-|---|---|---|
-| `stage3_return_navigator.py` | — | 官方返程主体：前置通道 YOLO 对中 + 地图粗导航 + P 视觉最终到达 + Stage1 4态避障 |
-| `global_path_planner.py` | — | A* 规划 mixin（TF 转换 / occupancy grid / scan overlay）|
-| `phase3_test_trigger.py` | — | 独立测试工具，正式 total 不启动 |
-| `stage3_test_simulator.py` | — | 返程测试工具，正式 total 不启动 |
+### 4.1 当前生产路径
 
-**独立调参包**：`racing_stage3_param_test`
-
-### 4.1 返程路径
-
-路点通过 **JSON 参数** 传入（map 全局坐标系），仅用于尚未识别 P 时的粗导航；最终到达完全由 P 视觉决定：
-
-| 参数 | 当前值 | 说明 |
-|---|---|---|
-| `return_waypoints_json` | `[{"x":0.325,"y":0.10,"speed":0.15,"description":"P_region_center"}]` | 搜索 P 的地图粗导航目标，不作最终完成判据 |
-
-S2 在完成时通过 transient-local `stage3_entry_anchor` 发布交权瞬间 map 坐标；S3 收到新鲜锚点时锁存同一时刻的 `/odom_combined` xy 及 `map <- odom_combined` TF 的旋转角，后续 map 位置固定按 `anchor_map + R(map<-odom) * (current_odom_xy - anchor_odom_xy)` 计算。运行中不再把实时 `map <- base_footprint` TF 写入控制位置，以防重复或跳变 TF 改写整条 A* 坐标；只在锚点绑定时读取静态坐标轴旋转，缺少该变换时停车等待。航向继续使用原始 IMU yaw，任何 odom orientation 都不参与计算。生产 S3 未收到新鲜 S2 锚点时停车等待，不允许以 TF 后备位置出车。S3 静态占据层默认以 `/map` 的真实黑色栅格为准，`planner_clear_rectangles_json` 只清除已确认不参与规划的视觉图案（当前为上方 U 形外框及中部横条）；`planner_forbidden_rectangles_json` 仅保留为特殊场地的兼容覆盖模式。A* 只读取静态地图，不订阅或注入激光点；雷达仅交给局部避障。首次规划出的 A* 路径会被固定缓存，跟踪游标只向前推进，只有车辆偏离路径超过 `planner_path_deviation_replan_m` 才重新规划，避免等价路径和前视点抖动。S1 风格避障固定首次向右，按 avoiding → countersteering → recovering 闭环独占控制；普通窗口负责触发，转向中使用近场紧急窗口判定可进入反舵，恢复到入避障 IMU 航向后才归还控制权。雷达避障优先级高于 P YOLO 和 A* 跟踪，避障后由路径偏差决定是否重规划。若当前位置进入静态黑区或其膨胀安全边界，固定倒车 `planner_forbidden_reverse_distance_m` 后重新规划；该恢复状态独占 `/cmd_vel`，仅紧急停车可打断。P YOLO 在 phase=3 启动即推理，满足连续置信度门限即可接管；雷达避障仍可打断视觉接管。P 接管后仅以 P bbox 的水平偏差计算转向、以 P 框内对齐深度判断 `<0.50m` 终停；不再检查 map 坐标、终点矩形、地图前视轨迹或回退 A*。P 丢帧时发布零速度并等待重识别。
-
-### 4.2 核心参数
-
-| 参数 | 值 | 说明 |
-|---|---|---|
-| `pursuit_lookahead_m` | 0.45 m | 预瞄距离 |
-| `pursuit_linear_speed` | 0.35 m/s | 未识别 P 时的地图粗导航速度 |
-| `p_approach_linear_speed` | 0.50 m/s | 连续识别 P 后的视觉终段速度 |
-| `p_detection_timeout_sec` | 0.35 s | 视觉终段检测超时后发布零速度并完成 |
-| `pursuit_heading_stop_deg` | 70.0° | 航向差大于此值则进入低速正向重定向 |
-| `pursuit_turn_kp` | 1.2 | PP 转向 P 增益 |
-| `waypoint_tolerance` | 0.18 m | 中间路点容差 |
-
-### 4.3 控制流
+当前生产配置为 `use_global_planner: false`。A* 与静态禁区恢复代码仍作为可选能力保留，但不会参与正式当前路线，也不会因为 `stage3_preplan_pose` 改变实际控制。
 
 ```
-phase=3 收到
-  └─ 等待新鲜 stage3_entry_anchor → running / map_search_p（沿用 S2 锚点 + odom xy 增量、原始 IMU，直接启动 A*）
-      ├─ emergency_stop
-      ├─ [避障] Stage1 4态聚类避障（仅地图粗导航态）
-      └─ map_search_p：地图粗导航 + P 检测连续确认
-          └─ p_approach：视觉伺服 0.50m/s；map 位姿进入标定 P 区域 → complete
+Phase 3
+  -> wait for fresh Stage2 anchor
+  -> low-speed initial_align (only if heading error is large)
+  -> drive to P visual-search goal (0.50, 0.10)
+  -> visual_search_wait
+  -> P visual approach
+  -> P-bbox depth threshold -> complete
 ```
 
-### 4.4 状态机
+- S3 锁存 `stage3_entry_anchor` 与当时 `/odom_combined` xy；后续 map 位置为锚点加上旋转后的 odom xy 增量，运行中不使用实时 map TF 覆写控制位置。
+- 交权瞬间把原始 IMU yaw 映射至 map -Y（`stage3_entry_map_yaw_deg=-90`），后续仅累计 IMU 相对转角。
+- 初始目标方位误差达到 `initial_align_trigger_deg` 才进入 `initial_align`；阿克曼底盘以非零低速摆弧对准，不能原地转向。
+- 未识别 P 时，向 `return_waypoints_json` 中当前单一视觉搜索目标行驶；到 `waypoint_tolerance`（当前 0.25 m）范围后停车等待 P，不能继续盲走。
+- P 连续识别满足门限后接管，bbox 水平偏差控制转向；偏移大时按 `p_approach_slowdown_offset` 降至最小线速度。P 框中心 ROI 的有效深度中位数小于 `p_depth_stop_distance_m`（当前 0.35 m）立即发布 `stage3_state=complete`。
+- P 接近中有效深度首次不大于 `p_approach_disable_avoidance_distance_m`（当前 0.75 m）后，本次任务跳过常规雷达避障直到完成；急停保持优先级。
 
-```
-idle → armed → pre_return_channel_yolo → running(map_search_p) → p_approach → complete
-  ↑         running 时可中断为：
-  └── avoiding → countersteer → recovering → running
-```
+### 4.2 避障与丢失恢复
 
-### 4.5 调参速查
-
-| 问题 | 参数 | 方向 |
-|---|---|---|
-| 路点到不了 | `waypoint_tolerance` | ↑ |
-| P 视觉终段过早/过晚 | `p_approach_consecutive_hits` / `p_detection_timeout_sec` | ↑确认帧 / 调整超时 |
-| 震荡 | `pursuit_turn_kp` | ↓ |
-| 避障误触发 | `avoid_min_turn_angle_deg` / `avoid_safe_distance` | 调阈值 |
+Stage3 粗导航复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前 P 视觉搜索目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。恢复阶段重新对准当前搜索目标航向。P 视觉接管后若转弯导致丢失，按约一秒前仍见 P 的 IMU yaw 低速倒车闭环回转；超时仍未重获则停车等待，禁止回退到粗导航盲走。
 
 ---
 
-## 5. 辅助模块
+## 5. 日志、辅助包与启动
 
-| 模块 | 包 | 功能 |
-|---|---|---|
-| QR Scanner | `qr_scanner` | WeChat CV 二维码扫描，解析顺/逆时针方向 |
-| Racing Vision AI | `racing_vision_ai` | `sign4return=9` 触发→火山引擎大模型图生文 |
-| Voice Driver | `voice_driver` | MAE01 模块 + API TTS 语音播报 |
-| RacingLogger | `racing_common` | 统一日志工具（所有节点共用） |
-| ObstacleMarkerPublisher | `racing_common` | 障碍物可视化 marker（rviz2） |
-| InitialScanMapLocalizer | `racing_tools` | `/scan` 与 `/map` 边缘匹配，输出初始 `(x,y,yaw,confidence)` 和 RViz marker；默认不发布 TF |
-
----
-
-## 6. 启动方式汇总
+| 项目 | 位置/说明 |
+|---|---|
+| Stage1 日志 | `~/dev_ws/log/competition_stage1/latest.log` |
+| Stage2 日志 | `~/dev_ws/log/competition_stage2/latest.log` |
+| Stage3 日志 | `~/dev_ws/log/competition_stage3/latest.log` |
+| QR | `qr_scanner`，WeChat CV 解码 |
+| 图生文 | `racing_vision_ai`，接收 Stage2 一次性触发，豆包/Qwen/本地 VLM 流式竞速 |
+| 语音 | `voice_driver`，异步顺序播报 `ai_description` 流式短句 |
+| 通用日志/Marker | `racing_common` |
 
 ```bash
-# 总启动
+source /opt/ros/humble/setup.bash
 ros2 launch racing_bringup competition_total.launch.py
 
-# ── Stage2 惯导测试 ──
-colcon build --symlink-install --packages-select racing_common racing_stage2_param_test
-source install/setup.bash
+# 独立 Stage2：默认隔离测试 phase、支持栈和 cmd relay 均开启
 ros2 launch racing_stage2 competition_stage2.launch.py
-ros2 launch racing_stage2 competition_stage2.launch.py test_direction:=counterclockwise
 
-# ── Stage2 带视觉车道居中 ──
-ros2 launch racing_stage2 competition_stage2.launch.py \
-  vision_camera:=true
-
-# ── Stage3 返程测试 ──
-colcon build --symlink-install --packages-select racing_stage3_param_test
-source install/setup.bash
+# 独立 Stage3：需自行提供 phase、S2 交接锚点、里程计、IMU、雷达和深度相机
 ros2 launch racing_stage3 competition_stage3.launch.py
-
-# ── 可视化调试 ──
-ros2 launch racing_stage2 competition_stage2.launch.py \
-  enable_rviz:=true
-
-# 紧急停车
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
-  "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
 ```
 
-### Stage2 启动参数
+## 6. 维护注意事项
 
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `test_direction` | clockwise | 行驶方向 |
-| `enable_test_publisher` | true | 单启动默认发布隔离测试 phase=2 和方向；总启动显式关闭 |
-| `include_bringup` | true | 单启动默认启动 origincar_bringup，提供底盘、EKF 和 /odom_combined；总启动显式关闭 |
-| `include_lidar` | true | 单启动默认启动激光雷达；总启动显式关闭 |
-| `include_camera` | false | 是否启动普通摄像头 |
-| `enable_cmd_relay` | true | 是否启动 cmd_vel 中继（stage2→主控）|
-| `enable_rviz` | false | 是否启动 rviz2 |
-| `carto_slam` | false | 是否启动 Cartographer SLAM |
-
----
-
-## 7. 已知问题
-
-| # | 问题 | 涉及 | 说明 |
-|---|---|---|---|
-| 1 | corner_2/3 转弯过冲（多转 1.6-2.7°） | Stage2 | 惯性造成，`heading_tolerance_deg`=3.0° 提前停，`turn_min_speed_ratio`=0.5 减缓末端 |
-| 2 | 避障 after-avoid 直行段抖动 | Stage2 | `avoider_heading_tolerance_deg` 放宽可缓解；leg2 视觉修正可能引入反相修正 |
-| 3 | 视觉模型光照敏感，暗场分割不稳定 | Stage2 Vision | 待优化；IMU 100% 降级策略缓解 |
-| 4 | A* 频繁重规划耗资源 | Stage3 | 可降频或关闭 `use_occupancy_grid_planner` |
-| 5 | P 点航向靠不拢 | Stage3 | 放宽 `goal_yaw_tolerance_deg` |
-| 6 | Phase 2→3 切换 cmd_vel 冲突 | 全局 | twist_cmd_relay 和 competition_controller 的 supervisor 机制需协调 |
-| 7 | QR 受光照/角度影响 | Stage1 | 增加重试机制 |
-| 8 | odom 轮速滑移误差累积 | Stage2 | 短段（0.40m）影响大，长段（2.90m）可控；`distance_tolerance` 权衡 |
-| 9 | 赛道 rect_side 0.40m 过短，避障空间不足 | Stage2 | 考虑加长侧边或进赛道前预判 |
-| 10 | 视觉模型路径 `bset.bin` 硬编码 | Stage2 Vision | `vision_model_path` 参数可覆盖，但默认路径依赖文件存在 |
-
-## 2026-07-17 场测修复要点
-- Stage1：A* 条件重规划 + 占用栅格缓存；区域半径约 0.40m；不要求 90° 精对准。
-- Stage2：角落 `arc` 以航向进度结束；短边保留；视觉中线主控带 conf/rows 质量门，弯中不抢舵。
-- 排查日志：`~/dev_ws/log/competition_stage1/latest.log`、`~/dev_ws/log/competition_stage2/latest.log`。
+1. 修改阶段状态机、生产 YAML、launch 话题或交权坐标时，必须同步更新本文档和 `docs/CHANGELOG.md`。
+2. 不要把 `bak/`、参数测试包或已删除矩形赛道方案写成生产行为。
+3. 生产参数的准确数值优先以 `stage1_controller.yaml`、`stage2_controller.yaml`、`stage3_controller.yaml` 为准；本文只保留对流程有决定意义的当前值。

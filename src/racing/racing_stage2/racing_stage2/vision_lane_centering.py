@@ -145,10 +145,12 @@ class VisionLaneCentering:
         self._min_frame_interval = 1.0 / self._target_fps
         self._last_save_time = 0.0
         
-        # 加载模型
-        self._node.get_logger().info(f'[视觉] 加载模型: {model_path}')
-        models = dnn.load(model_path)
-        self.model = models[0]
+        # Keep the BPU model unloaded until Stage2 is prewarmed or activated.
+        # Stage1 owns the camera/BPU during the opening corridor section.
+        self._model_path = model_path
+        self._model_lock = threading.Lock()
+        self.model = None
+        self._model_load_error = ''
         self.input_size = 640
         self.REG_MAX = 16
         self.strides = [8, 16, 32]
@@ -188,7 +190,7 @@ class VisionLaneCentering:
 # 创建占位图像（避免首次连接 404）
         self._write_placeholder_image()
 
-        self._node.get_logger().info('[视觉] 模块初始化完成，等待相机数据...')
+        self._node.get_logger().info('[视觉] 模块初始化完成，BPU模型延迟到预热/Phase2加载...')
         self._node.get_logger().info(f'[视觉] HTTP 服务将在 phase=2 时绑定端口 {self.http_port}')
     
     # ═══════════════════════════════════════════════════════
@@ -198,6 +200,8 @@ class VisionLaneCentering:
     def set_inference_active(self, active: bool):
         """启用/停用视觉推理。Stage1 期间应关闭，避免无意义刷屏和算力占用。"""
         active = bool(active)
+        if active and not self.ensure_model_loaded('phase2_activate'):
+            active = False
         with self._lock:
             prev = getattr(self, '_inference_active', False)
             self._inference_active = active
@@ -209,6 +213,56 @@ class VisionLaneCentering:
         if prev != active:
             state = '启用' if active else '停用'
             self._node.get_logger().info(f'[视觉] 推理已{state}')
+
+    def _resource_log(self, event, detail):
+        message = f'[RESOURCE] stage2_vision {event} | {detail}'
+        self._node.get_logger().info(message)
+        session_log = getattr(self._node, '_log_session', None)
+        if callable(session_log):
+            session_log('RESOURCE', message)
+
+    def ensure_model_loaded(self, reason):
+        """Load the BPU model only when this stage is about to use it."""
+        with self._model_lock:
+            if self.model is not None:
+                return True
+            started = time.perf_counter()
+            self._resource_log('MODEL_LOAD_START', f'reason={reason} path={self._model_path}')
+            try:
+                models = dnn.load(self._model_path)
+                self.model = models[0]
+                self._model_load_error = ''
+            except Exception as exc:
+                self.model = None
+                self._model_load_error = f'{type(exc).__name__}: {exc}'
+                self._resource_log(
+                    'MODEL_LOAD_FAILED',
+                    f'reason={reason} elapsed={(time.perf_counter() - started):.3f}s error={self._model_load_error}',
+                )
+                return False
+            self._resource_log(
+                'MODEL_LOAD_DONE',
+                f'reason={reason} elapsed={(time.perf_counter() - started):.3f}s',
+            )
+            return True
+
+    def preload_model(self, reason='qr_task'):
+        """Prewarm Stage2 while Stage1 returns through the corridor."""
+        return self.ensure_model_loaded(reason)
+
+    def release_model(self, reason):
+        """Drop the BPU handle before Stage3 needs its P detector."""
+        self.set_inference_active(False)
+        with self._model_lock:
+            if self.model is None:
+                return
+            started = time.perf_counter()
+            self.model = None
+            self._model_load_error = ''
+            self._resource_log(
+                'MODEL_RELEASED',
+                f'reason={reason} elapsed={(time.perf_counter() - started):.3f}s',
+            )
 
     def is_inference_active(self) -> bool:
         with self._lock:
@@ -222,6 +276,7 @@ class VisionLaneCentering:
         thread = getattr(self, '_inference_thread', None)
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
+        self.release_model('node_shutdown')
 
     def _image_callback(self, msg):
         """Keep only the newest camera frame; inference is done by a worker."""
@@ -370,9 +425,11 @@ class VisionLaneCentering:
                 'straight_score': float(getattr(self, '_straight_score', 0.0)),
                 'left_ratio': float(getattr(self, '_left_ratio', 0.0)),
                 'right_ratio': float(getattr(self, '_right_ratio', 0.0)),
-                'near_error': float(getattr(self, '_near_error', 0.0)),
-                'far_error': float(getattr(self, '_far_error', 0.0)),
-                'path_bend': float(getattr(self, '_path_bend', 0.0)),
+                # 近场用于判断车身横移，远近差用于判断赛道相对车头的方向。
+                # 生产轨迹控制器不能再只消费混合后的单一像素误差。
+                'near_error': float(getattr(self, '_near_error', 0.0)) if valid else 0.0,
+                'far_error': float(getattr(self, '_far_error', 0.0)) if valid else 0.0,
+                'path_bend': float(getattr(self, '_path_bend', 0.0)) if valid else 0.0,
                 'left_margin': float(getattr(self, '_left_margin', 0.0)),
                 'right_margin': float(getattr(self, '_right_margin', 0.0)),
                 'lane_clear': bool(getattr(self, '_lane_clear', False)),
@@ -431,13 +488,13 @@ class VisionLaneCentering:
             if xs.size < self._min_mask_pixels_per_row:
                 continue
 
-            # 中心点
-            cx = float(xs.mean())
-            samples.append((cx, float(y)))
-
-            # 左右边界
+            # 赛道几何中线必须取左右边界的中点，不能取 mask 像素质心。
+            # 分割区域左右面积不等时，质心会偏向面积较大的一侧，即使车道
+            # 的实际几何中心没有偏移，也会错误地产生横向转向命令。
             left_edge = float(xs.min())
             right_edge = float(xs.max())
+            cx = 0.5 * (left_edge + right_edge)
+            samples.append((cx, float(y)))
             left_edges.append((left_edge, float(y)))
             right_edges.append((right_edge, float(y)))
 
@@ -644,7 +701,7 @@ class VisionLaneCentering:
                 and rel_l > 0.08
                 and rel_r > 0.08
             )
-            # 覆盖 near_error 用赛道中心（比 mask 质心更稳）
+            # 该诊断值与采样中线现在都来自左右边界的几何中点。
             self._lane_center_off = center_off
             self._rel_left = rel_l
             self._rel_right = rel_r
@@ -1220,6 +1277,9 @@ setInterval(health, 500); health();
         try:
             if not self.is_inference_active():
                 return
+            if self.model is None:
+                self._resource_log('INFERENCE_SKIPPED', 'model_not_loaded')
+                return
 
             if self._frame_count == 0:
                 self._node.get_logger().info('[视觉] 收到第一帧相机数据（phase2 推理已启用）')
@@ -1253,7 +1313,10 @@ setInterval(health, 500); health();
             
             # 3. 推理
             t0 = time.perf_counter()
-            outs = self.model.forward([nv12])
+            with self._model_lock:
+                if self.model is None:
+                    return
+                outs = self.model.forward([nv12])
             self._infer_time_ms = (time.perf_counter() - t0) * 1000
             
             # 4. 后处理
@@ -1302,6 +1365,9 @@ setInterval(health, 500); health();
             best_path_samples_m = []
             best_lookahead_point_m = None
             best_lateral_error_m = 0.0
+            best_near_error = 0.0
+            best_far_error = 0.0
+            best_path_bend = 0.0
             boundary_ahead = False
             boundary_dist = 0.0
             boundary_diag = {
@@ -1544,6 +1610,9 @@ setInterval(health, 500); health();
                         best_path_samples_m = path_samples_m
                         best_lookahead_point_m = lookahead_point_m
                         best_lateral_error_m = float(lateral_error_m)
+                        best_near_error = float(getattr(self, '_near_error', 0.0))
+                        best_far_error = float(getattr(self, '_far_error', 0.0))
+                        best_path_bend = float(getattr(self, '_path_bend', 0.0))
 
                         # 检测前方转弯边界（返回详细诊断）
                         if mf is not None and mf.size > 0:
@@ -1581,6 +1650,9 @@ setInterval(health, 500); health();
                     self._latest_path_samples = list(best_path_samples_m or [])
                     self._latest_lookahead_point = best_lookahead_point_m
                     self._latest_lateral_error_m = float(best_lateral_error_m or 0.0)
+                    self._near_error = float(best_near_error)
+                    self._far_error = float(best_far_error)
+                    self._path_bend = float(best_path_bend)
                     # 边界线检测
                     self._boundary_ahead = bool(boundary_ahead)
                     self._boundary_distance_ratio = float(boundary_dist)

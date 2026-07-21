@@ -13,8 +13,7 @@
 #
 # 调参速查：
 #   两个 180° 前触发点：
-#     track_entry_medium_distance_m 控制 entry_medium -> left_side_arc
-#     track_top_long_distance_m 控制 top_long -> right_side_arc
+#     两段均优先由 SEG 前方横边确认；视觉未命中时由 map x 强制切入
 #   直线速度：track_max_speed
 #   弯道速度：track_corner_speed / track_entry_linear
 #   弯道转向力度：track_entry_angular / track_corner_angular
@@ -28,64 +27,88 @@ stage2_inertial_navigator:
     # ────────────────────────────────────────────────────────────────────────
     # ROS 话题
     # ────────────────────────────────────────────────────────────────────────
+    # 赛程阶段话题
     phase_topic: competition_phase
+    # 二维码方向任务话题
     task_topic: competition_qr_task
+    # 距离里程计话题（仅使用 xy 位移）
     odom_topic: /odom_combined
+    # 航向 IMU 话题
     imu_topic: /imu/data
+    # 激光扫描话题
     scan_topic: /scan
+    # Stage2 速度输出话题
     cmd_topic: /stage2_cmd_vel
+    # 阶段反馈话题
     feedback_topic: competition_feedback
+    # 阶段状态话题
     state_topic: stage2_state
+    # 是否启用长直道图像采集
     stage2_ai_capture_enabled: true
+    # 距离末端多少米时触发图像采集
     stage2_ai_capture_lead_m: 0.50
+    # 图像采集触发话题
     stage2_ai_trigger_topic: stage2_ai_capture
 
     # ────────────────────────────────────────────────────────────────────────
     # 启动 / 循环
     # ────────────────────────────────────────────────────────────────────────
+    # 主控制循环频率（Hz）
     control_rate_hz: 20.0
     # 控制循环/命令发布间隔超过该阈值时写 CTRL_GAP 诊断日志。
     control_gap_warn_sec: 0.35
+    # 速度命令超过该时长未由控制循环刷新时，心跳临时发布零速度；控制循环恢复后继续当前段。
+    # 与告警阈值分开，避免偶发 0.35s 级调度抖动误停。
+    control_gap_stop_sec: 1.00
+    # 速度指令心跳频率（Hz）
     command_heartbeat_rate_hz: 20.0
+    # QR 任务到达后、进入 Phase2 前预加载 SEG 模型，避免切换时抢占控制循环。
+    stage2_vision_prewarm_on_task: true
     # Stage1 发布 phase=2 后立即启动 Stage2；不再额外等待 0.5s。
     start_delay_sec: 0.0
+    # 启动时允许的静止线速度阈值（m/s）
     start_stationary_speed_mps: 0.03
+    # 启动时允许的静止角速度阈值（rad/s）
     start_stationary_yaw_rate_rps: 0.08
     # 只检查当前底盘是否仍在明显运动；不再要求连续静止保持 0.5s。
     start_stationary_hold_sec: 0.0
+    # 阶段反馈日志前缀
     test_feedback_prefix: 第二阶段
 
     # 生产定位源：距离使用 /odom_combined，角度使用 IMU。
+    # 导航距离位姿源；航向始终使用 IMU
     navigation_pose_source: ekf
+    # 轮速里程计话题（仅用于启动诊断/预热）
     wheel_odom_topic: /odom
+    # 轮速里程计预热时间（s）
     wheel_odom_warmup_sec: 0.40
+    # 轮速里程计预热最少消息数
     wheel_odom_warmup_min_msgs: 5
 
     # ────────────────────────────────────────────────────────────────────────
     # 生产轨迹参数
     # ────────────────────────────────────────────────────────────────────────
     # 直线速度：entry_medium / top_long / exit_medium / stage3_handoff_line
-    track_max_speed: 0.70
-
-    # 后续 180° 弯线速度：left_side_arc / right_side_arc
-    track_corner_speed: 0.44
+    # 直线段最大线速度（m/s）
+    track_max_speed: 0.65
 
     # 全局角速度限幅
-    track_max_angular: 0.75
+    # 全局最大角速度（rad/s）
+    track_max_angular: 1.5
 
     # 入口 90° 弯：线速度 + 角速度
-    track_entry_linear: 0.30
-    track_entry_angular: 0.77
+    track_entry_linear: 0.70
+    track_entry_angular: 1.5
 
-    # 后续 180° 弯：角速度
-    track_corner_angular: 0.80
+    # 后续 180° 弯：线速度 + 角速度
+    track_corner_speed: 0.73
+    track_corner_angular: 1.5
 
     # 第一个 180° 的标定中心：entry_arc 后 entry_medium 的名义距离。
     # 视觉触发开启后，此值不再是常规切段点，而是下方保护窗口的中心。
     track_entry_medium_distance_m: 0.65
 
-    # 第一个 180°：在 0.65m ± 0.15m 窗口内由前方正对边界触发。
-    # 到达窗口上限仍未连续确认视觉边界时，按距离保护强制进入 left_side_arc。
+    # 第一个 180°：在 0.65m ± 0.50m 窗口内由前方正对边界触发。
     track_entry_boundary_trigger_enabled: true
     track_entry_boundary_guard_half_width_m: 0.50 # 让纯视觉
     # 前方横边在分割 ROI 中自顶部向下的位置比例；值越大代表边界越靠近车头。
@@ -95,21 +118,39 @@ stage2_inertial_navigator:
     # 连续有效视觉帧数；现场试跑先用 1，支持改为 2 或 3 抑制误检。
     track_entry_boundary_confirm_frames: 1
 
-    # 第二个 180° 触发点：top_long 走多远开始 right_side_arc。
-    # 最新日志约在 2.50m 后切入；现场要求再提前约 10cm，因此由 2.59m 收到 2.49m。
+    # 第二个 180°：复用第一个弯的 SEG 横边判定，独立保留调参入口。
+    track_top_boundary_trigger_enabled: true
+    track_top_boundary_guard_half_width_m: 0.50
+    track_top_boundary_top_y_ratio: 0.23
+    track_top_boundary_max_angle_deg: 20.0
+    track_top_boundary_confirm_frames: 1
+
+    # 两个 180° 的视觉均未确认时，以 map <- base_footprint 的 x 强制转弯。
+    # 顺时针：entry_medium x<=min，top_long x>=max；逆时针顺序相反。
+    # map TF 暂不可用时才回退到各段距离窗口上限，避免无限直行。
+    track_turn_force_map_x_enabled: true
+    track_turn_force_min_map_x: 1.00
+    track_turn_force_max_map_x: 3.60
+
+    # 第二个 180° 的名义里程中心，只用于视觉有效窗口和 TF 缺失保护。
     track_top_long_distance_m: 2.47
 
     # 出口最后直线长度：right_side_arc 后走多远判定 Stage2 完成。
     # 最新实车反馈最后一段偏长，缩短 20cm：1.49m -> 1.29m。
-    track_exit_medium_distance_m: 0.70
+    track_exit_medium_distance_m: 0.85
 
     # 两个 180° 和出口短直线完成后，按方向执行 90°：顺时针左转、逆时针右转。
     # 该段复用入口 90° 的 track_entry_linear / track_entry_angular / radius 配置，
     # 随后沿 -Y 直行；实时 TF map_y 严格小于此值时交权给 Stage3。
-    track_stage3_handoff_map_y: 2.10
+    track_stage3_handoff_map_y: 2.40
     stage3_entry_anchor_topic: stage3_entry_anchor
     # S3 交接锚点只取 map <- base_footprint 的实时 TF xy；TF 不可用时暂停交权。
     stage3_entry_anchor_base_frame: base_footprint
+    # S2 末段 x 固定；进入最后 -Y 直线即把该 x 和预测起点 y 交给 S3 后台 A*。
+    stage3_preplan_pose_topic: stage3_preplan_pose
+    stage3_preplan_map_y: 1.80
+    # 正式交权后持续末段命令的最长时间；S3 未及时接管则安全停车。
+    stage3_handoff_hold_timeout_sec: 1.0
 
     # 名义半径：用于日志/弧长诊断，实际切段以 IMU 相对角为准
     track_entry_radius: 0.40
@@ -119,10 +160,11 @@ stage2_inertial_navigator:
     track_entry_tolerance_deg: 3.0
 
     # 提前切段角：
-    #   entry_arc 目标 90°，提前 50° => 约转到 40° 切入 entry_medium
-    #   corner_arc 目标 180°，提前 35° => 约转到 145° 切入下一条直线
-    track_entry_arc_complete_lead_deg: 40.0
-    track_corner_arc_complete_lead_deg: 20.0
+    #   entry_arc / exit_turn_90 目标 90°，提前 52° => 约转到 38° 切入下一直线
+    #   corner_arc 目标 180°，提前 45° => 约转到 135° 切入下一条直线
+    track_entry_arc_complete_lead_deg: 53.0
+    track_corner_arc_complete_lead_deg: 50.0
+    track_exit_turn_arc_complete_lead_deg: 52.0
 
     # 关闭 yaw-rate 预测切段和提前反向刹车，只使用上面的明确提前角
     track_arc_finish_predict_sec: 0.0
@@ -140,11 +182,21 @@ stage2_inertial_navigator:
     vision_turn_assist_enabled: false
     imu_heading_correction_enabled: true
     fusion_mode_enabled: true
-    # 长直线视觉横向纠偏：实车越线后将视觉权重减半，降低与 IMU 航向保持对抗。
+    # 长直线视觉纠偏：近场中线负责横移拉回，远近差负责航向辅助。
+    # 保留 0.40rad/s 的强回正能力，但仅在连续可信且近远中线不矛盾时释放。
     track_vision_lateral_scale_m: 2.40
     track_vision_lateral_weight: 0.35
-    # 视觉修正本身的角速度限幅，同步由 0.10 提高四倍至 0.40rad/s；
-    # 总输出仍受 track_max_angular=0.75rad/s 限制。
+    track_vision_lateral_deadband: 0.06
+    track_vision_lateral_release_deadband: 0.035
+    track_vision_heading_gain: 0.22
+    track_vision_confirm_frames: 3
+    track_vision_max_frame_delta: 0.25
+    track_vision_opposition_threshold: 0.08
+    # 车体物理居中、静止时记录 near_error，填入这里以消除相机安装零偏。
+    track_vision_camera_offset: 0.0
+    # 每个新 SEG 帧允许的视觉角速度变化；不是最大角速度限幅。
+    track_vision_max_angular_step: 0.12
+    # 视觉修正本身保留 ±0.40rad/s，总输出仍受 track_max_angular=0.75rad/s 限制。
     track_vision_correction_max_angular: 0.40
 
     # /odom_combined 单步异常过滤，防 EKF 跳变误累计距离。
@@ -181,6 +233,35 @@ stage2_inertial_navigator:
     avoid_leg_distance_tol_m: 0.04
     side_detour_threshold_m: 0.18
     avoider_heading_tolerance_deg: 1.5
+
+    # 生产直线 S 形避障：聚类规则与 Stage1 前方有效障碍判定一致。
+    # 仅在直线段接管；进入两个 180° 弯前检查窗口后不再新触发。
+    stage2_straight_avoid_enabled: true
+    stage2_straight_avoid_trigger_m: 0.60
+    stage2_straight_avoid_window_min_x: 0.18
+    stage2_straight_avoid_window_half_width_m: 0.22
+    stage2_straight_avoid_cluster_gap_m: 0.12
+    stage2_straight_avoid_min_cluster_points: 3
+    stage2_straight_avoid_min_cluster_width_m: 0.06
+    stage2_straight_avoid_max_cluster_width_m: 0.55
+    stage2_straight_avoid_min_valid_range_m: 0.15
+    # 默认左绕；有效障碍明确偏左达到该角度时锁定右绕。
+    stage2_straight_avoid_right_turn_left_angle_deg: 15.0
+    # 当前直线速度保持不变；speed_limit=0.0 表示不限速。
+    stage2_straight_avoid_speed_limit_mps: 0.0
+    stage2_straight_avoid_angular_speed: 0.80
+    # 依次偏离 +10°/-10°（按绕行方向镜像），再回到直线段 IMU 航向。
+    stage2_straight_avoid_yaw_offset_deg: 10.0
+    stage2_straight_avoid_yaw_tolerance_deg: 1.0
+
+    # 两个 180° 弯前探测：仅记录，不停车、不减速、不改变切段。
+    # 顺时针取右侧、逆时针取左侧；前方与同侧窗口共用上述聚类过滤规则。
+    stage2_turn_precheck_enabled: true
+    stage2_turn_precheck_lead_m: 0.60
+    stage2_turn_precheck_front_m: 0.50
+    stage2_turn_precheck_side_m: 0.60
+    stage2_turn_precheck_side_min_x_m: 0.0
+    stage2_turn_precheck_side_min_y_m: 0.18
 
     # ────────────────────────────────────────────────────────────────────────
     # 视觉模型 / 日志

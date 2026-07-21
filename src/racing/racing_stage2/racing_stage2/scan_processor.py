@@ -142,3 +142,58 @@ class ScanProcessor:
             clusters.append(current_cluster)
         
         return clusters
+
+    def nearest_filtered_cluster(self, scan_msg, *, min_x, max_x, min_y, max_y,
+                               gap_tolerance, min_points, min_width, max_width,
+                               min_valid_range=0.15):
+        """Return the nearest Stage1-style valid cluster in a rectangular window."""
+        clusters = []
+        current_cluster = []
+        previous_point = None
+        for index, distance in enumerate(scan_msg.ranges):
+            if math.isinf(distance) or math.isnan(distance) or distance < min_valid_range:
+                if current_cluster:
+                    clusters.append(current_cluster)
+                current_cluster = []
+                previous_point = None
+                continue
+            angle = scan_msg.angle_min + index * scan_msg.angle_increment
+            x = distance * math.cos(angle)
+            y = distance * math.sin(angle)
+            if x < min_x or x > max_x or y < min_y or y > max_y:
+                if current_cluster:
+                    clusters.append(current_cluster)
+                current_cluster = []
+                previous_point = None
+                continue
+            point = (x, y, distance)
+            if previous_point is None or math.hypot(
+                    x - previous_point[0], y - previous_point[1]) <= gap_tolerance:
+                current_cluster.append(point)
+            else:
+                clusters.append(current_cluster)
+                current_cluster = [point]
+            previous_point = point
+        if current_cluster:
+            clusters.append(current_cluster)
+
+        nearest = None
+        for cluster in clusters:
+            if len(cluster) < min_points:
+                continue
+            span = math.hypot(cluster[-1][0] - cluster[0][0],
+                              cluster[-1][1] - cluster[0][1])
+            if span < min_width or span > max_width:
+                continue
+            center_x = sum(point[0] for point in cluster) / len(cluster)
+            center_y = sum(point[1] for point in cluster) / len(cluster)
+            candidate = {
+                'distance': min(point[2] for point in cluster),
+                'center_x': center_x,
+                'center_y': center_y,
+                'span': span,
+                'danger_angle_deg': math.degrees(math.atan2(center_y, max(center_x, 1e-6))),
+            }
+            if nearest is None or candidate['distance'] < nearest['distance']:
+                nearest = candidate
+        return nearest

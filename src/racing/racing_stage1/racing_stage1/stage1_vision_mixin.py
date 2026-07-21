@@ -147,6 +147,18 @@ class Stage1VisionMixin:
         status = "启用" if enable else "禁用"
         self.get_logger().info(f'[Stage1视觉导航] 状态: {status}')
 
+    def _shutdown_vision_corridor(self, reason: str):
+        """Release Stage1-only vision resources once the competition advances."""
+        detector = getattr(self, '_vision_corridor', None)
+        if detector is None:
+            return
+        try:
+            detector.shutdown()
+            self._vision_corridor_active = False
+            self.get_logger().info(f'[Stage1视觉导航] 资源已释放 reason={reason}')
+        except Exception as exc:
+            self.get_logger().warn(f'[Stage1视觉导航] 资源释放失败: {exc}')
+
     def _get_vision_corridor_control(self):
         """
         获取视觉通道导航控制指令

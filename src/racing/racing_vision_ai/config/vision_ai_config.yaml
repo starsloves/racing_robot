@@ -3,30 +3,59 @@
 volcengine:
   # API密钥 - 请替换为你的实际API密钥
   # Keep credentials out of the repository. Export ARK_API_KEY on the robot.
+  # API 密钥；留空时从 ARK_API_KEY 环境变量读取
   api_key: ""
   
   # 模型ID - 可用 ARK_MODEL_ID 环境变量覆盖
-  model_id: "doubao-seed-1-6-250615"
+  # 云端视觉模型 ID
+  # Doubao-1.5-vision deployed Ark endpoint. ARK_API_KEY stays in the runtime .env.
+  model_id: "<your-ark-model-id>"
   
   # AI分析提示词（与 MAE01 短句播报长度保持一致）
-  prompt: "仅描述画面中展示牌上的图案和关键信息，忽略背景、赛道和其他物体，不能够泛略的说有啥，要描述在做什么。用20-30个汉字输出适合语音播报的中文短句"
+  # 云端图像描述提示词
+  prompt: "仅简要描述画面中展示牌上的图案和关键信息，忽略背景、赛道和其他物体，只需要描述在做什么。用10-20个汉字输出适合语音播报的中文短句"
+  # 云端描述最大字符数
   max_description_chars: 60
+
+# 本地 llama.cpp 的 OpenAI 兼容视觉服务。与云端同时发起请求，先返回有效短句的一方播报。
+local_llama:
+  # 是否启用本地视觉服务
+  enabled: true
+  # 本地 OpenAI 兼容接口地址
+  base_url: "http://127.0.0.1:8080/v1/chat/completions"
+  # 本地视觉模型 ID
+  model_id: "SmolVLM-500M-Instruct"
+  # 本地图像描述提示词
+  prompt: "只描述展示牌的图案或正在发生的事。用不超过20个汉字回答。"
+  # 本地结果必须含中文，否则继续等待云端结果
+  require_chinese: true
+  # 本地模型最大生成 token 数
+  max_tokens: 48
+  # 本地请求超时时间（s）
+  timeout_sec: 12
 
 # 检测配置
 detection:
   # 触发图像分析的sign值
+  # 触发图像分析的标牌信号值
   target_sign: 9
   
   # 图像话题名称
+  # 输入 RGB 图像话题
   image_topic: "/aurora/rgb/image_raw"
   
   # sign话题名称  
+  # 标牌触发信号话题
   sign_topic: "sign4return"
 
 # 图像处理配置
 image:
   # 图像质量 (1-100)
+  # JPEG 压缩质量（1-100）
   jpeg_quality: 85
+  # 图像最长边限制（px）
+  max_edge_px: 448
   
   # 图像格式
+  # 请求图像编码格式
   format: "JPEG"

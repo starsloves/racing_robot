@@ -71,9 +71,10 @@ class VisionPDetector:
         self.REG_MAX = 16
         self.strides = [8, 16, 32]
 
-        self._node.get_logger().info(f'[P-DET] 加载模型: {model_path}')
-        models = dnn.load(model_path)
-        self.model = models[0]
+        self._model_path = model_path
+        self._model_lock = threading.Lock()
+        self.model = None
+        self._model_load_error = ''
 
         self.bridge = CvBridge()
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -88,7 +89,7 @@ class VisionPDetector:
 
         # 创建占位图像
         self._write_placeholder_image()
-        self._node.get_logger().info('[P-DET] 模块初始化完成，等待相机数据...')
+        self._node.get_logger().info('[P-DET] 模块初始化完成，BPU模型将在Phase3按需加载...')
         self._node.get_logger().info(f'[P-DET] HTTP 服务将在 phase=3 时绑定端口 {self.http_port}')
 
     def get_p_detection(self):
@@ -106,6 +107,8 @@ class VisionPDetector:
     def set_inference_active(self, active: bool):
         """启用/停用 P YOLO 推理。仅 phase=3 期间应启用。"""
         active = bool(active)
+        if active and not self.ensure_model_loaded('phase3_activate'):
+            active = False
         with self._lock:
             previous = self._inference_active
             self._inference_active = active
@@ -119,6 +122,46 @@ class VisionPDetector:
         if previous != active:
             state = '启用' if active else '停用'
             self._node.get_logger().info(f'[P-DET] YOLO 推理已{state}')
+
+    def _resource_log(self, event, detail):
+        message = f'[RESOURCE] stage3_p_vision {event} | {detail}'
+        self._node.get_logger().info(message)
+        stage_log = getattr(self._node, 'log', None)
+        if stage_log is not None:
+            stage_log.mission(message)
+
+    def ensure_model_loaded(self, reason):
+        with self._model_lock:
+            if self.model is not None:
+                return True
+            started = time.perf_counter()
+            self._resource_log('MODEL_LOAD_START', f'reason={reason} path={self._model_path}')
+            try:
+                models = dnn.load(self._model_path)
+                self.model = models[0]
+                self._model_load_error = ''
+            except Exception as exc:
+                self.model = None
+                self._model_load_error = f'{type(exc).__name__}: {exc}'
+                self._resource_log(
+                    'MODEL_LOAD_FAILED',
+                    f'reason={reason} elapsed={(time.perf_counter() - started):.3f}s error={self._model_load_error}',
+                )
+                return False
+            self._resource_log(
+                'MODEL_LOAD_DONE',
+                f'reason={reason} elapsed={(time.perf_counter() - started):.3f}s',
+            )
+            return True
+
+    def release_model(self, reason):
+        self.set_inference_active(False)
+        with self._model_lock:
+            if self.model is None:
+                return
+            self.model = None
+            self._model_load_error = ''
+            self._resource_log('MODEL_RELEASED', f'reason={reason}')
 
     def is_inference_active(self) -> bool:
         with self._lock:
@@ -347,6 +390,8 @@ setInterval(health, 500); health();
 
     def _image_callback(self, msg):
         try:
+            if not self.is_inference_active():
+                return
             # 1. 使用完整相机画面
             img_full = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             h_full, w_full = img_full.shape[:2]
@@ -358,32 +403,16 @@ setInterval(health, 500); health();
             cv2.putText(frame_before, 'INPUT (Full frame)',
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-            # 总启动时检测器会早于 Stage3 创建。未启用时不做 BPU 推理，
-            # 但仍持续更新 Web 画面，避免网页停在占位图或上一帧。
-            if not self.is_inference_active():
-                frame_after = img_cropped.copy()
-                cv2.putText(
-                    frame_after,
-                    f'P YOLO DISABLED (phase={getattr(self._node, "phase", 0)})',
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2,
-                )
-                with self._lock:
-                    self._detected = False
-                    self._confidence = 0.0
-                    self._bbox = None
-                    self._timestamp = time.time()
-                    self._offset = 0.0
-                    self._fill_ratio = 0.0
-                self._publish_visualization(frame_before, frame_after, 'P inference disabled')
-                return
-
             # 2. 预处理
             canvas, scale = self._letterbox(img_cropped, self.input_size)
             nv12 = self._bgr2nv12(canvas)
 
             # 3. 推理
             t0 = time.perf_counter()
-            outs = self.model.forward([nv12])
+            with self._model_lock:
+                if self.model is None:
+                    return
+                outs = self.model.forward([nv12])
             self._infer_time_ms = (time.perf_counter() - t0) * 1000
 
             # 4. 后处理

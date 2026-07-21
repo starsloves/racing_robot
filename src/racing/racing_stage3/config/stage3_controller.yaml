@@ -25,6 +25,8 @@ stage3_return_navigator:
     # S2 在交权时发布的 map 锚点。S3 锁存交接时 map<-odom 的旋转，
     # 再以该锚点加旋转后的 /odom_combined 平移增量定位；不在运行中重用 map TF 位姿。
     stage3_entry_anchor_topic: stage3_entry_anchor
+    # S2 最后一条直线发布的预测 A* 起点；仅用于 phase=2 后台预规划。
+    stage3_preplan_pose_topic: stage3_preplan_pose
     require_stage3_entry_anchor: true
     stage3_entry_anchor_max_age_sec: 3.0
 
@@ -56,23 +58,26 @@ stage3_return_navigator:
     # S2 放权后立即继承 S2 发布的 map 锚点和原始 IMU 航向接管，不停车、不重新对齐。
     start_delay_sec: 0.0
 
+    # S2 交接末段固定沿 map -Y。Phase3 武装时将当时 IMU yaw 对齐到该 map 航向，
+    # 后续航向仍仅使用 IMU 相对转角，绝不使用 /odom orientation。
+    stage3_entry_map_yaw_deg: -90.0
+
     # 生产 S3 必须等到新鲜 S2 锚点；实时 map TF 只记录为交接诊断，不参与控制。
 
     # ────────────────────────────────────────────────────────────────────────
     # 路点与目标区域 (Waypoints and Goal Region)
     # ────────────────────────────────────────────────────────────────────────
 
-    # --- 路径规划起终点 (map 全局坐标系) ---
-    # Stage2 结束位置约 (2.80, 3.25)
-    # P 点停车矩形: 0.20 < x < 0.45, 0.00 < y < 0.20
-    # 路径：起点 → P 点名义中心 (0.325, 0.10)
+    # --- P 视觉搜索终点 (map 全局坐标系) ---
+    # 最终名义位置为 (0.50, 0.10)。P 的最终到达仍由视觉和深度决定；
+    # 该点只用于 P 未出现时的粗导航和停车等待边界。
 
     # 途经路点列表（JSON 格式）
     # [{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
-    return_waypoints_json: '[{"x":0.325,"y":0.10,"speed":0.15,"description":"P_region_center"}]'
+    return_waypoints_json: '[{"x":0.50,"y":0.10,"speed":0.45,"description":"P_visual_search_goal"}]'
 
-    # 路点容差 (m) — 距离途经点 < 此值时推进到下一路点
-    waypoint_tolerance: 0.18
+    # 视觉搜索终点容差 (m) — 到达后停车，仅等待 P 视觉接管。
+    waypoint_tolerance: 0.25
 
     # 路径超时 (s) — 超过此时长未到达则任务失败
     path_timeout_sec: 60.0
@@ -81,20 +86,34 @@ stage3_return_navigator:
     # Pure Pursuit 路径跟踪 (Pure Pursuit Path Following)
     # ────────────────────────────────────────────────────────────────────────
 
-    # 地图粗导航线速度 (m/s) — 仅用于尚未识别到 P 时搜索目标
-    pursuit_linear_speed: 0.35
+    # 视觉搜索入口直行速度 (m/s) — 尚未识别到 P 时沿右下方向快速驶入入口。
+    pursuit_linear_speed: 0.45
 
     # 前视距离 (m) — 追踪路径上前方此距离的点
     pursuit_lookahead_m: 0.45
 
-    # 航向差停止阈值 (°) — 航向误差 > 此值时停止纯追踪
+    # 大航向差阈值 (°) — 诊断/调参参考；大误差仍沿可实现的转弯弧线行驶。
     pursuit_heading_stop_deg: 70.0
 
     # 转向增益 — 曲率 → 角速度增益
     pursuit_turn_kp: 1.2
 
-    # 转弯线速度 (m/s) — 大角度转向时的前进速度
+    # 转弯最低线速度 (m/s)
     pursuit_turn_linear_speed: 0.08
+
+    # A* 转弯最小半径 (m)。跟踪时线速度至少为 |angular_z| * 此值，
+    # 避免低速饱和打舵而无法完成大角度转弯。
+    pursuit_min_turn_radius_m: 0.42
+
+    # 起步目标方位预对正：初始目标方位误差达到该值时，先摆正再允许单目标追踪或 P 接管。
+    initial_align_trigger_deg: 30.0
+
+    # 预对正完成容差 (°)。进入此范围后开始单目标直追。
+    initial_align_tolerance_deg: 8.0
+
+    # 预对正角速度 (rad/s) 和线速度 (m/s)。阿克曼底盘须低速前进摆弧，不能原地旋转。
+    initial_align_angular_speed: 1.5
+    initial_align_linear_speed: 0.12
 
     # 全局最大角速度 (rad/s)
     max_angular_speed: 0.8
@@ -124,9 +143,9 @@ stage3_return_navigator:
     p_approach_conf_threshold: 0.5
 
     # 连续检测次数阈值 — 连续检测到 P 点此帧数后触发接近（抗抖动）
-    p_approach_consecutive_hits: 3
+    p_approach_consecutive_hits: 1
 
-    # 接近线速度 (m/s) — 连续识别到 P 后由视觉接管并直接高速接近
+    # 接近线速度 (m/s) — P 已接近画面中心时的最高速度
     p_approach_linear_speed: 0.30
 
     # P 检测结果的最大有效年龄 (s)
@@ -143,7 +162,11 @@ stage3_return_navigator:
     # 仅取 P bbox 中心区域，降低边缘背景、空洞和 P 边框的影响。
     p_depth_roi_fraction: 0.50
     # P 框内有效深度中位数 < 此值时，发布零速度和 stage3_state=complete。
-    p_depth_stop_distance_m: 0.50
+    p_depth_stop_distance_m: 0.35
+
+    # P 框深度首次 <= 此值后，直到本次任务结束都跳过常规雷达避障；0 表示关闭。
+    # 紧急停车仍保留优先级。
+    p_approach_disable_avoidance_distance_m: 0.75
 
     # P 点视觉到达后额外前进距离 (m) — 0 表示达到视觉阈值即刹停
     p_extra_forward_distance_m: 0.00
@@ -152,10 +175,23 @@ stage3_return_navigator:
     p_extra_forward_speed: 0.50
 
     # 接近角速度增益 — bbox 中心 offset → 角速度增益
-    p_approach_angular_kp: 0.8
+    p_approach_angular_kp: 0.9
+
+    # P 偏移滤波与减速：提高新帧权重以降低转向滞后；偏移超过阈值后，
+    # 线速度随偏移线性降至最低速度，先摆正航向再继续靠近。
+    p_approach_offset_filter_alpha: 0.55
+    p_approach_slowdown_offset: 0.20
+    p_approach_min_linear_speed: 0.15
 
     # P 接管后只由 bbox 水平偏差转向、对齐深度决定终停；不再使用 map 判据。
-    # 雷达避障仍处于更高优先级；P 丢帧时停车等待重识别，不回退 A*。
+    # P 丢失时低速倒车，并闭环回到仍能看见 P 时的历史航向。
+    p_loss_reverse_speed: 0.10
+    p_loss_reverse_duration_sec: 2.00
+    p_loss_reverse_max_angular: 0.35
+    # P 丢失时取此前该时长的有效 P 画面对应 IMU 航向作为回转目标。
+    p_loss_heading_lookback_sec: 1.0
+    p_loss_heading_tolerance_deg: 6.0
+    p_loss_heading_kp: 1.2
 
     # Stage3 专用 Web 端口 — HTTP 实时预览端口（避免与 Stage2 冲突）
     p_web_port: 8083
@@ -179,6 +215,14 @@ stage3_return_navigator:
 
     # 避障最小转向角度 (°) — 相对初始航向至少转过此角度
     avoid_min_turn_angle_deg: 18.0
+
+    # 明显左前障碍才硬性偏向右绕；其余情况由下方目标趋近评分选择绕行侧。
+    avoid_right_turn_left_obstacle_angle_deg: 15.0
+
+    # 对当前 P 视觉搜索目标评估左右绕行后的航向，选择更接近目标的一侧。
+    # 明确朝障碍同侧转入时加入安全惩罚，避免为了靠近目标切入近障。
+    avoid_goal_bias_enabled: true
+    avoid_obstacle_side_penalty: 3.5
 
     # 安全距离 (m) — 障碍物距离 < 此值触发避障
     avoid_safe_distance: 0.50
@@ -274,8 +318,8 @@ stage3_return_navigator:
     # A* 全局路径规划 (A* Global Path Planner)
     # ────────────────────────────────────────────────────────────────────────
 
-    # 启用全局规划器 — true: 使用 A* 避开地图禁区
-    use_global_planner: true
+    # 生产返程使用“右下视觉搜索入口 + S1 雷达避障”，不使用漂移敏感 A*。
+    use_global_planner: false
 
     # 全局坐标系名称
     global_frame_id: map

@@ -22,6 +22,9 @@ competition_controller:
     # Stage2 控制指令话题（Phase2 时订阅并转发）
     stage2_cmd_topic: /stage2_cmd_vel
 
+    # Stage3 控制指令话题；总赛由本节点统一仲裁后输出 /cmd_vel。
+    stage3_cmd_topic: /stage3_cmd_vel
+
     # 激光雷达扫描话题（用于避障）
     scan_topic: /scan
 
@@ -82,7 +85,7 @@ competition_controller:
     # ────────────────────────────────────────────────────────────────────────
 
     # 盲开线速度 (m/s) — Phase1 初始前进速度
-    blind_linear_speed: 0.45
+    blind_linear_speed: 0.55
 
     # 盲开角速度 (rad/s) — 通常为 0（直行）
     blind_angular_speed: 0.0
@@ -96,7 +99,7 @@ competition_controller:
     phase1_window_min_x: 0.18
 
     # 前方窗口最大 X 距离 (m) — 距车体前端的远界
-    phase1_window_max_x: 0.85
+    phase1_window_max_x: 0.60
 
     # 前方窗口半宽 (m) — Y 方向±半宽，形成矩形检测区域
     phase1_window_half_width: 0.22
@@ -129,35 +132,46 @@ competition_controller:
 
     # --- 避障动作参数 (Avoidance Action) ---
     # 避障线速度 (m/s) — 避障期间前进速度
-    avoid_linear_speed: 0.1
+    avoid_linear_speed: 0.3
 
-    # 避障角速度 (rad/s) — 转向速度（根据障碍物方向选择±）
-    avoid_angular_speed: 0.8
+    # 避障角速度 (rad/s)
+    avoid_angular_speed: 1.5
+
+    # 有效障碍物中心位于车体左前方且角度不小于此值时，首次避障改为右转；
+    # 通道导航的局部安全回退也使用此阈值。ROS base 坐标中，正角为左侧。
+    avoid_right_turn_left_obstacle_angle_deg: 15.0
+
+    # 通道导航避障时，结合当前 map 路点选择左右绕行；true 时生效。
+    corridor_avoid_goal_bias_enabled: true
+
+    # 障碍物明确位于候选绕行侧时附加的安全代价（rad），必须大于 π，
+    # 使路点方向不能驱动车辆朝该侧近障切入。
+    corridor_avoid_obstacle_side_penalty: 3.5
 
     # 避障最小持续时间 (s) — 避障至少持续时长
-    avoid_min_duration_sec: 0.7
+    avoid_min_duration_sec: 0.5
 
     # 障碍清除保持时间 (s) — 障碍清除后需保持此时长才切换状态
     avoid_clear_hold_sec: 0.25
 
     # 避障最小转向角度 (°) — 相对初始航向至少转过此角度
-    avoid_min_turn_angle_deg: 18.0
+    avoid_min_turn_angle_deg: 30.0
 
     # 启动宽限期 (s) — 节点启动后此时间内不触发避障（避免噪声误触发）
-    phase1_avoid_startup_grace_sec: 1.5
+    phase1_avoid_startup_grace_sec: 0.5
 
     # --- 激光扫描配置 (Lidar Scan Config) ---
     # 扫描角度范围 (°) — ±此角度内的激光点参与检测
     scan_angle_deg: 45.0
 
     # 安全距离 (m) — 障碍物距离小于此值触发避障
-    safe_distance: 0.5
+    safe_distance: 0.6
 
     # 清除距离 (m) — 障碍物距离大于此值视为清除
     clear_distance: 0.65
 
     # 最小有效量程 (m) — 激光点距离小于此值视为无效
-    min_valid_range: 0.15
+    min_valid_range: 0.10
 
     # ────────────────────────────────────────────────────────────────────────
     # 避障恢复 (Avoidance Recovery)
@@ -165,26 +179,26 @@ competition_controller:
 
     # --- 反舵阶段 (Counter Steering) ---
     # 反舵线速度 (m/s)
-    counter_steer_linear_speed: 0.10
+    counter_steer_linear_speed: 0.30
 
     # 反舵角速度 (rad/s) — 反向转向速度（第二个转角，减小避免过冲）
-    counter_steer_angular_speed: 0.50
+    counter_steer_angular_speed: 1.0
 
     # 反舵持续时间缩放系数 — 反舵时长 = 避障时长 × 此系数
     counter_steer_duration_scale: 0.6
 
     # 反舵最小持续时间 (s)
-    counter_steer_min_duration_sec: 0.45
+    counter_steer_min_duration_sec: 0.30
 
     # 反舵最大持续时间 (s)
-    counter_steer_max_duration_sec: 1.20
+    counter_steer_max_duration_sec: 1.00
 
     # --- 恢复阶段 (Recovery) ---
     # 恢复线速度 (m/s) — 直行恢复速度
-    recovery_linear_speed: 0.12
+    recovery_linear_speed: 0.35
 
     # 恢复转弯线速度 (m/s) — 转弯修正时的前进速度
-    recovery_turn_linear_speed: 0.08
+    recovery_turn_linear_speed: 0.20
 
     # 恢复角速度 (rad/s) — 基于时间的恢复转向速度（减小避免回正过冲）
     recovery_angular_speed: 0.40
@@ -227,7 +241,7 @@ competition_controller:
     back_angular_kp: 0.9
 
     # 后退角速度绝对上限与每秒变化率，抑制高速倒退时的反复反打
-    back_max_angular_speed: 0.40
+    back_max_angular_speed: 0.50
     back_angular_slew_rate: 0.50
 
     # 路点到达容差 (m) — 小于采样间隔的两倍，避免一次跳过多个路点
@@ -263,7 +277,8 @@ competition_controller:
 
     # --- 通道路点 (Waypoints in map frame) ---
     # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
-    # 先贴 x=2.50 再收 y，避免单点 LOS 中段漂移
+    # 按数组顺序逐点跟踪：先贴 x=2.50 再收 y，避免单点 LOS 中段漂移。
+    # 雷达避障恢复后也会继续追踪当前路点，不会跳过中继点直冲终点。
     corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.55,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
 
     # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
@@ -330,6 +345,13 @@ competition_controller:
 
     # 最后一小段 X 微调的角速度绝对上限 (rad/s)
     corridor_terminal_micro_max_angular_speed: 0.06
+
+    # 最后路点进入 Y 门线前的预对正距离 (m)。在仍正向行驶时同时收敛 IMU 航向。
+    corridor_terminal_prealign_y_margin_m: 0.70
+
+    # 预对正航向闭环增益与角速度上限 (rad/s)
+    corridor_terminal_prealign_heading_kp: 1.2
+    corridor_terminal_prealign_max_angular_speed: 0.25
 
     # 仅在已到 Y 门线和最终 X 窗口、但航向未对齐时，低速后退回正
     terminal_reverse_align_linear_speed: -0.06
@@ -505,6 +527,12 @@ competition_controller:
 
     # 左旋线速度 (m/s) — 向左旋回时的前进速度（x>3.5m 时小速度运行）
     corridor_left_recover_linear: 0.08
+
+    # Stage1 盲开右转区域（map 坐标系）
+    blind_right_turn_x: 3.5
+    blind_right_turn_y: 1.5
+    blind_right_turn_angular: 0.70
+    blind_right_turn_linear: 0.08
 
     # ────────────────────────────────────────────────────────────────────────
     # Phase 切换参数 (Phase Transition)

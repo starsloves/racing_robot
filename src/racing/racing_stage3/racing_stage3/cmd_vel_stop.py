@@ -22,7 +22,7 @@ def publish_stop(publisher, repeat=25, interval_sec=0.02):
 
 
 def emergency_cli_stop_async(topics=None):
-    """Publish zero velocity in background to avoid blocking signal handler."""
+    """Publish one bounded CLI stop per topic as a last-resort fallback."""
     if topics is None:
         topics = ['/cmd_vel', '/stage2_cmd_vel']
 
@@ -32,22 +32,31 @@ def emergency_cli_stop_async(topics=None):
     )
 
     def _run():
-        for _ in range(5):
-            for topic in topics:
+        for topic in dict.fromkeys(topics):
+            process = None
+            try:
+                process = subprocess.Popen(
+                    [
+                        'ros2', 'topic', 'pub', '--once', topic,
+                        'geometry_msgs/msg/Twist', payload,
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                process.communicate(timeout=0.75)
+            except subprocess.TimeoutExpired:
+                process.terminate()
                 try:
-                    subprocess.Popen(
-                        [
-                            'ros2', 'topic', 'pub', '--once', topic,
-                            'geometry_msgs/msg/Twist', payload,
-                        ],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                except (OSError, FileNotFoundError):
-                    pass
-            time.sleep(0.04)
+                    process.communicate(timeout=0.25)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+            except (OSError, FileNotFoundError):
+                pass
 
-    threading.Thread(target=_run, daemon=True).start()
+    # Do not orphan a CLI child if the owning ROS process exits immediately.
+    threading.Thread(target=_run, name='Stage3CliStop').start()
 
 
 def init_without_ros_signal_handler(args=None):

@@ -20,9 +20,9 @@ def _emergency_stop_action():
             (
                 'set +e; '
                 # 先停车
-                'ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '
+                'timeout --signal=TERM 1s ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '
                 '"{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" '
-                '2>/dev/null & '
+                '>/dev/null 2>&1 || true; '
                 # 杀掉相关进程
                 'pkill -15 -f lslidar_driver_node 2>/dev/null; '
                 'sleep 0.3; '

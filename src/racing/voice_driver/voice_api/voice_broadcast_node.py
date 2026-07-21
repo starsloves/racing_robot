@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import threading
+from queue import Empty, Queue
 
 import rclpy
 from cv_bridge import CvBridge
@@ -33,13 +34,14 @@ class VoiceBroadcastNode(Node):
 
         self._service = VoiceBroadcastService(self._config, logger=self.get_logger())
         self._bridge = CvBridge()
-        self._busy = False
-        self._lock = threading.Lock()
+        self._speech_queue: Queue[tuple[str, str] | None] = Queue()
         self._waiting_for_image = False
         self._image_sub = None
 
         qos = QoSProfile(depth=10)
         self._status_pub = self.create_publisher(String, 'voice_broadcast_status', qos)
+        self._speech_worker = threading.Thread(target=self._speech_worker_loop, daemon=True)
+        self._speech_worker.start()
 
         if self._mode == 'tts_only':
             self.create_subscription(
@@ -106,15 +108,9 @@ class VoiceBroadcastNode(Node):
             f'[VOICE_BROADCAST] ai_description received chars={len(text)}; '
             'queueing background speech task'
         )
-        self._run_async('text', lambda: self._service.speak_text(text))
+        self._enqueue_speech('text', text)
 
     def _run_async(self, kind: str, task) -> None:
-        with self._lock:
-            if self._busy:
-                self.get_logger().warn('Voice broadcast already running, skipping request')
-                return
-            self._busy = True
-
         def _worker() -> None:
             try:
                 self.get_logger().info(f'[VOICE_BROADCAST] worker started kind={kind}')
@@ -127,11 +123,33 @@ class VoiceBroadcastNode(Node):
                 else:
                     self._publish_status(f'{kind}_failed')
             finally:
-                with self._lock:
-                    self._busy = False
                 self.get_logger().info(f'[VOICE_BROADCAST] worker finished kind={kind}')
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _enqueue_speech(self, kind: str, text: str) -> None:
+        self._speech_queue.put((kind, text))
+        self.get_logger().info(
+            f'[VOICE_BROADCAST] queued {kind} speech; pending={self._speech_queue.qsize()}'
+        )
+
+    def _speech_worker_loop(self) -> None:
+        while rclpy.ok():
+            try:
+                item = self._speech_queue.get(timeout=0.2)
+            except Empty:
+                continue
+            if item is None:
+                return
+            kind, text = item
+            try:
+                self.get_logger().info(f'[VOICE_BROADCAST] speaking queued {kind}')
+                if self._service.speak_text(text):
+                    self._publish_status(f'{kind}_ok:{text[:120]}')
+                else:
+                    self._publish_status(f'{kind}_failed')
+            finally:
+                self._speech_queue.task_done()
 
     def _teardown_image_sub(self) -> None:
         if self._image_sub is not None:

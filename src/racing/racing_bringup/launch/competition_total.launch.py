@@ -41,7 +41,7 @@ def generate_launch_description():
     include_voice_arg = DeclareLaunchArgument('include_voice', default_value='true')
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='true')
     include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
-    include_obstacle_markers_arg = DeclareLaunchArgument('include_obstacle_markers', default_value='true')
+    include_obstacle_markers_arg = DeclareLaunchArgument('include_obstacle_markers', default_value='false')
     imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/imu/data')
     test_direction_arg = DeclareLaunchArgument('test_direction', default_value='clockwise')
     map_yaml_arg = DeclareLaunchArgument(
@@ -109,6 +109,7 @@ def generate_launch_description():
             'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
             'standalone_map_overlay': 'false',
             'include_map_overlay': 'false',
+            'cmd_topic': '/stage3_cmd_vel',
         }.items(),
         condition=IfCondition(LaunchConfiguration('include_stage3')),
     )

@@ -10,6 +10,7 @@ import math
 import sys
 import threading
 import time
+from collections import deque
 
 import numpy as np
 import rclpy
@@ -74,6 +75,7 @@ class Stage3ReturnNavigator(Node):
         self._last_raw_odom_yaw = None
         self._imu_yaw = None
         self._imu_yaw_offset = 0.0
+        self._awaiting_entry_yaw_alignment = False
         self._entry_anchor_map = None
         self._entry_anchor_odom = None
         self._entry_anchor_map_from_odom_yaw = None
@@ -93,6 +95,8 @@ class Stage3ReturnNavigator(Node):
         self._planner_forbidden_reverse_attempts = 0
         self._map_pose_warned = False
         self._entry_anchor_tf_warned = False
+        self._visual_search_gate_reached = False
+        self._initial_align_required = False
 
         # P 视觉最终接管：地图只用于粗导航，P 视觉决定最终到达。
         self._p_detector = None
@@ -100,6 +104,12 @@ class Stage3ReturnNavigator(Node):
         self._p_consecutive_hits = 0
         self._p_offset_filtered = 0.0
         self._p_lost_since = None
+        self._p_lost_reverse_started_at = None
+        self._p_last_angular = 0.0
+        # Once P is within the final approach distance, lidar must not detour around it.
+        self._p_final_approach_latched = False
+        self._p_visible_yaw_history = deque()
+        self._p_recovery_target_yaw = None
 
         # P 终段深度当前仅用于实车标定日志，不参与控制或完成判定。
         self._depth_bridge = CvBridge()
@@ -117,6 +127,8 @@ class Stage3ReturnNavigator(Node):
         self.avoid_started_time = None
         self.avoid_clear_since = None
         self.avoid_entry_yaw = None
+        self.desired_heading = None
+        self.recovery_uses_heading = False
         self.last_avoid_duration = 0.0
         self.counter_steer_deadline = None
         self.recovery_deadline = None
@@ -127,6 +139,8 @@ class Stage3ReturnNavigator(Node):
         self._channel_detector = None
         self._channel_hits = 0
         self._channel_offset_filtered = 0.0
+        self._preplan_start = None
+        self._preplanned_path = []
 
         # ── Pub/Sub ──
         qos_latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -142,6 +156,10 @@ class Stage3ReturnNavigator(Node):
         self.create_subscription(
             PointStamped, self.stage3_entry_anchor_topic,
             self._stage3_entry_anchor_cb, qos_latched,
+        )
+        self.create_subscription(
+            PointStamped, self.stage3_preplan_pose_topic,
+            self._stage3_preplan_pose_cb, qos_latched,
         )
         self.create_subscription(Odometry, self.odom_topic, self._odom_cb, 10)
         self.create_subscription(Imu, self.imu_topic, self._imu_cb, 10)
@@ -193,12 +211,14 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('feedback_topic', 'competition_feedback')
         self.declare_parameter('direction_topic', 'competition_qr_task')
         self.declare_parameter('stage3_entry_anchor_topic', 'stage3_entry_anchor')
+        self.declare_parameter('stage3_preplan_pose_topic', 'stage3_preplan_pose')
         self.declare_parameter('require_stage3_entry_anchor', True)
         self.declare_parameter('stage3_entry_anchor_max_age_sec', 3.0)
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'base_footprint')
         self.declare_parameter('control_rate_hz', 20.0)
         self.declare_parameter('start_delay_sec', 0.0)
+        self.declare_parameter('stage3_entry_map_yaw_deg', -90.0)
 
         # ── 路点 ──
         self.declare_parameter('return_waypoints_json', '[]')
@@ -214,6 +234,15 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_approach_consecutive_hits', 3)
         self.declare_parameter('p_approach_linear_speed', 0.50)
         self.declare_parameter('p_approach_angular_kp', 0.8)
+        self.declare_parameter('p_approach_offset_filter_alpha', 0.55)
+        self.declare_parameter('p_approach_slowdown_offset', 0.20)
+        self.declare_parameter('p_approach_min_linear_speed', 0.10)
+        self.declare_parameter('p_loss_reverse_speed', 0.10)
+        self.declare_parameter('p_loss_reverse_duration_sec', 0.80)
+        self.declare_parameter('p_loss_reverse_max_angular', 0.35)
+        self.declare_parameter('p_loss_heading_lookback_sec', 1.0)
+        self.declare_parameter('p_loss_heading_tolerance_deg', 6.0)
+        self.declare_parameter('p_loss_heading_kp', 1.2)
         self.declare_parameter('p_web_port', 8083)
         self.declare_parameter('p_detection_timeout_sec', 0.35)
         self.declare_parameter('p_depth_logging_enabled', True)
@@ -224,6 +253,7 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_depth_max_m', 4.00)
         self.declare_parameter('p_depth_roi_fraction', 0.50)
         self.declare_parameter('p_depth_stop_distance_m', 0.50)
+        self.declare_parameter('p_approach_disable_avoidance_distance_m', 0.0)
 
         # ── Pure Pursuit ──
         self.declare_parameter('pursuit_linear_speed', 0.18)
@@ -231,6 +261,11 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('pursuit_heading_stop_deg', 70.0)
         self.declare_parameter('pursuit_turn_kp', 1.8)
         self.declare_parameter('pursuit_turn_linear_speed', 0.08)
+        self.declare_parameter('pursuit_min_turn_radius_m', 0.42)
+        self.declare_parameter('initial_align_trigger_deg', 30.0)
+        self.declare_parameter('initial_align_tolerance_deg', 8.0)
+        self.declare_parameter('initial_align_angular_speed', 1.5)
+        self.declare_parameter('initial_align_linear_speed', 0.0)
         self.declare_parameter('max_angular_speed', 0.8)
         self.declare_parameter('min_angular_speed', 0.45)
 
@@ -240,6 +275,9 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('avoid_min_duration_sec', 0.70)
         self.declare_parameter('avoid_clear_hold_sec', 0.25)
         self.declare_parameter('avoid_min_turn_angle_deg', 18.0)
+        self.declare_parameter('avoid_right_turn_left_obstacle_angle_deg', 15.0)
+        self.declare_parameter('avoid_goal_bias_enabled', True)
+        self.declare_parameter('avoid_obstacle_side_penalty', 3.5)
         self.declare_parameter('avoid_safe_distance', 0.50)
         self.declare_parameter('avoid_clear_distance', 0.65)
         self.declare_parameter('emergency_stop_distance', 0.22)
@@ -321,6 +359,9 @@ class Stage3ReturnNavigator(Node):
         self.stage3_entry_anchor_topic = str(
             self.get_parameter('stage3_entry_anchor_topic').value
         )
+        self.stage3_preplan_pose_topic = str(
+            self.get_parameter('stage3_preplan_pose_topic').value
+        )
         self.require_stage3_entry_anchor = bool(
             self.get_parameter('require_stage3_entry_anchor').value
         )
@@ -331,6 +372,9 @@ class Stage3ReturnNavigator(Node):
         self.base_frame = str(self.get_parameter('base_frame').value)
         self.control_rate_hz = float(self.get_parameter('control_rate_hz').value)
         self.start_delay_sec = float(self.get_parameter('start_delay_sec').value)
+        self.stage3_entry_map_yaw = math.radians(float(
+            self.get_parameter('stage3_entry_map_yaw_deg').value
+        ))
 
         self.return_waypoints_json = self.get_parameter('return_waypoints_json').value
         self.waypoint_tolerance = float(self.get_parameter('waypoint_tolerance').value)
@@ -346,6 +390,29 @@ class Stage3ReturnNavigator(Node):
         )
         self.p_approach_linear = float(self.get_parameter('p_approach_linear_speed').value)
         self.p_approach_angular_kp = float(self.get_parameter('p_approach_angular_kp').value)
+        self.p_approach_offset_filter_alpha = min(1.0, max(0.05, float(
+            self.get_parameter('p_approach_offset_filter_alpha').value
+        )))
+        self.p_approach_slowdown_offset = min(0.99, max(0.0, float(
+            self.get_parameter('p_approach_slowdown_offset').value
+        )))
+        self.p_approach_min_linear = min(self.p_approach_linear, max(0.0, float(
+            self.get_parameter('p_approach_min_linear_speed').value
+        )))
+        self.p_loss_reverse_speed = abs(float(self.get_parameter('p_loss_reverse_speed').value))
+        self.p_loss_reverse_duration = max(
+            0.0, float(self.get_parameter('p_loss_reverse_duration_sec').value)
+        )
+        self.p_loss_reverse_max_angular = abs(float(
+            self.get_parameter('p_loss_reverse_max_angular').value
+        ))
+        self.p_loss_heading_lookback = max(0.0, float(
+            self.get_parameter('p_loss_heading_lookback_sec').value
+        ))
+        self.p_loss_heading_tolerance = math.radians(max(
+            0.1, float(self.get_parameter('p_loss_heading_tolerance_deg').value)
+        ))
+        self.p_loss_heading_kp = float(self.get_parameter('p_loss_heading_kp').value)
         self.p_web_port = int(self.get_parameter('p_web_port').value)
         self.p_detection_timeout = max(
             0.0, float(self.get_parameter('p_detection_timeout_sec').value)
@@ -369,12 +436,32 @@ class Stage3ReturnNavigator(Node):
         self.p_depth_stop_distance = max(
             0.0, float(self.get_parameter('p_depth_stop_distance_m').value)
         )
+        self.p_approach_disable_avoidance_distance = max(
+            0.0, float(self.get_parameter(
+                'p_approach_disable_avoidance_distance_m'
+            ).value)
+        )
 
         self.pursuit_linear_speed = float(self.get_parameter('pursuit_linear_speed').value)
         self.pursuit_lookahead = float(self.get_parameter('pursuit_lookahead_m').value)
         self.pursuit_heading_stop = math.radians(float(self.get_parameter('pursuit_heading_stop_deg').value))
         self.pursuit_turn_kp = float(self.get_parameter('pursuit_turn_kp').value)
         self.pursuit_turn_linear = float(self.get_parameter('pursuit_turn_linear_speed').value)
+        self.pursuit_min_turn_radius = max(
+            0.05, float(self.get_parameter('pursuit_min_turn_radius_m').value)
+        )
+        self.initial_align_trigger = math.radians(max(
+            0.0, float(self.get_parameter('initial_align_trigger_deg').value)
+        ))
+        self.initial_align_tolerance = math.radians(max(
+            0.1, float(self.get_parameter('initial_align_tolerance_deg').value)
+        ))
+        self.initial_align_angular = abs(float(
+            self.get_parameter('initial_align_angular_speed').value
+        ))
+        self.initial_align_linear = float(
+            self.get_parameter('initial_align_linear_speed').value
+        )
         self.max_angular = float(self.get_parameter('max_angular_speed').value)
         self.min_angular = float(self.get_parameter('min_angular_speed').value)
 
@@ -383,6 +470,15 @@ class Stage3ReturnNavigator(Node):
         self.avoid_min_duration = float(self.get_parameter('avoid_min_duration_sec').value)
         self.avoid_clear_hold = float(self.get_parameter('avoid_clear_hold_sec').value)
         self.avoid_min_turn_angle = math.radians(float(self.get_parameter('avoid_min_turn_angle_deg').value))
+        self.avoid_right_turn_left_obstacle_angle = math.radians(float(
+            self.get_parameter('avoid_right_turn_left_obstacle_angle_deg').value
+        ))
+        self.avoid_goal_bias_enabled = bool(
+            self.get_parameter('avoid_goal_bias_enabled').value
+        )
+        self.avoid_obstacle_side_penalty = float(
+            self.get_parameter('avoid_obstacle_side_penalty').value
+        )
         self.avoid_safe_dist = float(self.get_parameter('avoid_safe_distance').value)
         self.avoid_clear_dist = float(self.get_parameter('avoid_clear_distance').value)
         self.emergency_stop_dist = float(self.get_parameter('emergency_stop_distance').value)
@@ -625,6 +721,13 @@ class Stage3ReturnNavigator(Node):
         if method is not None:
             method()
 
+    def _clear_depth_cache(self):
+        """Drop the full depth frame outside the Stage3 visual approach."""
+        with self._depth_lock:
+            self._last_depth_image = None
+            self._last_depth_received_at = 0.0
+            self._last_depth_encoding = ''
+
     def _set_channel_inference_active(self, active: bool):
         detector = getattr(self, '_channel_detector', None)
         if detector is not None and hasattr(detector, 'set_inference_active'):
@@ -662,6 +765,7 @@ class Stage3ReturnNavigator(Node):
                 self.phase_initialized = True
                 self._set_p_inference_active(False)
                 self._set_stage3_http_active(False)
+                self._clear_depth_cache()
                 self.get_logger().info('[PHASE] ✓ Phase 初始化完成: phase=1')
                 return
             if incoming == 3:
@@ -672,6 +776,7 @@ class Stage3ReturnNavigator(Node):
             self.phase = incoming
             self._set_p_inference_active(False)
             self._set_stage3_http_active(False)
+            self._clear_depth_cache()
             return
 
         self.phase = incoming
@@ -679,6 +784,7 @@ class Stage3ReturnNavigator(Node):
             self._reset_mission()
             self._set_p_inference_active(False)
             self._set_stage3_http_active(False)
+            self._clear_depth_cache()
         elif prev != 3 and self.phase == 3:
             self._set_stage3_http_active(True)
             self._arm_mission()
@@ -741,6 +847,36 @@ class Stage3ReturnNavigator(Node):
             )
             return
         self._bind_stage3_entry_anchor(anchor_map)
+
+    def _stage3_preplan_pose_cb(self, msg):
+        if msg.header.frame_id and msg.header.frame_id != self.map_frame:
+            self.log.warn('PREPLAN', f'ignored frame={msg.header.frame_id}')
+            return
+        self._preplan_start = (float(msg.point.x), float(msg.point.y))
+        self._preplanned_path = []
+        self.log.mission(
+            f'Stage2 preplan start received map=({self._preplan_start[0]:.3f},'
+            f'{self._preplan_start[1]:.3f})'
+        )
+
+    def _maybe_build_preplanned_path(self):
+        if self.phase != 2 or self._preplan_start is None or self._preplanned_path:
+            return
+        if not self.use_global_planner or self.global_planner is None or not self.return_waypoints:
+            return
+        path = self.global_planner.plan_path(
+            self._preplan_start, self._goal_center(), self._now_sec()
+        )
+        if path is None:
+            return
+        if not path:
+            self.log.warn('PREPLAN', 'A* failed from predicted Stage3 start; will retry')
+            return
+        self._preplanned_path = list(path)
+        self.log.mission(
+            f'Stage3 preplan ready: points={len(path)} '
+            f'start=({self._preplan_start[0]:.2f},{self._preplan_start[1]:.2f})'
+        )
 
     def _bind_stage3_entry_anchor(self, anchor_map):
         map_from_odom_yaw = self._lookup_map_from_odom_yaw()
@@ -828,10 +964,23 @@ class Stage3ReturnNavigator(Node):
 
     def _imu_cb(self, msg):
         self._imu_yaw = self._quat_to_yaw(msg.orientation)
+        if self._awaiting_entry_yaw_alignment:
+            self._imu_yaw_offset = self._normalize_angle(
+                self.stage3_entry_map_yaw - self._imu_yaw
+            )
+            self._awaiting_entry_yaw_alignment = False
+            self.log.mission(
+                'Stage3 IMU aligned at handoff: '
+                f'raw={math.degrees(self._imu_yaw):.1f}deg '
+                f'map={math.degrees(self.stage3_entry_map_yaw):.1f}deg '
+                f'offset={math.degrees(self._imu_yaw_offset):+.1f}deg'
+            )
         self.current_yaw = self._normalize_angle(self._imu_yaw + self._imu_yaw_offset)
 
     def _depth_cb(self, msg):
         """Cache the newest RGB-aligned Aurora depth frame for P diagnostics."""
+        if self.phase != 3 or not self.p_depth_logging_enabled:
+            return
         try:
             depth = self._depth_bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
             if depth is None or depth.ndim != 2:
@@ -852,14 +1001,31 @@ class Stage3ReturnNavigator(Node):
         self.mission_active = False
         self.mission_finished = False
         self._imu_yaw_offset = 0.0
+        # S2's final handoff line is fixed along map -Y.  Establish the map
+        # heading from IMU at handoff, then retain IMU-only relative heading.
+        self._awaiting_entry_yaw_alignment = True
+        if self._imu_yaw is not None:
+            self._imu_yaw_offset = self._normalize_angle(
+                self.stage3_entry_map_yaw - self._imu_yaw
+            )
+            self.current_yaw = self.stage3_entry_map_yaw
+            self._awaiting_entry_yaw_alignment = False
+            self.log.mission(
+                'Stage3 IMU aligned at handoff: '
+                f'raw={math.degrees(self._imu_yaw):.1f}deg '
+                f'map={math.degrees(self.stage3_entry_map_yaw):.1f}deg '
+                f'offset={math.degrees(self._imu_yaw_offset):+.1f}deg'
+            )
         self.path_started_at = None
         self.path_index = 0
         self._settled_start = None
         self._planner_reverse_start = None
         self._planner_reverse_started_at = None
         self._planner_forbidden_reverse_attempts = 0
-        self._active_planned_path = []
+        self._active_planned_path = list(self._preplanned_path)
         self._active_path_cursor = 0
+        self._visual_search_gate_reached = False
+        self._initial_align_required = False
         if self._entry_anchor_map is not None and self._entry_anchor_odom is not None:
             self.current_position = self._position_from_entry_anchor(
                 self._entry_anchor_map, self._entry_anchor_odom, self._last_raw_odom_xy,
@@ -870,11 +1036,18 @@ class Stage3ReturnNavigator(Node):
         if self.current_position is None:
             self.log.warn('POSE', 'phase=3 waiting for map<-base_footprint TF')
         self.avoid_state = 'forward'
+        self.desired_heading = None
+        self.recovery_uses_heading = False
         self.start_after_time = self._now_sec() + self.start_delay_sec
         self._p_approaching = False
         self._p_consecutive_hits = 0
         self._p_offset_filtered = 0.0
         self._p_lost_since = None
+        self._p_lost_reverse_started_at = None
+        self._p_last_angular = 0.0
+        self._p_final_approach_latched = False
+        self._p_visible_yaw_history.clear()
+        self._p_recovery_target_yaw = None
         self._set_p_inference_active(True)
         # Phase3 直接进入返程；P YOLO 从本阶段开始即可确认并接管。
         self._set_channel_inference_active(False)
@@ -893,6 +1066,7 @@ class Stage3ReturnNavigator(Node):
         self.cmd_pub.publish(Twist())
         self.mission_active = False
         self.mission_finished = False
+        self._awaiting_entry_yaw_alignment = False
         self._imu_yaw_offset = 0.0
         self.start_after_time = None
         self.path_started_at = None
@@ -903,16 +1077,28 @@ class Stage3ReturnNavigator(Node):
         self._planner_forbidden_reverse_attempts = 0
         self._active_planned_path = []
         self._active_path_cursor = 0
+        self._visual_search_gate_reached = False
+        self._initial_align_required = False
         self.avoid_state = 'forward'
+        self.desired_heading = None
+        self.recovery_uses_heading = False
         self._p_approaching = False
         self._p_consecutive_hits = 0
         self._p_offset_filtered = 0.0
         self._p_lost_since = None
+        self._p_lost_reverse_started_at = None
+        self._p_last_angular = 0.0
+        self._p_final_approach_latched = False
+        self._p_visible_yaw_history.clear()
+        self._p_recovery_target_yaw = None
         self._pre_return_state = 'idle'
         self._channel_hits = 0
         self._channel_offset_filtered = 0.0
         self._set_channel_inference_active(False)
         self._set_p_inference_active(False)
+        detector = getattr(self, '_p_detector', None)
+        if detector is not None and hasattr(detector, 'release_model'):
+            detector.release_model('phase_exit')
         self._publish_state('idle')
 
     def _start_mission(self):
@@ -932,12 +1118,21 @@ class Stage3ReturnNavigator(Node):
         self.mission_active = True
         self.path_started_at = self._now_sec()
         self.path_index = 0
-        self._publish_state('running')
+        target_x, target_y = self._goal_center()
+        target_yaw = math.atan2(
+            target_y - self.current_position[1], target_x - self.current_position[0]
+        )
+        initial_error = self._angle_error(target_yaw, self.current_yaw)
+        self._initial_align_required = abs(initial_error) >= self.initial_align_trigger
+        self._publish_state('initial_align' if self._initial_align_required else 'running')
         self._update_p_inference_gate()
         self.log.mission(
             f'return started, {len(self.return_waypoints)} waypoints (map coords), '
             f'current=({self.current_position[0]:.2f},{self.current_position[1]:.2f}) '
-            f'yaw={math.degrees(self.current_yaw):.1f}° {self._position_source_text()}'
+            f'yaw={math.degrees(self.current_yaw):.1f}° '
+            f'goal_yaw={math.degrees(target_yaw):.1f}° '
+            f'initial_error={math.degrees(initial_error):+.1f}° '
+            f'pre_align={self._initial_align_required} {self._position_source_text()}'
         )
         self.get_logger().info(f'mission_active=True, will publish cmd_vel now')
 
@@ -946,6 +1141,9 @@ class Stage3ReturnNavigator(Node):
         self.mission_active = False
         self.mission_finished = True
         self._set_p_inference_active(False)
+        detector = getattr(self, '_p_detector', None)
+        if detector is not None and hasattr(detector, 'release_model'):
+            detector.release_model('mission_complete')
         self._publish_state('complete')
         self._publish_feedback(feedback_text)
         sys.stderr.write('\n=== STAGE3 RETURN COMPLETE ===\n\n')
@@ -1036,6 +1234,9 @@ class Stage3ReturnNavigator(Node):
     # ══════════════ 主控制循环 ══════════════
 
     def _control_loop(self):
+        if self.phase == 2:
+            self._maybe_build_preplanned_path()
+            return
         if self.phase != 3 or self.mission_finished:
             return
 
@@ -1050,7 +1251,7 @@ class Stage3ReturnNavigator(Node):
         if self._check_emergency_stop():
             return
 
-        # 2. 雷达避障高于 P 视觉和 A* 导航。
+        # 2. 雷达避障高于 P 视觉和 A* 导航；P 终段可按深度禁用避障。
         if self.avoid_state == 'forward' and self.latest_scan is not None:
             self._check_obstacle()
 
@@ -1058,19 +1259,24 @@ class Stage3ReturnNavigator(Node):
             self._run_avoidance()
             return
 
-        # 3. Phase3 开始即允许 P YOLO 确认并接管。
+        # 3. 大航向差先按目标方位摆正，避免直接单点追踪走出大弧。
+        if self._initial_align_required:
+            self._run_initial_align()
+            return
+
+        # 4. Phase3 开始即允许 P YOLO 确认并接管。
         self._update_p_inference_gate()
         self._update_p_detection()
         if self._p_approaching:
             self._run_p_approach()
             return
 
-        # 4. 尚未识别 P，才允许使用漂移敏感的 map/A* 粗导航。
+        # 5. 尚未识别 P，才允许使用漂移敏感的 map/A* 粗导航。
         if self.current_position is None:
             self.stop_robot()
             self._publish_state('waiting_for_map_tf')
             return
-        if self._run_planner_forbidden_reverse():
+        if self.use_global_planner and self._run_planner_forbidden_reverse():
             return
         self._run_center_drive()
 
@@ -1093,6 +1299,42 @@ class Stage3ReturnNavigator(Node):
         self.cmd_pub.publish(Twist())
 
     # ══════════════ 地图粗导航 + P 视觉最终到达 ══════════════
+
+    def _run_initial_align(self):
+        """Turn toward the single map goal before enabling P takeover or pursuit."""
+        if self.current_position is None or self.current_yaw is None:
+            self.stop_robot()
+            self._publish_state('waiting_for_map_tf')
+            return
+
+        target_x, target_y = self._goal_center()
+        target_yaw = math.atan2(
+            target_y - self.current_position[1], target_x - self.current_position[0]
+        )
+        heading_error = self._angle_error(target_yaw, self.current_yaw)
+        self.desired_heading = target_yaw
+        if abs(heading_error) <= self.initial_align_tolerance:
+            self._initial_align_required = False
+            self._filtered_heading_err = 0.0
+            self.stop_robot()
+            self._publish_state('running')
+            self.log.mission(
+                f'initial align complete: target={math.degrees(target_yaw):.1f}° '
+                f'yaw={math.degrees(self.current_yaw):.1f}° '
+                f'error={math.degrees(heading_error):+.1f}°'
+            )
+            return
+
+        angular = math.copysign(self.initial_align_angular, heading_error)
+        self._publish_state('initial_align')
+        self.log.telemetry(
+            'INITIAL_ALIGN',
+            f'target={math.degrees(target_yaw):.1f}° '
+            f'yaw={math.degrees(self.current_yaw):.1f}° '
+            f'error={math.degrees(heading_error):+.1f}° '
+            f'v={self.initial_align_linear:.2f} w={angular:.2f}'
+        )
+        self.cmd_pub.publish(self._twist(self.initial_align_linear, angular))
 
     def _p_detection(self):
         if self._p_detector is None:
@@ -1148,6 +1390,23 @@ class Stage3ReturnNavigator(Node):
             return f'depth=invalid samples={samples} ({status})'
         return f'depth={depth_m:.3f}m samples={samples} ({status})'
 
+    def _record_p_visible_yaw(self, now):
+        if self.current_yaw is None:
+            return
+        self._p_visible_yaw_history.append((now, self.current_yaw))
+        history_limit = now - max(3.0, self.p_loss_heading_lookback + 1.0)
+        while self._p_visible_yaw_history and self._p_visible_yaw_history[0][0] < history_limit:
+            self._p_visible_yaw_history.popleft()
+
+    def _p_heading_before_loss(self, now):
+        desired_time = now - self.p_loss_heading_lookback
+        for stamp, yaw in reversed(self._p_visible_yaw_history):
+            if stamp <= desired_time:
+                return yaw
+        if self._p_visible_yaw_history:
+            return self._p_visible_yaw_history[0][1]
+        return self.current_yaw
+
     def _update_p_detection(self):
         detected, conf, bbox, _stamp, offset, _fill = self._p_detection()
         confirmed = (
@@ -1158,9 +1417,15 @@ class Stage3ReturnNavigator(Node):
         self._p_consecutive_hits = self._p_consecutive_hits + 1 if confirmed else 0
         if self._p_consecutive_hits < self.p_approach_hits_required:
             return
+        if self._p_approaching:
+            return
         self._p_approaching = True
         self._p_offset_filtered = float(offset)
         self._p_lost_since = None
+        self._p_lost_reverse_started_at = None
+        self._p_last_angular = 0.0
+        self._p_visible_yaw_history.clear()
+        self._p_recovery_target_yaw = None
         self._publish_state('p_approach')
         map_pos = self.current_position
         map_text = (
@@ -1177,19 +1442,71 @@ class Stage3ReturnNavigator(Node):
     def _run_p_approach(self):
         detected, conf, bbox, _stamp, offset, fill = self._p_detection()
         if not detected or conf < self.p_approach_conf:
-            self.cmd_pub.publish(Twist())
             now = self._now_sec()
             if self._p_lost_since is None:
                 self._p_lost_since = now
-                self.log.warn('P_DETECTION', 'P lost after acquisition: stopped, waiting for reacquisition')
-                self._publish_feedback('P lost: stopped, waiting for visual reacquisition')
+                self._p_lost_reverse_started_at = now
+                self._p_recovery_target_yaw = self._p_heading_before_loss(now)
+                self.desired_heading = self._p_recovery_target_yaw
+                target_deg = (
+                    math.degrees(self._p_recovery_target_yaw)
+                    if self._p_recovery_target_yaw is not None else float('nan')
+                )
+                self.log.warn(
+                    'P_DETECTION',
+                    'P lost after acquisition: reversing toward the P-visible heading '
+                    f'{self.p_loss_heading_lookback:.1f}s ago ({target_deg:.1f}deg)'
+                )
+                self._publish_feedback('P lost: reverse toward the last P-visible heading')
+
+            reverse_elapsed = now - self._p_lost_reverse_started_at
+            target_yaw = self._p_recovery_target_yaw
+            heading_error = (
+                self._angle_error(target_yaw, self.current_yaw)
+                if target_yaw is not None and self.current_yaw is not None else 0.0
+            )
+            heading_restored = abs(heading_error) <= self.p_loss_heading_tolerance
+            if reverse_elapsed < self.p_loss_reverse_duration and not heading_restored:
+                reverse_angular = self._clamp(
+                    self.p_loss_heading_kp * heading_error,
+                    self.p_loss_reverse_max_angular,
+                )
+                self._publish_state('p_visual_recover')
+                self.log.telemetry(
+                    'P_RECOVER',
+                    f'loss_t={reverse_elapsed:.2f}s v={-self.p_loss_reverse_speed:.2f} '
+                    f'target={math.degrees(target_yaw):.1f}° '
+                    f'err={math.degrees(heading_error):+.1f}° w={reverse_angular:.2f}'
+                )
+                self.cmd_pub.publish(self._twist(-self.p_loss_reverse_speed, reverse_angular))
+            else:
+                self._publish_state('p_visual_recovery_wait')
+                self.stop_robot()
             return
 
         self._p_lost_since = None
-        alpha = 0.35
+        self._p_lost_reverse_started_at = None
+        self._p_recovery_target_yaw = None
+        self._record_p_visible_yaw(self._now_sec())
+        alpha = self.p_approach_offset_filter_alpha
         self._p_offset_filtered = alpha * float(offset) + (1.0 - alpha) * self._p_offset_filtered
         angular = self._clamp(-self.p_approach_angular_kp * self._p_offset_filtered, self.max_angular)
+        offset_ratio = max(0.0, min(
+            1.0,
+            (abs(self._p_offset_filtered) - self.p_approach_slowdown_offset)
+            / max(1e-6, 1.0 - self.p_approach_slowdown_offset),
+        ))
+        linear = max(
+            self.p_approach_min_linear,
+            self.p_approach_linear * (1.0 - offset_ratio),
+        )
+        self._p_last_angular = angular
         depth_m, samples, depth_status = self._p_depth_measurement(bbox)
+        if (
+            depth_m is not None
+            and depth_m <= self.p_approach_disable_avoidance_distance
+        ):
+            self._p_final_approach_latched = True
         if depth_m is not None and depth_m < self.p_depth_stop_distance:
             self.log.segment(
                 f'P depth stop: depth={depth_m:.3f}m < '
@@ -1200,11 +1517,11 @@ class Stage3ReturnNavigator(Node):
         self._publish_state('p_approach')
         self.log.telemetry(
             'P_APPROACH',
-            f'conf={conf:.2f} off={self._p_offset_filtered:+.3f} fill={fill:.2%} '
-            f'spd={self.p_approach_linear:.2f} ang={angular:.2f} '
+            f'conf={conf:.2f} raw_off={offset:+.3f} off={self._p_offset_filtered:+.3f} '
+            f'fill={fill:.2%} spd={linear:.2f} ang={angular:.2f} '
             f'{self._p_depth_text(bbox)}',
         )
-        self.cmd_pub.publish(self._twist(self.p_approach_linear, angular))
+        self.cmd_pub.publish(self._twist(linear, angular))
 
     def _start_planner_forbidden_reverse(self):
         if self.current_position is None:
@@ -1332,11 +1649,28 @@ class Stage3ReturnNavigator(Node):
             self.log.warn('ODOM', 'no pose, waiting for odom')
             return
 
-        if self._run_planner_forbidden_reverse():
+        if self.use_global_planner and self._run_planner_forbidden_reverse():
             return
 
-        # P 尚未稳定识别时，A* 将车辆带到 P 区附近；黑色 map 栅格不可穿越。
+        # P 未识别时只驶向已标定的视觉搜索入口。入口处停车等待
+        # 视觉接管，避免用漂移的里程计继续追逐 P 的名义 map 中心。
         target_x, target_y = self._goal_center()
+        gate_dist = math.hypot(
+            target_x - self.current_position[0], target_y - self.current_position[1]
+        )
+        if gate_dist <= self.waypoint_tolerance:
+            if not self._visual_search_gate_reached:
+                self._visual_search_gate_reached = True
+                self._filtered_heading_err = 0.0
+                self.log.mission(
+                    f'visual search gate reached map=({self.current_position[0]:.2f},'
+                    f'{self.current_position[1]:.2f}) target=({target_x:.2f},'
+                    f'{target_y:.2f}) dist={gate_dist:.2f}m; waiting for P vision'
+                )
+            self._publish_state('visual_search_wait')
+            self.stop_robot()
+            return
+
         if self.use_global_planner:
             if self.global_planner is None:
                 self.log.warn('PLANNER', 'global planner requested but unavailable')
@@ -1406,6 +1740,10 @@ class Stage3ReturnNavigator(Node):
         # ── 计算目标相对车体坐标 ──
         dx = target_x - self.current_position[0]
         dy = target_y - self.current_position[1]
+        if abs(dx) + abs(dy) > 1e-6:
+            # Match S1 corridor recovery: preserve the active navigation-leg
+            # heading while the fixed four-state avoidance maneuver runs.
+            self.desired_heading = math.atan2(dy, dx)
         cos_y = math.cos(self.current_yaw)
         sin_y = math.sin(self.current_yaw)
         tx = cos_y * dx + sin_y * dy
@@ -1413,27 +1751,41 @@ class Stage3ReturnNavigator(Node):
         target_dist = math.hypot(tx, ty)
         heading_err = math.atan2(ty, tx if abs(tx) > 1e-6 else 1e-6)
 
-        # ── 航向误差低通滤波（消除抖动）──
+        # ── 航向误差环形低通滤波（跨 +/-180 度时不走长路）──
         alpha = 0.3
-        self._filtered_heading_err = alpha * heading_err + (1.0 - alpha) * self._filtered_heading_err
+        self._filtered_heading_err = self._normalize_angle(
+            self._filtered_heading_err + alpha * self._angle_error(
+                heading_err, self._filtered_heading_err
+            )
+        )
         heading_err = self._filtered_heading_err
 
         self._publish_state('map_search_p')
 
         angular = self._clamp(self.pursuit_turn_kp * heading_err, self.max_angular)
-        if abs(angular) < 1e-4:
+        if abs(heading_err) > math.radians(5.0) and abs(angular) < self.min_angular:
+            angular = math.copysign(self.min_angular, heading_err)
+        elif abs(angular) < 1e-4:
             angular = 0.0
 
         speed = self.pursuit_linear_speed
-        if abs(heading_err) > math.radians(30.0):
-            speed = self.pursuit_turn_linear
-        elif abs(heading_err) > math.radians(5.0):
-            speed = self.pursuit_linear_speed * 0.5
+        turn_mode = 'track'
+        if abs(heading_err) > math.radians(5.0):
+            # This is an Ackermann chassis: a near-zero linear speed with a
+            # saturated angular command only chatters the steering.  Couple
+            # speed to yaw rate so v / |w| never asks for an unrealistically
+            # tight turning radius, including during large heading recovery.
+            arc_speed = abs(angular) * self.pursuit_min_turn_radius
+            speed = max(self.pursuit_turn_linear, min(self.pursuit_linear_speed, arc_speed))
+            if abs(heading_err) > self.pursuit_heading_stop:
+                turn_mode = 'arc_align'
+            else:
+                turn_mode = 'arc_track'
 
         self.log.telemetry('MAP_SEARCH_P',
             f'dist={target_dist:.2f} '
             f'err={math.degrees(heading_err):.1f}° '
-            f'spd={speed:.2f} ang={angular:.2f} '
+            f'mode={turn_mode} spd={speed:.2f} ang={angular:.2f} '
             f'pos=({self.current_position[0]:.2f},{self.current_position[1]:.2f}) '
             f'center=({target_x:.2f},{target_y:.2f}) {self._position_source_text()}'
         )
@@ -1521,22 +1873,114 @@ class Stage3ReturnNavigator(Node):
         return clusters
 
     def _check_obstacle(self):
+        if self._p_approach_avoidance_disabled():
+            return
         obs = self._find_nearest_obstacle(self.latest_scan)
         if obs is not None and obs['dist'] < self.avoid_safe_dist:
+            self.log.segment(
+                f'lidar obstacle trigger: dist={obs["dist"]:.2f}m '
+                f'danger={obs["danger_deg"]:.1f}deg width={obs["width"]:.2f}m '
+                f'points={obs["pts"]} threshold={self.avoid_safe_dist:.2f}m'
+            )
             self._begin_avoidance(obs['danger_deg'])
+
+    def _p_approach_avoidance_disabled(self):
+        """Skip normal lidar detours once the P final approach has begun."""
+        if not self._p_approaching or self.p_approach_disable_avoidance_distance <= 0.0:
+            return False
+        if self._p_final_approach_latched:
+            return True
+        detected, conf, bbox, _stamp, _offset, _fill = self._p_detection()
+        if detected and conf >= self.p_approach_conf:
+            depth_m, _samples, _status = self._p_depth_measurement(bbox)
+            if (
+                depth_m is not None
+                and depth_m <= self.p_approach_disable_avoidance_distance
+            ):
+                self._p_final_approach_latched = True
+                return True
+        return False
 
     def _begin_avoidance(self, danger_deg):
         self.avoid_state = 'avoiding'
-        # S1 strategy: the first avoidance turn is always to the right.
-        self.avoid_turn_direction = -1.0
+        self.avoid_turn_direction, selection_detail = self._choose_avoid_turn_direction(
+            danger_deg
+        )
         self.avoid_started_time = self.get_clock().now()
         self.avoid_clear_since = None
         self.avoid_entry_yaw = self.current_yaw
         self.counter_steer_deadline = None
         self.recovery_deadline = None
+        self.recovery_uses_heading = False
+        self._update_avoidance_desired_heading()
         self._publish_state('avoiding')
-        self.log.corner_avoid(f'start dir={self.avoid_turn_direction:.1f} danger={danger_deg:.1f}°')
+        turn_name = 'RIGHT' if self.avoid_turn_direction < 0.0 else 'LEFT'
+        desired_deg = (
+            math.degrees(self.desired_heading)
+            if self.desired_heading is not None else float('nan')
+        )
+        self.log.corner_avoid(
+            f'{turn_name}: dir={self.avoid_turn_direction:.0f} '
+            f'danger={danger_deg:.1f}deg {selection_detail} desired='
+            f'{desired_deg:.1f}deg'
+        )
         self._publish_feedback(f'avoid start dir={self.avoid_turn_direction:.1f} danger={danger_deg:.1f}°')
+
+    def _update_avoidance_desired_heading(self):
+        """Lock recovery onto the active map search goal when its pose is available."""
+        if self.current_position is not None:
+            goal_x, goal_y = self._goal_center()
+            dx = goal_x - self.current_position[0]
+            dy = goal_y - self.current_position[1]
+            if abs(dx) + abs(dy) > 1e-6:
+                self.desired_heading = math.atan2(dy, dx)
+                return
+        if self.desired_heading is None and self.current_yaw is not None:
+            self.desired_heading = self.current_yaw
+
+    def _choose_avoid_turn_direction(self, danger_deg):
+        """Choose the safe detour that also leaves the chassis closest to the search goal."""
+        fallback = (
+            -1.0
+            if math.radians(danger_deg) >= self.avoid_right_turn_left_obstacle_angle
+            else 1.0
+        )
+        if (
+            not self.avoid_goal_bias_enabled
+            or self.current_position is None
+            or self.current_yaw is None
+        ):
+            return fallback, 'local_fallback'
+
+        goal_x, goal_y = self._goal_center()
+        dx = goal_x - self.current_position[0]
+        dy = goal_y - self.current_position[1]
+        if abs(dx) + abs(dy) <= 1e-6:
+            return fallback, 'local_at_goal'
+
+        target_bearing = math.atan2(dy, dx)
+        danger_angle = math.radians(danger_deg)
+        scores = {}
+        for direction in (-1.0, 1.0):
+            turned_yaw = self._normalize_angle(
+                self.current_yaw + direction * self.avoid_min_turn_angle
+            )
+            score = abs(self._angle_error(target_bearing, turned_yaw))
+            if (
+                abs(danger_angle) >= self.avoid_right_turn_left_obstacle_angle
+                and math.copysign(1.0, danger_angle) == direction
+            ):
+                score += self.avoid_obstacle_side_penalty
+            scores[direction] = score
+
+        direction = min(scores, key=scores.get)
+        relative_goal = math.degrees(self._angle_error(target_bearing, self.current_yaw))
+        detail = (
+            f'goal_bias target=({goal_x:.2f},{goal_y:.2f}) '
+            f'goal_angle={relative_goal:.1f}deg '
+            f'score_right={scores[-1.0]:.2f} score_left={scores[1.0]:.2f}'
+        )
+        return direction, detail
 
     def _run_avoidance(self):
         now = self.get_clock().now()
@@ -1585,11 +2029,10 @@ class Stage3ReturnNavigator(Node):
                 self._finish_recovery()
                 return
 
-            if self.current_yaw is not None:
-                target_yaw = self.avoid_entry_yaw if self.avoid_entry_yaw is not None else 0.0
-                error = self._angle_error(target_yaw, self.current_yaw)
+            if self.recovery_uses_heading and self.current_yaw is not None and self.desired_heading is not None:
+                error = self._angle_error(self.desired_heading, self.current_yaw)
                 angular = self._clamp(self.recovery_kp * error, self.recovery_max_angular)
-                if abs(error) > self.recovery_in_place and abs(angular) < self.recovery_min_angular:
+                if abs(error) > self.heading_tolerance and abs(angular) < self.recovery_min_angular:
                     angular = math.copysign(self.recovery_min_angular, error)
                 linear = self.recovery_turn_linear if abs(error) > self.recovery_in_place else self.recovery_linear
                 self.cmd_pub.publish(self._twist(linear, angular))
@@ -1610,6 +2053,7 @@ class Stage3ReturnNavigator(Node):
         self.avoid_clear_since = None
         self.counter_steer_deadline = now + Duration(seconds=dur)
         self.recovery_deadline = None
+        self.recovery_uses_heading = False
 
     def _begin_recovery(self):
         if self.avoid_state not in ('avoiding', 'countersteering'):
@@ -1617,13 +2061,25 @@ class Stage3ReturnNavigator(Node):
         self.avoid_state = 'recovering'
         self.avoid_clear_since = None
         self.counter_steer_deadline = None
-        dur = max(0.15, min(self.recovery_timeout, self.last_avoid_duration * self.recovery_duration_scale))
+        self._update_avoidance_desired_heading()
+        self.recovery_uses_heading = (
+            self.current_yaw is not None and self.desired_heading is not None
+        )
+        if self.recovery_uses_heading:
+            heading_error = abs(self._angle_error(self.desired_heading, self.current_yaw))
+            dur = max(
+                0.6,
+                heading_error / max(self.recovery_max_angular, 0.1) * 1.6,
+            )
+        else:
+            dur = max(0.15, self.last_avoid_duration * self.recovery_duration_scale)
+        dur = min(self.recovery_timeout, dur)
         self.recovery_deadline = self.get_clock().now() + Duration(seconds=dur)
 
     def _recovery_complete(self):
         now = self.get_clock().now()
-        if self.current_yaw is not None and self.avoid_entry_yaw is not None:
-            if abs(self._angle_error(self.avoid_entry_yaw, self.current_yaw)) <= self.heading_tolerance:
+        if self.recovery_uses_heading and self.current_yaw is not None and self.desired_heading is not None:
+            if abs(self._angle_error(self.desired_heading, self.current_yaw)) <= self.heading_tolerance:
                 return True
         if self.recovery_deadline is not None and now >= self.recovery_deadline:
             return True
@@ -1637,12 +2093,14 @@ class Stage3ReturnNavigator(Node):
         self.last_avoid_duration = 0.0
         self.counter_steer_deadline = None
         self.recovery_deadline = None
+        self.recovery_uses_heading = False
         self._publish_state('running')
 
     def destroy_node(self):
         try:
             self._set_p_inference_active(False)
             self._set_stage3_http_active(False)
+            self._clear_depth_cache()
             self.log.close()
             if rclpy.ok():
                 self.cmd_pub.publish(Twist())

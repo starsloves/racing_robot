@@ -1,4 +1,7 @@
 import os
+import time
+import fcntl
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import cv2
 import rclpy
@@ -10,6 +13,12 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Int32, String
 
+try:
+    from pyzbar.pyzbar import ZBarSymbol, decode as zbar_decode
+    ZBAR_AVAILABLE = True
+except ImportError:
+    ZBAR_AVAILABLE = False
+
 class QRScannerNode(Node):
     def __init__(self):
         super().__init__('qr_scanner')
@@ -20,12 +29,21 @@ class QRScannerNode(Node):
         self.declare_parameter('phase_topic', 'competition_phase')
         self.declare_parameter('odom_topic', '/odom_combined')
         self.declare_parameter('scan_task_phase', 1)
-        self.declare_parameter('scan_start_x_m', 2.0)
+        self.declare_parameter('scan_start_x_m', 1.0)
         self.declare_parameter('scan_rate_hz', 4.0)
         self.declare_parameter('crop_top_ratio', 0.25)
-        self.declare_parameter('crop_top_px', 155)
+        self.declare_parameter('crop_top_px', 80)
+        self.declare_parameter('upscale_factor', 1.0)
+        self.declare_parameter('detection_order', 'crop_only')
+        self.declare_parameter(
+            'preprocess_variants', 'wechat_raw,wechat_clahe,zbar_raw'
+        )
         self.declare_parameter('process_every_frame', True)
         self.declare_parameter('min_publish_interval', 1.0)
+        self.declare_parameter('diagnostics_enabled', True)
+        self.declare_parameter('diagnostics_interval_sec', 1.0)
+        self.declare_parameter('diagnostics_log_subdir', 'competition_stage1')
+        self.declare_parameter('diagnostics_log_filename', 'latest.log')
         self.declare_parameter('backend', 'wechat')
         self.declare_parameter('allow_backend_fallback', True)
         self.declare_parameter('wechat_detect_prototxt', '')
@@ -43,8 +61,40 @@ class QRScannerNode(Node):
         self.scan_rate_hz = float(self.get_parameter('scan_rate_hz').value)
         self.crop_top_ratio = float(self.get_parameter('crop_top_ratio').value)
         self.crop_top_px = int(self.get_parameter('crop_top_px').value)
+        self.upscale_factor = max(1.0, float(self.get_parameter('upscale_factor').value))
+        self.detection_order = str(self.get_parameter('detection_order').value).strip().lower()
+        if self.detection_order not in ('crop_only', 'full_only', 'full_then_crop', 'crop_then_full'):
+            self.get_logger().warn(
+                f'unsupported detection_order={self.detection_order!r}; using crop_only'
+            )
+            self.detection_order = 'crop_only'
+        requested_variants = [
+            item.strip().lower()
+            for item in str(self.get_parameter('preprocess_variants').value).split(',')
+            if item.strip()
+        ]
+        supported_variants = {'wechat_raw', 'wechat_clahe', 'zbar_raw'}
+        self.preprocess_variants = [
+            item for item in requested_variants if item in supported_variants
+        ]
+        if not ZBAR_AVAILABLE:
+            self.preprocess_variants = [
+                item for item in self.preprocess_variants if item != 'zbar_raw'
+            ]
+        if not self.preprocess_variants:
+            self.preprocess_variants = ['wechat_raw']
         self.process_every_frame = bool(self.get_parameter('process_every_frame').value)
         self.min_publish_interval = float(self.get_parameter('min_publish_interval').value)
+        self.diagnostics_enabled = bool(self.get_parameter('diagnostics_enabled').value)
+        self.diagnostics_interval_sec = max(
+            0.2, float(self.get_parameter('diagnostics_interval_sec').value)
+        )
+        self.diagnostics_log_subdir = str(
+            self.get_parameter('diagnostics_log_subdir').value
+        ).strip()
+        self.diagnostics_log_filename = str(
+            self.get_parameter('diagnostics_log_filename').value
+        ).strip()
         self.requested_backend = str(self.get_parameter('backend').value).strip().lower()
         self.allow_backend_fallback = bool(self.get_parameter('allow_backend_fallback').value)
 
@@ -75,16 +125,31 @@ class QRScannerNode(Node):
 
         self.bridge = CvBridge()
         self.wechat_detector = None
+        self.wechat_variant_detectors = {}
         self.opencv_detector = None
         self.active_backend = self.initialize_backend()
+        self.decode_executor = self.create_decode_executor()
         self.publisher_ = self.create_publisher(String, self.result_topic, 10)
         self.phase = self.scan_task_phase
         self.current_x = None
         self.latest_image_msg = None
         self.scan_armed = False
+        self.scan_completed = False
         self.scan_activation_logged = False
         self.last_qr_content = ''
         self.last_publish_time = None
+        self.diag_window_started_at = None
+        self.diag_last_frame_stamp_ns = None
+        self.diag_attempt_count = 0
+        self.diag_candidate_count = 0
+        self.diag_total_decode_ms = 0.0
+        self.diag_max_decode_ms = 0.0
+        self.diag_source_gap_total_ms = 0.0
+        self.diag_source_gap_count = 0
+        self.diag_backend_error_count = 0
+        self.diag_last_image_shape = None
+        self.diag_last_candidates = []
+        self.diag_variant_stats = {}
 
         self.create_subscription(Int32, self.phase_topic, self.phase_callback, 10)
         self.create_subscription(Odometry, self.odom_topic, self.odom_callback, 10)
@@ -111,8 +176,104 @@ class QRScannerNode(Node):
         self.get_logger().info(
             f'qr scanner ready, topic={self.camera_topic}, mode={image_mode}, result={self.result_topic}, '
             f'backend={self.active_backend}, arm_phase={self.scan_task_phase}, arm_x>{self.scan_start_x_m:.2f}m, '
-            f'crop_px={self.crop_top_px}, per_frame={self.process_every_frame}'
+            f'crop_px={self.crop_top_px}, upscale={self.upscale_factor:.1f}x, '
+            f'order={self.detection_order}, variants={self.preprocess_variants}, parallel=True, '
+            f'per_frame={self.process_every_frame}'
         )
+        self.write_diagnostic(
+            'ready '
+            f'backend={self.active_backend} topic={self.camera_topic} '
+            f'arm_x>{self.scan_start_x_m:.2f}m crop_px={self.crop_top_px} '
+            f'upscale={self.upscale_factor:.1f}x order={self.detection_order} '
+            f'variants={self.preprocess_variants} parallel=True per_frame={self.process_every_frame}'
+        )
+
+    def diagnostic_log_path(self):
+        workspace_root = os.environ.get('DEV_WS', '').strip()
+        if not workspace_root:
+            workspace_root = os.getcwd()
+        if not os.path.isdir(os.path.join(workspace_root, 'src', 'racing')):
+            return ''
+        subdir = self.diagnostics_log_subdir or 'competition_stage1'
+        filename = self.diagnostics_log_filename or 'latest.log'
+        return os.path.join(workspace_root, 'log', subdir, filename)
+
+    def write_diagnostic(self, message):
+        """Append QR processing evidence without taking ownership of the Stage1 log."""
+        if not self.diagnostics_enabled:
+            return
+
+        path = self.diagnostic_log_path()
+        if not path:
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'a', encoding='utf-8') as log_file:
+                fcntl.flock(log_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    log_file.write(f'[QR_DIAG] {message}\n')
+                    log_file.flush()
+                finally:
+                    fcntl.flock(log_file.fileno(), fcntl.LOCK_UN)
+        except OSError as exc:
+            self.get_logger().warn(f'failed to write QR diagnostic log: {exc}')
+
+    def reset_diagnostic_window(self):
+        self.diag_window_started_at = time.monotonic()
+        self.diag_attempt_count = 0
+        self.diag_candidate_count = 0
+        self.diag_total_decode_ms = 0.0
+        self.diag_max_decode_ms = 0.0
+        self.diag_source_gap_total_ms = 0.0
+        self.diag_source_gap_count = 0
+        self.diag_backend_error_count = 0
+        self.diag_variant_stats = {
+            name: {'attempts': 0, 'total_ms': 0.0, 'max_ms': 0.0}
+            for name in self.preprocess_variants
+        }
+
+    def record_frame_stamp(self, image_msg):
+        stamp = image_msg.header.stamp
+        stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+        if stamp_ns <= 0:
+            return
+        if self.diag_last_frame_stamp_ns is not None and stamp_ns > self.diag_last_frame_stamp_ns:
+            self.diag_source_gap_total_ms += (stamp_ns - self.diag_last_frame_stamp_ns) / 1e6
+            self.diag_source_gap_count += 1
+        self.diag_last_frame_stamp_ns = stamp_ns
+
+    def log_diagnostic_summary(self, force=False):
+        if not self.diagnostics_enabled or self.diag_window_started_at is None:
+            return
+
+        elapsed_sec = time.monotonic() - self.diag_window_started_at
+        if not force and elapsed_sec < self.diagnostics_interval_sec:
+            return
+        if self.diag_attempt_count == 0:
+            self.reset_diagnostic_window()
+            return
+
+        average_decode_ms = self.diag_total_decode_ms / self.diag_attempt_count
+        source_fps = 0.0
+        if self.diag_source_gap_total_ms > 0.0:
+            source_fps = 1000.0 * self.diag_source_gap_count / self.diag_source_gap_total_ms
+        height, width = self.diag_last_image_shape or (0, 0)
+        candidates = ','.join(self.diag_last_candidates) or 'none'
+        variant_stats = ';'.join(
+            f'{name}(n={stats["attempts"]},avg='
+            f'{stats["total_ms"] / stats["attempts"]:.1f}ms,max={stats["max_ms"]:.1f}ms)'
+            for name, stats in self.diag_variant_stats.items()
+            if stats['attempts'] > 0
+        ) or 'none'
+        self.write_diagnostic(
+            f'summary x={self.current_x if self.current_x is not None else float("nan"):.2f}m '
+            f'attempts={self.diag_attempt_count} rate={self.diag_attempt_count / elapsed_sec:.1f}Hz '
+            f'decode_avg={average_decode_ms:.1f}ms decode_max={self.diag_max_decode_ms:.1f}ms '
+            f'source_fps={source_fps:.1f} image={width}x{height} '
+            f'candidates={candidates} variant_stats={variant_stats} '
+            f'backend_errors={self.diag_backend_error_count}'
+        )
+        self.reset_diagnostic_window()
 
     def resolve_model_path(self, configured_path, default_path):
         candidate = str(configured_path).strip()
@@ -161,9 +322,34 @@ class QRScannerNode(Node):
             self.get_logger().warn(f'failed to initialize wechat QR detector: {exc}')
             return None
 
+    def create_decode_executor(self):
+        if len(self.preprocess_variants) <= 1:
+            return None
+
+        if self.active_backend == 'wechat' and self.wechat_detector is not None:
+            for variant in self.preprocess_variants:
+                if variant.startswith('wechat_'):
+                    detector = self.create_wechat_detector()
+                    if detector is not None:
+                        self.wechat_variant_detectors[variant] = detector
+
+        return ThreadPoolExecutor(
+            max_workers=len(self.preprocess_variants),
+            thread_name_prefix='QR-Decode',
+        )
+
+    def stop_decode_executor(self, reason):
+        if self.decode_executor is None:
+            return
+        self.decode_executor.shutdown(wait=True, cancel_futures=True)
+        self.decode_executor = None
+        self.wechat_variant_detectors.clear()
+        self.write_diagnostic(f'workers_released reason={reason}')
+
     def should_scan(self):
         return (
             self.active_backend != 'disabled'
+            and not self.scan_completed
             and self.phase == self.scan_task_phase
             and self.current_x is not None
             and self.current_x > self.scan_start_x_m
@@ -176,7 +362,9 @@ class QRScannerNode(Node):
             self.scan_armed = False
             self.scan_activation_logged = False
             self.latest_image_msg = None
+            self.stop_decode_executor('phase_exit')
         elif previous_phase != self.phase:
+            self.scan_completed = False
             self.scan_activation_logged = False
 
     def odom_callback(self, msg):
@@ -184,7 +372,9 @@ class QRScannerNode(Node):
         self.scan_armed = self.should_scan()
         if self.scan_armed and not self.scan_activation_logged:
             self.scan_activation_logged = True
+            self.reset_diagnostic_window()
             self.get_logger().info(f'qr scan armed at x={self.current_x:.2f} m')
+            self.write_diagnostic(f'armed x={self.current_x:.2f}m phase={self.phase}')
         if not self.scan_armed:
             self.latest_image_msg = None
 
@@ -220,12 +410,50 @@ class QRScannerNode(Node):
 
     def iter_detection_images(self, gray_image):
         crop_top = self.compute_crop_top(gray_image.shape[0])
-        if crop_top > 0:
-            cropped = gray_image[crop_top:, :]
-            if cropped.size != 0:
-                yield cropped
+        cropped = gray_image[crop_top:, :] if crop_top > 0 else None
 
-        yield gray_image
+        if self.detection_order == 'crop_only':
+            if cropped is not None and cropped.size != 0:
+                yield 'crop', cropped
+            return
+
+        if self.detection_order in ('full_only', 'full_then_crop'):
+            yield 'full', gray_image
+
+        if self.detection_order != 'full_only' and cropped is not None and cropped.size != 0:
+            yield 'crop', cropped
+
+        if self.detection_order == 'crop_then_full':
+            yield 'full', gray_image
+
+    def upscale_for_detection(self, gray_image):
+        if self.upscale_factor <= 1.0:
+            return gray_image
+
+        return cv2.resize(
+            gray_image,
+            None,
+            fx=self.upscale_factor,
+            fy=self.upscale_factor,
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+    def next_preprocess_variant(self):
+        return self.preprocess_variants
+
+    @staticmethod
+    def preprocess_detection_image(gray_image, variant):
+        if variant == 'wechat_clahe':
+            return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray_image)
+        return gray_image
+
+    def record_variant_attempt(self, variant, decode_ms):
+        stats = self.diag_variant_stats.setdefault(
+            variant, {'attempts': 0, 'total_ms': 0.0, 'max_ms': 0.0}
+        )
+        stats['attempts'] += 1
+        stats['total_ms'] += decode_ms
+        stats['max_ms'] = max(stats['max_ms'], decode_ms)
 
     def process_image_msg(self, image_msg):
         if not self.scan_armed:
@@ -242,13 +470,35 @@ class QRScannerNode(Node):
         if gray_image is None or gray_image.size == 0:
             return
 
+        self.record_frame_stamp(image_msg)
+        self.diag_last_image_shape = gray_image.shape[:2]
         results = []
-        for detection_image in self.iter_detection_images(gray_image):
-            results = self.detect_and_decode(detection_image)
-            if results:
-                break
+        decoded_path = ''
+        candidate_descriptions = []
+        decode_started_at = time.monotonic()
+        for candidate_name, detection_image in self.iter_detection_images(gray_image):
+            variants = self.next_preprocess_variant()
+            candidate_descriptions = [
+                f'{candidate_name}/{variant}:{detection_image.shape[1]}x{detection_image.shape[0]}'
+                for variant in variants
+            ]
+            outcomes = self.decode_variants_parallel(detection_image, variants)
+            for variant, variant_results, variant_ms in outcomes:
+                self.record_variant_attempt(variant, variant_ms)
+                if not results and variant_results:
+                    results = variant_results
+                    decoded_path = f'{candidate_name}/{variant}'
+            break
+
+        decode_ms = (time.monotonic() - decode_started_at) * 1000.0
+        self.diag_attempt_count += 1
+        self.diag_candidate_count += len(candidate_descriptions)
+        self.diag_total_decode_ms += decode_ms
+        self.diag_max_decode_ms = max(self.diag_max_decode_ms, decode_ms)
+        self.diag_last_candidates = candidate_descriptions
 
         if not results:
+            self.log_diagnostic_summary()
             return
 
         now = self.get_clock().now()
@@ -262,16 +512,67 @@ class QRScannerNode(Node):
 
             self.last_qr_content = qr_content
             self.last_publish_time = now
+            self.scan_completed = True
             self.scan_armed = False
+            self.stop_decode_executor('qr_detected')
+            self.write_diagnostic(
+                f'detected x={self.current_x if self.current_x is not None else float("nan"):.2f}m '
+                f'content={qr_content!r} path={decoded_path} decode={decode_ms:.1f}ms '
+                f'attempts_since_last_summary={self.diag_attempt_count} '
+                f'candidates={";".join(candidate_descriptions)} '
+                f'backend_errors={self.diag_backend_error_count}'
+            )
+            self.log_diagnostic_summary(force=True)
             self.get_logger().warn(f'qr detected via {self.active_backend}: {qr_content}')
             self.publisher_.publish(String(data=qr_content))
             return
 
-    def detect_and_decode(self, gray_image):
-        if self.active_backend == 'wechat' and self.wechat_detector is not None:
+    def decode_variants_parallel(self, gray_image, variants):
+        if self.decode_executor is None:
+            return [self.decode_variant(gray_image, variant) for variant in variants]
+
+        futures = {
+            self.decode_executor.submit(self.decode_variant, gray_image, variant): variant
+            for variant in variants
+        }
+        outcomes = []
+        for future in as_completed(futures):
+            variant = futures[future]
             try:
-                decoded = self.wechat_detector.detectAndDecode(gray_image)
-            except Exception:
+                outcomes.append(future.result())
+            except Exception as exc:
+                self.diag_backend_error_count += 1
+                self.get_logger().warn(f'parallel QR decode failed variant={variant}: {exc}')
+                outcomes.append((variant, [], 0.0))
+        return outcomes
+
+    def decode_variant(self, gray_image, variant):
+        started_at = time.monotonic()
+        prepared_image = self.upscale_for_detection(
+            self.preprocess_detection_image(gray_image, variant)
+        )
+        results = self.detect_and_decode(prepared_image, variant)
+        return variant, results, (time.monotonic() - started_at) * 1000.0
+
+    def detect_and_decode(self, gray_image, variant):
+        if variant == 'zbar_raw':
+            if not ZBAR_AVAILABLE:
+                return []
+            try:
+                decoded = zbar_decode(gray_image, symbols=[ZBarSymbol.QRCODE])
+            except Exception as exc:
+                self.diag_backend_error_count += 1
+                self.get_logger().warn(f'ZBar QR decode failed: {exc}')
+                return []
+            return [item.data.decode('utf-8', errors='replace').strip() for item in decoded if item.data]
+
+        if self.active_backend == 'wechat' and self.wechat_detector is not None:
+            detector = self.wechat_variant_detectors.get(variant, self.wechat_detector)
+            try:
+                decoded = detector.detectAndDecode(gray_image)
+            except Exception as exc:
+                self.diag_backend_error_count += 1
+                self.get_logger().warn(f'wechat QR decode failed: {exc}')
                 return []
 
             if isinstance(decoded, tuple):
@@ -290,7 +591,9 @@ class QRScannerNode(Node):
 
         try:
             decoded, _, _ = self.opencv_detector.detectAndDecode(gray_image)
-        except Exception:
+        except Exception as exc:
+            self.diag_backend_error_count += 1
+            self.get_logger().warn(f'OpenCV QR decode failed: {exc}')
             return []
 
         decoded = decoded.strip() if isinstance(decoded, str) else ''
@@ -304,6 +607,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.stop_decode_executor('node_shutdown')
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

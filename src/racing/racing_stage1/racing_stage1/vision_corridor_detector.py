@@ -26,6 +26,7 @@ import threading
 import time
 import os
 import math
+import gc
 from collections import deque
 from http.server import SimpleHTTPRequestHandler
 from socketserver import ThreadingTCPServer
@@ -59,6 +60,7 @@ class VisionCorridorDetector:
 
         # 共享变量（线程安全）
         self._lock = threading.Lock()
+        self._model_lock = threading.Lock()
         self._inference_active = False
         self._latest_lateral_error = 0.0
         self._latest_heading_error_deg = 0.0
@@ -94,16 +96,19 @@ class VisionCorridorDetector:
         self._jpeg_output_path = '/tmp/stage1_vision.jpg'
         self._http_server_start_time = time.time()
         self._last_frame_save_time = 0.0
+        self._http_lock = threading.Lock()
+        self._http_server = None
+        self._http_enabled = False
 
         # FPS 控制
         self._target_fps = 30
         self._min_frame_interval = 1.0 / self._target_fps
         self._last_save_time = 0.0
 
-        # 加载模型
-        self._node.get_logger().info(f'[Stage1视觉] 加载模型: {model_path}')
-        models = dnn.load(model_path)
-        self.model = models[0]
+        # 模型仅在通道视觉实际启用时加载，避免与后续阶段抢占 BPU 内存。
+        self._model_path = str(model_path)
+        self.model = None
+        self._model_load_error = ''
         self.input_size = 640
         self.REG_MAX = 16
         self.strides = [8, 16, 32]
@@ -128,8 +133,8 @@ class VisionCorridorDetector:
         # 创建占位图像
         self._write_placeholder_image()
 
-        # 启动 HTTP 服务器
-        self._start_http_server()
+        # Stage1 启动后提供监控端口；离开 Phase1 时由 owning node 显式释放。
+        self.start_http_server()
 
         self._node.get_logger().info('[Stage1视觉] 模块初始化完成，等待相机数据...')
         self._node.get_logger().info(
@@ -153,6 +158,9 @@ class VisionCorridorDetector:
     def set_inference_active(self, active: bool):
         """启用/停用视觉推理"""
         active = bool(active)
+        if active and not self.ensure_model_loaded('inference_enabled'):
+            self._node.get_logger().error('[Stage1视觉] 模型加载失败，无法启用推理')
+            return
         with self._lock:
             if active != self._inference_active:
                 self._inference_active = active
@@ -170,6 +178,64 @@ class VisionCorridorDetector:
                     self._node.destroy_subscription(self._camera_subscription)
                     self._camera_subscription = None
                     self._node.get_logger().info('[Stage1视觉] 已取消相机订阅')
+
+    def ensure_model_loaded(self, reason):
+        """Load the BPU model only while Stage1 corridor vision is needed."""
+        with self._model_lock:
+            if self.model is not None:
+                return True
+            try:
+                self._node.get_logger().info(
+                    f'[Stage1视觉] 加载模型 reason={reason}: {self._model_path}'
+                )
+                self.model = dnn.load(self._model_path)[0]
+                self._model_load_error = ''
+                return True
+            except Exception as exc:
+                self.model = None
+                self._model_load_error = f'{type(exc).__name__}: {exc}'
+                self._node.get_logger().error(
+                    f'[Stage1视觉] 模型加载失败 reason={reason}: {self._model_load_error}'
+                )
+                return False
+
+    def release_model(self, reason):
+        """Release the Stage1 BPU handle before later phases use vision."""
+        self.set_inference_active(False)
+        with self._model_lock:
+            if self.model is None:
+                return
+            self.model = None
+            self._model_load_error = ''
+        gc.collect()
+        self._node.get_logger().info(f'[Stage1视觉] 模型已释放 reason={reason}')
+
+    def start_http_server(self):
+        """Bind 8081 only while Stage1 owns the visual monitor."""
+        if int(self.http_port) <= 0:
+            return
+        with self._http_lock:
+            if self._http_enabled:
+                return
+            self._http_enabled = True
+            self._http_server_start_time = time.time()
+        self._start_http_server()
+
+    def stop_http_server(self):
+        """Release the Stage1 HTTP port when leaving Phase1."""
+        with self._http_lock:
+            self._http_enabled = False
+            server = self._http_server
+        if server is not None:
+            self._node.get_logger().info(f'[Stage1视觉] HTTP_STOP port={self.http_port}')
+            server.shutdown()
+
+    def shutdown(self):
+        """Release subscriptions, HTTP server, and BPU resources before node exit."""
+        self.release_model('node_shutdown')
+        self.stop_http_server()
+        with self._lock:
+            self._combined_frame = None
 
     def get_latest_corridor_status(self):
         """
@@ -300,10 +366,28 @@ class VisionCorridorDetector:
                 pass  # 禁用默认日志
 
         def serve_forever_thread():
-            with ThreadingTCPServer(('0.0.0.0', self.http_port), HealthHandler) as httpd:
+            try:
+                ThreadingTCPServer.allow_reuse_address = True
+                httpd = ThreadingTCPServer(('0.0.0.0', self.http_port), HealthHandler)
+                httpd.daemon_threads = True
+                with self._http_lock:
+                    if not self._http_enabled:
+                        httpd.server_close()
+                        return
+                    self._http_server = httpd
                 httpd.serve_forever()
+            except OSError as exc:
+                self._node.get_logger().error(f'[Stage1视觉] HTTP 服务启动失败: {exc}')
+            finally:
+                if 'httpd' in locals():
+                    httpd.server_close()
+                    with self._http_lock:
+                        if self._http_server is httpd:
+                            self._http_server = None
 
-        thread = threading.Thread(target=serve_forever_thread, daemon=True)
+        thread = threading.Thread(
+            target=serve_forever_thread, daemon=True, name='Stage1VisionHTTPServer'
+        )
         thread.start()
 
     # ═══════════════════════════════════════════════════════
@@ -712,8 +796,12 @@ class VisionCorridorDetector:
         t0 = time.perf_counter()
         input_tensor, ratio, pad_w, pad_h = self._preprocess(roi)
 
-        # BPU 推理
-        outputs = self.model.forward(input_tensor)
+        # BPU 推理与 release_model 共用锁，保证阶段切换不会中途释放句柄。
+        with self._model_lock:
+            model = self.model
+            if model is None:
+                return
+            outputs = model.forward(input_tensor)
         t1 = time.perf_counter()
         self._infer_time_ms = (t1 - t0) * 1000.0
 
