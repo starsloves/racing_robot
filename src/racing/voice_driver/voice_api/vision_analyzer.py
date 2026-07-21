@@ -61,7 +61,7 @@ class VisionAnalyzer:
         if not self._api_key:
             return False
         if self._provider == 'ark':
-            return self._ark_client is not None
+            return True
         return True
 
     def analyze_path(self, image_path: str | Path) -> str | None:
@@ -347,8 +347,7 @@ class VisionAnalyzer:
 
     def _call_ark(self, base64_image: str) -> str | None:
         if self._ark_client is None:
-            self._log_error('Ark client unavailable; set ARK_API_KEY and install volcengine SDK')
-            return None
+            return self._call_ark_http(base64_image)
         try:
             response = self._ark_client.chat.completions.create(
                 model=self._model_id,
@@ -380,12 +379,57 @@ class VisionAnalyzer:
             self._log_error(f'Ark API call failed: {exc}')
             return None
 
+    def _call_ark_http(self, base64_image: str) -> str | None:
+        """Call Ark through its OpenAI-compatible HTTP endpoint."""
+        payload = {
+            'model': self._model_id,
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': self._prompt},
+                        {
+                            'type': 'image_url',
+                            'image_url': {'url': f'data:image/jpeg;base64,{base64_image}'},
+                        },
+                    ],
+                }
+            ],
+        }
+        if self._max_tokens is not None:
+            payload['max_tokens'] = self._max_tokens
+        request = urllib.request.Request(
+            'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                'Authorization': f'Bearer {self._api_key}',
+                'Content-Type': 'application/json',
+            },
+            method='POST',
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._request_timeout_sec) as response:
+                body = json.loads(response.read().decode('utf-8'))
+            content = body['choices'][0]['message']['content']
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode('utf-8', errors='replace')
+            self._log_error(f'Ark HTTP error {exc.code}: {detail[:300]}')
+        except Exception as exc:  # noqa: BLE001
+            self._log_error(f'Ark HTTP request failed: {exc}')
+        return None
+
     def _call_ark_stream(
         self, base64_image: str, on_delta: Callable[[str], None]
     ) -> str | None:
         if self._ark_client is None:
-            self._log_error('Ark client unavailable; set ARK_API_KEY and install volcengine SDK')
-            return None
+            return self._call_openai_stream(
+                'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+                base64_image,
+                on_delta,
+                {'Authorization': f'Bearer {self._api_key}'},
+            )
         try:
             stream = self._ark_client.chat.completions.create(
                 model=self._model_id,

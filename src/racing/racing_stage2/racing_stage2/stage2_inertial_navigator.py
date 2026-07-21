@@ -62,6 +62,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_top_boundary_top_y_ratio', 0.18)
         self.declare_parameter('track_top_boundary_max_angle_deg', 20.0)
         self.declare_parameter('track_top_boundary_confirm_frames', 3)
+        self.declare_parameter('track_side_arc_vision_enabled', True)
         self.declare_parameter('track_turn_force_map_x_enabled', False)
         self.declare_parameter('track_turn_force_min_map_x', 0.50)
         self.declare_parameter('track_turn_force_max_map_x', 4.00)
@@ -124,16 +125,24 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('stage2_straight_avoid_trigger_m', 0.60)
         self.declare_parameter('stage2_straight_avoid_window_min_x', 0.18)
         self.declare_parameter('stage2_straight_avoid_window_half_width_m', 0.22)
+        self.declare_parameter('stage2_straight_avoid_front_angle_deg', 15.0)
         self.declare_parameter('stage2_straight_avoid_cluster_gap_m', 0.12)
         self.declare_parameter('stage2_straight_avoid_min_cluster_points', 3)
         self.declare_parameter('stage2_straight_avoid_min_cluster_width_m', 0.06)
         self.declare_parameter('stage2_straight_avoid_max_cluster_width_m', 0.55)
         self.declare_parameter('stage2_straight_avoid_min_valid_range_m', 0.15)
-        self.declare_parameter('stage2_straight_avoid_right_turn_left_angle_deg', 15.0)
         self.declare_parameter('stage2_straight_avoid_angular_speed', 0.80)
         self.declare_parameter('stage2_straight_avoid_yaw_offset_deg', 10.0)
         self.declare_parameter('stage2_straight_avoid_yaw_tolerance_deg', 1.0)
+        self.declare_parameter('stage2_straight_avoid_start_heading_tolerance_deg', 15.0)
+        self.declare_parameter('stage2_straight_avoid_max_turn_travel_deg', 35.0)
         self.declare_parameter('stage2_straight_avoid_speed_limit_mps', 0.0)
+        self.declare_parameter('stage2_straight_avoid_corridor_min_x_m', 0.20)
+        self.declare_parameter('stage2_straight_avoid_corridor_min_lateral_m', 0.28)
+        self.declare_parameter('stage2_straight_avoid_vehicle_half_width_m', 0.15)
+        self.declare_parameter('stage2_straight_avoid_clearance_m', 0.07)
+        self.declare_parameter('stage2_straight_avoid_min_shift_m', 0.06)
+        self.declare_parameter('stage2_straight_avoid_forward_margin_m', 0.25)
         self.declare_parameter('stage2_turn_precheck_enabled', True)
         self.declare_parameter('stage2_turn_precheck_lead_m', 0.60)
         self.declare_parameter('stage2_turn_precheck_front_m', 0.50)
@@ -186,6 +195,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.left_clearance_distance = float('inf')
         self.right_clearance_distance = float('inf')
         self._straight_avoid_obstacle = None
+        self._straight_avoid_corridor = None
+        self._straight_avoid_plan_reject_reason = ''
         self._turn_precheck_front_obstacle = None
         self._turn_precheck_left_obstacle = None
         self._turn_precheck_right_obstacle = None
@@ -225,8 +236,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             angular_speed=float(self.get_parameter('stage2_straight_avoid_angular_speed').value),
             yaw_offset_deg=float(self.get_parameter('stage2_straight_avoid_yaw_offset_deg').value),
             yaw_tolerance_deg=float(self.get_parameter('stage2_straight_avoid_yaw_tolerance_deg').value),
-            right_turn_left_obstacle_angle_deg=float(
-                self.get_parameter('stage2_straight_avoid_right_turn_left_angle_deg').value
+            start_heading_tolerance_deg=float(
+                self.get_parameter('stage2_straight_avoid_start_heading_tolerance_deg').value
+            ),
+            max_turn_travel_deg=float(
+                self.get_parameter('stage2_straight_avoid_max_turn_travel_deg').value
             ),
             speed_limit_mps=float(
                 self.get_parameter('stage2_straight_avoid_speed_limit_mps').value
@@ -294,6 +308,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             ),
             top_boundary_confirm_frames=int(
                 self.get_parameter('track_top_boundary_confirm_frames').value
+            ),
+            side_arc_vision_enabled=bool(
+                self.get_parameter('track_side_arc_vision_enabled').value
             ),
             turn_force_map_x_enabled=bool(
                 self.get_parameter('track_turn_force_map_x_enabled').value
@@ -1293,10 +1310,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                     yaw=self.current_yaw,
                     line_heading=self._track_controller.active_segment_heading,
                     line_speed=float(self.get_parameter('track_max_speed').value),
-                    obstacle_angle_deg=(
-                        None if self._straight_avoid_obstacle is None
-                        else self._straight_avoid_obstacle['danger_angle_deg']
-                    ),
+                    plan=self._straight_avoidance_plan(),
                 )
             else:
                 self._straight_avoider.reset()
@@ -1312,10 +1326,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                     f'w={avoid_command.angular:.3f} '
                     f'heading={math.degrees(self._track_controller.active_segment_heading):.1f} '
                     f'yaw={math.degrees(self.current_yaw):.1f} '
+                    f'plan={self._straight_avoider.plan} '
                     f'obstacle={self._straight_avoid_obstacle}',
                 )
                 return
             track_map_xy = self._track_map_position()
+            previous_segment = self._track_controller.active_segment_name
             if (
                 self._track_controller.active_segment_name == 'stage3_handoff_line'
                 and not self._stage3_preplan_sent
@@ -1333,6 +1349,32 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 stage3_handoff_reached=handoff_reached,
                 map_x=None if track_map_xy is None else track_map_xy[0],
             )
+            if (
+                previous_segment in ('entry_medium', 'top_long')
+                and command.segment in ('left_side_arc', 'right_side_arc')
+            ):
+                map_text = (
+                    f'({track_map_xy[0]:.3f},{track_map_xy[1]:.3f})'
+                    if track_map_xy is not None else 'unavailable'
+                )
+                visual_text = (
+                    f'valid={bool(visual.get("valid", False))} '
+                    f'confidence={float(visual.get("confidence", 0.0) or 0.0):.2f} '
+                    f'boundary_ahead={bool(visual.get("boundary_ahead", False))} '
+                    f'top_y={float(visual.get("boundary_top_y_ratio", 0.0) or 0.0):.3f} '
+                    f'angle={float(visual.get("boundary_angle_deg", 90.0) or 90.0):.1f}'
+                    if visual is not None else 'unavailable'
+                )
+                self._log_session(
+                    'TURN_TRIGGER',
+                    f'direction={self.direction} from={previous_segment} '
+                    f'to={command.segment} reason={command.entry_boundary_trigger} '
+                    f'map_xy={map_text} seg_s={command.progress_m:.3f} '
+                    f'guard={command.entry_boundary_window_min_m:.3f}/'
+                    f'{command.entry_boundary_window_max_m:.3f} '
+                    f'imu_xy=({self._track_pose[0]:.3f},{self._track_pose[1]:.3f}) '
+                    f'ekf_s={self._track_distance_m:.3f} vision={visual_text}',
+                )
         cmd_msg = self.create_twist(command.linear, command.angular)
         self._log_control_timing(now, f'track:{command.segment or command.state}')
         self.cmd_pub.publish(cmd_msg)
@@ -1644,9 +1686,13 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         avoid_half_y = float(
             self.get_parameter('stage2_straight_avoid_window_half_width_m').value
         )
-        self._straight_avoid_obstacle = self._nearest_stage1_style_cluster(
+        straight_obstacle = self._nearest_stage1_style_cluster(
             msg, avoid_min_x, avoid_max_x, -avoid_half_y, avoid_half_y
         )
+        self._straight_avoid_obstacle = self._straight_avoidance_start_obstacle(
+            straight_obstacle
+        )
+        self._straight_avoid_corridor = self._straight_avoidance_corridor(msg)
 
         front_max_x = float(self.get_parameter('stage2_turn_precheck_front_m').value)
         side_max_y = float(self.get_parameter('stage2_turn_precheck_side_m').value)
@@ -1665,6 +1711,89 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._turn_precheck_right_obstacle = self._nearest_stage1_style_cluster(
             msg, side_min_x, front_max_x, -side_max_y, -side_min_y
         )
+
+    def _straight_avoidance_corridor(self, msg):
+        """Return the inward left/right fence edges in the current scan frame."""
+        min_x = float(self.get_parameter('stage2_straight_avoid_corridor_min_x_m').value)
+        max_x = float(self.get_parameter('stage2_straight_avoid_trigger_m').value)
+        min_lateral = float(
+            self.get_parameter('stage2_straight_avoid_corridor_min_lateral_m').value
+        )
+        left_edges = []
+        right_edges = []
+        for index, distance in enumerate(msg.ranges):
+            if not math.isfinite(distance) or distance <= 0.0:
+                continue
+            angle = msg.angle_min + index * msg.angle_increment
+            x = distance * math.cos(angle)
+            y = distance * math.sin(angle)
+            if x < min_x or x > max_x:
+                continue
+            if y >= min_lateral:
+                left_edges.append(y)
+            elif y <= -min_lateral:
+                right_edges.append(y)
+        if not left_edges or not right_edges:
+            return None
+        return {'left': min(left_edges), 'right': max(right_edges)}
+
+    def _straight_avoidance_start_obstacle(self, obstacle):
+        """Reject fence returns outside the forward cone; plans validate both sides."""
+        if obstacle is None or self._straight_avoider.is_active:
+            return obstacle
+
+        front_limit_deg = float(
+            self.get_parameter('stage2_straight_avoid_front_angle_deg').value
+        )
+        obstacle_angle_deg = float(obstacle['danger_angle_deg'])
+        if abs(obstacle_angle_deg) > front_limit_deg:
+            return None
+
+        return obstacle
+
+    def _straight_avoidance_plan(self):
+        """Choose a scan-feasible lateral offset without changing line speed."""
+        if self._straight_avoider.is_active:
+            return None
+        obstacle = self._straight_avoid_obstacle
+        corridor = self._straight_avoid_corridor
+        if obstacle is None or corridor is None:
+            return None
+
+        body_edge = float(self.get_parameter('stage2_straight_avoid_vehicle_half_width_m').value)
+        clearance = float(self.get_parameter('stage2_straight_avoid_clearance_m').value)
+        min_shift = float(self.get_parameter('stage2_straight_avoid_min_shift_m').value)
+        protected_half_width = 0.5 * float(obstacle['span']) + body_edge + clearance
+        left_target = max(min_shift, float(obstacle['center_y']) + protected_half_width)
+        right_target = min(-min_shift, float(obstacle['center_y']) - protected_half_width)
+        left_limit = float(corridor['left']) - body_edge - clearance
+        right_limit = float(corridor['right']) + body_edge + clearance
+        candidates = []
+        if left_target <= left_limit:
+            candidates.append(left_target)
+        if right_target >= right_limit:
+            candidates.append(right_target)
+        if not candidates:
+            self._straight_avoid_plan_reject_reason = 'no_corridor_gap'
+            return None
+
+        lateral_shift = min(candidates, key=abs)
+        plan = StraightAvoidanceController.plan_for_offset(
+            lateral_shift_m=lateral_shift,
+            obstacle_distance_m=float(obstacle['distance']),
+            linear_speed=float(self.get_parameter('track_max_speed').value),
+            angular_speed=float(
+                self.get_parameter('stage2_straight_avoid_angular_speed').value
+            ),
+            max_yaw_offset_rad=math.radians(float(
+                self.get_parameter('stage2_straight_avoid_yaw_offset_deg').value
+            )),
+            forward_margin_m=float(
+                self.get_parameter('stage2_straight_avoid_forward_margin_m').value
+            ),
+        )
+        self._straight_avoid_plan_reject_reason = '' if plan else 'insufficient_forward_distance'
+        return plan
 
     def _turn_precheck_active(self):
         if not bool(self.get_parameter('stage2_turn_precheck_enabled').value):

@@ -167,6 +167,45 @@ class TrackControllerTest(unittest.TestCase):
         self.assertEqual(command.segment, 'left_side_arc')
         self.assertEqual(command.entry_boundary_trigger, 'distance_fallback')
 
+    def test_side_arc_vision_switch_uses_only_map_x_when_disabled(self):
+        controller = Stage2TrackController(
+            entry_medium_distance_m=0.65,
+            entry_boundary_trigger_enabled=True,
+            side_arc_vision_enabled=False,
+            turn_force_map_x_enabled=True,
+            turn_force_min_map_x=2.30,
+            turn_force_max_map_x=3.90,
+        )
+        self._enter_medium(controller)
+        command = controller.step(
+            1.1, (-0.20, 0.60), math.pi / 2.0, distance_m=1.12,
+            visual=self._front_boundary_visual(), map_x=2.50,
+        )
+        self.assertEqual(command.segment, 'entry_medium')
+        self.assertEqual(command.entry_boundary_trigger, 'vision_disabled_wait_map_x')
+        command = controller.step(
+            1.2, (-0.20, 0.60), math.pi / 2.0, distance_m=1.14,
+            visual=self._front_boundary_visual(), map_x=2.30,
+        )
+        self.assertEqual(command.segment, 'left_side_arc')
+        self.assertEqual(command.entry_boundary_trigger, 'map_x_fallback')
+
+    def test_side_arc_vision_switch_keeps_tf_loss_distance_fallback(self):
+        controller = Stage2TrackController(
+            entry_medium_distance_m=0.65,
+            entry_boundary_trigger_enabled=True,
+            entry_boundary_guard_half_width_m=0.15,
+            side_arc_vision_enabled=False,
+            turn_force_map_x_enabled=True,
+        )
+        self._enter_medium(controller)
+        command = controller.step(
+            1.1, (-0.20, 0.60), math.pi / 2.0, distance_m=1.41,
+            visual=self._front_boundary_visual(), map_x=None,
+        )
+        self.assertEqual(command.segment, 'left_side_arc')
+        self.assertEqual(command.entry_boundary_trigger, 'distance_fallback_no_map_tf')
+
     def test_entry_boundary_keeps_qr_selected_turn_direction(self):
         for direction, entry_sign, corner_sign in (
                 ('clockwise', 1.0, -1.0),

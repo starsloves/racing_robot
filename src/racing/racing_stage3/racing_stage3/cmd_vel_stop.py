@@ -55,8 +55,9 @@ def emergency_cli_stop_async(topics=None):
             except (OSError, FileNotFoundError):
                 pass
 
-    # Do not orphan a CLI child if the owning ROS process exits immediately.
-    threading.Thread(target=_run, name='Stage3CliStop').start()
+    # The in-process publisher has already sent the stop command.  This CLI
+    # fallback must not keep SIGINT shutdown waiting for ROS discovery.
+    threading.Thread(target=_run, name='Stage3CliStop', daemon=True).start()
 
 
 def init_without_ros_signal_handler(args=None):

@@ -70,7 +70,7 @@ competition_controller:
     odom_frame: odom_combined
 
     # map -> odom_combined 静态变换平移 (m)。由 Stage1/总启动读取后发布 TF。
-    map_to_odom_x: 0.30
+    map_to_odom_x: 0.37
     map_to_odom_y: 0.15
 
     # ────────────────────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ competition_controller:
     # ────────────────────────────────────────────────────────────────────────
 
     # 盲开线速度 (m/s) — Phase1 初始前进速度
-    blind_linear_speed: 0.55
+    blind_linear_speed: 0.50
 
     # 盲开角速度 (rad/s) — 通常为 0（直行）
     blind_angular_speed: 0.0
@@ -235,7 +235,7 @@ competition_controller:
     back_target_x: 2.0
 
     # 后退线速度 (m/s) — 负值表示倒车；速度须低于 0.05m 轨迹采样的可跟踪范围
-    back_linear_speed: -0.35
+    back_linear_speed: -0.40
 
     # 后退航向修正增益 — 航向误差 → 角速度增益
     back_angular_kp: 0.9
@@ -326,7 +326,7 @@ competition_controller:
     corridor_terminal_release_yaw_tolerance_deg: 10.0
 
     # 终端逼近固定正线速度 (m/s)，正常导航中绝不为 0
-    corridor_terminal_linear_speed: 0.15
+    corridor_terminal_linear_speed: 0.20
 
     # 距离 Y 门线该距离以内，若仍未进入最终 X 容差才开启微小横向修正 (m)
     corridor_terminal_micro_start_y_margin_m: 0.18
@@ -341,20 +341,20 @@ competition_controller:
     corridor_terminal_yaw_deadband_deg: 1.0
 
     # 终端逼近角速度绝对上限 (rad/s)
-    corridor_terminal_max_angular_speed: 0.12
+    corridor_terminal_max_angular_speed: 0.30
 
     # 最后一小段 X 微调的角速度绝对上限 (rad/s)
-    corridor_terminal_micro_max_angular_speed: 0.06
+    corridor_terminal_micro_max_angular_speed: 0.12
 
     # 最后路点进入 Y 门线前的预对正距离 (m)。在仍正向行驶时同时收敛 IMU 航向。
-    corridor_terminal_prealign_y_margin_m: 0.70
+    corridor_terminal_prealign_y_margin_m: 0.50
 
     # 预对正航向闭环增益与角速度上限 (rad/s)
     corridor_terminal_prealign_heading_kp: 1.2
     corridor_terminal_prealign_max_angular_speed: 0.25
 
     # 仅在已到 Y 门线和最终 X 窗口、但航向未对齐时，低速后退回正
-    terminal_reverse_align_linear_speed: -0.06
+    terminal_reverse_align_linear_speed: -0.12
     terminal_reverse_align_heading_kp: 1.0
     terminal_reverse_align_max_angular_speed: 0.35
 
@@ -437,7 +437,7 @@ competition_controller:
 
     # --- 近场收敛 (Near-Field Convergence) ---
     # 制动距离 (m) — 距离终点小于此值时开始减速
-    corridor_brake_distance: 0.60
+    corridor_brake_distance: 0.50
 
     # 制动增益 — 距离 → 线速度衰减系数
     corridor_brake_kp: 0.35
@@ -449,10 +449,10 @@ competition_controller:
     corridor_capture_exit_distance: 0.45
 
     # 捕获速度 (m/s) — 近场控制时的线速度
-    corridor_capture_speed: 0.10
+    corridor_capture_speed: 0.20
 
     # 对齐线速度 (m/s) — 航向对齐时的线速度（0 = 原地转）
-    corridor_align_linear_speed: 0.0
+    corridor_align_linear_speed: 0.15
 
     # Beta 混合距离 (m) — 距离终点小于此值时融合目标航向
     corridor_beta_blend_distance: 0.70

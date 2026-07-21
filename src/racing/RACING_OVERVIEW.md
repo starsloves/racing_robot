@@ -37,7 +37,7 @@ Phase 3: Stage3 /stage3_cmd_vel ── Stage1 supervisor ────> /cmd_vel
 | Stage2 | 8082 | SEG 预览只在 Phase 2 提供；二维码任务到达后可预热模型。 |
 | Stage3 | 8083 | P 视觉只在 Phase 3 武装；离开阶段或完成后释放。 |
 
-`/vision_debug` 不受 HTTP 生命周期限制。`racing_vision_ai` 只在 Phase 2 缓存相机帧，收到 `stage2_ai_capture` 后异步图生文；豆包 Ark、已配置的 Qwen 与本地 VLM 并发请求，首个有效流式输出按短句发布到 `ai_description`。该过程不阻塞底盘控制。
+`/vision_debug` 不受 HTTP 生命周期限制。`racing_vision_ai` 只在 Phase 2 缓存相机帧，并在进入 Phase 2 时启动和预热本地 SmolVLM 服务、离开时关闭；收到 `stage2_ai_capture` 后豆包 Ark、已配置的 Qwen 与就绪的本地 VLM 并发图生文，首个有效流式输出按短句发布到 `ai_description`。该过程不阻塞底盘控制。
 
 ### 1.3 关键话题
 
@@ -119,7 +119,7 @@ entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
 
 - `entry_arc` 是入口 90 度弧；随后两个 `*_side_arc` 是 180 度弧。
 - 方向由 QR 决定：入口及出口 90 度和两次 180 度的转向符号按 `clockwise/counterclockwise` 镜像。
-- `entry_medium -> left_side_arc` 与 `top_long -> right_side_arc` 优先由 SEG 前方横边确认；未确认时由 `map <- base_footprint` 的 `track_turn_force_min/max_map_x` 强制切段。TF 缺失才回退里程保护窗口。
+- `track_side_arc_vision_enabled=true` 时，`entry_medium -> left_side_arc` 与 `top_long -> right_side_arc` 优先由 SEG 前方横边确认；未确认时由 `map <- base_footprint` 的 `track_turn_force_min/max_map_x` 强制切段。设为 `false` 时，两个 180 度弯忽略 SEG，只按 TF x 切段；TF 缺失才回退里程保护窗口。
 - 直线完成距离用 `/odom_combined` xy 累计，弧线完成以 IMU 相对转角为主；弧长仅作下限和失配保护。
 - 进入 `stage3_handoff_line` 后，S2 以实时 map TF 发布预测起点；当 map Y 小于 `track_stage3_handoff_map_y`（当前 2.40）时发布交接锚点和 `stage2_state=complete`。
 
@@ -127,7 +127,7 @@ entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
 
 - 生产速度、弧线角速度、提前切段角、视觉修正和交权门限全部在 `stage2_controller.yaml` 的 `track_*` 参数中；入口和出口 90 度弯分别用各自提前切段角，当前均为 52 度；当前直线最大速度为 0.65 m/s。
 - 直线段由 IMU 航向保持为主，可信 SEG 中线只作小幅横向修正；SEG 不可单独结束转弯。
-- `StraightAvoidanceController` 只在直线段接管，按 IMU 依次偏离 10 度、反向 10 度、回到原直线航向。弧线段关闭前方硬停车，避免扫到赛道边界误停。
+- `StraightAvoidanceController` 只在直线段接管，只接受车头正前方 +/-15 度内的聚类。它从同一帧雷达估计两侧围栏内缘，并以车体半宽、障碍宽度和安全边界求可行的最小横移；只有完整 S 形横移可在障碍前完成且不扫到任一围栏时才接管。避障全程保持当前直线速度，偏航量由所需横移反算并受最大角度限制，结束时回到原直线航向。弧线段关闭前方硬停车，避免扫到赛道边界误停。
 - 两个 180 度弯前的 `stage2_turn_precheck_*` 当前只写诊断日志，不停车、不减速、不改变切段。
 - 控制循环超过 `control_gap_stop_sec`（当前 1.0 秒）未刷新时，命令心跳发布零速度；控制循环恢复后从当前段继续。
 - `top_long` 距离末端 `stage2_ai_capture_lead_m`（当前 0.50 m）时只发一次异步图像分析触发，不等待云端或语音；图生文三模型并发竞速，语音从胜出模型的第一条完整短句开始播报。

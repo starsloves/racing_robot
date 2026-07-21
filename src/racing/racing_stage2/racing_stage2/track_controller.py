@@ -177,6 +177,7 @@ class Stage2TrackController:
                  top_boundary_top_y_ratio: float = 0.18,
                  top_boundary_max_angle_deg: float = 20.0,
                  top_boundary_confirm_frames: int = 3,
+                 side_arc_vision_enabled: bool = True,
                  turn_force_map_x_enabled: bool = False,
                  turn_force_min_map_x: float = 0.50,
                  turn_force_max_map_x: float = 4.00,
@@ -238,6 +239,7 @@ class Stage2TrackController:
         self.top_boundary_top_y_ratio = max(0.0, min(1.0, top_boundary_top_y_ratio))
         self.top_boundary_max_angle_deg = max(0.0, min(90.0, top_boundary_max_angle_deg))
         self.top_boundary_confirm_target = max(1, int(top_boundary_confirm_frames))
+        self.side_arc_vision_enabled = bool(side_arc_vision_enabled)
         self.turn_force_map_x_enabled = bool(turn_force_map_x_enabled)
         self.turn_force_min_map_x = float(turn_force_min_map_x)
         self.turn_force_max_map_x = float(turn_force_max_map_x)
@@ -520,10 +522,6 @@ class Stage2TrackController:
             90.0 if boundary_angle is None else float(boundary_angle)
         )
 
-        if not trigger_enabled:
-            self._entry_boundary_trigger = 'distance_nominal'
-            return progress >= nominal_distance - self.distance_tolerance
-
         # Clockwise reaches the low-x end first; counterclockwise reaches the
         # high-x end first. The second 180-degree turn uses the opposite end.
         force_low_x = (is_entry and self._clockwise) or (not is_entry and not self._clockwise)
@@ -537,6 +535,26 @@ class Stage2TrackController:
             self._entry_boundary_trigger = 'map_x_fallback'
             self._entry_boundary_confirmed_frames = 0
             return True
+
+        # This global switch selects the turn source for both 180-degree arcs.
+        # Keep the map-x switch independent: with TF forcing disabled, retain
+        # the previous nominal-distance behavior; with TF unavailable, retain
+        # its guarded distance fallback.
+        if not self.side_arc_vision_enabled:
+            self._entry_boundary_confirmed_frames = 0
+            if not self.turn_force_map_x_enabled:
+                self._entry_boundary_trigger = 'distance_nominal'
+                return progress >= nominal_distance - self.distance_tolerance
+            if map_x is None and progress >= guard_max - 1e-6:
+                self._entry_boundary_trigger = 'distance_fallback_no_map_tf'
+                return True
+            self._entry_boundary_trigger = 'vision_disabled_wait_map_x'
+            return False
+
+        if not trigger_enabled:
+            self._entry_boundary_trigger = 'distance_nominal'
+            return progress >= nominal_distance - self.distance_tolerance
+
         if progress < guard_min:
             self._entry_boundary_trigger = 'below_guard_min'
             self._entry_boundary_confirmed_frames = 0

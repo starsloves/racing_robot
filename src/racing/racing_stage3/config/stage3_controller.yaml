@@ -162,7 +162,7 @@ stage3_return_navigator:
     # 仅取 P bbox 中心区域，降低边缘背景、空洞和 P 边框的影响。
     p_depth_roi_fraction: 0.50
     # P 框内有效深度中位数 < 此值时，发布零速度和 stage3_state=complete。
-    p_depth_stop_distance_m: 0.35
+    p_depth_stop_distance_m: 0.37
 
     # P 框深度首次 <= 此值后，直到本次任务结束都跳过常规雷达避障；0 表示关闭。
     # 紧急停车仍保留优先级。

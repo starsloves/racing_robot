@@ -52,7 +52,6 @@ def generate_launch_description():
             {'crop_top_px': 80},
             {'upscale_factor': 1.0},
             {'detection_order': 'crop_only'},
-            {'preprocess_variants': 'wechat_raw,wechat_clahe,zbar_raw'},
             {'process_every_frame': True},
             {'backend': 'wechat'},
             {'allow_backend_fallback': True},

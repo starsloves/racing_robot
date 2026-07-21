@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import threading
+import time
+import urllib.error
+import urllib.request
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
@@ -79,8 +83,13 @@ class VisionAINode(Node):
                 logger=self.get_logger(),
             )
         local = self._config.get('local_llama', {})
+        self._local_config = local
         self._local_vision: VisionAnalyzer | None = None
         self._local_require_chinese = bool(local.get('require_chinese', True))
+        self._local_server: subprocess.Popen | None = None
+        self._local_server_log = None
+        self._local_server_lock = threading.Lock()
+        self._local_server_ready = threading.Event()
         if bool(local.get('enabled', False)):
             self._local_vision = VisionAnalyzer(
                 provider='openai_compatible',
@@ -226,6 +235,10 @@ class VisionAINode(Node):
         self._capture_active = self._phase == int(self.get_parameter('active_phase').value)
         if previous == self._phase:
             return
+        if self._capture_active:
+            self._start_local_server()
+        else:
+            self._stop_local_server()
         if not self._capture_active:
             with self._frame_lock:
                 self._latest_frame = None
@@ -233,6 +246,101 @@ class VisionAINode(Node):
         self.get_logger().info(
             f'[RESOURCE] vision_ai phase={self._phase} capture_active={self._capture_active}'
         )
+
+    def _start_local_server(self) -> None:
+        if self._local_vision is None or not bool(
+                self._local_config.get('manage_process', False)):
+            return
+        with self._local_server_lock:
+            if self._local_server is not None and self._local_server.poll() is None:
+                return
+            server_path = Path(str(self._local_config.get('server_path', '')).strip())
+            model_path = Path(str(self._local_config.get('model_path', '')).strip())
+            mmproj_path = Path(str(self._local_config.get('mmproj_path', '')).strip())
+            missing = [str(path) for path in (server_path, model_path, mmproj_path)
+                       if not path.is_file()]
+            if missing:
+                self.get_logger().error(
+                    f'[RESOURCE] local VLM not started; missing: {", ".join(missing)}'
+                )
+                self._publish_status('local_vlm_failed:missing_files')
+                return
+            log_path = Path(str(self._local_config.get('log_path', '')).strip())
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                self._local_server_log = log_path.open('a', encoding='utf-8')
+                command = [
+                    str(server_path),
+                    '--host', str(self._local_config.get('host', '127.0.0.1')),
+                    '--port', str(int(self._local_config.get('port', 8080))),
+                    '--model', str(model_path),
+                    '--mmproj', str(mmproj_path),
+                    '--threads', str(max(1, int(self._local_config.get('threads', 4)))),
+                    '--ctx-size', str(max(512, int(self._local_config.get('context_size', 2048)))),
+                    '--n-gpu-layers', '0',
+                ]
+                self._local_server = subprocess.Popen(
+                    command,
+                    stdout=self._local_server_log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            except (OSError, ValueError) as exc:
+                self.get_logger().error(f'[RESOURCE] local VLM start failed: {exc}')
+                self._publish_status('local_vlm_failed:start')
+                if self._local_server_log is not None:
+                    self._local_server_log.close()
+                    self._local_server_log = None
+                return
+            self._local_server_ready.clear()
+            self.get_logger().info('[RESOURCE] local VLM starting for Phase 2 prewarm')
+            threading.Thread(target=self._wait_for_local_server_ready, daemon=True).start()
+
+    def _wait_for_local_server_ready(self) -> None:
+        timeout_sec = max(1.0, float(self._local_config.get('warmup_timeout_sec', 25.0)))
+        host = str(self._local_config.get('host', '127.0.0.1'))
+        port = int(self._local_config.get('port', 8080))
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            with self._local_server_lock:
+                process = self._local_server
+            if process is None or process.poll() is not None:
+                self.get_logger().error('[RESOURCE] local VLM exited during Phase 2 prewarm')
+                self._publish_status('local_vlm_failed:exited')
+                return
+            try:
+                with urllib.request.urlopen(
+                    f'http://{host}:{port}/health', timeout=1.0
+                ) as response:
+                    if 200 <= response.status < 300:
+                        self._local_server_ready.set()
+                        self.get_logger().info('[RESOURCE] local VLM ready for Phase 2 capture')
+                        self._publish_status('local_vlm_ready')
+                        return
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+                pass
+            time.sleep(0.25)
+        self.get_logger().error('[RESOURCE] local VLM Phase 2 prewarm timed out')
+        self._publish_status('local_vlm_failed:warmup_timeout')
+
+    def _stop_local_server(self) -> None:
+        self._local_server_ready.clear()
+        with self._local_server_lock:
+            process = self._local_server
+            self._local_server = None
+        if process is None:
+            return
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3.0)
+        if self._local_server_log is not None:
+            self._local_server_log.close()
+            self._local_server_log = None
+        self.get_logger().info('[RESOURCE] local VLM stopped outside Phase 2')
 
     def _stage2_trigger_callback(self, _msg: Empty) -> None:
         self._trigger_callback(None, None)
@@ -316,7 +424,8 @@ class VisionAINode(Node):
             candidates.append((self._vision_provider, self._cloud_vision))
         if self._dashscope_vision is not None and self._dashscope_vision.ready:
             candidates.append(('qwen', self._dashscope_vision))
-        if self._local_vision is not None and self._local_vision.ready:
+        if (self._local_vision is not None and self._local_vision.ready
+                and self._local_server_ready.is_set()):
             candidates.append(('local', self._local_vision))
         return candidates
 
@@ -453,6 +562,7 @@ class VisionAINode(Node):
     def destroy_node(self) -> bool:
         self.get_logger().info('[VISION_AI] shutting down executor')
         self._executor.shutdown(wait=False, cancel_futures=True)
+        self._stop_local_server()
         return super().destroy_node()
 
 

@@ -9,7 +9,7 @@ volcengine:
   # 模型ID - 可用 ARK_MODEL_ID 环境变量覆盖
   # 云端视觉模型 ID
   # Doubao-1.5-vision deployed Ark endpoint. ARK_API_KEY stays in the runtime .env.
-  model_id: "<your-ark-model-id>"
+  model_id: "doubao-1.5-vision-lite"
   
   # AI分析提示词（与 MAE01 短句播报长度保持一致）
   # 云端图像描述提示词
@@ -33,6 +33,17 @@ local_llama:
   max_tokens: 48
   # 本地请求超时时间（s）
   timeout_sec: 12
+  # 仅在 competition_phase=2 时由 stage2_vision_ai 启动和预热；离开第二阶段即退出。
+  manage_process: true
+  server_path: "/home/sunrise/models/llama.cpp/build/bin/llama-server"
+  model_path: "/home/sunrise/models/SmolVLM-500M-Instruct-Q8_0.gguf"
+  mmproj_path: "/home/sunrise/models/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"
+  host: "127.0.0.1"
+  port: 8080
+  threads: 4
+  context_size: 2048
+  warmup_timeout_sec: 25
+  log_path: "/home/sunrise/dev_ws/log/local-smolvlm.log"
 
 # 检测配置
 detection:

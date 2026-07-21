@@ -13,7 +13,8 @@
 #
 # 调参速查：
 #   两个 180° 前触发点：
-#     两段均优先由 SEG 前方横边确认；视觉未命中时由 map x 强制切入
+#     track_side_arc_vision_enabled=true：SEG 优先，map x 兜底
+#     track_side_arc_vision_enabled=false：只用 map x；TF 缺失时按距离降级
 #   直线速度：track_max_speed
 #   弯道速度：track_corner_speed / track_entry_linear
 #   弯道转向力度：track_entry_angular / track_corner_angular
@@ -125,24 +126,28 @@ stage2_inertial_navigator:
     track_top_boundary_max_angle_deg: 20.0
     track_top_boundary_confirm_frames: 1
 
+    # 两个 180° 弯的总视觉开关。关闭后，SEG 横边不再参与切段，直接按 map x 触发。
+    # track_turn_force_map_x_enabled 仍独立控制 TF x 与 TF 缺失后的距离降级策略。
+    track_side_arc_vision_enabled: false
+
     # 两个 180° 的视觉均未确认时，以 map <- base_footprint 的 x 强制转弯。
     # 顺时针：entry_medium x<=min，top_long x>=max；逆时针顺序相反。
     # map TF 暂不可用时才回退到各段距离窗口上限，避免无限直行。
     track_turn_force_map_x_enabled: true
-    track_turn_force_min_map_x: 1.00
-    track_turn_force_max_map_x: 3.60
+    track_turn_force_min_map_x: 2.10
+    track_turn_force_max_map_x: 4.10
 
     # 第二个 180° 的名义里程中心，只用于视觉有效窗口和 TF 缺失保护。
     track_top_long_distance_m: 2.47
 
     # 出口最后直线长度：right_side_arc 后走多远判定 Stage2 完成。
     # 最新实车反馈最后一段偏长，缩短 20cm：1.49m -> 1.29m。
-    track_exit_medium_distance_m: 0.85
+    track_exit_medium_distance_m: 0.80
 
     # 两个 180° 和出口短直线完成后，按方向执行 90°：顺时针左转、逆时针右转。
     # 该段复用入口 90° 的 track_entry_linear / track_entry_angular / radius 配置，
     # 随后沿 -Y 直行；实时 TF map_y 严格小于此值时交权给 Stage3。
-    track_stage3_handoff_map_y: 2.40
+    track_stage3_handoff_map_y: 2.25
     stage3_entry_anchor_topic: stage3_entry_anchor
     # S3 交接锚点只取 map <- base_footprint 的实时 TF xy；TF 不可用时暂停交权。
     stage3_entry_anchor_base_frame: base_footprint
@@ -163,7 +168,7 @@ stage2_inertial_navigator:
     #   entry_arc / exit_turn_90 目标 90°，提前 52° => 约转到 38° 切入下一直线
     #   corner_arc 目标 180°，提前 45° => 约转到 135° 切入下一条直线
     track_entry_arc_complete_lead_deg: 53.0
-    track_corner_arc_complete_lead_deg: 50.0
+    track_corner_arc_complete_lead_deg: 30.0
     track_exit_turn_arc_complete_lead_deg: 52.0
 
     # 关闭 yaw-rate 预测切段和提前反向刹车，只使用上面的明确提前角
@@ -216,10 +221,10 @@ stage2_inertial_navigator:
     # 直线段避障触发阈值
     detour_enabled: true
     detour_obstacle_distance: 0.52
-    detour_front_angle_deg: 18.0
+    detour_front_angle_deg: 15.0
     detour_side_center_deg: 65.0
     detour_side_window_deg: 30.0
-    detour_min_side_clearance: 0.55
+    detour_min_side_clearance: 0.18
 
     # 避障动作参数
     avoid_turn_away_deg: 30.0
@@ -234,25 +239,36 @@ stage2_inertial_navigator:
     side_detour_threshold_m: 0.18
     avoider_heading_tolerance_deg: 1.5
 
-    # 生产直线 S 形避障：聚类规则与 Stage1 前方有效障碍判定一致。
-    # 仅在直线段接管；进入两个 180° 弯前检查窗口后不再新触发。
+    # 生产直线避障：在左右围栏约束内提前完成小横移，整个过程保持直线速度。
+    # 无法从扫描中得到两侧围栏，或障碍两侧均不足车体包络时，不创建绕行计划。
     stage2_straight_avoid_enabled: true
-    stage2_straight_avoid_trigger_m: 0.60
+    stage2_straight_avoid_trigger_m: 1.50
     stage2_straight_avoid_window_min_x: 0.18
     stage2_straight_avoid_window_half_width_m: 0.22
+    # 只接受车头正前方 +/-15 度的障碍；赛道两侧围栏不触发绕行。
+    stage2_straight_avoid_front_angle_deg: 15.0
     stage2_straight_avoid_cluster_gap_m: 0.12
     stage2_straight_avoid_min_cluster_points: 3
     stage2_straight_avoid_min_cluster_width_m: 0.06
     stage2_straight_avoid_max_cluster_width_m: 0.55
     stage2_straight_avoid_min_valid_range_m: 0.15
-    # 默认左绕；有效障碍明确偏左达到该角度时锁定右绕。
-    stage2_straight_avoid_right_turn_left_angle_deg: 15.0
     # 当前直线速度保持不变；speed_limit=0.0 表示不限速。
     stage2_straight_avoid_speed_limit_mps: 0.0
     stage2_straight_avoid_angular_speed: 0.80
-    # 依次偏离 +10°/-10°（按绕行方向镜像），再回到直线段 IMU 航向。
-    stage2_straight_avoid_yaw_offset_deg: 10.0
+    # 根据扫描可行横移反算的最大偏航；不是固定打角。
+    stage2_straight_avoid_yaw_offset_deg: 30.0
     stage2_straight_avoid_yaw_tolerance_deg: 1.0
+    # 仅在车头已贴近直线基准时触发；每个子转向超过此角度立即退出避障。
+    stage2_straight_avoid_start_heading_tolerance_deg: 15.0
+    stage2_straight_avoid_max_turn_travel_deg: 35.0
+    # 围栏内缘估计窗口，以及车辆/障碍的保守安全包络。
+    stage2_straight_avoid_corridor_min_x_m: 0.20
+    stage2_straight_avoid_corridor_min_lateral_m: 0.28
+    stage2_straight_avoid_vehicle_half_width_m: 0.15
+    stage2_straight_avoid_clearance_m: 0.07
+    # 最小有效横移；完整换线必须在障碍前额外保留的纵向余量。
+    stage2_straight_avoid_min_shift_m: 0.06
+    stage2_straight_avoid_forward_margin_m: 0.25
 
     # 两个 180° 弯前探测：仅记录，不停车、不减速、不改变切段。
     # 顺时针取右侧、逆时针取左侧；前方与同侧窗口共用上述聚类过滤规则。
