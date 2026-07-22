@@ -1,4 +1,5 @@
 import os
+import math
 
 import yaml
 
@@ -12,10 +13,14 @@ from launch_ros.actions import Node
 
 
 def _stage1_map_to_odom_defaults(config_path):
-    """Read the Stage1-owned static TF translation from its ROS parameter YAML."""
+    """Read the Stage1-owned map-to-odom transform from its ROS parameter YAML."""
     with open(config_path, 'r', encoding='utf-8') as config_file:
         params = yaml.safe_load(config_file)['competition_controller']['ros__parameters']
-    return str(params['map_to_odom_x']), str(params['map_to_odom_y'])
+    return (
+        str(params['map_to_odom_x']),
+        str(params['map_to_odom_y']),
+        str(math.radians(float(params['imu_initial_map_yaw_deg']))),
+    )
 
 
 def generate_launch_description():
@@ -28,7 +33,11 @@ def generate_launch_description():
 
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
     stage1_config_path = os.path.join(stage1_dir, 'config', 'stage1_controller.yaml')
-    map_to_odom_x_default, map_to_odom_y_default = _stage1_map_to_odom_defaults(stage1_config_path)
+    (
+        map_to_odom_x_default,
+        map_to_odom_y_default,
+        map_to_odom_yaw_default,
+    ) = _stage1_map_to_odom_defaults(stage1_config_path)
     stage1_launch_path = os.path.join(stage1_dir, 'launch', 'competition_stage1.launch.py')
     stage2_launch_path = os.path.join(stage2_dir, 'launch', 'competition_stage2.launch.py')
     stage3_launch_path = os.path.join(stage3_dir, 'launch', 'competition_stage3.launch.py')
@@ -50,7 +59,9 @@ def generate_launch_description():
     )
     map_to_odom_x_arg = DeclareLaunchArgument('map_to_odom_x', default_value=map_to_odom_x_default)
     map_to_odom_y_arg = DeclareLaunchArgument('map_to_odom_y', default_value=map_to_odom_y_default)
-    map_to_odom_yaw_arg = DeclareLaunchArgument('map_to_odom_yaw', default_value='0.1745329252')
+    map_to_odom_yaw_arg = DeclareLaunchArgument(
+        'map_to_odom_yaw', default_value=map_to_odom_yaw_default
+    )
 
     map_overlay_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(map_overlay_launch_path),
@@ -120,12 +131,12 @@ def generate_launch_description():
         name='stage2_vision_ai',
         output='screen',
         parameters=[{
-            'mode': 'stage2',
             'config_path': os.path.join(vision_ai_dir, 'config', 'vision_ai_config.yaml'),
             'trigger_topic': 'stage2_ai_capture',
             'image_topic': '/aurora/rgb/image_raw',
             'result_topic': 'ai_description',
             'status_topic': 'stage2_ai_status',
+            'mission_state_topic': 'stage3_state',
         }],
         condition=IfCondition(LaunchConfiguration('include_vision_ai')),
     )

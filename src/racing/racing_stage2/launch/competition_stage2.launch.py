@@ -171,6 +171,7 @@ def generate_launch_description():
                 'task_topic': active_task_topic,
                 'test_direction': LaunchConfiguration('test_direction'),
                 'use_test_direction_fallback': LaunchConfiguration('enable_test_publisher'),
+                'imu_map_yaw_offset_fallback_enabled': LaunchConfiguration('enable_test_publisher'),
             },
         ],
         output='screen',

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import threading
@@ -22,7 +21,6 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profi
 from sensor_msgs.msg import Image
 from std_msgs.msg import Empty, Int32, String
 
-from voice_api.env_config import VoiceEnvConfig
 from voice_api.vision_analyzer import VisionAnalyzer
 
 
@@ -31,7 +29,6 @@ class VisionAINode(Node):
 
     def __init__(self) -> None:
         super().__init__('vision_ai_node')
-        self.declare_parameter('mode', 'stage2')
         self.declare_parameter('config_path', '')
         self.declare_parameter('trigger_topic', 'stage2_ai_capture')
         self.declare_parameter('image_topic', '/aurora/rgb/image_raw')
@@ -42,47 +39,29 @@ class VisionAINode(Node):
         self.declare_parameter('phase_topic', 'competition_phase')
         self.declare_parameter('active_phase', 2)
         self.declare_parameter('phase_gated', True)
+        self.declare_parameter('mission_state_topic', 'stage3_state')
         self.declare_parameter('streaming_enabled', True)
         self.declare_parameter('stream_sentence_min_chars', 8)
 
         self._config = self._load_config()
-        volc = self._config.get('volcengine', {})
-        self._voice_env = VoiceEnvConfig.from_env()
-        self._vision_provider, self._api_key, self._model_id = self._resolve_vision_api(volc)
-        self._prompt = str(volc.get(
-            'prompt', '请用一小段话简单描述这张图片中的内容，包括物体、场景、颜色等信息。'
-        ))
-        self._max_description_chars = max(1, int(volc.get('max_description_chars', 20)))
+        models = self._config.get('vision_models', {})
+        self._max_description_chars = max(
+            1, int(self._config.get('response', {}).get('max_description_chars', 20))
+        )
         self._streaming_enabled = bool(self.get_parameter('streaming_enabled').value)
         self._stream_sentence_min_chars = max(
             1, int(self.get_parameter('stream_sentence_min_chars').value)
         )
         self._jpeg_quality = int(self._config.get('image', {}).get('jpeg_quality', 85))
         self._image_max_edge_px = max(0, int(self._config.get('image', {}).get('max_edge_px', 448)))
-        self._cloud_vision = VisionAnalyzer(
-            provider=self._vision_provider,
-            api_key=self._api_key,
-            model_id=self._model_id,
-            prompt=self._prompt,
-            jpeg_quality=self._jpeg_quality,
-            image_max_edge_px=self._image_max_edge_px,
-            request_timeout_sec=float(self.get_parameter('request_timeout_sec').value),
-            logger=self.get_logger(),
-        )
-        self._dashscope_vision: VisionAnalyzer | None = None
-        dashscope_key = os.environ.get('DASHSCOPE_API_KEY', '').strip()
-        if self._vision_provider != 'dashscope' and dashscope_key:
-            self._dashscope_vision = VisionAnalyzer(
-                provider='dashscope',
-                api_key=dashscope_key,
-                model_id=self._voice_env.dashscope_model_id,
-                prompt=self._prompt,
-                jpeg_quality=self._jpeg_quality,
-                image_max_edge_px=self._image_max_edge_px,
-                request_timeout_sec=float(self.get_parameter('request_timeout_sec').value),
-                logger=self.get_logger(),
-            )
-        local = self._config.get('local_llama', {})
+        self._vision_models: dict[str, VisionAnalyzer] = {}
+        for name, model in models.items():
+            if name == 'local' or not isinstance(model, dict) or not bool(model.get('enabled', False)):
+                continue
+            self._vision_models[name] = self._create_vision_analyzer(model)
+        local = models.get('local', {})
+        if not isinstance(local, dict):
+            local = {}
         self._local_config = local
         self._local_vision: VisionAnalyzer | None = None
         self._local_require_chinese = bool(local.get('require_chinese', True))
@@ -91,18 +70,7 @@ class VisionAINode(Node):
         self._local_server_lock = threading.Lock()
         self._local_server_ready = threading.Event()
         if bool(local.get('enabled', False)):
-            self._local_vision = VisionAnalyzer(
-                provider='openai_compatible',
-                api_key='',
-                model_id=str(local.get('model_id', 'SmolVLM-500M-Instruct')),
-                prompt=str(local.get('prompt', self._prompt)),
-                jpeg_quality=self._jpeg_quality,
-                image_max_edge_px=self._image_max_edge_px,
-                base_url=str(local.get('base_url', 'http://127.0.0.1:8080/v1/chat/completions')),
-                request_timeout_sec=float(local.get('timeout_sec', 12.0)),
-                max_tokens=int(local.get('max_tokens', 48)),
-                logger=self.get_logger(),
-            )
+            self._local_vision = self._create_vision_analyzer(local)
         self._frame_max_age_sec = max(0.1, float(self.get_parameter('frame_max_age_sec').value))
         self._request_timeout_sec = max(1.0, float(self.get_parameter('request_timeout_sec').value))
         self._bridge = CvBridge()
@@ -111,6 +79,7 @@ class VisionAINode(Node):
         self._latest_frame_time = 0.0
         self._busy = False
         self._busy_lock = threading.Lock()
+        self._mission_complete = False
         self._phase = 0
         self._capture_active = not bool(self.get_parameter('phase_gated').value)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='vision-ai')
@@ -135,36 +104,24 @@ class VisionAINode(Node):
             self.create_subscription(
                 Int32, str(self.get_parameter('phase_topic').value), self._phase_callback, qos_latched
             )
-
-        mode = str(self.get_parameter('mode').value).strip().lower()
-        if mode == 'full':
-            target_sign = int(self._config.get('detection', {}).get('target_sign', 9))
-            sign_topic = str(self._config.get('detection', {}).get('sign_topic', 'sign4return'))
-            self._sign_sub = self.create_subscription(
-                Int32, sign_topic, lambda msg: self._trigger_callback(target_sign, msg.data), 10
-            )
-            self.get_logger().info(
-                f'[VISION_AI] mode=full sign_topic={sign_topic} target_sign={target_sign}'
-            )
-        else:
-            trigger_topic = str(self.get_parameter('trigger_topic').value)
-            self._trigger_sub = self.create_subscription(
-                Empty, trigger_topic, self._stage2_trigger_callback, 10
-            )
-            self.get_logger().info(
-                f'[VISION_AI] mode=stage2 trigger_topic={trigger_topic} '
-                f'image_topic={image_topic} max_age={self._frame_max_age_sec:.1f}s'
+            self.create_subscription(
+                String, str(self.get_parameter('mission_state_topic').value),
+                self._mission_state_callback, qos_latched
             )
 
-        if not self._cloud_vision.ready:
-            self.get_logger().error(
-                f'[VISION_AI] {self._vision_provider} API is not ready; '
-                'check the shared voice_driver/.env credentials'
-            )
-        else:
+        trigger_topic = str(self.get_parameter('trigger_topic').value)
+        self._trigger_sub = self.create_subscription(
+            Empty, trigger_topic, self._stage2_trigger_callback, 10
+        )
+        self.get_logger().info(
+            f'[VISION_AI] trigger_topic={trigger_topic} '
+            f'image_topic={image_topic} max_age={self._frame_max_age_sec:.1f}s'
+        )
+
+        for name, analyzer in self._vision_models.items():
             self.get_logger().info(
-                f'[VISION_AI] provider={self._vision_provider} ready model={self._model_id} '
-                f'prompt_len={len(self._prompt)} streaming={self._streaming_enabled}'
+                f'[VISION_AI] model={name} provider={analyzer.provider} ready={analyzer.ready} '
+                f'streaming={self._streaming_enabled}'
             )
         if self._local_vision is not None:
             self.get_logger().info(
@@ -172,23 +129,20 @@ class VisionAINode(Node):
                 f'model={local.get("model_id")} image_max_edge={self._image_max_edge_px}px'
             )
 
-    def _resolve_vision_api(self, volc: dict) -> tuple[str, str, str]:
-        """Prefer the shared .env provider, retaining legacy Ark YAML fallback."""
-        provider = os.environ.get('VISION_PROVIDER', '').strip().lower()
-        if not provider:
-            provider = 'ark' if (volc.get('api_key') or os.environ.get('ARK_API_KEY')) else self._voice_env.resolved_vision_provider()
-
-        if provider in {'dashscope', 'bailian', '百炼'}:
-            return (
-                'dashscope',
-                self._voice_env.dashscope_api_key,
-                self._voice_env.dashscope_model_id,
-            )
-
-        return (
-            'ark',
-            str(volc.get('api_key') or self._voice_env.ark_api_key).strip(),
-            str(volc.get('model_id') or self._voice_env.ark_model_id).strip(),
+    def _create_vision_analyzer(self, model: dict) -> VisionAnalyzer:
+        """Build one contender from the uniform YAML model schema."""
+        api_key = str(model.get('api_key', '')).strip()
+        return VisionAnalyzer(
+            provider=str(model.get('provider', '')).strip(),
+            api_key=api_key,
+            model_id=str(model.get('model_id', '')).strip(),
+            prompt=str(model.get('prompt', '')).strip(),
+            jpeg_quality=self._jpeg_quality,
+            image_max_edge_px=self._image_max_edge_px,
+            base_url=str(model.get('base_url', '')).strip(),
+            request_timeout_sec=float(model.get('timeout_sec', self.get_parameter('request_timeout_sec').value)),
+            max_tokens=int(model.get('max_tokens', 0)) or None,
+            logger=self.get_logger(),
         )
 
     def _load_config(self) -> dict:
@@ -237,8 +191,6 @@ class VisionAINode(Node):
             return
         if self._capture_active:
             self._start_local_server()
-        else:
-            self._stop_local_server()
         if not self._capture_active:
             with self._frame_lock:
                 self._latest_frame = None
@@ -246,6 +198,22 @@ class VisionAINode(Node):
         self.get_logger().info(
             f'[RESOURCE] vision_ai phase={self._phase} capture_active={self._capture_active}'
         )
+
+    def _mission_state_callback(self, msg: String) -> None:
+        if msg.data.strip().lower() != 'complete' or self._mission_complete:
+            return
+        self._mission_complete = True
+        self.get_logger().info(
+            '[RESOURCE] competition complete; local VLM will stop after pending analysis'
+        )
+        self._stop_local_server_if_idle()
+
+    def _stop_local_server_if_idle(self) -> None:
+        with self._busy_lock:
+            busy = self._busy
+        if busy:
+            return
+        self._stop_local_server()
 
     def _start_local_server(self) -> None:
         if self._local_vision is None or not bool(
@@ -343,11 +311,9 @@ class VisionAINode(Node):
         self.get_logger().info('[RESOURCE] local VLM stopped outside Phase 2')
 
     def _stage2_trigger_callback(self, _msg: Empty) -> None:
-        self._trigger_callback(None, None)
+        self._trigger_callback()
 
-    def _trigger_callback(self, target_sign: int | None, value: int | None) -> None:
-        if target_sign is not None and value != target_sign:
-            return
+    def _trigger_callback(self) -> None:
         if not self._capture_active:
             self.get_logger().warning(
                 f'[VISION_AI] trigger ignored: inactive phase={self._phase}'
@@ -417,20 +383,21 @@ class VisionAINode(Node):
             with self._busy_lock:
                 self._busy = False
             self.get_logger().info('[VISION_AI] background task finished; ready for next trigger')
+            if self._mission_complete:
+                self._stop_local_server_if_idle()
 
     def _stream_candidates(self) -> list[tuple[str, VisionAnalyzer]]:
         candidates: list[tuple[str, VisionAnalyzer]] = []
-        if self._cloud_vision.ready:
-            candidates.append((self._vision_provider, self._cloud_vision))
-        if self._dashscope_vision is not None and self._dashscope_vision.ready:
-            candidates.append(('qwen', self._dashscope_vision))
+        candidates.extend(
+            (name, analyzer) for name, analyzer in self._vision_models.items() if analyzer.ready
+        )
         if (self._local_vision is not None and self._local_vision.ready
                 and self._local_server_ready.is_set()):
             candidates.append(('local', self._local_vision))
         return candidates
 
     def _analyze_stream_race(self, frame: Any) -> tuple[str | None, str]:
-        """Use the first usable stream, then ignore all slower model responses."""
+        """Publish the first usable stream, then cancel the losing requests."""
         candidates = self._stream_candidates()
         selected: list[str] = []
         buffers = {name: '' for name, _ in candidates}
@@ -485,6 +452,15 @@ class VisionAINode(Node):
                 self.get_logger().error('[VISION_AI] stream race timed out before first usable delta')
                 return None, 'none'
             winner = selected[0]
+            for name, future in futures.items():
+                if name != winner:
+                    future.cancel()
+            if winner != 'local':
+                self._stop_local_server()
+            self.get_logger().info(
+                f'[VISION_AI] winner={winner}; cancellation requested for '
+                f'{", ".join(name for name in futures if name != winner)}'
+            )
             content = futures[winner].result()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'[VISION_AI] {selected[0] if selected else "stream"} failed: {exc}')

@@ -24,17 +24,28 @@ class RacingLogger:
     """Unified logger — writes [TAG] message to ROS logger + file."""
 
     def __init__(self, node, log_subdir='default', log_filename='latest.log',
-                 session_title='session'):
+                 session_title='session', defer_file=False):
         self._node = node
-        self._file_log = SessionFileLog(
-            log_subdir, log_filename, session_title=session_title,
-        )
+        self._log_subdir = log_subdir
+        self._log_filename = log_filename
+        self._session_title = session_title
+        self._file_log = None
+        if not defer_file:
+            self.start_session()
+
+    def start_session(self):
+        """Open a new file session, replacing the previous latest log."""
+        if self._file_log is None:
+            self._file_log = SessionFileLog(
+                self._log_subdir, self._log_filename,
+                session_title=self._session_title,
+            )
 
     # ── path property for callers that need the log file path ──
 
     @property
     def path(self):
-        return self._file_log.path
+        return None if self._file_log is None else self._file_log.path
 
     # ── low-level write ──
 
@@ -47,7 +58,8 @@ class RacingLogger:
                 self._node.get_logger().warn(formatted)
             elif level == 'error':
                 self._node.get_logger().error(formatted)
-        self._file_log.write(formatted)
+        if self._file_log is not None:
+            self._file_log.write(formatted)
 
     # ── public: generic tag ──
 

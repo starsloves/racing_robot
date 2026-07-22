@@ -11,7 +11,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import Imu, LaserScan
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Float64, Int32, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -23,6 +23,9 @@ class Stage2InertialBase(Node):
         self.declare_parameter('task_topic', 'competition_qr_task')
         self.declare_parameter('odom_topic', '/odom_combined')
         self.declare_parameter('imu_topic', '/imu/data')
+        self.declare_parameter('imu_map_yaw_offset_topic', 'imu_map_yaw_offset')
+        self.declare_parameter('imu_map_yaw_offset_fallback_enabled', False)
+        self.declare_parameter('imu_map_yaw_offset_fallback_map_yaw_deg', 90.0)
         self.declare_parameter('map_topic', '/map')
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('cmd_topic', '/stage2_cmd_vel')
@@ -88,6 +91,13 @@ class Stage2InertialBase(Node):
         self.task_topic = self.get_parameter('task_topic').value
         self.odom_topic = self.get_parameter('odom_topic').value
         self.imu_topic = self.get_parameter('imu_topic').value
+        self.imu_map_yaw_offset_topic = self.get_parameter('imu_map_yaw_offset_topic').value
+        self.imu_map_yaw_offset_fallback_enabled = bool(
+            self.get_parameter('imu_map_yaw_offset_fallback_enabled').value
+        )
+        self.imu_map_yaw_offset_fallback_map_yaw_rad = math.radians(float(
+            self.get_parameter('imu_map_yaw_offset_fallback_map_yaw_deg').value
+        ))
         self.map_topic = self.get_parameter('map_topic').value
         self.scan_topic = self.get_parameter('scan_topic').value
         self.cmd_topic = self.get_parameter('cmd_topic').value
@@ -181,6 +191,8 @@ class Stage2InertialBase(Node):
         self.direction = None
         self.phase_initialized = False  # 标记是否收到过有效的 phase 消息
         self.current_yaw = None
+        self.current_raw_imu_yaw = None
+        self.imu_map_yaw_offset_rad = None
         self.current_position = None
         self.current_odom_yaw = None
         self.latest_map = None
@@ -246,6 +258,9 @@ class Stage2InertialBase(Node):
         self.create_subscription(Int32, self.phase_topic, self.phase_callback, event_qos)
         self.create_subscription(String, self.task_topic, self.task_callback, event_qos)
         self.create_subscription(Imu, self.imu_topic, self.imu_callback, 10)
+        self.create_subscription(
+            Float64, self.imu_map_yaw_offset_topic, self.imu_map_yaw_offset_callback, event_qos
+        )
         self.create_subscription(Odometry, self.odom_topic, self.odom_callback, 10)
         self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, map_qos)
         self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
@@ -875,7 +890,34 @@ class Stage2InertialBase(Node):
         self.try_start_mission()
 
     def imu_callback(self, msg):
-        self.current_yaw = self.quaternion_to_yaw(msg.orientation)
+        self.current_raw_imu_yaw = self.quaternion_to_yaw(msg.orientation)
+        if (
+            self.imu_map_yaw_offset_rad is None
+            and self.imu_map_yaw_offset_fallback_enabled
+        ):
+            self.imu_map_yaw_offset_rad = self.normalize_angle(
+                self.imu_map_yaw_offset_fallback_map_yaw_rad - self.current_raw_imu_yaw
+            )
+            self.get_logger().warn(
+                '[IMU] Stage1 map yaw calibration unavailable; using standalone fallback: '
+                f'offset={math.degrees(self.imu_map_yaw_offset_rad):+.1f}deg'
+            )
+        if self.imu_map_yaw_offset_rad is not None:
+            self.current_yaw = self.normalize_angle(
+                self.current_raw_imu_yaw + self.imu_map_yaw_offset_rad
+            )
+        self.try_start_mission()
+
+    def imu_map_yaw_offset_callback(self, msg):
+        self.imu_map_yaw_offset_rad = self.normalize_angle(float(msg.data))
+        if self.current_raw_imu_yaw is not None:
+            self.current_yaw = self.normalize_angle(
+                self.current_raw_imu_yaw + self.imu_map_yaw_offset_rad
+            )
+        self.get_logger().info(
+            '[IMU] map yaw calibration received: '
+            f'offset={math.degrees(self.imu_map_yaw_offset_rad):+.1f}deg'
+        )
         self.try_start_mission()
 
     def odom_callback(self, msg):

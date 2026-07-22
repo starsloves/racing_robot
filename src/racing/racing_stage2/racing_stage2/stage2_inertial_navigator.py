@@ -18,6 +18,10 @@ from racing_stage2.avoid_controller import AvoidConfig, AvoidController, NavStat
 from racing_stage2.avoid_geometry import cross_segment_m
 from racing_stage2.scan_processor import ScanProcessor
 from racing_stage2.straight_avoidance import StraightAvoidanceController
+from racing_stage2.straight_obstacle_gate import (
+    StraightObstacleGate,
+    StraightObstacleGateConfig,
+)
 from racing_stage2.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 from racing_stage2.stage2_vision_mixin import Stage2VisionMixin
@@ -63,13 +67,13 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_top_boundary_max_angle_deg', 20.0)
         self.declare_parameter('track_top_boundary_confirm_frames', 3)
         self.declare_parameter('track_side_arc_vision_enabled', True)
+        self.declare_parameter('track_side_arc_vision_trigger_lead_m', 0.002)
+        self.declare_parameter('track_side_arc_vision_trigger_speed_mps', 0.45)
         self.declare_parameter('track_turn_force_map_x_enabled', False)
         self.declare_parameter('track_turn_force_min_map_x', 0.50)
         self.declare_parameter('track_turn_force_max_map_x', 4.00)
         self.declare_parameter('track_top_long_distance_m', 2.59)
         self.declare_parameter('track_exit_medium_distance_m', 1.49)
-        self.declare_parameter('track_entry_tolerance_deg', 2.0)
-        self.declare_parameter('track_settle_sec', 0.25)
         self.declare_parameter('track_entry_heading_kp', 1.0)
         self.declare_parameter('track_yaw_rate_damping', 0.30)
         self.declare_parameter('track_entry_yaw_rate_tolerance', 0.10)
@@ -77,14 +81,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_entry_align_error_tolerance', 0.08)
         self.declare_parameter('track_entry_align_hold_sec', 0.20)
         self.declare_parameter('track_entry_align_visual_kp', 0.55)
-        self.declare_parameter('track_arc_min_completion_ratio', 0.70)
-        self.declare_parameter('track_arc_finish_predict_sec', 0.18)
-        self.declare_parameter('track_arc_mismatch_angle_deg', 14.0)
-        self.declare_parameter('track_entry_stop_prepare_deg', 0.0)
-        self.declare_parameter('track_entry_arc_complete_lead_deg', 0.0)
-        self.declare_parameter('track_exit_turn_arc_complete_lead_deg', 0.0)
-        self.declare_parameter('track_corner_arc_complete_lead_deg', 0.0)
         self.declare_parameter('track_corner_radius', 0.18)
+        self.declare_parameter('track_arc_yaw_decel_rps2', 2.0)
+        self.declare_parameter('track_arc_yaw_rate_kp', 0.60)
+        self.declare_parameter('track_arc_terminal_yaw_rate_rps', 0.15)
+        self.declare_parameter('track_arc_terminal_angle_deg', 0.75)
+        self.declare_parameter('track_arc_terminal_min_speed_mps', 0.08)
         self.declare_parameter('track_vision_lateral_scale_m', 0.30)
         self.declare_parameter('track_vision_lateral_weight', 0.35)
         self.declare_parameter('track_vision_correction_max_angular', 0.10)
@@ -92,6 +94,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_vision_lateral_release_deadband', 0.035)
         self.declare_parameter('track_vision_heading_gain', 0.22)
         self.declare_parameter('track_vision_confirm_frames', 3)
+        self.declare_parameter('track_vision_max_age_sec', 0.60)
         self.declare_parameter('track_vision_max_frame_delta', 0.25)
         self.declare_parameter('track_vision_opposition_threshold', 0.08)
         self.declare_parameter('track_vision_camera_offset', 0.0)
@@ -131,6 +134,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('stage2_straight_avoid_min_cluster_width_m', 0.06)
         self.declare_parameter('stage2_straight_avoid_max_cluster_width_m', 0.55)
         self.declare_parameter('stage2_straight_avoid_min_valid_range_m', 0.15)
+        self.declare_parameter('stage2_straight_avoid_min_lateral_span_m', 0.05)
+        self.declare_parameter('stage2_straight_avoid_confirm_frames', 3)
+        self.declare_parameter('stage2_straight_avoid_association_x_m', 0.25)
+        self.declare_parameter('stage2_straight_avoid_association_y_m', 0.12)
+        self.declare_parameter('stage2_straight_avoid_association_span_m', 0.20)
+        self.declare_parameter('stage2_straight_avoid_cooldown_sec', 1.0)
         self.declare_parameter('stage2_straight_avoid_angular_speed', 0.80)
         self.declare_parameter('stage2_straight_avoid_yaw_offset_deg', 10.0)
         self.declare_parameter('stage2_straight_avoid_yaw_tolerance_deg', 1.0)
@@ -197,6 +206,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._straight_avoid_obstacle = None
         self._straight_avoid_corridor = None
         self._straight_avoid_plan_reject_reason = ''
+        self._straight_avoid_gate_last_state = 'clear'
         self._turn_precheck_front_obstacle = None
         self._turn_precheck_left_obstacle = None
         self._turn_precheck_right_obstacle = None
@@ -245,6 +255,20 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             speed_limit_mps=float(
                 self.get_parameter('stage2_straight_avoid_speed_limit_mps').value
             ),
+        )
+        self._straight_obstacle_gate = StraightObstacleGate(
+            StraightObstacleGateConfig(
+                confirm_frames=int(self.get_parameter(
+                    'stage2_straight_avoid_confirm_frames').value),
+                association_x_m=float(self.get_parameter(
+                    'stage2_straight_avoid_association_x_m').value),
+                association_y_m=float(self.get_parameter(
+                    'stage2_straight_avoid_association_y_m').value),
+                association_span_m=float(self.get_parameter(
+                    'stage2_straight_avoid_association_span_m').value),
+                cooldown_sec=float(self.get_parameter(
+                    'stage2_straight_avoid_cooldown_sec').value),
+            )
         )
 
         # 障碍物可视化（rviz2 调试用）
@@ -312,6 +336,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             side_arc_vision_enabled=bool(
                 self.get_parameter('track_side_arc_vision_enabled').value
             ),
+            side_arc_vision_trigger_lead_m=float(
+                self.get_parameter('track_side_arc_vision_trigger_lead_m').value
+            ),
+            side_arc_vision_trigger_speed_mps=float(
+                self.get_parameter('track_side_arc_vision_trigger_speed_mps').value
+            ),
             turn_force_map_x_enabled=bool(
                 self.get_parameter('track_turn_force_map_x_enabled').value
             ),
@@ -327,8 +357,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             exit_medium_distance_m=float(
                 self.get_parameter('track_exit_medium_distance_m').value
             ),
-            entry_tolerance_deg=float(self.get_parameter('track_entry_tolerance_deg').value),
-            settle_sec=float(self.get_parameter('track_settle_sec').value),
             entry_heading_kp=float(self.get_parameter('track_entry_heading_kp').value),
             yaw_rate_damping=float(self.get_parameter('track_yaw_rate_damping').value),
             entry_yaw_rate_tolerance=float(
@@ -346,28 +374,22 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             entry_align_visual_kp=float(
                 self.get_parameter('track_entry_align_visual_kp').value
             ),
-            arc_min_completion_ratio=float(
-                self.get_parameter('track_arc_min_completion_ratio').value
-            ),
-            arc_finish_predict_sec=float(
-                self.get_parameter('track_arc_finish_predict_sec').value
-            ),
-            arc_mismatch_angle_deg=float(
-                self.get_parameter('track_arc_mismatch_angle_deg').value
-            ),
-            entry_stop_prepare_deg=float(
-                self.get_parameter('track_entry_stop_prepare_deg').value
-            ),
-            entry_arc_complete_lead_deg=float(
-                self.get_parameter('track_entry_arc_complete_lead_deg').value
-            ),
-            exit_turn_arc_complete_lead_deg=float(
-                self.get_parameter('track_exit_turn_arc_complete_lead_deg').value
-            ),
-            corner_arc_complete_lead_deg=float(
-                self.get_parameter('track_corner_arc_complete_lead_deg').value
-            ),
             corner_radius=float(self.get_parameter('track_corner_radius').value),
+            arc_yaw_decel_rps2=float(
+                self.get_parameter('track_arc_yaw_decel_rps2').value
+            ),
+            arc_yaw_rate_kp=float(
+                self.get_parameter('track_arc_yaw_rate_kp').value
+            ),
+            arc_terminal_yaw_rate_rps=float(
+                self.get_parameter('track_arc_terminal_yaw_rate_rps').value
+            ),
+            arc_terminal_angle_deg=float(
+                self.get_parameter('track_arc_terminal_angle_deg').value
+            ),
+            arc_terminal_min_speed_mps=float(
+                self.get_parameter('track_arc_terminal_min_speed_mps').value
+            ),
             vision_lateral_scale_m=float(self.get_parameter('track_vision_lateral_scale_m').value),
             vision_lateral_weight=float(self.get_parameter('track_vision_lateral_weight').value),
             vision_correction_max_angular=float(
@@ -381,6 +403,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             ),
             vision_heading_gain=float(self.get_parameter('track_vision_heading_gain').value),
             vision_confirm_frames=int(self.get_parameter('track_vision_confirm_frames').value),
+            vision_max_age_sec=float(self.get_parameter('track_vision_max_age_sec').value),
             vision_max_frame_delta=float(self.get_parameter('track_vision_max_frame_delta').value),
             vision_opposition_threshold=float(
                 self.get_parameter('track_vision_opposition_threshold').value
@@ -528,12 +551,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._telemetry_interval_sec = max(
             0.05, float(self.get_parameter('session_telemetry_interval_sec').value)
         )
-        self._session_log = SessionFileLog(
-            subdir,
-            filename,
-            session_title='direct inertial test session',
-            workspace_root=os.path.expanduser('~/dev_ws'),
-        )
+        self._session_log_subdir = subdir
+        self._session_log_filename = filename
+        self._session_log = None
         self._last_telemetry_sec = 0.0
         self._last_wait_log_sec = 0.0
         self._wheel_warmup_logged = False
@@ -552,6 +572,16 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._control_gap_stop_sec = max(
             self._control_gap_warn_sec,
             float(self.get_parameter('control_gap_stop_sec').value),
+        )
+    def _start_session_log(self) -> None:
+        """Create the Stage2 log only after this node enters phase 2."""
+        if self._session_log is not None:
+            return
+        self._session_log = SessionFileLog(
+            self._session_log_subdir,
+            self._session_log_filename,
+            session_title='Stage2 competition navigator',
+            workspace_root=os.path.expanduser('~/dev_ws'),
         )
         self.get_logger().info(
             f'{self.test_feedback_prefix}会话日志: {self._session_log.path}'
@@ -673,12 +703,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         # self.current_yaw = self.current_wheel_yaw  # 注释掉，改用 IMU yaw
 
     def imu_callback(self, msg):
-        self.imu_yaw = self.quaternion_to_yaw(msg.orientation)
         self.current_imu_yaw_rate = float(msg.angular_velocity.z)
-        # 航向角始终使用 IMU，不管位置源是什么
-        self.current_yaw = self.imu_yaw
-        if self.waiting_for_phase2_start:
-            self.try_start_mission()
+        # The base callback owns raw IMU capture, Stage1 map-yaw calibration,
+        # and mission-start evaluation.  Keep this override for yaw-rate only.
+        super().imu_callback(msg)
+        self.imu_yaw = self.current_raw_imu_yaw
 
     def _fmt_num(self, value, prec=3):
         if value is None:
@@ -1251,7 +1280,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             f'direction={self.direction} local=(0.000,0.000) '
             f'odom_combined=({self._last_ekf_position[0]:.3f},'
             f'{self._last_ekf_position[1]:.3f}) '
-            f'yaw_imu={math.degrees(self.current_yaw):.1f}',
+            f'yaw_map_imu={math.degrees(self.current_yaw):.1f} '
+            f'raw_imu={math.degrees(self.current_raw_imu_yaw):.1f} '
+            f'imu_map_offset={math.degrees(self.imu_map_yaw_offset_rad):+.1f}',
         )
         self.publish_feedback(
             f'{self.test_feedback_prefix}圆角轨迹闭环启动，方向: {self.direction_text()}'
@@ -1304,6 +1335,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 'entry_medium', 'top_long', 'exit_medium', 'stage3_handoff_line'
             )
             avoid_command = None
+            was_straight_avoiding = self._straight_avoider.is_active
             if active_is_line and (
                     self._straight_avoider.is_active or not self._turn_precheck_active()):
                 avoid_command = self._straight_avoider.step(
@@ -1330,6 +1362,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                     f'obstacle={self._straight_avoid_obstacle}',
                 )
                 return
+            if was_straight_avoiding and not self._straight_avoider.is_active:
+                self._straight_obstacle_gate.start_cooldown(time.monotonic())
+                self._log_session(
+                    'STRAIGHT_AVOID_DONE',
+                    f'cooldown={float(self.get_parameter("stage2_straight_avoid_cooldown_sec").value):.2f}s',
+                )
             track_map_xy = self._track_map_position()
             previous_segment = self._track_controller.active_segment_name
             if (
@@ -1361,7 +1399,15 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                     f'valid={bool(visual.get("valid", False))} '
                     f'confidence={float(visual.get("confidence", 0.0) or 0.0):.2f} '
                     f'boundary_ahead={bool(visual.get("boundary_ahead", False))} '
-                    f'top_y={float(visual.get("boundary_top_y_ratio", 0.0) or 0.0):.3f} '
+                    f'boundary_pos=(top_y={float(visual.get("boundary_top_y_ratio", 0.0) or 0.0):.3f},'
+                    f'px={int(visual.get("boundary_top_y_px", -1))}/'
+                    f'{int(visual.get("boundary_mask_height_px", 0))},'
+                    f'far={float(visual.get("boundary_far_ratio", 0.0) or 0.0):.3f},'
+                    f'mid={float(visual.get("boundary_mid_ratio", 0.0) or 0.0):.3f},'
+                    f'near={float(visual.get("boundary_near_ratio", 0.0) or 0.0):.3f},'
+                    f'left={float(visual.get("left_ratio", 0.0) or 0.0):.3f},'
+                    f'right={float(visual.get("right_ratio", 0.0) or 0.0):.3f}) '
+                    f'distance_ratio={float(visual.get("boundary_distance_ratio", 0.0) or 0.0):.3f} '
                     f'angle={float(visual.get("boundary_angle_deg", 90.0) or 90.0):.1f}'
                     if visual is not None else 'unavailable'
                 )
@@ -1396,6 +1442,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             f'seg_s={command.segment_progress_m:.3f}/{command.segment_target_m:.3f} '
             f'turn={math.degrees(command.turn_progress_rad):.1f}/'
             f'{math.degrees(command.turn_target_rad):.1f} '
+            f'arc_ref={math.degrees(command.arc_reference_yaw_rad):.1f} '
+            f'arc_final_err={math.degrees(command.arc_final_heading_error_rad):+.1f} '
+            f'arc_parts=(base={command.arc_base_angular:+.3f},'
+            f'damping={command.arc_damping_angular:+.3f},'
+            f'taper={command.arc_taper_scale:.2f},'
+            f'done={command.arc_completion_reason or "pending"}) '
             f'angular_parts=(head={command.line_heading_angular:+.3f},'
             f'vision={command.vision_angular:+.3f},'
             f'damping={command.yaw_rate_damping_angular:+.3f}) '
@@ -1686,12 +1738,33 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         avoid_half_y = float(
             self.get_parameter('stage2_straight_avoid_window_half_width_m').value
         )
+        active_segment = getattr(self._track_controller, 'active_segment_name', None)
+        observation_allowed = (
+            active_segment in ('entry_medium', 'top_long', 'exit_medium', 'stage3_handoff_line')
+            and not self._straight_avoider.is_active
+            and not self._turn_precheck_active()
+        )
         straight_obstacle = self._nearest_stage1_style_cluster(
             msg, avoid_min_x, avoid_max_x, -avoid_half_y, avoid_half_y
+        ) if observation_allowed else None
+        raw_straight_obstacle = self._straight_avoidance_start_obstacle(straight_obstacle)
+        self._straight_avoid_obstacle = self._straight_obstacle_gate.update(
+            raw_straight_obstacle, time.monotonic()
         )
-        self._straight_avoid_obstacle = self._straight_avoidance_start_obstacle(
-            straight_obstacle
-        )
+        gate_state = self._straight_obstacle_gate.state
+        if gate_state != self._straight_avoid_gate_last_state:
+            self._straight_avoid_gate_last_state = gate_state
+            obstacle_text = 'none' if raw_straight_obstacle is None else (
+                f'x={raw_straight_obstacle["center_x"]:.2f} '
+                f'y={raw_straight_obstacle["center_y"]:.2f} '
+                f'lat_span={raw_straight_obstacle.get("lateral_span", 0.0):.2f}'
+            )
+            self._log_session(
+                'STRAIGHT_AVOID_GATE',
+                f'state={gate_state} hits={self._straight_obstacle_gate.hit_count}/'
+                f'{int(self.get_parameter("stage2_straight_avoid_confirm_frames").value)} '
+                f'candidate={obstacle_text}',
+            )
         self._straight_avoid_corridor = self._straight_avoidance_corridor(msg)
 
         front_max_x = float(self.get_parameter('stage2_turn_precheck_front_m').value)
@@ -1738,7 +1811,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         return {'left': min(left_edges), 'right': max(right_edges)}
 
     def _straight_avoidance_start_obstacle(self, obstacle):
-        """Reject fence returns outside the forward cone; plans validate both sides."""
+        """Reject side-edge returns before temporal confirmation and planning."""
         if obstacle is None or self._straight_avoider.is_active:
             return obstacle
 
@@ -1747,6 +1820,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         )
         obstacle_angle_deg = float(obstacle['danger_angle_deg'])
         if abs(obstacle_angle_deg) > front_limit_deg:
+            return None
+
+        min_lateral_span = float(self.get_parameter(
+            'stage2_straight_avoid_min_lateral_span_m').value)
+        if float(obstacle.get('lateral_span', 0.0)) < min_lateral_span:
             return None
 
         return obstacle
@@ -2279,6 +2357,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 if self.use_test_direction_fallback:
                     self.phase = 2
                     self.phase_initialized = True
+                    self._start_session_log()
                     self.waiting_for_phase2_start = True
                     self.start_after_time = None
                     self.reported_start_delay = False
@@ -2312,6 +2391,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 
         # 仅在真正切到 phase=2 时武装启动
         if previous_phase != 2 and self.phase == 2:
+            self._start_session_log()
             self.waiting_for_phase2_start = True
             self.start_after_time = None
             self.reported_start_delay = False

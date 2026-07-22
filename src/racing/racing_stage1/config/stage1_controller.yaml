@@ -6,7 +6,7 @@
 #   2. 激光聚类避障（4状态：forward → avoiding → countersteering → recovering）
 #   3. 二维码识别触发后退
 #   4. 路径记录与后退（backing along recorded path）
-#   5. 地图自由空间区域进入（corridor navigation with A* planning）
+#   5. 实测中心线快速通道导航（激光避障后回归中心线）
 # ================================================================================
 
 competition_controller:
@@ -33,12 +33,15 @@ competition_controller:
 
     # 初始静止时的赛场 map 航向 (°)。首帧原始 IMU yaw 映射到该值，
     # 后续仅叠加 IMU 的相对转角，供 Stage1 全部状态使用。
+    # Stage1 和总启动会由此派生 map_to_odom_yaw，二者必须一致。
     imu_initial_map_yaw_deg: 10.0
+    # 发布给 Stage2 的 latched IMU->map 航向零点映射；Stage2 必须继承此值。
+    imu_map_yaw_offset_topic: imu_map_yaw_offset
 
     # 里程计话题（EKF 融合后的位姿，用于路径记录和后退）
     odom_topic: /odom_combined
 
-    # 地图话题（栅格地图，用于 A* 规划）
+    # 地图话题（保留给可选 A* 降级规划）
     map_topic: /map
 
     # 二维码识别结果话题（触发后退与通道导航）
@@ -70,7 +73,7 @@ competition_controller:
     odom_frame: odom_combined
 
     # map -> odom_combined 静态变换平移 (m)。由 Stage1/总启动读取后发布 TF。
-    map_to_odom_x: 0.37
+    map_to_odom_x: 0.25
     map_to_odom_y: 0.15
 
     # ────────────────────────────────────────────────────────────────────────
@@ -86,6 +89,12 @@ competition_controller:
 
     # 盲开线速度 (m/s) — Phase1 初始前进速度
     blind_linear_speed: 0.50
+
+    # 二维码接近区减速起点（/odom_combined X，m）。超过该值时使用下方速度。
+    blind_qr_slowdown_start_x_m: 1.5
+
+    # 二维码接近区盲开线速度 (m/s)，降低运动模糊。
+    blind_qr_slowdown_linear_speed: 0.4
 
     # 盲开角速度 (rad/s) — 通常为 0（直行）
     blind_angular_speed: 0.0
@@ -135,7 +144,7 @@ competition_controller:
     avoid_linear_speed: 0.3
 
     # 避障角速度 (rad/s)
-    avoid_angular_speed: 1.5
+    avoid_angular_speed: 0.8
 
     # 有效障碍物中心位于车体左前方且角度不小于此值时，首次避障改为右转；
     # 通道导航的局部安全回退也使用此阈值。ROS base 坐标中，正角为左侧。
@@ -277,9 +286,13 @@ competition_controller:
 
     # --- 通道路点 (Waypoints in map frame) ---
     # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
-    # 按数组顺序逐点跟踪：先贴 x=2.50 再收 y，避免单点 LOS 中段漂移。
-    # 雷达避障恢复后也会继续追踪当前路点，不会跳过中继点直冲终点。
-    corridor_waypoints_json: '[{"x":2.50,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.50,"y":2.55,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    # 按数组顺序逐点跟踪；用于中继点推进与最终交接判据。
+    corridor_waypoints_json: '[{"x":2.60,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.60,"y":2.55,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
+
+    # 使用实车测得的快速中心线。正常行驶及激光避障恢复均沿该线跟踪，
+    # 不因局部偏差反复运行全局 A*；障碍避让仍由既有激光状态机接管。
+    corridor_reference_path_enabled: true
+    corridor_reference_path_json: '[{"x":2.18,"y":0.72},{"x":2.38,"y":0.96},{"x":2.45,"y":1.20},{"x":2.60,"y":1.75},{"x":2.60,"y":2.20},{"x":2.60,"y":2.55}]'
 
     # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
     corridor_waypoint_tolerance: 0.25
@@ -303,6 +316,14 @@ competition_controller:
     # 终端逼近持续到该门线，防止目标前提前交权
     corridor_release_min_y_m: 2.50
 
+    # 交权只允许在门线后的有限窗口内发生；超过该 Y 说明避障或回正已越点，
+    # 必须倒回 staging 区重新捕获，禁止高位直接进入 Stage2。
+    corridor_release_max_y_m: 2.62
+    # 退回到最后一个中心线中继点之前，使 (2.50, 2.20) 重新成为前方目标，
+    # 给避障后的横向恢复预留足够距离。
+    corridor_reacquire_y_m: 2.05
+    corridor_reacquire_reverse_speed: -0.12
+
     # 旧版进入区域航向容差 (°) — 仅 terminal_enabled=false 时使用
     corridor_entry_yaw_tolerance_deg: 15.0
 
@@ -310,11 +331,15 @@ competition_controller:
     corridor_require_yaw_for_release: false
 
     # --- 终端逼近 (Terminal Approach) ---
-    # 近 Y 门线且 X 已进入预留带时锁存；锁存后停止重规划，先回正航向再微调 X
+    # 近 Y 门线且 X 已进入捕获带时锁存；锁存后先回正航向再微调至最终 X 窗口
     corridor_terminal_enabled: true
 
     # Stage2 交权所需的最终横向 X 误差容差 (m)
     corridor_terminal_x_tolerance_m: 0.06
+
+    # 只有横向误差已收敛到该捕获带才进入终端微调。更大的误差必须在
+    # staging 到门线之间沿参考中心线修正，避免终端正向微调越过 Y 窗口。
+    corridor_terminal_entry_x_tolerance_m: 0.10
 
     # 终端锁存后若 X 再偏离该值，才退出回 Pure Pursuit；必须大于最终 X 容差以避免抖动
     corridor_terminal_x_exit_tolerance_m: 0.28
@@ -326,7 +351,7 @@ competition_controller:
     corridor_terminal_release_yaw_tolerance_deg: 10.0
 
     # 终端逼近固定正线速度 (m/s)，正常导航中绝不为 0
-    corridor_terminal_linear_speed: 0.20
+    corridor_terminal_linear_speed: 0.16
 
     # 距离 Y 门线该距离以内，若仍未进入最终 X 容差才开启微小横向修正 (m)
     corridor_terminal_micro_start_y_margin_m: 0.18
@@ -345,6 +370,15 @@ competition_controller:
 
     # 最后一小段 X 微调的角速度绝对上限 (rad/s)
     corridor_terminal_micro_max_angular_speed: 0.12
+
+    # 终端逼近角速度每秒最大变化量 (rad/s²)，限制左右反打
+    corridor_terminal_angular_slew_rate_rad_s2: 0.25
+
+    # 仅用于终端横向闭环的 X 误差低通时间常数 (s)；交权判据仍使用原始 map X
+    corridor_terminal_x_filter_tau_sec: 0.20
+
+    # 终端横向修正反向前的 X 误差滞回带 (m)，抑制目标线附近的来回换向
+    corridor_terminal_x_reverse_hysteresis_m: 0.015
 
     # 最后路点进入 Y 门线前的预对正距离 (m)。在仍正向行驶时同时收敛 IMU 航向。
     corridor_terminal_prealign_y_margin_m: 0.50
@@ -373,8 +407,8 @@ competition_controller:
     corridor_path_follow_mode: pure_pursuit
 
     # --- 速度参数 (Speed Control) ---
-    # 通道巡航速度 (m/s)
-    corridor_linear_speed: 0.20
+    # 通道巡航速度 (m/s)：中心线模式无障碍时的高速上限
+    corridor_linear_speed: 0.48
 
     # 转弯线速度 (m/s) — 大角度转向时的前进速度
     turn_linear_speed: 0.12
@@ -530,7 +564,7 @@ competition_controller:
 
     # Stage1 盲开右转区域（map 坐标系）
     blind_right_turn_x: 3.5
-    blind_right_turn_y: 1.5
+    blind_right_turn_y: 1.2
     blind_right_turn_angular: 0.70
     blind_right_turn_linear: 0.08
 
@@ -553,7 +587,7 @@ competition_controller:
     # Phase3 外部控制 — true: Phase3 由 Stage3 节点控制，Stage1 不发指令
     phase3_external_control: true
 
-    # Phase3 紧急停车距离 (m)
+    # 已废弃：Phase3 近障倒车和重新避障由 Stage3 完整控制，Stage1 只仲裁其速度指令。
     phase3_emergency_stop_distance: 0.22
 
     # ────────────────────────────────────────────────────────────────────────

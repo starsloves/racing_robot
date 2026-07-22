@@ -192,6 +192,8 @@ class ScanProcessor:
                 'center_x': center_x,
                 'center_y': center_y,
                 'span': span,
+                'lateral_span': max(point[1] for point in cluster)
+                - min(point[1] for point in cluster),
                 'danger_angle_deg': math.degrees(math.atan2(center_y, max(center_x, 1e-6))),
             }
             if nearest is None or candidate['distance'] < nearest['distance']:

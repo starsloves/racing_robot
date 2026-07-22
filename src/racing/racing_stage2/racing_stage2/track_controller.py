@@ -6,7 +6,7 @@ condition, so an observation from one side of the rectangle cannot advance a
 different side or corner.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import List, Optional, Tuple
 
@@ -50,6 +50,12 @@ class TrackCommand:
     line_heading_angular: float = 0.0
     vision_angular: float = 0.0
     yaw_rate_damping_angular: float = 0.0
+    arc_reference_yaw_rad: float = 0.0
+    arc_final_heading_error_rad: float = 0.0
+    arc_base_angular: float = 0.0
+    arc_damping_angular: float = 0.0
+    arc_taper_scale: float = 0.0
+    arc_completion_reason: str = ''
 
 
 class ImuDistancePose:
@@ -141,6 +147,7 @@ class _ActiveSegment:
     start_position: Tuple[float, float]
     start_heading: float
     last_yaw: Optional[float] = None
+    arc_entry_yaw: Optional[float] = None
     turn_progress_rad: float = 0.0
 
 
@@ -178,13 +185,13 @@ class Stage2TrackController:
                  top_boundary_max_angle_deg: float = 20.0,
                  top_boundary_confirm_frames: int = 3,
                  side_arc_vision_enabled: bool = True,
+                 side_arc_vision_trigger_lead_m: float = 0.002,
+                 side_arc_vision_trigger_speed_mps: float = 0.45,
                  turn_force_map_x_enabled: bool = False,
                  turn_force_min_map_x: float = 0.50,
                  turn_force_max_map_x: float = 4.00,
                  top_long_distance_m: float = 2.59,
                  exit_medium_distance_m: float = 1.49,
-                 entry_tolerance_deg: float = 3.0,
-                 settle_sec: float = 0.25,
                  entry_heading_kp: float = 1.6,
                  yaw_rate_damping: float = 0.45,
                  entry_yaw_rate_tolerance: float = 0.10,
@@ -192,14 +199,12 @@ class Stage2TrackController:
                  entry_align_error_tolerance: float = 0.08,
                  entry_align_hold_sec: float = 0.20,
                  entry_align_visual_kp: float = 0.55,
-                 arc_min_completion_ratio: float = 0.70,
-                 arc_finish_predict_sec: float = 0.18,
-                 arc_mismatch_angle_deg: float = 14.0,
-                 entry_stop_prepare_deg: float = 0.0,
-                 entry_arc_complete_lead_deg: float = 0.0,
-                 exit_turn_arc_complete_lead_deg: float = 0.0,
-                 corner_arc_complete_lead_deg: float = 0.0,
                  corner_radius: float = 0.40,
+                 arc_yaw_decel_rps2: float = 2.0,
+                 arc_yaw_rate_kp: float = 0.60,
+                 arc_terminal_yaw_rate_rps: float = 0.15,
+                 arc_terminal_angle_deg: float = 0.75,
+                 arc_terminal_min_speed_mps: float = 0.08,
                  vision_lateral_scale_m: float = 0.30,
                  vision_lateral_weight: float = 0.35,
                  vision_correction_max_angular: float = 0.10,
@@ -207,6 +212,7 @@ class Stage2TrackController:
                  vision_lateral_release_deadband: float = 0.035,
                  vision_heading_gain: float = 0.22,
                  vision_confirm_frames: int = 3,
+                 vision_max_age_sec: float = 0.60,
                  vision_max_frame_delta: float = 0.25,
                  vision_opposition_threshold: float = 0.08,
                  vision_camera_offset: float = 0.0,
@@ -214,7 +220,7 @@ class Stage2TrackController:
                  lookahead_m: float = 0.45,
                  heading_slowdown_deg: float = 10.0,
                  finish_tolerance_m: float = 0.10):
-        del max_lateral_accel, curvature_kp, entry_min_linear, settle_sec, lookahead_m, finish_tolerance_m
+        del max_lateral_accel, curvature_kp, entry_min_linear, lookahead_m, finish_tolerance_m
         self.max_speed = max(0.01, max_speed)
         self.corner_speed = max(0.02, corner_speed)
         self.heading_kp = max(0.1, stanley_heading_kp)
@@ -240,6 +246,8 @@ class Stage2TrackController:
         self.top_boundary_max_angle_deg = max(0.0, min(90.0, top_boundary_max_angle_deg))
         self.top_boundary_confirm_target = max(1, int(top_boundary_confirm_frames))
         self.side_arc_vision_enabled = bool(side_arc_vision_enabled)
+        self.side_arc_vision_trigger_lead = max(0.0, side_arc_vision_trigger_lead_m)
+        self.side_arc_vision_trigger_speed = max(0.01, side_arc_vision_trigger_speed_mps)
         self.turn_force_map_x_enabled = bool(turn_force_map_x_enabled)
         self.turn_force_min_map_x = float(turn_force_min_map_x)
         self.turn_force_max_map_x = float(turn_force_max_map_x)
@@ -250,8 +258,13 @@ class Stage2TrackController:
         self.top_long_distance = max(0.20, top_long_distance_m)
         self.exit_medium_distance = max(0.05, exit_medium_distance_m)
         self.corner_radius = max(0.05, corner_radius)
-        self.entry_tolerance = math.radians(max(0.5, entry_tolerance_deg))
-        self.angle_tolerance = self.entry_tolerance
+        self.arc_yaw_decel = max(0.10, arc_yaw_decel_rps2)
+        self.arc_yaw_rate_kp = max(0.0, min(2.0, arc_yaw_rate_kp))
+        self.arc_terminal_yaw_rate = max(0.01, arc_terminal_yaw_rate_rps)
+        self.arc_terminal_angle = math.radians(
+            max(0.1, min(5.0, arc_terminal_angle_deg))
+        )
+        self.arc_terminal_min_speed = max(0.02, arc_terminal_min_speed_mps)
         self.heading_slowdown = math.radians(max(1.0, heading_slowdown_deg))
         self.entry_heading_kp = max(0.1, entry_heading_kp)
         self.yaw_rate_damping = max(0.0, yaw_rate_damping)
@@ -260,15 +273,6 @@ class Stage2TrackController:
         self.entry_align_error_tolerance = max(0.01, entry_align_error_tolerance)
         self.entry_align_hold_sec = max(0.0, entry_align_hold_sec)
         self.entry_align_visual_kp = max(0.05, entry_align_visual_kp)
-        self.arc_min_completion_ratio = max(0.35, min(1.0, arc_min_completion_ratio))
-        self.arc_finish_predict_sec = max(0.0, min(0.50, arc_finish_predict_sec))
-        self.arc_mismatch_angle = math.radians(max(3.0, arc_mismatch_angle_deg))
-        self.entry_stop_prepare = math.radians(max(0.0, min(60.0, entry_stop_prepare_deg)))
-        self.entry_arc_complete_lead = math.radians(max(0.0, min(60.0, entry_arc_complete_lead_deg)))
-        self.exit_turn_arc_complete_lead = math.radians(
-            max(0.0, min(60.0, exit_turn_arc_complete_lead_deg))
-        )
-        self.corner_arc_complete_lead = math.radians(max(0.0, min(90.0, corner_arc_complete_lead_deg)))
         self.vision_lateral_scale_m = max(0.0, vision_lateral_scale_m)
         self.vision_lateral_weight = max(0.0, min(1.0, vision_lateral_weight))
         self.vision_correction_max_angular = min(
@@ -280,6 +284,7 @@ class Stage2TrackController:
         )
         self.vision_heading_gain = max(0.0, vision_heading_gain)
         self.vision_confirm_frames = max(1, int(vision_confirm_frames))
+        self.vision_max_age_sec = max(0.05, min(2.0, vision_max_age_sec))
         self.vision_max_frame_delta = max(0.01, min(1.0, vision_max_frame_delta))
         self.vision_opposition_threshold = max(0.0, min(1.0, vision_opposition_threshold))
         self.vision_camera_offset = max(-0.50, min(0.50, vision_camera_offset))
@@ -381,7 +386,9 @@ class Stage2TrackController:
             self._active = None
             return False
         next_spec = self._specs[self._index]
-        if finished.name == 'entry_arc':
+        if heading_override is not None:
+            heading = wrap_angle(heading_override)
+        elif finished.name == 'entry_arc':
             heading = self._entry_heading
             self.state = self.ALIGN if next_spec.kind == 'ALIGN' else self.TRACK
         elif finished.kind == 'ALIGN':
@@ -413,7 +420,7 @@ class Stage2TrackController:
         """
         fresh = (
             bool(visual and visual.get('valid', False))
-            and float(visual.get('age', 999.0) or 999.0) <= 0.20
+            and float(visual.get('age', 999.0) or 999.0) <= self.vision_max_age_sec
             and float(visual.get('confidence', 0.0) or 0.0) >= 0.35
         )
         if not fresh:
@@ -473,7 +480,10 @@ class Stage2TrackController:
     def _command(self, linear=0.0, angular=0.0, *, active: Optional[_ActiveSegment] = None,
                  distance=0.0, cross=0.0, heading_error=0.0, complete=False,
                  safe_stop=False, reason='', turn=0.0, line_heading_angular=0.0,
-                 vision_angular=0.0, yaw_rate_damping_angular=0.0):
+                 vision_angular=0.0, yaw_rate_damping_angular=0.0,
+                 arc_reference_yaw=0.0, arc_final_heading_error=0.0,
+                 arc_base_angular=0.0, arc_damping_angular=0.0,
+                 arc_taper_scale=0.0, arc_completion_reason=''):
         spec = active.spec if active is not None else None
         progress = max(0.0, distance - active.start_distance) if active is not None else 0.0
         return TrackCommand(linear, angular, self.state, distance, cross, heading_error, linear,
@@ -487,7 +497,13 @@ class Stage2TrackController:
                             self._entry_boundary_confirmed_frames,
                             line_heading_angular,
                             vision_angular,
-                            yaw_rate_damping_angular)
+                            yaw_rate_damping_angular,
+                            arc_reference_yaw,
+                            arc_final_heading_error,
+                            arc_base_angular,
+                            arc_damping_angular,
+                            arc_taper_scale,
+                            arc_completion_reason)
 
     def _boundary_ready(self, segment: str, progress: float, visual: Optional[dict],
                         map_x: Optional[float]) -> bool:
@@ -516,6 +532,8 @@ class Stage2TrackController:
         )
         guard_min = max(0.0, nominal_distance - guard_half_width)
         guard_max = nominal_distance + guard_half_width
+        vision_gate_min = max(0.0, nominal_distance - self.side_arc_vision_trigger_lead)
+        vision_gate_max = nominal_distance
         self._entry_boundary_top_y = float((visual or {}).get('boundary_top_y_ratio', 0.0) or 0.0)
         boundary_angle = (visual or {}).get('boundary_angle_deg')
         self._entry_boundary_angle_deg = (
@@ -555,9 +573,18 @@ class Stage2TrackController:
             self._entry_boundary_trigger = 'distance_nominal'
             return progress >= nominal_distance - self.distance_tolerance
 
-        if progress < guard_min:
-            self._entry_boundary_trigger = 'below_guard_min'
+        # Boundary SEG may turn only in the configured pre-corner gate.  Map
+        # x and TF-loss fallbacks above remain independent safety exits.
+        if progress < vision_gate_min:
+            self._entry_boundary_trigger = 'before_vision_trigger_gate'
             self._entry_boundary_confirmed_frames = 0
+            return False
+        if progress > vision_gate_max:
+            self._entry_boundary_trigger = 'after_vision_trigger_gate'
+            self._entry_boundary_confirmed_frames = 0
+            if map_x is None and progress >= guard_max - 1e-6:
+                self._entry_boundary_trigger = 'distance_fallback_no_map_tf'
+                return True
             return False
 
         visual_ready = (
@@ -599,6 +626,19 @@ class Stage2TrackController:
         angular = self._clamp_angular(heading_angular + visual_angular + damping_angular)
         progress = distance - active.start_distance
         if active.spec.name in ('entry_medium', 'top_long'):
+            is_entry = active.spec.name == 'entry_medium'
+            trigger_enabled = (
+                self.entry_boundary_trigger_enabled if is_entry
+                else self.top_boundary_trigger_enabled
+            )
+            nominal_distance = self.entry_medium_distance if is_entry else self.top_long_distance
+            vision_gate_min = max(0.0, nominal_distance - self.side_arc_vision_trigger_lead)
+            if (
+                self.side_arc_vision_enabled
+                and trigger_enabled
+                and progress >= vision_gate_min
+            ):
+                speed = min(speed, self.side_arc_vision_trigger_speed)
             ready_for_corner = self._boundary_ready(active.spec.name, progress, visual, map_x)
         else:
             ready_for_corner = progress >= active.spec.target_m - self.distance_tolerance
@@ -615,30 +655,83 @@ class Stage2TrackController:
     def _arc_command(self, active, position, yaw, yaw_rate, distance, visual, now):
         turn_sign = 1.0 if active.spec.turn_rad > 0.0 else -1.0
         if active.last_yaw is None:
-            active.last_yaw = active.start_heading
+            # Each arc is measured from the actual IMU heading at its entry.
+            # This makes every 90/180 degree target an explicit full turn,
+            # independent of residual heading error from the preceding line.
+            active.last_yaw = yaw
+            active.arc_entry_yaw = active.last_yaw
         active.turn_progress_rad += turn_sign * wrap_angle(yaw - active.last_yaw)
         active.last_yaw = yaw
         signed_turn = active.turn_progress_rad
         target_turn = abs(active.spec.turn_rad)
-        angular = self._clamp_angular(
-            turn_sign * (self.entry_angular if active.spec.name == 'entry_arc' else self.corner_angular),
-            entry=active.spec.name == 'entry_arc'
-        )
         progress = distance - active.start_distance
-        signed_rate = turn_sign * float(yaw_rate or 0.0)
-        if active.spec.name == 'entry_arc':
-            lead = self.entry_arc_complete_lead
-        elif active.spec.name == 'exit_turn_90':
-            lead = self.exit_turn_arc_complete_lead
+        radius = self.corner_radius if active.spec.name in (
+            'left_side_arc', 'right_side_arc'
+        ) else self.entry_radius
+        angular_limit = self.corner_angular if active.spec.name in (
+            'left_side_arc', 'right_side_arc'
+        ) else self.entry_angular
+        cruise_rate = min(angular_limit, active.spec.speed_mps / radius)
+        final_yaw = wrap_angle(
+            (active.arc_entry_yaw if active.arc_entry_yaw is not None else yaw)
+            + turn_sign * target_turn
+        )
+        final_error = target_turn - signed_turn
+        signed_yaw_rate = turn_sign * float(yaw_rate or 0.0)
+
+        # Follow a full geometric arc while using the IMU yaw rate to stop at
+        # its endpoint.  sqrt(2*a*remaining) is the largest rate that can be
+        # reduced to zero over the remaining angle; unlike a fixed lead angle,
+        # the braking point therefore changes with the actual turn rate.
+        if final_error > 0.0:
+            desired_rate = min(
+                cruise_rate,
+                math.sqrt(2.0 * self.arc_yaw_decel * final_error),
+            )
         else:
-            lead = self.corner_arc_complete_lead
-        angle_ready = signed_turn >= target_turn - max(self.angle_tolerance, lead)
-        if angle_ready:
+            # Overshoot stays in the same arc controller and is corrected at
+            # low speed, rather than asking the following straight to undo it.
+            desired_rate = max(-0.50 * cruise_rate,
+                               min(0.0, 2.0 * final_error))
+        commanded_rate = desired_rate + self.arc_yaw_rate_kp * (
+            desired_rate - signed_yaw_rate
+        )
+        commanded_rate = max(-angular_limit, min(angular_limit, commanded_rate))
+        base_angular = turn_sign * commanded_rate
+        taper_scale = min(1.0, abs(commanded_rate) / max(cruise_rate, 1e-6))
+        linear_speed = min(active.spec.speed_mps, radius * abs(commanded_rate))
+        if abs(commanded_rate) > 1e-3:
+            linear_speed = max(self.arc_terminal_min_speed, linear_speed)
+
+        # Do not hand over a still-rotating chassis.  The small tolerance is
+        # solely the IMU sampling resolution, not an advance turn margin.
+        complete_ready = (
+            progress >= active.spec.target_m - self.distance_tolerance
+            and abs(final_error) <= self.arc_terminal_angle
+            and abs(signed_yaw_rate) <= self.arc_terminal_yaw_rate
+        )
+        if complete_ready:
             if self._activate_next(position, distance):
-                return self._step_active(position, yaw, yaw_rate, distance, visual, now)
-            return self._command(complete=True)
-        return self._command(active.spec.speed_mps, angular, active=active, distance=distance,
-                             heading_error=target_turn - signed_turn, turn=signed_turn)
+                next_command = self._step_active(position, yaw, yaw_rate, distance, visual, now)
+                return replace(
+                    next_command,
+                    arc_reference_yaw_rad=final_yaw,
+                    arc_final_heading_error_rad=final_error,
+                    arc_base_angular=base_angular,
+                    arc_damping_angular=base_angular - turn_sign * desired_rate,
+                    arc_taper_scale=taper_scale,
+                    arc_completion_reason='full_arc_settled',
+                )
+            return self._command(complete=True, arc_completion_reason='full_arc_settled')
+        return self._command(
+            linear_speed, base_angular, active=active, distance=distance,
+            heading_error=final_error, turn=signed_turn,
+            arc_reference_yaw=final_yaw,
+            arc_final_heading_error=final_error,
+            arc_base_angular=base_angular,
+            arc_damping_angular=base_angular - turn_sign * desired_rate,
+            arc_taper_scale=taper_scale,
+        )
 
     def _align_command(self, active, position, yaw, yaw_rate, distance, visual, now):
         progress = distance - active.start_distance

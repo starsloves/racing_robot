@@ -354,7 +354,6 @@ class InitialScanMapLocalizer(Node):
             angle += 2.0 * math.pi
         return angle
 
-
 def main(args=None):
     rclpy.init(args=args)
     node = InitialScanMapLocalizer()

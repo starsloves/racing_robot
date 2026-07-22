@@ -1,6 +1,7 @@
 import os
 import time
 import fcntl
+import threading
 
 import cv2
 import rclpy
@@ -23,19 +24,15 @@ class QRScannerNode(Node):
         self.declare_parameter('odom_topic', '/odom_combined')
         self.declare_parameter('scan_task_phase', 1)
         self.declare_parameter('scan_start_x_m', 1.0)
-        self.declare_parameter('scan_rate_hz', 4.0)
         self.declare_parameter('crop_top_ratio', 0.25)
         self.declare_parameter('crop_top_px', 80)
         self.declare_parameter('upscale_factor', 1.0)
         self.declare_parameter('detection_order', 'crop_only')
-        self.declare_parameter('process_every_frame', True)
         self.declare_parameter('min_publish_interval', 1.0)
         self.declare_parameter('diagnostics_enabled', True)
         self.declare_parameter('diagnostics_interval_sec', 1.0)
         self.declare_parameter('diagnostics_log_subdir', 'competition_stage1')
         self.declare_parameter('diagnostics_log_filename', 'latest.log')
-        self.declare_parameter('backend', 'wechat')
-        self.declare_parameter('allow_backend_fallback', True)
         self.declare_parameter('wechat_detect_prototxt', '')
         self.declare_parameter('wechat_detect_caffemodel', '')
         self.declare_parameter('wechat_sr_prototxt', '')
@@ -48,7 +45,6 @@ class QRScannerNode(Node):
         self.odom_topic = self.get_parameter('odom_topic').value
         self.scan_task_phase = int(self.get_parameter('scan_task_phase').value)
         self.scan_start_x_m = float(self.get_parameter('scan_start_x_m').value)
-        self.scan_rate_hz = float(self.get_parameter('scan_rate_hz').value)
         self.crop_top_ratio = float(self.get_parameter('crop_top_ratio').value)
         self.crop_top_px = int(self.get_parameter('crop_top_px').value)
         self.upscale_factor = max(1.0, float(self.get_parameter('upscale_factor').value))
@@ -58,7 +54,6 @@ class QRScannerNode(Node):
                 f'unsupported detection_order={self.detection_order!r}; using crop_only'
             )
             self.detection_order = 'crop_only'
-        self.process_every_frame = bool(self.get_parameter('process_every_frame').value)
         self.min_publish_interval = float(self.get_parameter('min_publish_interval').value)
         self.diagnostics_enabled = bool(self.get_parameter('diagnostics_enabled').value)
         self.diagnostics_interval_sec = max(
@@ -70,9 +65,6 @@ class QRScannerNode(Node):
         self.diagnostics_log_filename = str(
             self.get_parameter('diagnostics_log_filename').value
         ).strip()
-        self.requested_backend = str(self.get_parameter('backend').value).strip().lower()
-        self.allow_backend_fallback = bool(self.get_parameter('allow_backend_fallback').value)
-
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -100,7 +92,6 @@ class QRScannerNode(Node):
 
         self.bridge = CvBridge()
         self.wechat_detector = None
-        self.opencv_detector = None
         self.active_backend = self.initialize_backend()
         self.publisher_ = self.create_publisher(String, self.result_topic, 10)
         self.phase = self.scan_task_phase
@@ -123,6 +114,9 @@ class QRScannerNode(Node):
         self.diag_last_image_shape = None
         self.diag_last_candidates = []
         self.diag_variant_stats = {}
+        self.frame_lock = threading.Lock()
+        self.frame_event = threading.Event()
+        self.shutdown_event = threading.Event()
 
         self.create_subscription(Int32, self.phase_topic, self.phase_callback, 10)
         self.create_subscription(Odometry, self.odom_topic, self.odom_callback, 10)
@@ -142,23 +136,27 @@ class QRScannerNode(Node):
                 qos,
             )
 
-        if not self.process_every_frame:
-            self.create_timer(1.0 / max(self.scan_rate_hz, 1.0), self.process_latest_frame)
+        self.decode_worker = threading.Thread(
+            target=self.decode_worker_loop,
+            name='qr_decode_worker',
+            daemon=True,
+        )
+        self.decode_worker.start()
 
         image_mode = 'compressed' if self.use_compressed else 'raw'
         self.get_logger().info(
             f'qr scanner ready, topic={self.camera_topic}, mode={image_mode}, result={self.result_topic}, '
             f'backend={self.active_backend}, arm_phase={self.scan_task_phase}, arm_x>{self.scan_start_x_m:.2f}m, '
             f'crop_px={self.crop_top_px}, upscale={self.upscale_factor:.1f}x, '
-            f'order={self.detection_order}, path=wechat_raw, '
-            f'per_frame={self.process_every_frame}'
+            f'order={self.detection_order}, path={self.active_backend}_raw, '
+            'latest_frame_worker=true'
         )
         self.write_diagnostic(
             'ready '
             f'backend={self.active_backend} topic={self.camera_topic} '
             f'arm_x>{self.scan_start_x_m:.2f}m crop_px={self.crop_top_px} '
             f'upscale={self.upscale_factor:.1f}x order={self.detection_order} '
-            f'path=wechat_raw per_frame={self.process_every_frame}'
+            f'path={self.active_backend}_raw latest_frame_worker=true'
         )
 
     def diagnostic_log_path(self):
@@ -252,20 +250,13 @@ class QRScannerNode(Node):
         return candidate if candidate else default_path
 
     def initialize_backend(self):
-        requested = self.requested_backend if self.requested_backend in ('wechat', 'opencv') else 'wechat'
+        detector = self.create_wechat_detector()
+        if detector is None:
+            self.get_logger().error('wechat QR backend unavailable')
+            return 'disabled'
 
-        if requested == 'wechat':
-            detector = self.create_wechat_detector()
-            if detector is not None:
-                self.wechat_detector = detector
-                return 'wechat'
-            if not self.allow_backend_fallback:
-                self.get_logger().error('wechat backend unavailable and fallback disabled')
-                return 'disabled'
-            self.get_logger().warn('wechat backend unavailable, falling back to opencv QRCodeDetector')
-
-        self.opencv_detector = cv2.QRCodeDetector()
-        return 'opencv'
+        self.wechat_detector = detector
+        return 'wechat'
 
     def create_wechat_detector(self):
         if not hasattr(cv2, 'wechat_qrcode_WeChatQRCode'):
@@ -309,7 +300,7 @@ class QRScannerNode(Node):
         if self.phase != self.scan_task_phase:
             self.scan_armed = False
             self.scan_activation_logged = False
-            self.latest_image_msg = None
+            self.clear_latest_frame()
         elif previous_phase != self.phase:
             self.scan_completed = False
             self.scan_activation_logged = False
@@ -323,28 +314,40 @@ class QRScannerNode(Node):
             self.get_logger().info(f'qr scan armed at x={self.current_x:.2f} m')
             self.write_diagnostic(f'armed x={self.current_x:.2f}m phase={self.phase}')
         if not self.scan_armed:
-            self.latest_image_msg = None
+            self.clear_latest_frame()
 
     def compressed_callback(self, msg):
-        if self.scan_armed and self.process_every_frame:
-            self.process_image_msg(msg)
-        elif self.scan_armed:
-            self.latest_image_msg = msg
+        self.enqueue_latest_frame(msg)
 
     def raw_callback(self, msg):
-        if self.scan_armed and self.process_every_frame:
-            self.process_image_msg(msg)
-        elif self.scan_armed:
-            self.latest_image_msg = msg
+        self.enqueue_latest_frame(msg)
 
-    def process_latest_frame(self):
-        if not self.scan_armed or self.latest_image_msg is None:
+    def enqueue_latest_frame(self, image_msg):
+        """Keep only the newest camera frame while a decode is in progress."""
+        if not self.scan_armed:
             return
 
-        image_msg = self.latest_image_msg
-        self.latest_image_msg = None
+        with self.frame_lock:
+            self.latest_image_msg = image_msg
+        self.frame_event.set()
 
-        self.process_image_msg(image_msg)
+    def clear_latest_frame(self):
+        with self.frame_lock:
+            self.latest_image_msg = None
+        self.frame_event.clear()
+
+    def decode_worker_loop(self):
+        while not self.shutdown_event.is_set():
+            if not self.frame_event.wait(timeout=0.2):
+                continue
+
+            self.frame_event.clear()
+            with self.frame_lock:
+                image_msg = self.latest_image_msg
+                self.latest_image_msg = None
+
+            if image_msg is not None:
+                self.process_image_msg(image_msg)
 
     def compute_crop_top(self, image_height):
         if image_height <= 1:
@@ -416,9 +419,11 @@ class QRScannerNode(Node):
         decode_started_at = time.monotonic()
         for candidate_name, detection_image in self.iter_detection_images(gray_image):
             candidate_descriptions = [
-                f'{candidate_name}/wechat_raw:{detection_image.shape[1]}x{detection_image.shape[0]}'
+                f'{candidate_name}:{detection_image.shape[1]}x{detection_image.shape[0]}'
             ]
-            variant_results, variant_ms = self.decode_variant(detection_image)
+            variant_results, variant_ms = self.decode_variant(
+                detection_image
+            )
             self.record_variant_attempt('wechat_raw', variant_ms)
             if variant_results:
                 results = variant_results
@@ -467,37 +472,33 @@ class QRScannerNode(Node):
         return results, (time.monotonic() - started_at) * 1000.0
 
     def detect_and_decode(self, gray_image):
-        if self.active_backend == 'wechat' and self.wechat_detector is not None:
-            try:
-                decoded = self.wechat_detector.detectAndDecode(gray_image)
-            except Exception as exc:
-                self.diag_backend_error_count += 1
-                self.get_logger().warn(f'wechat QR decode failed: {exc}')
-                return []
-
-            if isinstance(decoded, tuple):
-                decoded = decoded[0]
-
-            if isinstance(decoded, str):
-                decoded = [decoded]
-
-            if not isinstance(decoded, (list, tuple)):
-                return []
-
-            return [str(item).strip() for item in decoded if str(item).strip()]
-
-        if self.opencv_detector is None:
+        if self.wechat_detector is None:
             return []
 
         try:
-            decoded, _, _ = self.opencv_detector.detectAndDecode(gray_image)
+            decoded = self.wechat_detector.detectAndDecode(gray_image)
         except Exception as exc:
             self.diag_backend_error_count += 1
-            self.get_logger().warn(f'OpenCV QR decode failed: {exc}')
+            self.get_logger().warn(f'wechat QR decode failed: {exc}')
             return []
 
-        decoded = decoded.strip() if isinstance(decoded, str) else ''
-        return [decoded] if decoded else []
+        if isinstance(decoded, tuple):
+            decoded = decoded[0]
+
+        if isinstance(decoded, str):
+            decoded = [decoded]
+
+        if not isinstance(decoded, (list, tuple)):
+            return []
+
+        return [str(item).strip() for item in decoded if str(item).strip()]
+
+    def destroy_node(self):
+        self.shutdown_event.set()
+        self.frame_event.set()
+        if self.decode_worker.is_alive():
+            self.decode_worker.join(timeout=1.0)
+        super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)

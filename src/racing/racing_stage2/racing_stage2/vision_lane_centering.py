@@ -101,6 +101,8 @@ class VisionLaneCentering:
         self._boundary_near_ratio = 0.0
         self._boundary_coverage_std = 0.0
         self._boundary_top_y_ratio = 0.0
+        self._boundary_top_y_px = -1
+        self._boundary_mask_height_px = 0
         self._front_score = 0.0
         self._straight_score = 0.0
         self._left_ratio = 0.0
@@ -421,6 +423,8 @@ class VisionLaneCentering:
                 'boundary_near_ratio': float(getattr(self, '_boundary_near_ratio', 0.0)),
                 'boundary_coverage_std': float(getattr(self, '_boundary_coverage_std', 0.0)),
                 'boundary_top_y_ratio': float(getattr(self, '_boundary_top_y_ratio', 0.0)),
+                'boundary_top_y_px': int(getattr(self, '_boundary_top_y_px', -1)),
+                'boundary_mask_height_px': int(getattr(self, '_boundary_mask_height_px', 0)),
                 'front_score': float(getattr(self, '_front_score', 0.0)),
                 'straight_score': float(getattr(self, '_straight_score', 0.0)),
                 'left_ratio': float(getattr(self, '_left_ratio', 0.0)),
@@ -920,6 +924,8 @@ class VisionLaneCentering:
             'near_ratio': 0.0,
             'coverage_std': 0.0,
             'top_y_ratio': 0.0,
+            'top_y_px': -1,
+            'mask_height_px': 0,
             'front_score': 0.0,
             'straight_score': 0.0,
             'left_ratio': 0.0,
@@ -931,6 +937,7 @@ class VisionLaneCentering:
             return empty
 
         h, w = mask.shape[:2]
+        empty['mask_height_px'] = int(h)
         if h < 20 or w < 20:
             return empty
 
@@ -1055,6 +1062,8 @@ class VisionLaneCentering:
             'near_ratio': float(near_ratio),
             'coverage_std': float(coverage_std),
             'top_y_ratio': float(top_y_ratio),
+            'top_y_px': int(top_y),
+            'mask_height_px': int(h),
             'front_score': float(front_score),
             'straight_score': float(straight_score),
             'left_ratio': float(left_ratio),
@@ -1662,6 +1671,8 @@ setInterval(health, 500); health();
                     self._boundary_near_ratio = float(diag.get('near_ratio', 0.0))
                     self._boundary_coverage_std = float(diag.get('coverage_std', 0.0))
                     self._boundary_top_y_ratio = float(diag.get('top_y_ratio', 0.0))
+                    self._boundary_top_y_px = int(diag.get('top_y_px', -1))
+                    self._boundary_mask_height_px = int(diag.get('mask_height_px', 0))
                     self._front_score = float(diag.get('front_score', 0.0))
                     self._straight_score = float(diag.get('straight_score', 0.0))
                     self._left_ratio = float(diag.get('left_ratio', 0.0))
@@ -1714,6 +1725,8 @@ setInterval(health, 500); health();
                     self._boundary_near_ratio = 0.0
                     self._boundary_coverage_std = 0.0
                     self._boundary_top_y_ratio = 0.0
+                    self._boundary_top_y_px = -1
+                    self._boundary_mask_height_px = 0
                     self._front_score = 0.0
                     self._straight_score = 0.0
                     self._left_ratio = 0.0

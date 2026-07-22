@@ -87,7 +87,7 @@ stage3_return_navigator:
     # ────────────────────────────────────────────────────────────────────────
 
     # 视觉搜索入口直行速度 (m/s) — 尚未识别到 P 时沿右下方向快速驶入入口。
-    pursuit_linear_speed: 0.45
+    pursuit_linear_speed: 0.60
 
     # 前视距离 (m) — 追踪路径上前方此距离的点
     pursuit_lookahead_m: 0.45
@@ -146,7 +146,7 @@ stage3_return_navigator:
     p_approach_consecutive_hits: 1
 
     # 接近线速度 (m/s) — P 已接近画面中心时的最高速度
-    p_approach_linear_speed: 0.30
+    p_approach_linear_speed: 0.60
 
     # P 检测结果的最大有效年龄 (s)
     p_detection_timeout_sec: 0.35
@@ -162,10 +162,10 @@ stage3_return_navigator:
     # 仅取 P bbox 中心区域，降低边缘背景、空洞和 P 边框的影响。
     p_depth_roi_fraction: 0.50
     # P 框内有效深度中位数 < 此值时，发布零速度和 stage3_state=complete。
-    p_depth_stop_distance_m: 0.37
+    p_depth_stop_distance_m: 0.50
 
     # P 框深度首次 <= 此值后，直到本次任务结束都跳过常规雷达避障；0 表示关闭。
-    # 紧急停车仍保留优先级。
+    # 紧急近障倒车恢复仍保留优先级。
     p_approach_disable_avoidance_distance_m: 0.75
 
     # P 点视觉到达后额外前进距离 (m) — 0 表示达到视觉阈值即刹停
@@ -174,16 +174,19 @@ stage3_return_navigator:
     # P 点视觉到达后额外前进速度 (m/s)
     p_extra_forward_speed: 0.50
 
-    # 接近角速度增益 — bbox 中心 offset → 角速度增益
-    p_approach_angular_kp: 0.9
-
-    # P 偏移滤波与减速：提高新帧权重以降低转向滞后；偏移超过阈值后，
-    # 线速度随偏移线性降至最低速度，先摆正航向再继续靠近。
+    # P 偏移滤波用于视觉航向重捕获，而不是逐帧直接打舵。
     p_approach_offset_filter_alpha: 0.55
-    p_approach_slowdown_offset: 0.20
-    p_approach_min_linear_speed: 0.15
 
-    # P 接管后只由 bbox 水平偏差转向、对齐深度决定终停；不再使用 map 判据。
+    # 首次识别 P 即按框偏差锁定 IMU 目标航向，随后直线保持。
+    # 只有偏差超过重捕获阈值并经过最短间隔后，才更新一次目标航向。
+    p_heading_bearing_gain_rad: 0.55
+    p_heading_kp: 1.4
+    p_heading_tolerance_deg: 3.0
+    p_heading_max_angular_speed: 0.45
+    p_heading_reacquire_offset: 0.18
+    p_heading_reacquire_interval_sec: 0.35
+
+    # P 接管后由视觉锁定的 IMU 航向保持直线，深度决定终停；不再使用 map 判据。
     # P 丢失时低速倒车，并闭环回到仍能看见 P 时的历史航向。
     p_loss_reverse_speed: 0.10
     p_loss_reverse_duration_sec: 2.00
@@ -230,8 +233,11 @@ stage3_return_navigator:
     # 清除距离 (m) — 障碍物距离 > 此值视为清除
     avoid_clear_distance: 0.65
 
-    # 紧急停车距离 (m) — 障碍物距离 < 此值立即停车
-    emergency_stop_distance: 0.08
+    # 紧急近障距离 (m) — 命中后限时倒车并带反向侧转，再重新进入常规避障。
+    emergency_stop_distance: 0.22
+    emergency_reverse_speed: 0.10
+    emergency_reverse_duration_sec: 0.80
+    emergency_reverse_angular_speed: 0.35
 
     # --- 反舵阶段 (Counter Steering) ---
     # 反舵线速度 (m/s)

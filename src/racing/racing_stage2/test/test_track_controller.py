@@ -109,6 +109,7 @@ class TrackControllerTest(unittest.TestCase):
 
     def _entry_boundary_controller(self, direction='clockwise'):
         controller = Stage2TrackController(
+            max_speed=0.66,
             entry_medium_distance_m=0.65,
             entry_boundary_trigger_enabled=True,
             entry_boundary_guard_half_width_m=0.15,
@@ -142,6 +143,63 @@ class TrackControllerTest(unittest.TestCase):
         self.assertEqual(command.segment, 'left_side_arc')
         self.assertEqual(command.entry_boundary_trigger, 'vision_confirmed')
         self.assertEqual(command.entry_boundary_angle_deg, 0.0)
+
+    def test_side_arc_boundary_only_triggers_in_pre_corner_gate_at_reduced_speed(self):
+        controller = Stage2TrackController(
+            max_speed=0.66,
+            entry_medium_distance_m=0.65,
+            entry_boundary_trigger_enabled=True,
+            entry_boundary_confirm_frames=1,
+            side_arc_vision_enabled=True,
+            side_arc_vision_trigger_lead_m=0.002,
+            side_arc_vision_trigger_speed_mps=0.45,
+        )
+        self._enter_medium(controller)
+        visual = self._front_boundary_visual()
+
+        # The medium segment starts at total distance 0.61m. At progress
+        # 0.647m, valid SEG is still outside the 2mm pre-corner gate.
+        command = controller.step(
+            1.1, (-0.20, 0.60), math.pi / 2.0,
+            distance_m=1.257, visual=visual,
+        )
+        self.assertEqual(command.segment, 'entry_medium')
+        self.assertEqual(command.entry_boundary_trigger, 'before_vision_trigger_gate')
+        self.assertAlmostEqual(command.linear, controller.max_speed)
+
+        command = controller.step(
+            1.2, (-0.20, 0.60), math.pi / 2.0,
+            distance_m=1.258, visual=self._front_boundary_visual(valid=False),
+        )
+        self.assertEqual(command.segment, 'entry_medium')
+        self.assertEqual(command.entry_boundary_trigger, 'vision_rejected')
+        self.assertAlmostEqual(command.linear, 0.45)
+
+        command = controller.step(
+            1.25, (-0.20, 0.60), math.pi / 2.0,
+            distance_m=1.258, visual=visual,
+        )
+        self.assertEqual(command.segment, 'left_side_arc')
+        self.assertEqual(command.entry_boundary_trigger, 'vision_confirmed')
+
+        controller = Stage2TrackController(
+            max_speed=0.66,
+            entry_medium_distance_m=0.65,
+            entry_boundary_trigger_enabled=True,
+            entry_boundary_confirm_frames=1,
+            side_arc_vision_enabled=True,
+            side_arc_vision_trigger_lead_m=0.002,
+            side_arc_vision_trigger_speed_mps=0.45,
+            turn_force_map_x_enabled=True,
+        )
+        self._enter_medium(controller)
+        command = controller.step(
+            1.3, (-0.20, 0.60), math.pi / 2.0,
+            distance_m=1.261, visual=visual, map_x=2.50,
+        )
+        self.assertEqual(command.segment, 'entry_medium')
+        self.assertEqual(command.entry_boundary_trigger, 'after_vision_trigger_gate')
+        self.assertAlmostEqual(command.linear, 0.45)
 
     def test_entry_boundary_confirmation_resets_after_invalid_frame(self):
         controller, _ = self._entry_boundary_controller()
@@ -232,6 +290,93 @@ class TrackControllerTest(unittest.TestCase):
         self.assertEqual(command.segment, 'left_side_arc')
         command = controller.step(1.3, (-0.85, 1.35), -math.pi / 2.0, distance_m=3.00)
         self.assertEqual(command.segment, 'top_long')
+
+    def test_side_arc_waits_for_yaw_rate_to_settle_at_full_turn(self):
+        controller = Stage2TrackController()
+        self._enter_medium(controller)
+        controller.step(1.1, (-0.85, 1.35), math.pi / 2.0, yaw_rate=0.0, distance_m=1.71)
+        command = controller.step(
+            1.2, (-0.85, 1.35), -math.pi / 2.0,
+            yaw_rate=-1.0, distance_m=3.00,
+        )
+        self.assertEqual(command.segment, 'left_side_arc')
+        command = controller.step(
+            1.3, (-0.85, 1.35), -math.pi / 2.0,
+            yaw_rate=0.0, distance_m=3.00,
+        )
+        self.assertEqual(command.segment, 'top_long')
+
+    def test_side_arc_uses_configured_geometric_curvature(self):
+        controller = Stage2TrackController(
+            corner_speed=0.35,
+            corner_radius=0.25,
+            corner_angular=1.5,
+        )
+        self._enter_medium(controller)
+        controller.step(1.1, (-0.85, 1.35), math.pi / 2.0, yaw_rate=0.0, distance_m=1.71)
+        command = controller.step(
+            1.2, (-0.85, 1.35), 0.0,
+            yaw_rate=-1.46, distance_m=2.00,
+        )
+        self.assertAlmostEqual(command.linear / abs(command.angular), 0.25, places=6)
+
+    def test_side_arc_latches_actual_entry_yaw_without_counting_entry_error(self):
+        controller = Stage2TrackController(
+            corner_speed=0.35,
+            corner_radius=0.25,
+        )
+        self._enter_medium(controller)
+        # The boundary can be reached while the vehicle has a residual 17°
+        # heading error.  That yaw is the zero point for this relative 180°
+        # manoeuvre, rather than fake progress already completed at entry.
+        entry_yaw = math.radians(107.0)
+        command = controller.step(
+            1.1, (-0.85, 1.35), entry_yaw, yaw_rate=0.0, distance_m=1.71,
+        )
+        self.assertEqual(command.segment, 'left_side_arc')
+        self.assertAlmostEqual(command.turn_progress_rad, 0.0, places=6)
+        self.assertAlmostEqual(
+            command.arc_final_heading_error_rad, math.radians(180.0), places=6
+        )
+
+        command = controller.step(
+            1.2, (-0.85, 1.35), math.radians(-62.0), yaw_rate=-0.8,
+            distance_m=3.15,
+        )
+        self.assertGreater(command.linear, 0.08)
+        self.assertLess(command.linear, 0.35)
+
+        # The corner stays active until the complete relative 180 degree turn.
+        command = controller.step(
+            1.3, (-0.85, 1.35), math.radians(-62.0), yaw_rate=-0.10,
+            distance_m=3.20,
+        )
+        self.assertEqual(command.segment, 'left_side_arc')
+
+        # Crossing the full 180-degree target advances to top_long.
+        command = controller.step(
+            1.4, (-0.85, 1.35), math.radians(-73.0), yaw_rate=-0.10,
+            distance_m=3.25,
+        )
+        self.assertEqual(command.segment, 'top_long')
+        self.assertEqual(command.arc_completion_reason, 'full_arc_settled')
+
+    def test_side_arc_does_not_finish_before_full_180_degrees(self):
+        controller = Stage2TrackController()
+        self._enter_medium(controller)
+        controller.step(1.1, (-0.85, 1.35), math.pi / 2.0,
+                        yaw_rate=0.0, distance_m=1.71)
+        command = controller.step(
+            1.2, (-0.85, 1.35), -math.radians(82.0),
+            yaw_rate=-0.10, distance_m=3.20,
+        )
+        self.assertEqual(command.segment, 'left_side_arc')
+        command = controller.step(
+            1.3, (-0.85, 1.35), -math.pi / 2.0,
+            yaw_rate=-0.10, distance_m=3.20,
+        )
+        self.assertEqual(command.segment, 'top_long')
+        self.assertEqual(command.arc_completion_reason, 'full_arc_settled')
 
     def test_top_long_uses_full_259m(self):
         controller = Stage2TrackController()

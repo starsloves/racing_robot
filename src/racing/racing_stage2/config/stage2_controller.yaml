@@ -18,7 +18,7 @@
 #   直线速度：track_max_speed
 #   弯道速度：track_corner_speed / track_entry_linear
 #   弯道转向力度：track_entry_angular / track_corner_angular
-#   转弯过冲：track_entry_arc_complete_lead_deg / track_corner_arc_complete_lead_deg
+#   90° / 180° 弯均按完整相对 IMU 转角和完整弧长结束，无提前收口。
 #   出弯反修过猛：track_line_heading_kp / track_yaw_rate_damping
 # ================================================================================
 
@@ -36,6 +36,12 @@ stage2_inertial_navigator:
     odom_topic: /odom_combined
     # 航向 IMU 话题
     imu_topic: /imu/data
+    # Stage1 latched 发布的 map yaw - 原始 IMU yaw 偏置。S2 收到前不启动，
+    # 避免把原始 IMU 坐标误当作赛场 map 航向。
+    imu_map_yaw_offset_topic: imu_map_yaw_offset
+    # 正式比赛必须等待 Stage1 的锁存映射；独立参数测试由 launch 临时开启回退。
+    imu_map_yaw_offset_fallback_enabled: false
+    imu_map_yaw_offset_fallback_map_yaw_deg: 90.0
     # 激光扫描话题
     scan_topic: /scan
     # Stage2 速度输出话题
@@ -91,29 +97,31 @@ stage2_inertial_navigator:
     # ────────────────────────────────────────────────────────────────────────
     # 直线速度：entry_medium / top_long / exit_medium / stage3_handoff_line
     # 直线段最大线速度（m/s）
-    track_max_speed: 0.65
+    track_max_speed: 0.66
 
     # 全局角速度限幅
     # 全局最大角速度（rad/s）
     track_max_angular: 1.5
 
     # 入口 90° 弯：线速度 + 角速度
-    track_entry_linear: 0.70
-    track_entry_angular: 1.5
+    # 0.50 / 1.25 = 0.40m，与入口/出口 90° 弯半径一致。
+    track_entry_linear: 0.50
+    track_entry_angular: 1.25
 
-    # 后续 180° 弯：线速度 + 角速度
-    track_corner_speed: 0.73
+    # 后续 180° 弯：线速度 + 角速度上限
+    # 180° 弯直径约 0.50m，即 R=0.25m；0.35 / 1.40 = 0.25m。
+    track_corner_speed: 0.35
     track_corner_angular: 1.5
 
     # 第一个 180° 的标定中心：entry_arc 后 entry_medium 的名义距离。
     # 视觉触发开启后，此值不再是常规切段点，而是下方保护窗口的中心。
     track_entry_medium_distance_m: 0.65
 
-    # 第一个 180°：在 0.65m ± 0.50m 窗口内由前方正对边界触发。
+    # 第一个 180° 的名义里程终点；视觉触发窗口见下方统一配置。
     track_entry_boundary_trigger_enabled: true
     track_entry_boundary_guard_half_width_m: 0.50 # 让纯视觉
     # 前方横边在分割 ROI 中自顶部向下的位置比例；值越大代表边界越靠近车头。
-    track_entry_boundary_top_y_ratio: 0.23
+    track_entry_boundary_top_y_ratio: 0.20
     # 只接受近似水平、正对车头的横向边界。
     track_entry_boundary_max_angle_deg: 20.0
     # 连续有效视觉帧数；现场试跑先用 1，支持改为 2 或 3 抑制误检。
@@ -122,19 +130,23 @@ stage2_inertial_navigator:
     # 第二个 180°：复用第一个弯的 SEG 横边判定，独立保留调参入口。
     track_top_boundary_trigger_enabled: true
     track_top_boundary_guard_half_width_m: 0.50
-    track_top_boundary_top_y_ratio: 0.23
+    track_top_boundary_top_y_ratio: 0.20
     track_top_boundary_max_angle_deg: 20.0
     track_top_boundary_confirm_frames: 1
 
-    # 两个 180° 弯的总视觉开关。关闭后，SEG 横边不再参与切段，直接按 map x 触发。
+    # 两个 180° 弯的总视觉开关。SEG 横边仅能在名义终点前
+    # track_side_arc_vision_trigger_lead_m 的窗口内切段；进入窗口即降至
+    # track_side_arc_vision_trigger_speed_mps，以稳定边界检测。
     # track_turn_force_map_x_enabled 仍独立控制 TF x 与 TF 缺失后的距离降级策略。
-    track_side_arc_vision_enabled: false
+    track_side_arc_vision_enabled: true
+    track_side_arc_vision_trigger_lead_m: 0.20
+    track_side_arc_vision_trigger_speed_mps: 0.45
 
     # 两个 180° 的视觉均未确认时，以 map <- base_footprint 的 x 强制转弯。
     # 顺时针：entry_medium x<=min，top_long x>=max；逆时针顺序相反。
     # map TF 暂不可用时才回退到各段距离窗口上限，避免无限直行。
     track_turn_force_map_x_enabled: true
-    track_turn_force_min_map_x: 2.10
+    track_turn_force_min_map_x: 2.03
     track_turn_force_max_map_x: 4.10
 
     # 第二个 180° 的名义里程中心，只用于视觉有效窗口和 TF 缺失保护。
@@ -147,7 +159,7 @@ stage2_inertial_navigator:
     # 两个 180° 和出口短直线完成后，按方向执行 90°：顺时针左转、逆时针右转。
     # 该段复用入口 90° 的 track_entry_linear / track_entry_angular / radius 配置，
     # 随后沿 -Y 直行；实时 TF map_y 严格小于此值时交权给 Stage3。
-    track_stage3_handoff_map_y: 2.25
+    track_stage3_handoff_map_y: 2.30
     stage3_entry_anchor_topic: stage3_entry_anchor
     # S3 交接锚点只取 map <- base_footprint 的实时 TF xy；TF 不可用时暂停交权。
     stage3_entry_anchor_base_frame: base_footprint
@@ -157,23 +169,20 @@ stage2_inertial_navigator:
     # 正式交权后持续末段命令的最长时间；S3 未及时接管则安全停车。
     stage3_handoff_hold_timeout_sec: 1.0
 
-    # 名义半径：用于日志/弧长诊断，实际切段以 IMU 相对角为准
+    # 名义半径：两个 180° 弯直径约 0.50m。控制器以 v/R 生成基准角速度，
+    # 并以 πR 作为弧长参考；入口/出口 90° 弯仍使用 track_entry_radius。
     track_entry_radius: 0.40
-    track_corner_radius: 0.40
+    track_corner_radius: 0.25
 
-    # 基础转角容差
-    track_entry_tolerance_deg: 3.0
-
-    # 提前切段角：
-    #   entry_arc / exit_turn_90 目标 90°，提前 52° => 约转到 38° 切入下一直线
-    #   corner_arc 目标 180°，提前 45° => 约转到 135° 切入下一条直线
-    track_entry_arc_complete_lead_deg: 53.0
-    track_corner_arc_complete_lead_deg: 30.0
-    track_exit_turn_arc_complete_lead_deg: 52.0
-
-    # 关闭 yaw-rate 预测切段和提前反向刹车，只使用上面的明确提前角
-    track_arc_finish_predict_sec: 0.0
-    track_entry_stop_prepare_deg: 0.0
+    # 四个弯以完整弧长和完整 IMU 转角为目标。末段的允许角速度按
+    # sqrt(2 * decel * remaining_angle) 实时计算，角速度越高越早制动；
+    # 没有固定提前角。只有目标转角和 IMU yaw-rate 均收敛才切直线。
+    track_arc_yaw_decel_rps2: 2.0
+    track_arc_yaw_rate_kp: 0.60
+    track_arc_terminal_yaw_rate_rps: 0.15
+    track_arc_terminal_angle_deg: 0.75
+    # 终点反向曲率校正时保持阿克曼底盘可转向的最低正向速度。
+    track_arc_terminal_min_speed_mps: 0.08
 
     # 直线段出弯修正
     track_line_heading_kp: 0.80
@@ -194,7 +203,10 @@ stage2_inertial_navigator:
     track_vision_lateral_deadband: 0.06
     track_vision_lateral_release_deadband: 0.035
     track_vision_heading_gain: 0.22
-    track_vision_confirm_frames: 3
+    # 横偏纠正必须在首张可信 SEG 帧生效，避免出弯残余角速度已造成横移后才介入。
+    track_vision_confirm_frames: 1
+    # SEG 实测约 2~3Hz；必须覆盖相邻推理帧间隔，否则确认计数会在下一帧前被清零。
+    track_vision_max_age_sec: 0.60
     track_vision_max_frame_delta: 0.25
     track_vision_opposition_threshold: 0.08
     # 车体物理居中、静止时记录 near_error，填入这里以消除相机安装零偏。
@@ -252,6 +264,15 @@ stage2_inertial_navigator:
     stage2_straight_avoid_min_cluster_width_m: 0.06
     stage2_straight_avoid_max_cluster_width_m: 0.55
     stage2_straight_avoid_min_valid_range_m: 0.15
+    # 聚类先通过横向尺寸过滤，再需连续关联 3 帧才允许启动横移。
+    # association_* 是相邻扫描中同一目标允许的位置/尺寸变化。
+    stage2_straight_avoid_min_lateral_span_m: 0.05
+    stage2_straight_avoid_confirm_frames: 3
+    stage2_straight_avoid_association_x_m: 0.25
+    stage2_straight_avoid_association_y_m: 0.12
+    stage2_straight_avoid_association_span_m: 0.20
+    # 一次 S 形横移完成后短暂忽略旧回波，避免围栏或同一物体立即二次触发。
+    stage2_straight_avoid_cooldown_sec: 1.00
     # 当前直线速度保持不变；speed_limit=0.0 表示不限速。
     stage2_straight_avoid_speed_limit_mps: 0.0
     stage2_straight_avoid_angular_speed: 0.80

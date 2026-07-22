@@ -1,4 +1,5 @@
 import os
+import math
 
 import yaml
 
@@ -39,10 +40,14 @@ def _emergency_stop_action():
 
 
 def _stage1_map_to_odom_defaults(config_path):
-    """Read the Stage1-owned static TF translation from its ROS parameter YAML."""
+    """Read the Stage1-owned map-to-odom transform from its ROS parameter YAML."""
     with open(config_path, 'r', encoding='utf-8') as config_file:
         params = yaml.safe_load(config_file)['competition_controller']['ros__parameters']
-    return str(params['map_to_odom_x']), str(params['map_to_odom_y'])
+    return (
+        str(params['map_to_odom_x']),
+        str(params['map_to_odom_y']),
+        str(math.radians(float(params['imu_initial_map_yaw_deg']))),
+    )
 
 
 def generate_launch_description():
@@ -58,7 +63,11 @@ def generate_launch_description():
     stage1_config_path = os.path.join(stage1_config_dir, 'stage1_controller.yaml')
     bringup_launch_dir = os.path.join(bringup_dir, 'launch')
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
-    map_to_odom_x_default, map_to_odom_y_default = _stage1_map_to_odom_defaults(stage1_config_path)
+    (
+        map_to_odom_x_default,
+        map_to_odom_y_default,
+        map_to_odom_yaw_default,
+    ) = _stage1_map_to_odom_defaults(stage1_config_path)
 
     device_arg = DeclareLaunchArgument('device', default_value='/dev/video0')
     include_camera_arg = DeclareLaunchArgument('include_camera', default_value='true')
@@ -100,8 +109,8 @@ def generate_launch_description():
     )
     map_to_odom_yaw_arg = DeclareLaunchArgument(
         'map_to_odom_yaw',
-        default_value='0.1745329252',
-        description='Stage1 start yaw in map frame (rad, default ~10°)'
+        default_value=map_to_odom_yaw_default,
+        description='Stage1 start yaw in map frame (rad, derived from imu_initial_map_yaw_deg)'
     )
     test_direction_arg = DeclareLaunchArgument(
         'test_direction',

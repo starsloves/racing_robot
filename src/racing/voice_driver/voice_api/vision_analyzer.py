@@ -50,7 +50,10 @@ class VisionAnalyzer:
         self._logger = logger
         self._ark_client = None
         if self._provider == 'ark' and Ark is not None and api_key:
-            self._ark_client = Ark(api_key=api_key)
+            self._ark_client = Ark(
+                api_key=api_key,
+                base_url=self._ark_sdk_base_url(self._base_url),
+            )
 
     @property
     def ready(self) -> bool:
@@ -63,6 +66,10 @@ class VisionAnalyzer:
         if self._provider == 'ark':
             return True
         return True
+
+    @property
+    def provider(self) -> str:
+        return self._provider
 
     def analyze_path(self, image_path: str | Path) -> str | None:
         path = Path(image_path)
@@ -98,7 +105,7 @@ class VisionAnalyzer:
             return self._call_ark_stream(encoded, on_delta)
         if self._provider == 'dashscope':
             return self._call_openai_stream(
-                'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+                self._base_url or 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
                 encoded,
                 on_delta,
                 {'Authorization': f'Bearer {self._api_key}'},
@@ -129,6 +136,8 @@ class VisionAnalyzer:
             return None
 
     def _call_dashscope(self, base64_image: str) -> str | None:
+        if self._base_url:
+            return self._call_dashscope_http(base64_image)
         try:
             import dashscope
             from dashscope import MultiModalConversation
@@ -170,7 +179,7 @@ class VisionAnalyzer:
         import urllib.error
         import urllib.request
 
-        url = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
+        url = self._base_url or 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
         payload = {
             'model': self._model_id,
             'messages': [
@@ -349,30 +358,27 @@ class VisionAnalyzer:
         if self._ark_client is None:
             return self._call_ark_http(base64_image)
         try:
-            response = self._ark_client.chat.completions.create(
+            response = self._ark_client.responses.create(
                 model=self._model_id,
-                messages=[
+                input=[
                     {
                         'role': 'user',
                         'content': [
                             {
-                                'type': 'image_url',
-                                'image_url': {
-                                    'url': f'data:image/jpeg;base64,{base64_image}',
-                                },
+                                'type': 'input_image',
+                                'image_url': f'data:image/jpeg;base64,{base64_image}',
                             },
                             {
-                                'type': 'text',
+                                'type': 'input_text',
                                 'text': self._prompt,
                             },
                         ],
                     }
                 ],
             )
-            if response.choices:
-                content = response.choices[0].message.content
-                if isinstance(content, str) and content.strip():
-                    return content.strip()
+            content = getattr(response, 'output_text', None)
+            if isinstance(content, str) and content.strip():
+                return content.strip()
             self._log_error('Ark model returned empty content')
             return None
         except Exception as exc:  # noqa: BLE001
@@ -399,7 +405,7 @@ class VisionAnalyzer:
         if self._max_tokens is not None:
             payload['max_tokens'] = self._max_tokens
         request = urllib.request.Request(
-            'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+            self._base_url or 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
             data=json.dumps(payload).encode('utf-8'),
             headers={
                 'Authorization': f'Bearer {self._api_key}',
@@ -425,25 +431,23 @@ class VisionAnalyzer:
     ) -> str | None:
         if self._ark_client is None:
             return self._call_openai_stream(
-                'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+                self._base_url or 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
                 base64_image,
                 on_delta,
                 {'Authorization': f'Bearer {self._api_key}'},
             )
         try:
-            stream = self._ark_client.chat.completions.create(
+            stream = self._ark_client.responses.create(
                 model=self._model_id,
-                messages=[
+                input=[
                     {
                         'role': 'user',
                         'content': [
                             {
-                                'type': 'image_url',
-                                'image_url': {
-                                    'url': f'data:image/jpeg;base64,{base64_image}',
-                                },
+                                'type': 'input_image',
+                                'image_url': f'data:image/jpeg;base64,{base64_image}',
                             },
-                            {'type': 'text', 'text': self._prompt},
+                            {'type': 'input_text', 'text': self._prompt},
                         ],
                     }
                 ],
@@ -451,11 +455,11 @@ class VisionAnalyzer:
             )
             parts: list[str] = []
             for event in stream:
-                choices = getattr(event, 'choices', None) or []
-                if not choices:
+                # The Responses API also streams reasoning-summary deltas. Only
+                # publish final output text so internal reasoning is never spoken.
+                if getattr(event, 'type', None) != 'response.output_text.delta':
                     continue
-                delta = getattr(choices[0], 'delta', None)
-                content = getattr(delta, 'content', None) if delta is not None else None
+                content = getattr(event, 'delta', None)
                 if not isinstance(content, str) or not content:
                     continue
                 parts.append(content)
@@ -467,6 +471,13 @@ class VisionAnalyzer:
         except Exception as exc:  # noqa: BLE001
             self._log_error(f'Ark streaming API call failed: {exc}')
         return None
+
+    @staticmethod
+    def _ark_sdk_base_url(base_url: str) -> str:
+        """Convert a chat-completions URL into the Ark SDK API root."""
+        if not base_url:
+            return 'https://ark.cn-beijing.volces.com/api/v3'
+        return base_url.removesuffix('/chat/completions')
 
     def _log_error(self, message: str) -> None:
         if self._logger is not None:
