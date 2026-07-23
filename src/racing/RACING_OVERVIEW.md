@@ -37,7 +37,7 @@ Phase 3: Stage3 /stage3_cmd_vel ── Stage1 supervisor ────> /cmd_vel
 | Stage2 | 8082 | SEG 预览只在 Phase 2 提供；二维码任务到达后可预热模型。 |
 | Stage3 | 8083 | P 视觉只在 Phase 3 武装；离开阶段或完成后释放。 |
 
-`/vision_debug` 不受 HTTP 生命周期限制。`racing_vision_ai` 只在 Phase 2 缓存相机帧，并在进入 Phase 2 时启动和预热本地 SmolVLM 服务；进入 Phase 3 后停止取帧和新触发，但不会中断已提交的图生文。收到 `stage2_ai_capture` 后豆包 Ark 官方 SDK 的 Responses API、已配置的 Qwen 与就绪的本地 VLM 并发图生文，首个有效流式输出按短句发布到 `ai_description` 并成为胜者；Ark 流式调用只发布最终文本事件，不播报模型的推理摘要。仅在该决胜时请求取消其余两个请求，绝不由阶段切换取消。本地服务在本地模型落败时随决胜释放；本地模型胜出时仅在 `stage3_state=complete` 且胜出播报结束后关闭。该过程不阻塞底盘控制。
+`/vision_debug` 不受 HTTP 生命周期限制。`racing_vision_ai` 只在 Phase 2 缓存相机帧，并在进入 Phase 2 时启动和预热本地 SmolVLM 服务；进入 Phase 3 后停止取帧和新触发，但不会中断已提交的图生文。收到 `stage2_ai_capture` 后会将送入模型的同一帧覆盖保存为 `~/dev_ws/log/competition_stage2/ai_capture.jpg`，再由豆包 Ark 官方 SDK 的 Responses API、已配置的 Qwen 与就绪的本地 VLM 并发图生文，首个有效流式输出按短句发布到 `ai_description` 并成为胜者；生产 YAML 对 Ark 和 Qwen 均显式关闭思考模式，Ark 流式调用也只发布最终文本事件。仅在该决胜时请求取消其余两个请求，绝不由阶段切换取消。本地服务在本地模型落败时随决胜释放；本地模型胜出时仅在 `stage3_state=complete` 且胜出播报结束后关闭。该过程不阻塞底盘控制。
 
 ### 1.3 关键话题
 
@@ -95,7 +95,7 @@ Phase 1 blind drive
 forward -> avoiding -> countersteering -> recovering -> forward
 ```
 
-雷达在 `phase1_window` 中聚类，过滤点数、宽度和距离异常；扫码解码武装后，前向预检范围扩至生产 YAML 的 `blind_scan_avoid_detection_max_x_m`，为横移留出距离。扫码中心线激活后，控制器对左绕、右绕各自积分预测避障、反舵和回归段：候选必须同时满足障碍净距和二维码扫描走廊约束，优先选择最终横向误差更小的一侧。两侧都不可行时先检查车后近区；车后无障碍才低速后退并朝远离前障的一侧转向一次，随后允许有限的临时扫描带横移余量并重新预测。后方受阻或重试后仍无安全候选才停车等待，禁止以硬编码左右转越出识别范围。通道状态不再使用这套正向绕行。前方有效障碍簇触发 `corridor_reverse_avoid`：右前障碍倒车左摆、左前障碍倒车右摆；即使前方暂时清障，车辆仍以反向围墙平行/居中控制持续退回本次通道起点，进入 `corridor_reverse_avoid_entry_tolerance_m` 后才恢复正向已锁墙簇。没有倒车时长上限，也没有通道避障停车分支。日志记录障碍的距离、宽度、点数、倒车转向、起点和当时墙宽/中心误差。扫码避障恢复以扫描中心线航向为目标，通道恢复以当前通道航向为目标。
+雷达在 `phase1_window` 中聚类，过滤点数、宽度和距离异常；扫码解码武装后，前向预检范围扩至生产 YAML 的 `blind_scan_avoid_detection_max_x_m`，为横移留出距离。扫码中心线激活后，控制器对左绕、右绕各自积分预测避障、反舵和回归段：候选必须同时满足障碍净距和二维码扫描走廊约束。预测期内已从障碍前方完整通过的候选优先，但固定预测窗口没有走完低速动作时，仍允许满足两项硬约束的候选正向执行，不能错误停车。两侧都不满足硬约束时先检查车后近区；车后无障碍才低速后退并朝远离前障的一侧转向一次，随后允许有限的临时扫描带横移余量并重新预测。后方受阻或重试后仍无安全候选才停车等待，禁止以硬编码左右转越出识别范围。通道状态不再使用这套正向绕行。前方有效障碍簇触发 `corridor_reverse_avoid`：右前障碍倒车左摆、左前障碍倒车右摆；即使前方暂时清障，车辆仍以反向围墙平行/居中控制持续退回本次通道起点，进入 `corridor_reverse_avoid_entry_tolerance_m` 后才恢复正向已锁墙簇。没有倒车时长上限，也没有通道避障停车分支。日志记录障碍的距离、宽度、点数、倒车转向、起点和当时墙宽/中心误差。扫码避障恢复以扫描中心线航向为目标，通道恢复以当前通道航向为目标。
 
 ### 2.3 Phase2/3 指令转发
 
@@ -131,7 +131,7 @@ entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
 - 通用前方簇无法区分短直道尽头横墙与独立障碍，因此只有 `top_long` 的中段可以建立避障候选；`entry_medium`、`exit_medium` 与 `stage3_handoff_line` 只执行赛道控制，不能被通用避障簇抢占。`top_long` 的候选窗口还会在距下一弯 `stage2_top_long_avoid_turn_guard_m` 内关闭，禁止将已知转弯横墙交给 MPPI。MPPI 每个 20Hz 控制周期在雷达围栏内采样未来 yaw-rate 序列，按障碍净距、回归直线、航向与控制平滑代价加权更新首个指令。角度唯一来自 IMU；横移由 `/odom_combined` xy 向冻结的 IMU 直线法向投影，绝不使用 odom orientation。绕行期间冻结本段进度。已确认障碍进入制动距离或围栏完整却无碰撞自由候选时，MPPI 必须输出零速，不能继续直行。
 - 安全距离统一为 `v * response + v^2 / (2 * brake_decel) + margin`，生产 YAML 的 `stage2_safety_*` 是首版保守值，必须按实车扫描、执行和制动日志标定。两个 180 度弯前的 `stage2_turn_precheck_*` 当前仅记录前方/内侧簇诊断：赛道横墙和围栏本身会进入这些窗口，在没有“边界簇与独立障碍簇”分类器前，禁止用该诊断直接停车或在弧线内做 S 形横移。
 - 控制循环超过 `control_gap_stop_sec`（当前 1.0 秒）未刷新时，命令心跳发布零速度；控制循环恢复后从当前段继续。
-- `top_long` 距离末端 `stage2_ai_capture_lead_m`（当前 0.50 m）时只发一次异步图像分析触发，不等待云端或语音；图生文三模型并发竞速，语音从胜出模型的第一条完整短句开始播报。
+- 默认模式下，`top_long` 切入 `right_side_arc` 的入弯瞬间开始计时，满 `stage2_ai_capture_delay_after_turn_sec`（当前 0.20 s）后只发一次异步图像分析触发，确保相机已转向展示牌；图生文三模型并发竞速，语音从胜出模型的第一条完整短句开始播报。本地 VLM 的 `timeout_sec: 0` 表示本地 HTTP 推理和竞速首字等待不超时，云端不可用时持续等待本地结果。若 YAML 的 `stage2_ai_preset_enabled` 开启，则不触发图生文；从同一入弯点等待 `stage2_ai_preset_delay_after_turn_sec`（当前 5.0 s）后，按二维码方向直接向 `ai_description` 发布 `stage2_ai_preset_clockwise_text` 或 `stage2_ai_preset_counterclockwise_text`。
 
 ### 3.3 启动模式
 
@@ -139,7 +139,7 @@ entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
 
 ---
 
-## 4. Stage3：单目标搜索 + P 视觉终停
+## 4. Stage3：单目标搜索 + 终端锚点短程提交
 
 **生产包/配置**：`racing_stage3`，`config/stage3_controller.yaml`。
 
@@ -151,22 +151,24 @@ entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
 Phase 3
   -> wait for fresh Stage2 anchor
   -> low-speed initial_align (only if heading error is large)
-  -> drive to P visual-search goal (0.50, 0.10)
-  -> visual_search_wait
-  -> P visual approach
-  -> P-bbox depth threshold -> complete
+  -> drive to terminal staging goal (0.50, 0.10)
+  -> terminal_acquire
+  -> terminal P semantic latch + wall-corner anchor lock
+  -> terminal_precommit (low-speed heading alignment)
+  -> corrected IMU/odom short run to P=(0.25, 0.10)
+  -> terminal_done_hold -> complete
 ```
 
 - S3 锁存 `stage3_entry_anchor` 与当时 `/odom_combined` xy；后续 map 位置为锚点加上旋转后的 odom xy 增量，运行中不使用实时 map TF 覆写控制位置。
 - 交权瞬间把原始 IMU yaw 映射至 map -Y（`stage3_entry_map_yaw_deg=-90`），后续仅累计 IMU 相对转角。
 - 初始目标方位误差达到 `initial_align_trigger_deg` 才进入 `initial_align`；阿克曼底盘以非零低速摆弧对准，不能原地转向。
-- 未识别 P 时，向 `return_waypoints_json` 中当前单一视觉搜索目标行驶；到 `waypoint_tolerance`（当前 0.25 m）范围后停车等待 P，不能继续盲走。
-- P 连续识别满足门限后接管。首次检测框偏差换算为锁定的 IMU 目标航向，车辆以该航向直线接近；只有滤波后的框偏差相对上次锁定值变化达到 `p_heading_reacquire_offset` 且满足重捕获间隔时才更新目标航向，避免远距离逐帧追框走弧线。P 短时丢失时，倒车回正目标优先使用当前锁定的视觉航向，不能回到过期的历史车体航向。P 框中心 ROI 的有效深度中位数小于 `p_depth_stop_distance_m`（当前 0.50 m）立即发布 `stage3_state=complete`。
-- P 接近中有效深度首次不大于 `p_approach_disable_avoidance_distance_m`（当前 0.75 m）后，本次任务跳过常规雷达避障直到完成；近距离雷达聚类仍会触发限时倒车加侧转，随后重新进入常规避障，禁止原地等待。
+- 粗导航只向 `return_waypoints_json` 的单一终端 staging 点 `(0.50, 0.10)` 行驶；到 `waypoint_tolerance`（当前 0.25 m）范围后停车等待终端锚点，不能继续用地图盲走。P 在远距离可见时只供显示，绝不抢占转向或速度控制。
+- 仅进入 `terminal_acquire_distance_m`（当前 1.20 m）后，连续 P 检测才锁存为终点语义确认。同期 `/scan` 从连续物理簇以 TLS 拟合两条墙线；候选必须满足点数、跨度、残差、近似垂直交点、map 轴对齐的预期墙轴、校正量稳定性和连续 hold，才可锁定并冻结 map 平移校正。生产 YAML 标定墙角 `(0.00, 0.00)`、P 终点 `(0.25, 0.10)`；深度仅记录，不参与终停或避障权限。
+- P 语义和冻结的墙角锚点同时存在后，车辆先进入 `terminal_precommit`，以低速将 IMU 航向对准校正后终点。只有剩余距离不超过 `terminal_corner_commit_max_distance_m` 且航向误差不超过 `terminal_precommit_heading_tolerance_deg` 才进入 `p_corner_approach`。短程推进使用 `/odom_combined` xy 并受最大里程、横向 guard 和非零命令无里程进展超时保护；此后 P 与雷达丢失是预期行为，不会倒车、回退到 `(0.50, 0.10)` 或重新地图搜索。角度唯一来自 IMU，绝不使用 odom orientation。沿向与横向误差满足后停车保持 `terminal_completion_hold_sec`，才发布 `complete`；任何 guard 只停车并发布 `p_corner_terminal_guard`。
 
 ### 4.2 避障与丢失恢复
 
-Stage3 粗导航复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前 P 视觉搜索目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。紧急近障不再由 Stage1 仲裁器硬停车：S3 以紧急前方聚类触发 `emergency_reversing`，在 YAML 限定的时间内低速倒车并向安全侧反向侧转，完成后回到 `forward` 重新判定常规避障。P 视觉接管后，普通避障开始时锁存当前 P 视觉航向；反舵和恢复阶段必须回到该锁定 IMU 航向，不能改用地图搜索点方向。若此后 P 丢失，先低速倒车回正并复用同一锁定航向；回正或倒车时限到达后，清除视觉锁并恢复向 `return_waypoints_json` 末端搜索点的粗导航，同时重新启用常规雷达避障。P 重新识别后才按新框偏差更新航向。
+Stage3 仅在终端采集区外复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前 staging 目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。紧急近障触发 `emergency_reversing`，完成后回到 `forward` 重新判定常规避障。车辆进入 `terminal_acquire_distance_m` 后，终点墙属于预期结构，所有通用避障和紧急倒车均被取消，禁止任何横移、倒车或回地图搜索破坏已采集锚点；终端安全由冻结锚点、低速、最大短程里程和横向误差保护承担。
 
 ---
 
@@ -175,7 +177,7 @@ Stage3 粗导航复用 Stage1 的 `forward -> avoiding -> countersteering -> rec
 | 项目 | 位置/说明 |
 |---|---|
 | Stage1 日志 | `~/dev_ws/log/competition_stage1/latest.log` |
-| Stage2 日志 | `~/dev_ws/log/competition_stage2/latest.log`，仅在首次进入 Phase 2 时创建并覆盖 |
+| Stage2 日志 | `~/dev_ws/log/competition_stage2/latest.log`，仅在首次进入 Phase 2 时创建并覆盖；S2 主控与图生文节点均以同一文件锁写入，图生文追加抓拍、模型竞速、结果与失败诊断。 |
 | Stage3 日志 | `~/dev_ws/log/competition_stage3/latest.log`，仅在首次进入 Phase 3 时创建并覆盖 |
 | QR | `qr_scanner`，WeChat CV 解码 |
 | 图生文 | `racing_vision_ai`，接收 Stage2 一次性触发，豆包/Qwen/本地 VLM 流式竞速 |

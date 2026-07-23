@@ -35,6 +35,8 @@ competition_controller:
     # 后续仅叠加 IMU 的相对转角，供 Stage1 全部状态使用。
     # Stage1 和总启动会由此派生 map_to_odom_yaw，二者必须一致。
     imu_initial_map_yaw_deg: 10.0
+    # 原始 IMU 的安装零偏 (°)。仅在已实测固定零偏时调整；默认不额外修正。
+    imu_yaw_offset_deg: 0.0
     # 发布给 Stage2 的 latched IMU->map 航向零点映射；Stage2 必须继承此值。
     imu_map_yaw_offset_topic: imu_map_yaw_offset
     # 交权时将当前物理朝向重标定为 map 90°，并向 Stage2 发布同一持久 offset。
@@ -125,11 +127,14 @@ competition_controller:
     blind_scan_max_angular_speed: 0.35
     blind_scan_guidance_max_angular_speed: 0.18
 
-    # 左/右候选按避障、反舵及回归中心线的完整动作积分预测；任一候选与障碍
-    # 中心的最小距离小于该净距，或越出扫描带，均不可采用。两侧不可行时停车。
+    # 左/右候选按避障、反舵及回归中心线的完整动作积分预测。障碍净距和扫描带
+    # 是硬约束；越过障碍只用于候选排序，不能因固定预测时长小于实际低速绕行时间
+    # 而拒绝一条已满足净距和扫描带的路径并停车。
     blind_scan_avoid_prediction_sec: 1.80
     blind_scan_avoid_prediction_step_sec: 0.05
     blind_scan_avoid_min_clearance_m: 0.28
+    # 正向预测比障碍中心额外前进该距离时，标记为完整绕过并优先选择。
+    blind_scan_avoid_pass_margin_m: 0.10
     # 扫码阶段提前发现前方聚类，给完整 S 形绕行保留制动/横移距离。
     blind_scan_avoid_detection_max_x_m: 1.00
     # 两个前向候选均不可行时，只尝试一次后退转向脱困。车后近区有聚类则立刻停车。
@@ -370,7 +375,7 @@ competition_controller:
 
     # Stage1 -> Stage2 统一交权点为 map Y=2.55m（也是最终通道目标）。
     # 仅留 +/−约4cm 控制窗口，避免不同 Y 位置启动 Stage2 首段。
-    corridor_release_min_y_m: 2.53
+    corridor_release_min_y_m: 2.50
 
     # 超过 2.60m 仍未满足墙中心/yaw 才视为真正越点并重捕获。
     corridor_release_max_y_m: 2.60
@@ -520,10 +525,10 @@ competition_controller:
     corridor_wall_follow_heading_kp: 1.4
     corridor_wall_follow_max_angular_speed: 0.45
     corridor_wall_follow_no_lock_log_sec: 1.0
-    # 阿克曼底盘不能原地转。未形成双墙时，大角度以 0.12m/s 行驶并快速转向；
-    # 小于 20° 后提高到 0.16m/s 取墙，始终禁止发布 v=0。
-    corridor_wall_acquire_speed_mps: 0.16
-    corridor_wall_acquire_turn_linear_speed_mps: 0.12
+    # 阿克曼底盘不能原地转。未形成双墙时，大角度以 0.15m/s 行驶并快速转向；
+    # 小于 20° 后提高到 0.20m/s 取墙，始终禁止发布 v=0。
+    corridor_wall_acquire_speed_mps: 0.20
+    corridor_wall_acquire_turn_linear_speed_mps: 0.15
     corridor_wall_acquire_heading_kp: 1.20
     corridor_wall_acquire_max_angular_speed: 0.45
     corridor_wall_acquire_turn_in_place_angle_deg: 20.0
@@ -719,6 +724,9 @@ competition_controller:
     # Stage2 指令超时 (s) — Phase2 时，超过此时长未收到 Stage2 指令则停车
     stage2_cmd_timeout: 0.5
 
+    # Stage3 指令超时 (s) — Phase3 时，超过此时长未收到 Stage3 指令则停车
+    stage3_cmd_timeout: 0.5
+
     # Phase2 障碍覆盖 — true: Phase2 时仍响应 Phase1 避障
     phase2_obstacle_override: false
 
@@ -728,43 +736,10 @@ competition_controller:
     # Phase3 外部控制 — true: Phase3 由 Stage3 节点控制，Stage1 不发指令
     phase3_external_control: true
 
-    # 已废弃：Phase3 近障倒车和重新避障由 Stage3 完整控制，Stage1 只仲裁其速度指令。
-    phase3_emergency_stop_distance: 0.22
-
     # ────────────────────────────────────────────────────────────────────────
-    # 视觉通道导航 (Vision-based Corridor Navigation)
+    # 实验视觉通道控制
     # ────────────────────────────────────────────────────────────────────────
 
-    # 启用视觉通道导航 — 当前禁用：Stage1 到通道口后直接切 Stage2，由 Stage2 惯导+视觉修正接管
+    # 生产流程由激光围墙跟随完成通道导航，不启用此实验分支。其余视觉通道
+    # 参数采用代码默认值，避免同一套未参与生产的参数长期占用调参入口。
     vision_corridor_enabled: false
-
-    # YOLOv8-Seg 模型路径
-    vision_corridor_model_path: /home/sunrise/dev_ws/src/racing/racing_stage2/models/bset.bin
-
-    # 推理参数
-    vision_corridor_conf_thres: 0.25        # 置信度阈值
-    vision_corridor_iou_thres: 0.45         # NMS IOU 阈值
-    vision_corridor_crop_ratio: 0.4         # 裁剪上方 40%（保留下方 60%）
-    vision_corridor_crop_side_ratio: 0.20   # 左右各裁 20%（保留中间 60%）
-    vision_corridor_http_port: 8081         # HTTP 可视化服务端口
-
-    # 控制增益 (Control Gains)
-    vision_corridor_lateral_kp: 1.2         # 横向误差增益
-    vision_corridor_heading_kp: 1.5         # 航向误差增益
-    vision_corridor_curvature_kp: 0.8       # 曲率补偿增益
-    vision_corridor_max_angular: 0.55       # 最大角速度 (rad/s)
-
-    # 速度参数 (Speed Control)
-    vision_corridor_cruise_speed: 0.20      # 巡航速度 (m/s)
-    vision_corridor_approach_speed: 0.12    # 接近入口速度 (m/s)
-    vision_corridor_entry_threshold_m: 0.25 # 入口检测阈值（剩余距离 < 此值判定到达）
-
-    # 融合策略 (Fusion Strategy)
-    vision_corridor_timeout_sec: 0.5        # 视觉数据超时（超时降级到IMU直行）
-    vision_corridor_min_confidence: 0.30    # 最小置信度阈值
-    vision_corridor_imu_fallback_enabled: true  # 启用IMU直行兜底
-
-    # 中线提取参数 (Centerline Extraction)
-    vision_corridor_sample_rows: 9          # 采样行数
-    vision_corridor_lookahead_ratio: 0.62   # 前瞻比例
-    vision_corridor_min_valid_rows: 5       # 最少有效行数

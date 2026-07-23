@@ -5,6 +5,7 @@ overwrites the previous ``latest.log``.
 """
 
 import os
+import fcntl
 from datetime import datetime
 
 
@@ -40,8 +41,16 @@ class SessionFileLog:
     def write(self, line):
         if self._file is None:
             return
-        self._file.write(str(line).rstrip() + '\n')
-        self._file.flush()
+        # The vision node appends capture diagnostics to the same S2 log.
+        # Re-seek under the shared advisory lock so this persistent writer
+        # cannot overwrite lines appended by that node.
+        fcntl.flock(self._file.fileno(), fcntl.LOCK_EX)
+        try:
+            self._file.seek(0, os.SEEK_END)
+            self._file.write(str(line).rstrip() + '\n')
+            self._file.flush()
+        finally:
+            fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
 
     def close(self):
         if self._file is None:

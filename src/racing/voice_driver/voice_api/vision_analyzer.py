@@ -34,8 +34,9 @@ class VisionAnalyzer:
         jpeg_quality: int = 85,
         image_max_edge_px: int = 0,
         base_url: str = '',
-        request_timeout_sec: float = 120.0,
+        request_timeout_sec: float | None = 120.0,
         max_tokens: int | None = None,
+        thinking_enabled: bool | None = None,
         logger: Any | None = None,
     ) -> None:
         self._provider = provider.lower()
@@ -45,8 +46,12 @@ class VisionAnalyzer:
         self._jpeg_quality = jpeg_quality
         self._image_max_edge_px = max(0, int(image_max_edge_px))
         self._base_url = base_url.rstrip('/')
-        self._request_timeout_sec = max(1.0, float(request_timeout_sec))
+        self._request_timeout_sec = (
+            None if request_timeout_sec is None or float(request_timeout_sec) <= 0.0
+            else max(1.0, float(request_timeout_sec))
+        )
         self._max_tokens = max_tokens if max_tokens and max_tokens > 0 else None
+        self._thinking_enabled = thinking_enabled
         self._logger = logger
         self._ark_client = None
         if self._provider == 'ark' and Ark is not None and api_key:
@@ -70,6 +75,16 @@ class VisionAnalyzer:
     @property
     def provider(self) -> str:
         return self._provider
+
+    def _thinking_request_options(self) -> dict[str, Any]:
+        """Return the provider-specific payload that disables hidden reasoning."""
+        if self._thinking_enabled is not False:
+            return {}
+        if self._provider == 'ark':
+            return {'thinking': {'type': 'disabled'}}
+        if self._provider == 'dashscope':
+            return {'enable_thinking': False}
+        return {}
 
     def analyze_path(self, image_path: str | Path) -> str | None:
         path = Path(image_path)
@@ -200,6 +215,7 @@ class VisionAnalyzer:
                 }
             ],
         }
+        payload.update(self._thinking_request_options())
         if self._max_tokens is not None:
             payload['max_tokens'] = self._max_tokens
         request = urllib.request.Request(
@@ -248,6 +264,7 @@ class VisionAnalyzer:
                 }
             ],
         }
+        payload.update(self._thinking_request_options())
         if self._max_tokens is not None:
             payload['max_tokens'] = self._max_tokens
         request = urllib.request.Request(
@@ -293,6 +310,7 @@ class VisionAnalyzer:
                 }
             ],
         }
+        payload.update(self._thinking_request_options())
         if self._max_tokens is not None:
             payload['max_tokens'] = self._max_tokens
         headers = {'Content-Type': 'application/json', **extra_headers}
@@ -358,9 +376,9 @@ class VisionAnalyzer:
         if self._ark_client is None:
             return self._call_ark_http(base64_image)
         try:
-            response = self._ark_client.responses.create(
-                model=self._model_id,
-                input=[
+            request_kwargs: dict[str, Any] = {
+                'model': self._model_id,
+                'input': [
                     {
                         'role': 'user',
                         'content': [
@@ -375,7 +393,9 @@ class VisionAnalyzer:
                         ],
                     }
                 ],
-            )
+            }
+            request_kwargs.update(self._thinking_request_options())
+            response = self._ark_client.responses.create(**request_kwargs)
             content = getattr(response, 'output_text', None)
             if isinstance(content, str) and content.strip():
                 return content.strip()
@@ -402,6 +422,7 @@ class VisionAnalyzer:
                 }
             ],
         }
+        payload.update(self._thinking_request_options())
         if self._max_tokens is not None:
             payload['max_tokens'] = self._max_tokens
         request = urllib.request.Request(
@@ -437,9 +458,9 @@ class VisionAnalyzer:
                 {'Authorization': f'Bearer {self._api_key}'},
             )
         try:
-            stream = self._ark_client.responses.create(
-                model=self._model_id,
-                input=[
+            request_kwargs: dict[str, Any] = {
+                'model': self._model_id,
+                'input': [
                     {
                         'role': 'user',
                         'content': [
@@ -451,8 +472,10 @@ class VisionAnalyzer:
                         ],
                     }
                 ],
-                stream=True,
-            )
+                'stream': True,
+            }
+            request_kwargs.update(self._thinking_request_options())
+            stream = self._ark_client.responses.create(**request_kwargs)
             parts: list[str] = []
             for event in stream:
                 # The Responses API also streams reasoning-summary deltas. Only

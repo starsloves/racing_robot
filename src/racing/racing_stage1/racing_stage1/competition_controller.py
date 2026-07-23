@@ -72,6 +72,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('blind_scan_avoid_prediction_sec', 1.80)
         self.declare_parameter('blind_scan_avoid_prediction_step_sec', 0.05)
         self.declare_parameter('blind_scan_avoid_min_clearance_m', 0.28)
+        self.declare_parameter('blind_scan_avoid_pass_margin_m', 0.10)
         self.declare_parameter('blind_scan_avoid_detection_max_x_m', 1.00)
         self.declare_parameter('blind_scan_escape_reverse_linear_speed_mps', -0.16)
         self.declare_parameter('blind_scan_escape_reverse_angular_speed', 0.55)
@@ -97,6 +98,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_reverse_avoid_min_duration_sec', 0.65)
         self.declare_parameter('corridor_reverse_avoid_clear_hold_sec', 0.25)
         self.declare_parameter('corridor_reverse_avoid_entry_tolerance_m', 0.25)
+        self.declare_parameter('corridor_terminal_offset_handoff_enabled', True)
+        self.declare_parameter('corridor_terminal_offset_start_y_margin_m', 0.35)
+        self.declare_parameter('corridor_terminal_offset_linear_speed_mps', 0.18)
+        self.declare_parameter('corridor_terminal_offset_angular_speed', 0.35)
+        self.declare_parameter('corridor_terminal_offset_min_duration_sec', 0.25)
+        self.declare_parameter('corridor_terminal_offset_clear_hold_sec', 0.15)
         self.declare_parameter('safe_distance', 0.5)
         self.declare_parameter('clear_distance', 0.65)
         self.declare_parameter('scan_angle_deg', 45.0)
@@ -387,6 +394,9 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.blind_scan_avoid_min_clearance = max(
             0.05, float(self.get_parameter('blind_scan_avoid_min_clearance_m').value)
         )
+        self.blind_scan_avoid_pass_margin = max(
+            0.0, float(self.get_parameter('blind_scan_avoid_pass_margin_m').value)
+        )
         self.blind_scan_avoid_detection_max_x = max(
             0.18,
             float(self.get_parameter('blind_scan_avoid_detection_max_x_m').value),
@@ -449,6 +459,24 @@ class CompetitionController(Stage1VisionMixin, Node):
         )
         self.corridor_reverse_avoid_entry_tolerance = max(
             0.05, float(self.get_parameter('corridor_reverse_avoid_entry_tolerance_m').value)
+        )
+        self.corridor_terminal_offset_handoff_enabled = bool(
+            self.get_parameter('corridor_terminal_offset_handoff_enabled').value
+        )
+        self.corridor_terminal_offset_start_y_margin = max(
+            0.0, float(self.get_parameter('corridor_terminal_offset_start_y_margin_m').value)
+        )
+        self.corridor_terminal_offset_linear_speed = max(
+            0.01, float(self.get_parameter('corridor_terminal_offset_linear_speed_mps').value)
+        )
+        self.corridor_terminal_offset_angular_speed = max(
+            0.0, float(self.get_parameter('corridor_terminal_offset_angular_speed').value)
+        )
+        self.corridor_terminal_offset_min_duration = max(
+            0.05, float(self.get_parameter('corridor_terminal_offset_min_duration_sec').value)
+        )
+        self.corridor_terminal_offset_clear_hold = max(
+            0.0, float(self.get_parameter('corridor_terminal_offset_clear_hold_sec').value)
         )
         self.safe_distance = float(self.get_parameter('safe_distance').value)
         self.clear_distance = float(self.get_parameter('clear_distance').value)
@@ -962,6 +990,10 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_reverse_direction = 0.0
         self.corridor_reverse_last_obstacle = None
         self.corridor_reverse_return_logged = False
+        self.corridor_terminal_offset_handoff_active = False
+        self.corridor_terminal_offset_started_time = None
+        self.corridor_terminal_offset_clear_since = None
+        self.corridor_terminal_offset_direction = 0.0
         self.last_avoid_duration = 0.0
         self.counter_steer_deadline = None
         self.recovery_deadline = None
@@ -997,6 +1029,10 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_nav_mode = 'idle'  # path_follow | left_recover | idle
         self.corridor_terminal_active = False
         self.corridor_terminal_reverse_align_active = False
+        self.corridor_terminal_offset_handoff_active = False
+        self.corridor_terminal_offset_started_time = None
+        self.corridor_terminal_offset_clear_since = None
+        self.corridor_terminal_offset_direction = 0.0
         self.corridor_terminal_commit_active = False
         self._terminal_filtered_x_error = None
         self._terminal_x_filter_time = None
@@ -1411,6 +1447,10 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_nav_mode = 'path_follow'
         self.corridor_terminal_active = False
         self.corridor_terminal_reverse_align_active = False
+        self.corridor_terminal_offset_handoff_active = False
+        self.corridor_terminal_offset_started_time = None
+        self.corridor_terminal_offset_clear_since = None
+        self.corridor_terminal_offset_direction = 0.0
         self._reset_terminal_lateral_control()
         self.corridor_reacquire_active = False
         self.corridor_reacquire_target_y = None
@@ -1777,6 +1817,10 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_reacquire_rejoin_y = rejoin_y
         self.corridor_terminal_active = False
         self.corridor_terminal_reverse_align_active = False
+        self.corridor_terminal_offset_handoff_active = False
+        self.corridor_terminal_offset_started_time = None
+        self.corridor_terminal_offset_clear_since = None
+        self.corridor_terminal_offset_direction = 0.0
         self._reset_terminal_lateral_control()
         rejoin_text = f'{rejoin_y:.2f}' if rejoin_y is not None else 'n/a'
         self.log.mission(
@@ -2063,7 +2107,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         )
 
     def predict_blind_scan_avoidance(self, direction, obstacle, corridor_extra=0.0):
-        """积分预测左/右避障和反舵，检查障碍净距及扫描带横向范围。"""
+        """Predict a complete forward detour, including clearing the obstacle."""
         pose_xy = self.get_map_position()
         if pose_xy is None or self.current_yaw is None:
             return None
@@ -2101,6 +2145,21 @@ class CompetitionController(Stage1VisionMixin, Node):
         elapsed = 0.0
         max_lateral = abs(initial_projection['lateral'])
         min_obstacle_distance = math.hypot(x - obstacle_map_xy[0], y - obstacle_map_xy[1])
+        max_forward_progress = 0.0
+
+        def update_obstacle_metrics():
+            nonlocal min_obstacle_distance, max_forward_progress
+            min_obstacle_distance = min(
+                min_obstacle_distance, math.hypot(x - obstacle_map_xy[0], y - obstacle_map_xy[1])
+            )
+            # Record whether the simulated detour has passed the obstacle.
+            # This is a preference, not a hard admission gate: the fixed
+            # prediction horizon can end before a safe low-speed detour does.
+            forward_progress = (
+                (x - pose_xy[0]) * cos_yaw + (y - pose_xy[1]) * sin_yaw
+            )
+            max_forward_progress = max(max_forward_progress, forward_progress)
+
         for duration, linear, angular in phases:
             phase_elapsed = 0.0
             while phase_elapsed < duration:
@@ -2113,9 +2172,7 @@ class CompetitionController(Stage1VisionMixin, Node):
                 projection = self.project_to_blind_scan_centerline((x, y))
                 if projection is not None:
                     max_lateral = max(max_lateral, abs(projection['lateral']))
-                min_obstacle_distance = min(
-                    min_obstacle_distance, math.hypot(x - obstacle_map_xy[0], y - obstacle_map_xy[1])
-                )
+                update_obstacle_metrics()
 
         # 对反舵后的剩余预测时间，按中心线恢复航向继续积分。
         while elapsed < self.blind_scan_avoid_prediction_sec:
@@ -2133,9 +2190,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             yaw = self.normalize_angle(yaw + angular * dt)
             elapsed += dt
             max_lateral = max(max_lateral, abs(projection['lateral']))
-            min_obstacle_distance = min(
-                min_obstacle_distance, math.hypot(x - obstacle_map_xy[0], y - obstacle_map_xy[1])
-            )
+            update_obstacle_metrics()
 
         final_projection = self.project_to_blind_scan_centerline((x, y))
         final_lateral = final_projection['lateral'] if final_projection is not None else float('inf')
@@ -2145,16 +2200,23 @@ class CompetitionController(Stage1VisionMixin, Node):
             + max(0.0, corridor_extra)
         )
         corridor_ok = max_lateral <= lateral_limit + 1e-3
-        obstacle_ok = min_obstacle_distance >= self.blind_scan_avoid_min_clearance
+        clearance_ok = min_obstacle_distance >= self.blind_scan_avoid_min_clearance
+        required_forward_progress = obstacle_x + self.blind_scan_avoid_pass_margin
+        pass_ok = max_forward_progress >= required_forward_progress
+        obstacle_ok = clearance_ok
         score = abs(final_lateral) + 0.5 * max_lateral
         return {
             'direction': direction,
             'corridor_ok': corridor_ok,
             'obstacle_ok': obstacle_ok,
+            'clearance_ok': clearance_ok,
+            'pass_ok': pass_ok,
             'score': score,
             'max_lateral': max_lateral,
             'final_lateral': final_lateral,
             'min_obstacle_distance': min_obstacle_distance,
+            'max_forward_progress': max_forward_progress,
+            'required_forward_progress': required_forward_progress,
         }
 
     def _terminal_wall_lock_fresh(self, now_ts):
@@ -2621,6 +2683,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             and (
                 pose_xy[1] <= self.corridor_release_max_y
                 or self.corridor_terminal_commit_active
+                or self.corridor_terminal_offset_handoff_active
             )
         )
         x_error = goal_xy[0] - pose_xy[0]
@@ -2632,9 +2695,14 @@ class CompetitionController(Stage1VisionMixin, Node):
         position_x_ok = x_ok or not map_x_required
         wall_lock = self._terminal_wall_lock_fresh(now_ts)
         wall_latch = self._terminal_wall_latch_fresh(now_ts)
-        wall_ok = not self.corridor_terminal_wall_lock_enabled
+        wall_ok = (
+            not self.corridor_terminal_wall_lock_enabled
+            or self.corridor_terminal_offset_handoff_active
+        )
         use_commit_latch = self.corridor_terminal_commit_active and wall_latch is not None
-        if use_commit_latch:
+        if self.corridor_terminal_offset_handoff_active:
+            pass
+        elif use_commit_latch:
             wall_ok = (
                 abs(wall_latch['center_error'])
                 <= self.corridor_terminal_wall_release_center_tolerance
@@ -3056,7 +3124,16 @@ class CompetitionController(Stage1VisionMixin, Node):
                 else wall_latch['axis_error'] if wall_latch is not None
                 else float('inf')
             )
-            if self.corridor_terminal_commit_active:
+            if self.corridor_terminal_offset_handoff_active:
+                # The obstacle was passed by shifting inside the corridor. Do
+                # not pull back to the wall center: S2 resets its local frame
+                # from this actual handoff pose.
+                self.corridor_nav_mode = 'terminal_offset_handoff'
+                desired_yaw = self.corridor_goal_yaw
+                angular_limit = self.corridor_terminal_max_angular_speed
+                linear = self.corridor_terminal_offset_linear_speed
+                lateral_error = 0.0
+            elif self.corridor_terminal_commit_active:
                 commit_latch = self._terminal_wall_latch_fresh(now_ts)
                 commit_failed = (
                     (self.corridor_terminal_wall_lock_enabled and commit_latch is None)
@@ -3118,7 +3195,11 @@ class CompetitionController(Stage1VisionMixin, Node):
             commit_y_ok = pose_xy[1] >= (
                 self.corridor_release_min_y - self.corridor_terminal_commit_y_margin
             )
-            if not self.corridor_terminal_commit_active and commit_y_ok:
+            if (
+                not self.corridor_terminal_offset_handoff_active
+                and not self.corridor_terminal_commit_active
+                and commit_y_ok
+            ):
                 commit_wall_ok = not self.corridor_terminal_wall_lock_enabled
                 if wall_available:
                     commit_wall_ok = (
@@ -3315,13 +3396,19 @@ class CompetitionController(Stage1VisionMixin, Node):
                 if candidate['corridor_ok'] and candidate['obstacle_ok']
             ]
             if feasible:
-                selected = min(feasible, key=lambda candidate: candidate['score'])
+                selected = min(
+                    feasible,
+                    key=lambda candidate: (not candidate['pass_ok'], candidate['score']),
+                )
                 detail = 'scan_prediction ' + ' '.join(
                     f"{'L' if candidate['direction'] > 0.0 else 'R'}="
                     f"safe={candidate['obstacle_ok']} lane={candidate['corridor_ok']} "
                     f"dmax={candidate['max_lateral']:.2f} "
                     f"dend={candidate['final_lateral']:.2f} "
-                    f"clear={candidate['min_obstacle_distance']:.2f}"
+                    f"clear={candidate['min_obstacle_distance']:.2f} "
+                    f"pass={candidate['pass_ok']} "
+                    f"advance={candidate['max_forward_progress']:.2f}/"
+                    f"{candidate['required_forward_progress']:.2f}"
                     for candidate in candidates
                 )
                 return selected['direction'], detail
@@ -3330,7 +3417,10 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f"{'L' if candidate['direction'] > 0.0 else 'R'}="
                 f"safe={candidate['obstacle_ok']} lane={candidate['corridor_ok']} "
                 f"dmax={candidate['max_lateral']:.2f} "
-                f"clear={candidate['min_obstacle_distance']:.2f}"
+                f"clear={candidate['min_obstacle_distance']:.2f} "
+                f"pass={candidate['pass_ok']} "
+                f"advance={candidate['max_forward_progress']:.2f}/"
+                f"{candidate['required_forward_progress']:.2f}"
                 for candidate in candidates
             )
             return 0.0, detail
@@ -3376,6 +3466,9 @@ class CompetitionController(Stage1VisionMixin, Node):
 
     def begin_avoidance(self, danger_angle, obstacle=None):
         if self.phase1_motion_state == 'corridor' or self.corridor_active:
+            if self._terminal_offset_handoff_eligible():
+                self.begin_terminal_offset_handoff(danger_angle, obstacle)
+                return
             self.corridor_resume_after_avoidance = True
             if self.corridor_reverse_avoid_enabled:
                 self.begin_corridor_reverse_avoidance(danger_angle, obstacle)
@@ -3427,6 +3520,46 @@ class CompetitionController(Stage1VisionMixin, Node):
             f'danger_angle={danger_angle:.0f}° '
             f'{selection_detail} '
             f'desired_yaw={(math.degrees(self.desired_heading) if self.desired_heading is not None else float("nan")):.1f}°'
+        )
+
+    def _terminal_offset_handoff_eligible(self):
+        if not (
+            self.corridor_terminal_offset_handoff_enabled
+            and self.corridor_active
+            and self.corridor_terminal_active
+            and self.corridor_on_final_waypoint()
+        ):
+            return False
+        pose_xy = self.get_map_position()
+        return (
+            pose_xy is not None
+            and pose_xy[1] >= (
+                self.corridor_release_min_y
+                - self.corridor_terminal_offset_start_y_margin
+            )
+        )
+
+    def begin_terminal_offset_handoff(self, danger_angle, obstacle):
+        """Pass a terminal obstacle with a bounded offset and hand S2 the real pose."""
+        self.corridor_terminal_offset_handoff_active = True
+        self.corridor_terminal_commit_active = False
+        self._terminal_release_ready_since = None
+        self.corridor_terminal_offset_direction = 1.0 if danger_angle <= 0.0 else -1.0
+        self.corridor_terminal_offset_started_time = self.get_clock().now()
+        self.corridor_terminal_offset_clear_since = None
+        self.phase1_motion_state = 'terminal_offset_avoiding'
+        self.avoid_cmd = self.create_twist(
+            self.corridor_terminal_offset_linear_speed,
+            self.corridor_terminal_offset_direction * self.corridor_terminal_offset_angular_speed,
+        )
+        turn_name = 'LEFT' if self.corridor_terminal_offset_direction > 0.0 else 'RIGHT'
+        self.log.mission(
+            f'TERMINAL_OFFSET_HANDOFF start obstacle='
+            f'd={obstacle["distance"]:.2f}m span={obstacle["span"]:.2f}m '
+            f'pts={obstacle["point_count"]} angle={danger_angle:.1f}deg '
+            f'turn={turn_name} v={self.corridor_terminal_offset_linear_speed:.2f} '
+            f'w={self.corridor_terminal_offset_direction * self.corridor_terminal_offset_angular_speed:.2f}; '
+            f'preserve lateral offset for Stage2 initialization'
         )
 
     def begin_blind_scan_escape(self, danger_angle, obstacle, selection_detail):
@@ -3842,6 +3975,45 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.avoid_cmd = Twist()
             return
 
+        if self.phase1_motion_state == 'terminal_offset_avoiding':
+            obstacle = self.find_phase1_forward_obstacle(
+                scan_msg, self.corridor_obstacle_min_width
+            )
+            now = self.get_clock().now()
+            if obstacle is not None:
+                self.obstacle_found = True
+                self.closest_obstacle_distance = obstacle['distance']
+                self.corridor_terminal_offset_clear_since = None
+                self.avoid_cmd = self.create_twist(
+                    self.corridor_terminal_offset_linear_speed,
+                    self.corridor_terminal_offset_direction
+                    * self.corridor_terminal_offset_angular_speed,
+                )
+                return
+
+            self.obstacle_found = False
+            self.closest_obstacle_distance = float('inf')
+            if self.corridor_terminal_offset_clear_since is None:
+                self.corridor_terminal_offset_clear_since = now
+            elapsed = (
+                (now - self.corridor_terminal_offset_started_time).nanoseconds / 1e9
+                if self.corridor_terminal_offset_started_time is not None else 0.0
+            )
+            clear_elapsed = (
+                now - self.corridor_terminal_offset_clear_since
+            ).nanoseconds / 1e9
+            if (
+                elapsed >= self.corridor_terminal_offset_min_duration
+                and clear_elapsed >= self.corridor_terminal_offset_clear_hold
+            ):
+                self.phase1_motion_state = 'corridor'
+                self.avoid_cmd = Twist()
+                self.log.mission(
+                    f'TERMINAL_OFFSET_HANDOFF clear after {elapsed:.2f}s; '
+                    f'continue with offset and hand Stage2 the actual pose'
+                )
+            return
+
         # 启动宽限期：避免上电瞬间噪声/侧墙误触发
         if hasattr(self, '_node_start_time') and self.phase1_motion_state in ('forward', 'corridor'):
             grace = (self.get_clock().now() - self._node_start_time).nanoseconds / 1e9
@@ -4174,6 +4346,10 @@ class CompetitionController(Stage1VisionMixin, Node):
                 return
 
             if self.phase1_motion_state == 'corridor_reverse_avoid':
+                self.cmd_pub.publish(self.avoid_cmd)
+                return
+
+            if self.phase1_motion_state == 'terminal_offset_avoiding':
                 self.cmd_pub.publish(self.avoid_cmd)
                 return
 

@@ -83,6 +83,23 @@ class Stage3ReturnNavigator(Node):
         self._pending_entry_anchor_map = None
         self._entry_anchor_stamp_sec = None
         self._last_tf_position = None
+        # The terminal corner supplies a physical map correction before the
+        # P mark and close-range lidar become unreliable in the final run.
+        self._terminal_corner_map_correction = (0.0, 0.0)
+        self._terminal_corner_candidate_since = None
+        self._terminal_corner_source_axes = None
+        self._terminal_corner_reference_correction = None
+        self._terminal_corner_lock = None
+        self._terminal_corner_committed = False
+        self._terminal_precommitting = False
+        self._terminal_corner_target_yaw = None
+        self._terminal_corner_start_odom = None
+        self._terminal_corner_start_distance = None
+        self._terminal_last_progress_odom = None
+        self._terminal_last_progress_at = None
+        self._terminal_p_confirmed = False
+        self._terminal_completion_candidate_since = None
+        self._terminal_zone_announced = False
 
         # 路径状态
         self.path_started_at = None
@@ -265,6 +282,46 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_depth_roi_fraction', 0.50)
         self.declare_parameter('p_depth_stop_distance_m', 0.50)
         self.declare_parameter('p_approach_disable_avoidance_distance_m', 0.0)
+
+        # ── P 墙角终端校正 ──
+        # The fixed field corner is a metric reference.  It is deliberately
+        # independent from odometry orientation; yaw remains IMU-only.
+        self.declare_parameter('terminal_corner_enabled', True)
+        self.declare_parameter('terminal_corner_map_x', 0.0)
+        self.declare_parameter('terminal_corner_map_y', 0.0)
+        self.declare_parameter('terminal_target_map_x', 0.25)
+        self.declare_parameter('terminal_target_map_y', 0.10)
+        self.declare_parameter('terminal_corner_activation_distance_m', 1.20)
+        self.declare_parameter('terminal_corner_max_range_m', 1.80)
+        self.declare_parameter('terminal_corner_cluster_gap_m', 0.18)
+        self.declare_parameter('terminal_corner_min_points', 8)
+        self.declare_parameter('terminal_corner_min_span_m', 0.25)
+        self.declare_parameter('terminal_corner_fit_residual_m', 0.035)
+        self.declare_parameter('terminal_corner_perpendicular_tolerance_deg', 25.0)
+        self.declare_parameter('terminal_corner_max_correction_m', 0.80)
+        self.declare_parameter('terminal_corner_source_axis_jump_deg', 18.0)
+        self.declare_parameter('terminal_corner_expected_axes_deg_json', '[0.0, 90.0]')
+        self.declare_parameter('terminal_corner_expected_axis_tolerance_deg', 15.0)
+        self.declare_parameter('terminal_corner_lock_hold_sec', 0.20)
+        self.declare_parameter('terminal_corner_filter_alpha', 0.35)
+        self.declare_parameter('terminal_corner_correction_stability_m', 0.06)
+        self.declare_parameter('terminal_acquire_distance_m', 1.20)
+        self.declare_parameter('terminal_corner_commit_max_distance_m', 0.65)
+        self.declare_parameter('terminal_precommit_linear_speed', 0.06)
+        self.declare_parameter('terminal_precommit_heading_kp', 1.2)
+        self.declare_parameter('terminal_precommit_heading_max_angular_speed', 0.25)
+        self.declare_parameter('terminal_precommit_heading_tolerance_deg', 6.0)
+        self.declare_parameter('terminal_corner_approach_speed', 0.12)
+        self.declare_parameter('terminal_corner_heading_kp', 1.4)
+        self.declare_parameter('terminal_corner_heading_max_angular_speed', 0.30)
+        self.declare_parameter('terminal_corner_stop_tolerance_m', 0.035)
+        self.declare_parameter('terminal_corner_lateral_tolerance_m', 0.060)
+        self.declare_parameter('terminal_lateral_guard_m', 0.09)
+        self.declare_parameter('terminal_corner_max_extra_travel_m', 0.08)
+        self.declare_parameter('terminal_progress_min_delta_m', 0.015)
+        self.declare_parameter('terminal_progress_timeout_sec', 0.75)
+        self.declare_parameter('terminal_completion_hold_sec', 0.30)
+        self.declare_parameter('terminal_corner_disable_emergency_avoidance', True)
 
         # ── Pure Pursuit ──
         self.declare_parameter('pursuit_linear_speed', 0.18)
@@ -463,6 +520,118 @@ class Stage3ReturnNavigator(Node):
             0.0, float(self.get_parameter(
                 'p_approach_disable_avoidance_distance_m'
             ).value)
+        )
+        self.terminal_corner_enabled = bool(
+            self.get_parameter('terminal_corner_enabled').value
+        )
+        self.terminal_corner_map = (
+            float(self.get_parameter('terminal_corner_map_x').value),
+            float(self.get_parameter('terminal_corner_map_y').value),
+        )
+        self.terminal_target_map = (
+            float(self.get_parameter('terminal_target_map_x').value),
+            float(self.get_parameter('terminal_target_map_y').value),
+        )
+        self.terminal_corner_activation_distance = max(0.1, float(
+            self.get_parameter('terminal_corner_activation_distance_m').value
+        ))
+        self.terminal_corner_max_range = max(0.2, float(
+            self.get_parameter('terminal_corner_max_range_m').value
+        ))
+        self.terminal_corner_cluster_gap = max(0.01, float(
+            self.get_parameter('terminal_corner_cluster_gap_m').value
+        ))
+        self.terminal_corner_min_points = max(3, int(
+            self.get_parameter('terminal_corner_min_points').value
+        ))
+        self.terminal_corner_min_span = max(0.05, float(
+            self.get_parameter('terminal_corner_min_span_m').value
+        ))
+        self.terminal_corner_fit_residual = max(0.001, float(
+            self.get_parameter('terminal_corner_fit_residual_m').value
+        ))
+        self.terminal_corner_perpendicular_tolerance = math.radians(max(1.0, float(
+            self.get_parameter('terminal_corner_perpendicular_tolerance_deg').value
+        )))
+        self.terminal_corner_max_correction = max(0.05, float(
+            self.get_parameter('terminal_corner_max_correction_m').value
+        ))
+        self.terminal_corner_source_axis_jump = math.radians(max(1.0, float(
+            self.get_parameter('terminal_corner_source_axis_jump_deg').value
+        )))
+        try:
+            expected_axes_deg = json.loads(str(self.get_parameter(
+                'terminal_corner_expected_axes_deg_json'
+            ).value))
+        except (json.JSONDecodeError, TypeError):
+            expected_axes_deg = []
+        self.terminal_corner_expected_axes = tuple(sorted(
+            self._undirected_axis(math.radians(float(axis)))
+            for axis in expected_axes_deg
+        ))
+        self.terminal_corner_expected_axis_tolerance = math.radians(max(1.0, float(
+            self.get_parameter('terminal_corner_expected_axis_tolerance_deg').value
+        )))
+        self.terminal_corner_lock_hold = max(0.0, float(
+            self.get_parameter('terminal_corner_lock_hold_sec').value
+        ))
+        self.terminal_corner_filter_alpha = min(1.0, max(0.05, float(
+            self.get_parameter('terminal_corner_filter_alpha').value
+        )))
+        self.terminal_corner_correction_stability = max(0.005, float(
+            self.get_parameter('terminal_corner_correction_stability_m').value
+        ))
+        self.terminal_acquire_distance = max(0.1, float(
+            self.get_parameter('terminal_acquire_distance_m').value
+        ))
+        self.terminal_corner_commit_max_distance = max(0.05, float(
+            self.get_parameter('terminal_corner_commit_max_distance_m').value
+        ))
+        self.terminal_precommit_linear = max(0.02, float(
+            self.get_parameter('terminal_precommit_linear_speed').value
+        ))
+        self.terminal_precommit_heading_kp = float(
+            self.get_parameter('terminal_precommit_heading_kp').value
+        )
+        self.terminal_precommit_heading_max_angular = max(0.0, float(
+            self.get_parameter('terminal_precommit_heading_max_angular_speed').value
+        ))
+        self.terminal_precommit_heading_tolerance = math.radians(max(0.1, float(
+            self.get_parameter('terminal_precommit_heading_tolerance_deg').value
+        )))
+        self.terminal_corner_approach_speed = max(0.02, float(
+            self.get_parameter('terminal_corner_approach_speed').value
+        ))
+        self.terminal_corner_heading_kp = float(
+            self.get_parameter('terminal_corner_heading_kp').value
+        )
+        self.terminal_corner_heading_max_angular = max(0.0, float(
+            self.get_parameter('terminal_corner_heading_max_angular_speed').value
+        ))
+        self.terminal_corner_stop_tolerance = max(0.005, float(
+            self.get_parameter('terminal_corner_stop_tolerance_m').value
+        ))
+        self.terminal_corner_lateral_tolerance = max(0.005, float(
+            self.get_parameter('terminal_corner_lateral_tolerance_m').value
+        ))
+        self.terminal_lateral_guard = max(
+            self.terminal_corner_lateral_tolerance,
+            float(self.get_parameter('terminal_lateral_guard_m').value),
+        )
+        self.terminal_corner_max_extra_travel = max(0.0, float(
+            self.get_parameter('terminal_corner_max_extra_travel_m').value
+        ))
+        self.terminal_progress_min_delta = max(0.001, float(
+            self.get_parameter('terminal_progress_min_delta_m').value
+        ))
+        self.terminal_progress_timeout = max(0.1, float(
+            self.get_parameter('terminal_progress_timeout_sec').value
+        ))
+        self.terminal_completion_hold = max(0.0, float(
+            self.get_parameter('terminal_completion_hold_sec').value
+        ))
+        self.terminal_corner_disable_emergency_avoidance = bool(
+            self.get_parameter('terminal_corner_disable_emergency_avoidance').value
         )
 
         self.pursuit_linear_speed = float(self.get_parameter('pursuit_linear_speed').value)
@@ -835,10 +1004,11 @@ class Stage3ReturnNavigator(Node):
             self._pending_entry_anchor_map = None
             self._bind_stage3_entry_anchor(pending_anchor)
         if self._entry_anchor_map is not None and self._entry_anchor_odom is not None:
-            self.current_position = self._position_from_entry_anchor(
+            base_position = self._position_from_entry_anchor(
                 self._entry_anchor_map, self._entry_anchor_odom, self._last_raw_odom_xy,
                 self._entry_anchor_map_from_odom_yaw,
             )
+            self.current_position = self._apply_terminal_corner_correction(base_position)
         else:
             # Only diagnostic/fallback before a Stage2 handoff anchor arrives.
             self.current_position = self._lookup_map_xy_from_tf()
@@ -855,6 +1025,27 @@ class Stage3ReturnNavigator(Node):
         return (
             entry_map[0] + cos_yaw * dx_odom - sin_yaw * dy_odom,
             entry_map[1] + sin_yaw * dx_odom + cos_yaw * dy_odom,
+        )
+
+    def _apply_terminal_corner_correction(self, position):
+        """Apply only the translation established from a physical wall corner."""
+        return (
+            position[0] + self._terminal_corner_map_correction[0],
+            position[1] + self._terminal_corner_map_correction[1],
+        )
+
+    def _uncorrected_entry_anchor_position(self):
+        if (
+            self._entry_anchor_map is None
+            or self._entry_anchor_odom is None
+            or self._last_raw_odom_xy is None
+        ):
+            return None
+        return self._position_from_entry_anchor(
+            self._entry_anchor_map,
+            self._entry_anchor_odom,
+            self._last_raw_odom_xy,
+            self._entry_anchor_map_from_odom_yaw,
         )
 
     def _stage3_entry_anchor_cb(self, msg):
@@ -1034,6 +1225,7 @@ class Stage3ReturnNavigator(Node):
     def _arm_mission(self):
         self.mission_active = False
         self.mission_finished = False
+        self._reset_terminal_corner_state()
         self._imu_yaw_offset = 0.0
         # S2's final handoff line is fixed along map -Y.  Establish the map
         # heading from IMU at handoff, then retain IMU-only relative heading.
@@ -1061,9 +1253,11 @@ class Stage3ReturnNavigator(Node):
         self._visual_search_gate_reached = False
         self._initial_align_required = False
         if self._entry_anchor_map is not None and self._entry_anchor_odom is not None:
-            self.current_position = self._position_from_entry_anchor(
+            self.current_position = self._apply_terminal_corner_correction(
+                self._position_from_entry_anchor(
                 self._entry_anchor_map, self._entry_anchor_odom, self._last_raw_odom_xy,
                 self._entry_anchor_map_from_odom_yaw,
+                )
             )
         else:
             self.current_position = self._lookup_map_xy_from_tf()
@@ -1088,7 +1282,7 @@ class Stage3ReturnNavigator(Node):
         self._p_recovery_target_yaw = None
         self._p_avoidance_recovery_yaw = None
         self._set_p_inference_active(True)
-        # Phase3 直接进入返程；P YOLO 从本阶段开始即可确认并接管。
+        # Phase3 starts the return immediately; P is terminal semantic confirmation only.
         self._set_channel_inference_active(False)
         self._pre_return_state = 'done'
         self._pre_return_started_at = self._now_sec()
@@ -1098,13 +1292,14 @@ class Stage3ReturnNavigator(Node):
         self.log.mission(
             f'phase=3 detected, direction={self.return_direction}, '
             f'tf_map={self.current_position}; '
-            'starting return; P YOLO may take over immediately after confirmation'
+            'starting return; P is terminal semantic confirmation only'
         )
 
     def _reset_mission(self):
         self.cmd_pub.publish(Twist())
         self.mission_active = False
         self.mission_finished = False
+        self._reset_terminal_corner_state()
         self._awaiting_entry_yaw_alignment = False
         self._imu_yaw_offset = 0.0
         self.start_after_time = None
@@ -1144,6 +1339,23 @@ class Stage3ReturnNavigator(Node):
         if detector is not None and hasattr(detector, 'release_model'):
             detector.release_model('phase_exit')
         self._publish_state('idle')
+
+    def _reset_terminal_corner_state(self):
+        self._terminal_corner_map_correction = (0.0, 0.0)
+        self._terminal_corner_candidate_since = None
+        self._terminal_corner_source_axes = None
+        self._terminal_corner_reference_correction = None
+        self._terminal_corner_lock = None
+        self._terminal_corner_committed = False
+        self._terminal_precommitting = False
+        self._terminal_corner_target_yaw = None
+        self._terminal_corner_start_odom = None
+        self._terminal_corner_start_distance = None
+        self._terminal_last_progress_odom = None
+        self._terminal_last_progress_at = None
+        self._terminal_p_confirmed = False
+        self._terminal_completion_candidate_since = None
+        self._terminal_zone_announced = False
 
     def _start_mission(self):
         if self.require_stage3_entry_anchor and (
@@ -1291,13 +1503,33 @@ class Stage3ReturnNavigator(Node):
             self._start_mission()
             return
 
-        # 1. 紧急近障时倒车脱离，再重新进入常规避障。
-        if self._check_emergency_stop():
+        # Build the terminal reference before navigation arbitration.  P and
+        # lidar are only trusted while acquiring the reference; neither sensor
+        # can take control after the short-run commit.
+        self._update_p_inference_gate()
+        self._update_terminal_corner_lock()
+        self._update_p_detection()
+        self._try_start_terminal_corner_approach()
+        if self._terminal_corner_committed:
+            self._run_terminal_corner_approach()
+            return
+        if self._terminal_precommitting:
+            self._run_terminal_precommit()
             return
 
-        # 2. 雷达避障高于 P 视觉和 A* 导航；P 终段可按深度禁用避障。
-        if self.avoid_state == 'forward' and self.latest_scan is not None:
-            self._check_obstacle()
+        # The final walls are expected returns, not obstacles.  Once inside
+        # the acquisition zone, no lidar-driven reverse or lateral detour may
+        # erase a partially acquired terminal reference.
+        terminal_zone = self._in_terminal_acquisition_zone()
+        if terminal_zone:
+            self._cancel_avoidance_for_terminal_zone()
+        else:
+            # 1. Before the terminal zone, emergency and four-state lidar
+            # avoidance retain their normal authority.
+            if self._check_emergency_stop():
+                return
+            if self.avoid_state == 'forward' and self.latest_scan is not None:
+                self._check_obstacle()
 
         if self.avoid_state != 'forward':
             self._run_avoidance()
@@ -1308,14 +1540,8 @@ class Stage3ReturnNavigator(Node):
             self._run_initial_align()
             return
 
-        # 4. Phase3 开始即允许 P YOLO 确认并接管。
-        self._update_p_inference_gate()
-        self._update_p_detection()
-        if self._p_approaching:
-            self._run_p_approach()
-            return
-
-        # 5. 尚未识别 P，才允许使用漂移敏感的 map/A* 粗导航。
+        # 4. P never steers the production vehicle.  Map navigation reaches
+        # the staging point; P and the wall corner only authorize final commit.
         if self.current_position is None:
             self.stop_robot()
             self._publish_state('waiting_for_map_tf')
@@ -1323,6 +1549,58 @@ class Stage3ReturnNavigator(Node):
         if self.use_global_planner and self._run_planner_forbidden_reverse():
             return
         self._run_center_drive()
+
+    def _in_terminal_acquisition_zone(self):
+        if self.current_position is None:
+            return False
+        return math.hypot(
+            self.current_position[0] - self.terminal_target_map[0],
+            self.current_position[1] - self.terminal_target_map[1],
+        ) <= self.terminal_acquire_distance
+
+    def _cancel_avoidance_for_terminal_zone(self):
+        if self.avoid_state != 'forward':
+            self.log.mission(
+                f'terminal acquisition cancels lidar state={self.avoid_state}; '
+                'expected terminal walls must not trigger a detour'
+            )
+        self.avoid_state = 'forward'
+        self.avoid_started_time = None
+        self.avoid_clear_since = None
+        self.avoid_entry_yaw = None
+        self.counter_steer_deadline = None
+        self.recovery_deadline = None
+        self.emergency_reverse_deadline = None
+        self.recovery_uses_heading = False
+        if not self._terminal_zone_announced:
+            self._terminal_zone_announced = True
+            self.log.mission(
+                f'terminal acquisition zone entered: distance<='
+                f'{self.terminal_acquire_distance:.2f}m; lidar avoidance disabled '
+                'until terminal commit or phase exit'
+            )
+
+    def _try_start_terminal_corner_approach(self):
+        if (
+            self._terminal_corner_committed
+            or not self._terminal_p_confirmed
+            or self._terminal_corner_lock is None
+        ):
+            return False
+        if self.current_position is None or self.current_yaw is None:
+            return False
+        dx = self.terminal_target_map[0] - self.current_position[0]
+        dy = self.terminal_target_map[1] - self.current_position[1]
+        distance = math.hypot(dx, dy)
+        target_yaw = math.atan2(dy, dx) if distance > 1e-6 else self.current_yaw
+        heading_error = self._angle_error(target_yaw, self.current_yaw)
+        if (
+            distance <= self.terminal_corner_commit_max_distance
+            and abs(heading_error) <= self.terminal_precommit_heading_tolerance
+        ):
+            return self._start_terminal_corner_approach(target_yaw)
+        self._terminal_precommitting = True
+        return False
 
     def _check_emergency_stop(self):
         if self.avoid_state == 'emergency_reversing':
@@ -1487,6 +1765,434 @@ class Stage3ReturnNavigator(Node):
             return self._p_visible_yaw_history[0][1]
         return self.current_yaw
 
+    @staticmethod
+    def _undirected_axis(angle):
+        return float(angle % math.pi)
+
+    @staticmethod
+    def _undirected_axis_error(first, second):
+        difference = abs(first - second) % math.pi
+        return min(difference, math.pi - difference)
+
+    def _cluster_terminal_corner_points(self, scan_msg):
+        clusters = []
+        active = []
+        previous = None
+        max_range = self.terminal_corner_max_range
+        if scan_msg.range_max > 0.0:
+            max_range = min(max_range, float(scan_msg.range_max))
+
+        def finish_cluster():
+            nonlocal active, previous
+            if active:
+                clusters.append(active)
+            active = []
+            previous = None
+
+        for index, distance in enumerate(scan_msg.ranges):
+            if (
+                math.isinf(distance)
+                or math.isnan(distance)
+                or distance < self.min_range
+                or distance > max_range
+            ):
+                finish_cluster()
+                continue
+            angle = scan_msg.angle_min + index * scan_msg.angle_increment
+            point = (distance * math.cos(angle), distance * math.sin(angle))
+            if (
+                previous is not None
+                and math.hypot(point[0] - previous[0], point[1] - previous[1])
+                > self.terminal_corner_cluster_gap
+            ):
+                finish_cluster()
+            active.append(point)
+            previous = point
+        finish_cluster()
+        return clusters
+
+    def _fit_terminal_corner_line(self, points):
+        if len(points) < self.terminal_corner_min_points:
+            return None
+        values = np.asarray(points, dtype=float)
+        center = np.mean(values, axis=0)
+        centered = values - center
+        try:
+            _unused, _singular, vectors = np.linalg.svd(centered, full_matrices=False)
+        except np.linalg.LinAlgError:
+            return None
+        tangent = vectors[0]
+        normal = np.array((-tangent[1], tangent[0]))
+        projections = centered @ tangent
+        span = float(np.max(projections) - np.min(projections))
+        residual = float(np.sqrt(np.mean((centered @ normal) ** 2)))
+        if (
+            span < self.terminal_corner_min_span
+            or residual > self.terminal_corner_fit_residual
+        ):
+            return None
+        return {
+            'center': center,
+            'tangent': tangent,
+            'span': span,
+            'rms': residual,
+            'points': int(values.shape[0]),
+        }
+
+    def _find_terminal_corner(self, scan_msg):
+        best = None
+        clusters = self._cluster_terminal_corner_points(scan_msg)
+        lines = []
+
+        def consider_pair(first, second):
+            nonlocal best
+            dot = float(np.clip(np.dot(first['tangent'], second['tangent']), -1.0, 1.0))
+            perpendicular_error = abs(math.pi / 2.0 - math.acos(abs(dot)))
+            if perpendicular_error > self.terminal_corner_perpendicular_tolerance:
+                return
+            matrix = np.column_stack((first['tangent'], -second['tangent']))
+            if abs(float(np.linalg.det(matrix))) < 1e-4:
+                return
+            try:
+                distances = np.linalg.solve(matrix, second['center'] - first['center'])
+            except np.linalg.LinAlgError:
+                return
+            corner = first['center'] + distances[0] * first['tangent']
+            corner_range = float(np.linalg.norm(corner))
+            if corner_range > self.terminal_corner_max_range:
+                return
+            rank = (
+                min(first['span'], second['span']),
+                first['points'] + second['points'],
+                -max(first['rms'], second['rms']),
+                -corner_range,
+            )
+            candidate = {
+                'corner_body': corner,
+                'first': first,
+                'second': second,
+                'perpendicular_error': perpendicular_error,
+                'range': corner_range,
+                'rank': rank,
+            }
+            if best is None or candidate['rank'] > best['rank']:
+                best = candidate
+
+        for cluster in clusters:
+            if (line := self._fit_terminal_corner_line(cluster)) is not None:
+                lines.append(line)
+            # Adjacent returns from an L corner can form one continuous V
+            # cluster.  Test every viable scan-order split as two wall faces.
+            for split in range(
+                self.terminal_corner_min_points,
+                len(cluster) - self.terminal_corner_min_points + 1,
+            ):
+                first = self._fit_terminal_corner_line(cluster[:split])
+                second = self._fit_terminal_corner_line(cluster[split:])
+                if first is not None and second is not None:
+                    consider_pair(first, second)
+
+        for first_index, first in enumerate(lines):
+            for second in lines[first_index + 1:]:
+                consider_pair(first, second)
+        return best
+
+    def _update_terminal_corner_lock(self):
+        if (
+            not self.terminal_corner_enabled
+            or self.latest_scan is None
+            or self.current_position is None
+            or self.current_yaw is None
+        ):
+            return
+        # A commit must use one immutable physical reference.  Continuing to
+        # filter scan data after lock would move the endpoint while the final
+        # odometry-only run is in progress.
+        if self._terminal_corner_lock is not None:
+            return
+        if math.hypot(
+            self.current_position[0] - self.terminal_target_map[0],
+            self.current_position[1] - self.terminal_target_map[1],
+        ) > self.terminal_corner_activation_distance:
+            self._terminal_corner_candidate_since = None
+            self._terminal_corner_reference_correction = None
+            return
+        base_position = self._uncorrected_entry_anchor_position()
+        if base_position is None:
+            return
+        candidate = self._find_terminal_corner(self.latest_scan)
+        if candidate is None:
+            self._terminal_corner_candidate_since = None
+            self._terminal_corner_reference_correction = None
+            return
+
+        corner_x, corner_y = candidate['corner_body']
+        cos_yaw = math.cos(self.current_yaw)
+        sin_yaw = math.sin(self.current_yaw)
+        measured_corner_map = (
+            base_position[0] + cos_yaw * corner_x - sin_yaw * corner_y,
+            base_position[1] + sin_yaw * corner_x + cos_yaw * corner_y,
+        )
+        raw_correction = (
+            self.terminal_corner_map[0] - measured_corner_map[0],
+            self.terminal_corner_map[1] - measured_corner_map[1],
+        )
+        if math.hypot(*raw_correction) > self.terminal_corner_max_correction:
+            self._terminal_corner_candidate_since = None
+            self._terminal_corner_reference_correction = None
+            return
+
+        axes = tuple(sorted((
+            self._undirected_axis(self.current_yaw + math.atan2(
+                candidate['first']['tangent'][1], candidate['first']['tangent'][0],
+            )),
+            self._undirected_axis(self.current_yaw + math.atan2(
+                candidate['second']['tangent'][1], candidate['second']['tangent'][0],
+            )),
+        )))
+        if (
+            self.terminal_corner_expected_axes
+            and (
+                len(self.terminal_corner_expected_axes) != 2
+                or len(axes) != 2
+                or any(
+                    self._undirected_axis_error(axis, expected)
+                    > self.terminal_corner_expected_axis_tolerance
+                    for axis, expected in zip(axes, self.terminal_corner_expected_axes)
+                )
+            )
+        ):
+            self._terminal_corner_candidate_since = None
+            self._terminal_corner_reference_correction = None
+            self._terminal_corner_source_axes = None
+            return
+        if self._terminal_corner_source_axes is not None and any(
+            self._undirected_axis_error(axis, source_axis)
+            > self.terminal_corner_source_axis_jump
+            for axis, source_axis in zip(axes, self._terminal_corner_source_axes)
+        ):
+            self._terminal_corner_candidate_since = None
+            self._terminal_corner_reference_correction = None
+            return
+
+        now = self._now_sec()
+        if self._terminal_corner_reference_correction is None:
+            self._terminal_corner_reference_correction = raw_correction
+        elif math.hypot(
+            raw_correction[0] - self._terminal_corner_reference_correction[0],
+            raw_correction[1] - self._terminal_corner_reference_correction[1],
+        ) > self.terminal_corner_correction_stability:
+            self._terminal_corner_reference_correction = raw_correction
+            self._terminal_corner_candidate_since = None
+            return
+        if self._terminal_corner_candidate_since is None:
+            self._terminal_corner_candidate_since = now
+        alpha = self.terminal_corner_filter_alpha
+        old_x, old_y = self._terminal_corner_map_correction
+        self._terminal_corner_map_correction = (
+            old_x + alpha * (raw_correction[0] - old_x),
+            old_y + alpha * (raw_correction[1] - old_y),
+        )
+        self.current_position = self._apply_terminal_corner_correction(base_position)
+        self._terminal_corner_source_axes = axes
+        if (
+            self._terminal_corner_lock is None
+            and now - self._terminal_corner_candidate_since >= self.terminal_corner_lock_hold
+        ):
+            self._terminal_corner_lock = {
+                'stamp': now,
+                'correction': self._terminal_corner_map_correction,
+                'range': candidate['range'],
+                'span': min(candidate['first']['span'], candidate['second']['span']),
+                'rms': max(candidate['first']['rms'], candidate['second']['rms']),
+            }
+            self.log.segment(
+                'P corner lock: '
+                f'corner_body=({corner_x:.2f},{corner_y:.2f}) '
+                f'correction=({self._terminal_corner_map_correction[0]:+.3f},'
+                f'{self._terminal_corner_map_correction[1]:+.3f}) '
+                f'range={candidate["range"]:.2f}m '
+                f'span={self._terminal_corner_lock["span"]:.2f}m '
+                f'rms={self._terminal_corner_lock["rms"]:.3f}m'
+            )
+
+    def _run_terminal_precommit(self):
+        """Close the frozen-anchor geometry before allowing blind short travel."""
+        if self.current_position is None or self.current_yaw is None:
+            self.stop_robot()
+            self._publish_state('p_corner_terminal_guard')
+            return
+        dx = self.terminal_target_map[0] - self.current_position[0]
+        dy = self.terminal_target_map[1] - self.current_position[1]
+        distance = math.hypot(dx, dy)
+        if distance <= self.terminal_corner_stop_tolerance:
+            self._start_terminal_corner_approach(self.current_yaw)
+            return
+        target_yaw = math.atan2(dy, dx)
+        heading_error = self._angle_error(target_yaw, self.current_yaw)
+        angular = self._clamp(
+            self.terminal_precommit_heading_kp * heading_error,
+            self.terminal_precommit_heading_max_angular,
+        )
+        if abs(heading_error) <= self.terminal_precommit_heading_tolerance:
+            angular = 0.0
+        self.desired_heading = target_yaw
+        self._publish_state('terminal_precommit')
+        self.log.telemetry(
+            'TERMINAL_PRECOMMIT',
+            f'dist={distance:.3f}m target={math.degrees(target_yaw):.1f}deg '
+            f'heading_err={math.degrees(heading_error):+.1f}deg '
+            f'v={self.terminal_precommit_linear:.2f} w={angular:.2f}',
+        )
+        self.cmd_pub.publish(self._twist(self.terminal_precommit_linear, angular))
+
+    def _start_terminal_corner_approach(self, target_yaw=None):
+        if (
+            not self.terminal_corner_enabled
+            or self._terminal_corner_lock is None
+            or self.current_position is None
+            or self.current_yaw is None
+            or self._last_raw_odom_xy is None
+        ):
+            return False
+        dx = self.terminal_target_map[0] - self.current_position[0]
+        dy = self.terminal_target_map[1] - self.current_position[1]
+        distance = math.hypot(dx, dy)
+        if distance > self.terminal_corner_commit_max_distance:
+            return False
+        self._terminal_corner_committed = True
+        self._terminal_precommitting = False
+        self._terminal_corner_target_yaw = target_yaw if target_yaw is not None else (
+            self.current_yaw
+            if distance <= self.terminal_corner_stop_tolerance
+            else math.atan2(dy, dx)
+        )
+        self._terminal_corner_start_odom = self._last_raw_odom_xy
+        self._terminal_corner_start_distance = distance
+        self._terminal_last_progress_odom = self._last_raw_odom_xy
+        self._terminal_last_progress_at = self._now_sec()
+        self.desired_heading = self._terminal_corner_target_yaw
+        self._p_final_approach_latched = True
+        self._publish_state('p_corner_approach')
+        self.log.segment(
+            f'P corner terminal commit: target=({self.terminal_target_map[0]:.2f},'
+            f'{self.terminal_target_map[1]:.2f}) distance={distance:.3f}m '
+            f'yaw={math.degrees(self._terminal_corner_target_yaw):.1f}deg '
+            'visual/lidar loss is now expected; IMU plus short odometry runout'
+        )
+        return True
+
+    def _run_terminal_corner_approach(self):
+        if (
+            self.current_position is None
+            or self.current_yaw is None
+            or self._terminal_corner_target_yaw is None
+            or self._terminal_corner_start_odom is None
+        ):
+            self.stop_robot()
+            self._publish_state('p_corner_terminal_guard')
+            return
+        dx = self.terminal_target_map[0] - self.current_position[0]
+        dy = self.terminal_target_map[1] - self.current_position[1]
+        cos_target = math.cos(self._terminal_corner_target_yaw)
+        sin_target = math.sin(self._terminal_corner_target_yaw)
+        remaining = cos_target * dx + sin_target * dy
+        lateral = -sin_target * dx + cos_target * dy
+        travelled = math.hypot(
+            self._last_raw_odom_xy[0] - self._terminal_corner_start_odom[0],
+            self._last_raw_odom_xy[1] - self._terminal_corner_start_odom[1],
+        )
+        max_travel = self._terminal_corner_start_distance + self.terminal_corner_max_extra_travel
+        now = self._now_sec()
+        if self._terminal_last_progress_odom is not None:
+            progress_delta = math.hypot(
+                self._last_raw_odom_xy[0] - self._terminal_last_progress_odom[0],
+                self._last_raw_odom_xy[1] - self._terminal_last_progress_odom[1],
+            )
+            if progress_delta >= self.terminal_progress_min_delta:
+                self._terminal_last_progress_odom = self._last_raw_odom_xy
+                self._terminal_last_progress_at = now
+            elif (
+                self._terminal_last_progress_at is not None
+                and now - self._terminal_last_progress_at >= self.terminal_progress_timeout
+            ):
+                self.stop_robot()
+                self._publish_state('p_corner_terminal_guard')
+                self.log.warn(
+                    'P_CORNER',
+                    f'terminal guard: no odom progress for '
+                    f'{now - self._terminal_last_progress_at:.2f}s '
+                    f'while remain={remaining:.3f}m',
+                )
+                return
+        if abs(lateral) > self.terminal_lateral_guard:
+            self.stop_robot()
+            self._publish_state('p_corner_terminal_guard')
+            self.log.warn(
+                'P_CORNER',
+                f'terminal guard: lateral={lateral:.3f}m exceeds '
+                f'{self.terminal_lateral_guard:.3f}m',
+            )
+            return
+        if abs(remaining) <= self.terminal_corner_stop_tolerance:
+            if abs(lateral) <= self.terminal_corner_lateral_tolerance:
+                if self._terminal_completion_candidate_since is None:
+                    self._terminal_completion_candidate_since = now
+                    self.stop_robot()
+                    self._publish_state('terminal_done_hold')
+                    self.log.segment(
+                        f'terminal target reached; holding for '
+                        f'{self.terminal_completion_hold:.2f}s before complete'
+                    )
+                    return
+                if now - self._terminal_completion_candidate_since >= self.terminal_completion_hold:
+                    self._finish_mission('return complete, terminal anchor short-run verified')
+                else:
+                    self.stop_robot()
+                    self._publish_state('terminal_done_hold')
+            else:
+                self._terminal_completion_candidate_since = None
+                self.stop_robot()
+                self._publish_state('p_corner_terminal_guard')
+                self.log.warn(
+                    'P_CORNER',
+                    f'terminal guard: remaining={remaining:.3f}m lateral={lateral:.3f}m',
+                )
+            return
+        self._terminal_completion_candidate_since = None
+        if remaining < -self.terminal_corner_stop_tolerance:
+            self.stop_robot()
+            self._publish_state('p_corner_terminal_guard')
+            self.log.warn(
+                'P_CORNER',
+                f'terminal guard: overshot={-remaining:.3f}m '
+                f'lateral={lateral:.3f}m',
+            )
+            return
+        if travelled > max_travel:
+            self.stop_robot()
+            self._publish_state('p_corner_terminal_guard')
+            self.log.warn(
+                'P_CORNER',
+                f'terminal guard: travelled={travelled:.3f}m max={max_travel:.3f}m',
+            )
+            return
+        heading_error = self._angle_error(self._terminal_corner_target_yaw, self.current_yaw)
+        angular = self._clamp(
+            self.terminal_corner_heading_kp * heading_error,
+            self.terminal_corner_heading_max_angular,
+        )
+        if abs(heading_error) <= self.p_heading_tolerance:
+            angular = 0.0
+        self._publish_state('p_corner_approach')
+        self.log.telemetry(
+            'P_CORNER_APPROACH',
+            f'remain={remaining:.3f}m lateral={lateral:+.3f}m travelled={travelled:.3f}m '
+            f'heading_err={math.degrees(heading_error):+.1f}deg '
+            f'v={self.terminal_corner_approach_speed:.2f} w={angular:.2f}',
+        )
+        self.cmd_pub.publish(self._twist(self.terminal_corner_approach_speed, angular))
+
     def _update_p_detection(self):
         detected, conf, bbox, stamp, offset, _fill = self._p_detection()
         confirmed = (
@@ -1494,7 +2200,10 @@ class Stage3ReturnNavigator(Node):
             and detected
             and conf >= self.p_approach_conf
         )
-        if not confirmed:
+        # P is a semantic terminal witness, not a steering target.  Ignore
+        # valid long-range detections until map navigation reaches the same
+        # local zone in which the physical corner is acquired.
+        if not confirmed or not self._in_terminal_acquisition_zone():
             self._p_consecutive_hits = 0
             self._p_last_confirmed_stamp = None
             return
@@ -1503,32 +2212,20 @@ class Stage3ReturnNavigator(Node):
             self._p_last_confirmed_stamp = stamp
         if self._p_consecutive_hits < self.p_approach_hits_required:
             return
-        if self._p_approaching:
+        if self._terminal_p_confirmed:
             return
-        self._p_approaching = True
-        self._p_offset_filtered = float(offset)
-        self._p_target_yaw = self._visual_target_yaw(offset)
-        self._p_heading_lock_offset = self._p_offset_filtered
-        self._p_last_heading_reacquire_at = self._now_sec()
-        self.desired_heading = self._p_target_yaw
-        self._p_lost_since = None
-        self._p_lost_reverse_started_at = None
-        self._p_last_angular = 0.0
-        self._p_visible_yaw_history.clear()
-        self._p_recovery_target_yaw = None
-        self._publish_state('p_approach')
+        self._terminal_p_confirmed = True
         map_pos = self.current_position
         map_text = (
             f'map=({map_pos[0]:.2f},{map_pos[1]:.2f})'
             if map_pos is not None else 'map=unavailable'
         )
         self.log.segment(
-            f'P acquired conf={conf:.2f} offset={offset:+.3f}; '
-            f'heading_lock={math.degrees(self._p_target_yaw):.1f}deg '
-            f'visual approach v={self.p_approach_linear:.2f} {map_text} '
-            f'{self._position_source_text()} {self._p_depth_text(bbox)}'
+            f'terminal P confirmed conf={conf:.2f} offset={offset:+.3f} '
+            f'hits={self._p_consecutive_hits} {map_text}; '
+            'waiting for stable wall-corner anchor'
         )
-        self._publish_feedback('P acquired, visual final approach started')
+        self._publish_feedback('terminal P confirmed; acquiring physical anchor')
 
     def _run_p_approach(self):
         detected, conf, bbox, _stamp, offset, fill = self._p_detection()
@@ -1616,7 +2313,14 @@ class Stage3ReturnNavigator(Node):
             and depth_m <= self.p_approach_disable_avoidance_distance
         ):
             self._p_final_approach_latched = True
-        if depth_m is not None and depth_m < self.p_depth_stop_distance:
+        # The corner-calibrated route owns the physical stop point.  A depth
+        # reading around 0.5m is useful telemetry there, but must not complete
+        # before the corner correction can drive to the configured P point.
+        if (
+            not self.terminal_corner_enabled
+            and depth_m is not None
+            and depth_m < self.p_depth_stop_distance
+        ):
             self.log.segment(
                 f'P depth stop: depth={depth_m:.3f}m < '
                 f'{self.p_depth_stop_distance:.3f}m samples={samples} ({depth_status})'
@@ -1796,8 +2500,9 @@ class Stage3ReturnNavigator(Node):
         if self.use_global_planner and self._run_planner_forbidden_reverse():
             return
 
-        # P 未识别时只驶向已标定的视觉搜索入口。入口处停车等待
-        # 视觉接管，避免用漂移的里程计继续追逐 P 的名义 map 中心。
+        # Coarse navigation ends at the calibrated terminal staging point.
+        # It must not chase P beyond this point: the final run is authorized
+        # only by the local P/corner anchor and is explicitly bounded.
         target_x, target_y = self._goal_center()
         gate_dist = math.hypot(
             target_x - self.current_position[0], target_y - self.current_position[1]
@@ -1809,9 +2514,10 @@ class Stage3ReturnNavigator(Node):
                 self.log.mission(
                     f'visual search gate reached map=({self.current_position[0]:.2f},'
                     f'{self.current_position[1]:.2f}) target=({target_x:.2f},'
-                    f'{target_y:.2f}) dist={gate_dist:.2f}m; waiting for P vision'
+                    f'{target_y:.2f}) dist={gate_dist:.2f}m; waiting for terminal P '
+                    'confirmation and wall-corner anchor'
                 )
-            self._publish_state('visual_search_wait')
+            self._publish_state('terminal_acquire')
             self.stop_robot()
             return
 

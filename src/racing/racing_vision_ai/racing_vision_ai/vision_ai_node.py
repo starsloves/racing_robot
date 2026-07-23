@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+import fcntl
 import re
 import subprocess
 import threading
@@ -13,6 +15,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
+import cv2
 import rclpy
 import yaml
 from cv_bridge import CvBridge
@@ -54,6 +57,14 @@ class VisionAINode(Node):
         )
         self._jpeg_quality = int(self._config.get('image', {}).get('jpeg_quality', 85))
         self._image_max_edge_px = max(0, int(self._config.get('image', {}).get('max_edge_px', 448)))
+        capture_config = self._config.get('capture', {})
+        if not isinstance(capture_config, dict):
+            capture_config = {}
+        self._capture_image_path = Path(str(capture_config.get(
+            'save_path', '/home/sunrise/dev_ws/log/competition_stage2/ai_capture.jpg'
+        ))).expanduser()
+        self._stage2_log_path = self._capture_image_path.with_name('latest.log')
+        self._stage2_log_active = False
         self._vision_models: dict[str, VisionAnalyzer] = {}
         for name, model in models.items():
             if name == 'local' or not isinstance(model, dict) or not bool(model.get('enabled', False)):
@@ -63,6 +74,9 @@ class VisionAINode(Node):
         if not isinstance(local, dict):
             local = {}
         self._local_config = local
+        self._local_no_timeout = float(local.get(
+            'timeout_sec', self.get_parameter('request_timeout_sec').value
+        )) <= 0.0
         self._local_vision: VisionAnalyzer | None = None
         self._local_require_chinese = bool(local.get('require_chinese', True))
         self._local_server: subprocess.Popen | None = None
@@ -115,7 +129,8 @@ class VisionAINode(Node):
         )
         self.get_logger().info(
             f'[VISION_AI] trigger_topic={trigger_topic} '
-            f'image_topic={image_topic} max_age={self._frame_max_age_sec:.1f}s'
+            f'image_topic={image_topic} max_age={self._frame_max_age_sec:.1f}s '
+            f'capture_path={self._capture_image_path}'
         )
 
         for name, analyzer in self._vision_models.items():
@@ -132,6 +147,9 @@ class VisionAINode(Node):
     def _create_vision_analyzer(self, model: dict) -> VisionAnalyzer:
         """Build one contender from the uniform YAML model schema."""
         api_key = str(model.get('api_key', '')).strip()
+        thinking_enabled = model.get('thinking_enabled')
+        if not isinstance(thinking_enabled, bool):
+            thinking_enabled = None
         return VisionAnalyzer(
             provider=str(model.get('provider', '')).strip(),
             api_key=api_key,
@@ -142,6 +160,7 @@ class VisionAINode(Node):
             base_url=str(model.get('base_url', '')).strip(),
             request_timeout_sec=float(model.get('timeout_sec', self.get_parameter('request_timeout_sec').value)),
             max_tokens=int(model.get('max_tokens', 0)) or None,
+            thinking_enabled=thinking_enabled,
             logger=self.get_logger(),
         )
 
@@ -187,6 +206,8 @@ class VisionAINode(Node):
         previous = self._phase
         self._phase = int(msg.data)
         self._capture_active = self._phase == int(self.get_parameter('active_phase').value)
+        if self._capture_active:
+            self._stage2_log_active = True
         if previous == self._phase:
             return
         if self._capture_active:
@@ -197,6 +218,9 @@ class VisionAINode(Node):
                 self._latest_frame_time = 0.0
         self.get_logger().info(
             f'[RESOURCE] vision_ai phase={self._phase} capture_active={self._capture_active}'
+        )
+        self._write_stage2_log(
+            f'[PHASE] phase={self._phase} capture_active={self._capture_active}'
         )
 
     def _mission_state_callback(self, msg: String) -> None:
@@ -262,6 +286,7 @@ class VisionAINode(Node):
                 return
             self._local_server_ready.clear()
             self.get_logger().info('[RESOURCE] local VLM starting for Phase 2 prewarm')
+            self._write_stage2_log('[RESOURCE] local VLM starting for Phase 2 prewarm')
             threading.Thread(target=self._wait_for_local_server_ready, daemon=True).start()
 
     def _wait_for_local_server_ready(self) -> None:
@@ -283,6 +308,7 @@ class VisionAINode(Node):
                     if 200 <= response.status < 300:
                         self._local_server_ready.set()
                         self.get_logger().info('[RESOURCE] local VLM ready for Phase 2 capture')
+                        self._write_stage2_log('[RESOURCE] local VLM ready for capture')
                         self._publish_status('local_vlm_ready')
                         return
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
@@ -309,6 +335,7 @@ class VisionAINode(Node):
             self._local_server_log.close()
             self._local_server_log = None
         self.get_logger().info('[RESOURCE] local VLM stopped outside Phase 2')
+        self._write_stage2_log('[RESOURCE] local VLM stopped')
 
     def _stage2_trigger_callback(self, _msg: Empty) -> None:
         self._trigger_callback()
@@ -344,8 +371,29 @@ class VisionAINode(Node):
             f'[VISION_AI] frame captured age={age:.3f}s shape={frame.shape}; '
             f'queueing cloud request timeout={self._request_timeout_sec:.1f}s'
         )
+        self._save_capture_image(frame)
         self._publish_status(f'captured:age={age:.3f}s')
         self._executor.submit(self._analyze_worker, frame)
+
+    def _save_capture_image(self, frame: Any) -> None:
+        """Persist the exact frame sent to the vision providers for inspection."""
+        try:
+            self._capture_image_path.parent.mkdir(parents=True, exist_ok=True)
+            encoded, data = cv2.imencode(
+                '.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality]
+            )
+            if not encoded:
+                raise RuntimeError('cv2.imencode returned false')
+            temporary_path = self._capture_image_path.with_suffix('.jpg.tmp')
+            temporary_path.write_bytes(data.tobytes())
+            temporary_path.replace(self._capture_image_path)
+            self.get_logger().info(
+                f'[VISION_AI] capture image saved: {self._capture_image_path}'
+            )
+            self._write_stage2_log(f'[CAPTURE] image_saved={self._capture_image_path}')
+        except (OSError, RuntimeError, cv2.error) as exc:
+            self.get_logger().warning(f'[VISION_AI] capture image save failed: {exc}')
+            self._write_stage2_log(f'[CAPTURE] image_save_failed={type(exc).__name__}: {exc}')
 
     def _analyze_worker(self, frame: Any) -> None:
         try:
@@ -355,6 +403,9 @@ class VisionAINode(Node):
             started = self.get_clock().now().nanoseconds / 1e9
             self.get_logger().info(
                 f'[VISION_AI] stream race candidates={", ".join(name for name, _ in self._stream_candidates())}'
+            )
+            self._write_stage2_log(
+                f'[RACE] candidates={", ".join(name for name, _ in self._stream_candidates())}'
             )
             if self._streaming_enabled:
                 content, winner = self._analyze_stream_race(frame)
@@ -383,6 +434,7 @@ class VisionAINode(Node):
             with self._busy_lock:
                 self._busy = False
             self.get_logger().info('[VISION_AI] background task finished; ready for next trigger')
+            self._write_stage2_log('[RACE] background task finished')
             if self._mission_complete:
                 self._stop_local_server_if_idle()
 
@@ -437,6 +489,7 @@ class VisionAINode(Node):
                         selected.append(name)
                         selection_ready.set()
                         self.get_logger().info(f'[VISION_AI] stream race winner={name}')
+                        self._write_stage2_log(f'[RACE] stream_winner={name}')
                     outgoing = buffers[name]
                     buffers[name] = ''
                 publish_delta(outgoing)
@@ -448,7 +501,11 @@ class VisionAINode(Node):
             for name, analyzer in candidates
         }
         try:
-            if not selection_ready.wait(timeout=self._request_timeout_sec):
+            wait_timeout = (
+                None if self._local_no_timeout and any(name == 'local' for name, _ in candidates)
+                else self._request_timeout_sec
+            )
+            if not selection_ready.wait(timeout=wait_timeout):
                 self.get_logger().error('[VISION_AI] stream race timed out before first usable delta')
                 return None, 'none'
             winner = selected[0]
@@ -531,9 +588,27 @@ class VisionAINode(Node):
             race_executor.shutdown(wait=False, cancel_futures=True)
 
     def _publish_status(self, status: str) -> None:
+        self._write_stage2_log(f'[STATUS] {status}')
         msg = String()
         msg.data = status
         self._status_pub.publish(msg)
+
+    def _write_stage2_log(self, message: str) -> None:
+        """Append AI diagnostics without competing with Stage2's session owner."""
+        if not self._stage2_log_active:
+            return
+        try:
+            self._stage2_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._stage2_log_path.open('a', encoding='utf-8') as stream:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+                try:
+                    stamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                    stream.write(f'{stamp} [VISION_AI] {message}\n')
+                    stream.flush()
+                finally:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        except OSError as exc:
+            self.get_logger().warning(f'[VISION_AI] stage2 log append failed: {exc}')
 
     def destroy_node(self) -> bool:
         self.get_logger().info('[VISION_AI] shutting down executor')

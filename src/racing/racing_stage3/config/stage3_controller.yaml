@@ -2,11 +2,10 @@
 # Stage3 回P点导航配置 (stage3_return_navigator)
 # ================================================================================
 # 功能模块：
-#   1. A* 全局路径规划（避开地图禁区）
-#   2. Pure Pursuit 路径跟踪
-#   3. S1 风格激光聚类避障（固定首次右转，4状态：forward → avoiding → countersteering → recovering）
-#   4. P 点视觉检测与伺服接近（可选）
-#   5. 矩形区域到达判定
+#   1. 锚点后的单目标地图搜索（生产）
+#   2. S1 风格激光聚类避障（forward → avoiding → countersteering → recovering）
+#   3. P 终点语义确认、墙角锚定与受限短程终停（生产）
+#   4. A* 全局路径规划（可选能力，生产配置关闭）
 # ================================================================================
 
 stage3_return_navigator:
@@ -69,14 +68,14 @@ stage3_return_navigator:
     # ────────────────────────────────────────────────────────────────────────
 
     # --- P 视觉搜索终点 (map 全局坐标系) ---
-    # 最终名义位置为 (0.50, 0.10)。P 的最终到达仍由视觉和深度决定；
-    # 该点只用于 P 未出现时的粗导航和停车等待边界。
+    # (0.50, 0.10) 是终端锚点采集前的粗导航/等待点；实际终点由下方
+    # 墙角校正模块锁定为 (0.25, 0.10)。P 只确认终点语义，不直接控制车体。
 
     # 途经路点列表（JSON 格式）
     # [{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
     return_waypoints_json: '[{"x":0.50,"y":0.10,"speed":0.45,"description":"P_visual_search_goal"}]'
 
-    # 视觉搜索终点容差 (m) — 到达后停车，仅等待 P 视觉接管。
+    # 终端采集等待点容差 (m) — 到达后停车，等待 P 语义和墙角锚点。
     waypoint_tolerance: 0.25
 
     # 路径超时 (s) — 超过此时长未到达则任务失败
@@ -161,18 +160,13 @@ stage3_return_navigator:
     p_depth_max_m: 4.00
     # 仅取 P bbox 中心区域，降低边缘背景、空洞和 P 边框的影响。
     p_depth_roi_fraction: 0.50
-    # P 框内有效深度中位数 < 此值时，发布零速度和 stage3_state=complete。
+    # 关闭 terminal_corner_enabled 时，P 框内有效深度中位数 < 此值将终停；
+    # 墙角终端模式开启时该值仅作日志，终停由墙角校正后的 P 坐标决定。
     p_depth_stop_distance_m: 0.50
 
-    # P 框深度首次 <= 此值后，直到本次任务结束都跳过常规雷达避障；0 表示关闭。
-    # 紧急近障倒车恢复仍保留优先级。
-    p_approach_disable_avoidance_distance_m: 0.75
-
-    # P 点视觉到达后额外前进距离 (m) — 0 表示达到视觉阈值即刹停
-    p_extra_forward_distance_m: 0.00
-
-    # P 点视觉到达后额外前进速度 (m/s)
-    p_extra_forward_speed: 0.50
+    # 旧版 P 视觉接管的深度禁避障阈值。生产终端改由墙角锚点提交，
+    # 深度仅记录，必须保持 0，不能再决定避障权限。
+    p_approach_disable_avoidance_distance_m: 0.0
 
     # P 偏移滤波用于视觉航向重捕获，而不是逐帧直接打舵。
     p_approach_offset_filter_alpha: 0.55
@@ -186,9 +180,8 @@ stage3_return_navigator:
     p_heading_reacquire_offset: 0.18
     p_heading_reacquire_interval_sec: 0.60
 
-    # P 接管后由视觉锁定的 IMU 航向保持直线，深度决定终停；不再使用 map 判据。
-    # P 丢失时先低速倒车，并闭环回到仍能看见 P 时的历史航向；
-    # 回正或超时后恢复朝 P 视觉搜索终点的导航，重新启用常规雷达避障。
+    # 保留旧版视觉直线接近参数以兼容调试；生产状态机不再由 P 控制航向，
+    # P 丢失也不会倒车或回到地图搜索。
     p_loss_reverse_speed: 0.10
     p_loss_reverse_duration_sec: 2.00
     p_loss_reverse_max_angular: 0.35
@@ -196,6 +189,63 @@ stage3_return_navigator:
     p_loss_heading_lookback_sec: 1.0
     p_loss_heading_tolerance_deg: 6.0
     p_loss_heading_kp: 1.2
+
+    # ────────────────────────────────────────────────────────────────────────
+    # P 墙角终端校正：在可靠采集区锁定，最终视觉/雷达丢失是预期行为。
+    # ────────────────────────────────────────────────────────────────────────
+    # 赛场固定墙角为 map 原点；P 的车体原点终点为 (0.25, 0.10)。
+    # 现场坐标若实测不同，仅调整这四个坐标，不能改用里程计角度。
+    terminal_corner_enabled: true
+    terminal_corner_map_x: 0.00
+    terminal_corner_map_y: 0.00
+    terminal_target_map_x: 0.25
+    terminal_target_map_y: 0.10
+
+    # 仅在接近最终目标后寻找墙角，避免把赛道其他直角结构误作终端。
+    terminal_corner_activation_distance_m: 1.20
+    terminal_corner_max_range_m: 1.80
+    terminal_corner_cluster_gap_m: 0.18
+    terminal_corner_min_points: 8
+    terminal_corner_min_span_m: 0.25
+    terminal_corner_fit_residual_m: 0.030
+    terminal_corner_perpendicular_tolerance_deg: 25.0
+    # 大幅 map 平移通常意味着误锁了其他 L 形结构，拒绝而不是盲行补偿。
+    terminal_corner_max_correction_m: 0.55
+    terminal_corner_source_axis_jump_deg: 18.0
+    # 终点图为 map 轴对齐墙角；候选必须同时符合两条无向墙轴。
+    terminal_corner_expected_axes_deg_json: '[0.0, 90.0]'
+    terminal_corner_expected_axis_tolerance_deg: 15.0
+    terminal_corner_lock_hold_sec: 0.45
+    terminal_corner_filter_alpha: 0.35
+    # 连续候选推导出的 map 平移必须稳定，防止扫描分簇跳到其他墙角。
+    terminal_corner_correction_stability_m: 0.06
+
+    # 仅在距最终目标该范围内接受 P 作为终点语义确认，并关闭所有通用
+    # 激光避障/紧急倒车。此范围必须覆盖墙角仍可稳定拟合的位置。
+    terminal_acquire_distance_m: 1.20
+
+    # P 语义和墙角均锁定后，先以低速追终点方位；只有进入短程半径且
+    # 航向误差进入门限才冻结目标航向，随后用 /odom_combined xy 盲行。
+    terminal_corner_commit_max_distance_m: 0.65
+    terminal_precommit_linear_speed: 0.06
+    terminal_precommit_heading_kp: 1.2
+    terminal_precommit_heading_max_angular_speed: 0.25
+    terminal_precommit_heading_tolerance_deg: 6.0
+    terminal_corner_approach_speed: 0.12
+    terminal_corner_heading_kp: 1.4
+    terminal_corner_heading_max_angular_speed: 0.30
+    terminal_corner_stop_tolerance_m: 0.035
+    terminal_corner_lateral_tolerance_m: 0.060
+    # 短程一旦偏离进场线，不允许继续推进等待最终横向误差变大。
+    terminal_lateral_guard_m: 0.090
+    terminal_corner_max_extra_travel_m: 0.08
+    # 非零命令下 /odom_combined xy 无推进，立即停止并上报 guard。
+    terminal_progress_min_delta_m: 0.015
+    terminal_progress_timeout_sec: 0.75
+    # 目标坐标连续满足后保持停车时长，防止单帧里程计跨越即上报完成。
+    terminal_completion_hold_sec: 0.30
+    # 保留兼容参数；生产终端采集区和提交短程均不允许紧急倒车。
+    terminal_corner_disable_emergency_avoidance: true
 
     # Stage3 专用 Web 端口 — HTTP 实时预览端口（避免与 Stage2 冲突）
     p_web_port: 8083

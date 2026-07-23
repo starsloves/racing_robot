@@ -3,21 +3,23 @@
 
 vision_models:
   ark:
-    enabled: true
+    enabled: false
     provider: ark
     base_url: "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
     api_key: ""
     model_id: "doubao-seed-2-0-mini-260428"
+    thinking_enabled: false
     prompt: "仅简要描述画面中展示牌上的图案和关键信息，忽略背景、赛道和其他物体，只需要描述在做什么。用20-30个汉字输出适合语音播报的中文短句"
     timeout_sec: 30
     max_tokens: 48
 
   qwen:
-    enabled: true
+    enabled: false
     provider: dashscope
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     api_key: ""
     model_id: "qwen3.7-plus"
+    thinking_enabled: false
     prompt: "仅简要描述画面中展示牌上的图案和关键信息，忽略背景、赛道和其他物体，只需要描述在做什么。用20-30个汉字输出适合语音播报的中文短句"
     timeout_sec: 30
     max_tokens: 48
@@ -27,15 +29,16 @@ vision_models:
     provider: openai_compatible
     base_url: "http://127.0.0.1:8080/v1/chat/completions"
     api_key: ""
-    model_id: "SmolVLM-500M-Instruct"
+    model_id: "SmolVLM-256M-Instruct"
     prompt: "仅简要描述画面中展示牌上的图案和关键信息，忽略背景、赛道和其他物体，只需要描述在做什么。用10-20个汉字输出适合语音播报的中文短句"
-    timeout_sec: 30
+    # 0 表示本地 HTTP 推理及竞速首字等待均不超时；云端不可用时持续等待本地结果。
+    timeout_sec: 0
     max_tokens: 48
     require_chinese: true
     manage_process: true
     server_path: "/home/sunrise/models/llama.cpp/build/bin/llama-server"
-    model_path: "/home/sunrise/models/SmolVLM-500M-Instruct-Q8_0.gguf"
-    mmproj_path: "/home/sunrise/models/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"
+    model_path: "/home/sunrise/models/SmolVLM-256M-Instruct-Q8_0.gguf"
+    mmproj_path: "/home/sunrise/models/mmproj-SmolVLM-256M-Instruct-f16.gguf"
     host: "127.0.0.1"
     port: 8080
     threads: 4
@@ -49,3 +52,6 @@ response:
 image:
   jpeg_quality: 85
   max_edge_px: 448
+
+capture:
+  save_path: "/home/sunrise/dev_ws/log/competition_stage2/ai_capture.jpg"

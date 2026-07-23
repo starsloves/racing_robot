@@ -10,7 +10,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import PointStamped
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 from tf2_ros import TransformException
 
 from racing_stage2.stage2_inertial_base import Stage2InertialBase
@@ -117,8 +117,13 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('stage3_preplan_map_y', 1.80)
         self.declare_parameter('stage3_handoff_hold_timeout_sec', 1.0)
         self.declare_parameter('stage2_ai_capture_enabled', True)
-        self.declare_parameter('stage2_ai_capture_lead_m', 0.50)
+        self.declare_parameter('stage2_ai_capture_delay_after_turn_sec', 0.50)
         self.declare_parameter('stage2_ai_trigger_topic', 'stage2_ai_capture')
+        self.declare_parameter('stage2_ai_preset_enabled', False)
+        self.declare_parameter('stage2_ai_preset_delay_after_turn_sec', 5.0)
+        self.declare_parameter('stage2_ai_preset_clockwise_text', '')
+        self.declare_parameter('stage2_ai_preset_counterclockwise_text', '')
+        self.declare_parameter('stage2_ai_result_topic', 'ai_description')
         # 避障参数（yaml 配置，直行避障使用）
         self.declare_parameter('avoid_turn_away_deg', 30.0)
         self.declare_parameter('avoid_turn_back_deg', 40.0)
@@ -486,15 +491,40 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._stage2_ai_capture_enabled = bool(
             self.get_parameter('stage2_ai_capture_enabled').value
         )
-        self._stage2_ai_capture_lead_m = max(
-            0.0, float(self.get_parameter('stage2_ai_capture_lead_m').value)
+        self._stage2_ai_capture_delay_after_turn_sec = max(
+            0.0, float(self.get_parameter(
+                'stage2_ai_capture_delay_after_turn_sec'
+            ).value)
         )
         self._stage2_ai_capture_sent = False
+        self._stage2_ai_capture_due_at = None
+        self._stage2_ai_preset_enabled = bool(
+            self.get_parameter('stage2_ai_preset_enabled').value
+        )
+        self._stage2_ai_preset_delay_after_turn_sec = max(
+            0.0, float(self.get_parameter(
+                'stage2_ai_preset_delay_after_turn_sec'
+            ).value)
+        )
+        self._stage2_ai_preset_clockwise_text = str(self.get_parameter(
+            'stage2_ai_preset_clockwise_text'
+        ).value).strip()
+        self._stage2_ai_preset_counterclockwise_text = str(self.get_parameter(
+            'stage2_ai_preset_counterclockwise_text'
+        ).value).strip()
+        self._stage2_ai_preset_sent = False
+        self._stage2_ai_preset_due_at = None
         self._stage2_ai_trigger_topic = str(
             self.get_parameter('stage2_ai_trigger_topic').value
         ).strip() or 'stage2_ai_capture'
         self._stage2_ai_trigger_pub = self.create_publisher(
             Empty, self._stage2_ai_trigger_topic, 1
+        )
+        self._stage2_ai_result_topic = str(self.get_parameter(
+            'stage2_ai_result_topic'
+        ).value).strip() or 'ai_description'
+        self._stage2_ai_result_pub = self.create_publisher(
+            String, self._stage2_ai_result_topic, 10
         )
         anchor_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                                 reliability=ReliabilityPolicy.RELIABLE)
@@ -572,9 +602,10 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             f'±{self._cluster_window_config["half_y"]:.2f}m]'
         )
         self.get_logger().info(
-            f'[AI_CAPTURE] enabled={self._stage2_ai_capture_enabled} '
-            f'topic={self._stage2_ai_trigger_topic} lead={self._stage2_ai_capture_lead_m:.2f}m '
-            f'trigger=top_long_before_right_side_arc'
+            f'[AI_CAPTURE] mode={"preset" if self._stage2_ai_preset_enabled else "vision_race"} '
+            f'enabled={self._stage2_ai_capture_enabled} topic={self._stage2_ai_trigger_topic} '
+            f'capture_delay={self._stage2_ai_capture_delay_after_turn_sec:.2f}s '
+            f'preset_delay={self._stage2_ai_preset_delay_after_turn_sec:.2f}s'
         )
         self._log_session(
             'CONFIG',
@@ -593,10 +624,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         )
         self._log_session(
             'AI_CAPTURE_CONFIG',
-            f'enabled={self._stage2_ai_capture_enabled} '
+            f'mode={"preset" if self._stage2_ai_preset_enabled else "vision_race"} '
+            f'capture_enabled={self._stage2_ai_capture_enabled} '
             f'topic={self._stage2_ai_trigger_topic} '
-            f'lead={self._stage2_ai_capture_lead_m:.2f}m '
-            f'trigger=top_long_before_right_side_arc',
+            f'capture_delay={self._stage2_ai_capture_delay_after_turn_sec:.2f}s '
+            f'preset_delay={self._stage2_ai_preset_delay_after_turn_sec:.2f}s '
+            f'preset_topic={self._stage2_ai_result_topic}',
         )
 
     def _setup_session_log(self) -> None:
@@ -1307,6 +1340,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                                      self.current_yaw, now,
                                      distance_m=self._track_distance_m)
         self._stage2_ai_capture_sent = False
+        self._stage2_ai_capture_due_at = None
+        self._stage2_ai_preset_sent = False
+        self._stage2_ai_preset_due_at = None
         self._stage3_preplan_sent = False
         self._control_gap_stop_latched = False
         self._track_mission_active = True
@@ -1332,22 +1368,77 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         )
         return True
 
-    def _maybe_trigger_stage2_ai_capture(self) -> None:
-        if not self._stage2_ai_capture_enabled or self._stage2_ai_capture_sent:
+    def _arm_stage2_ai_capture_after_right_turn(self, now: float) -> None:
+        if self._stage2_ai_preset_enabled:
+            if self._stage2_ai_preset_sent or self._stage2_ai_preset_due_at is not None:
+                return
+            self._stage2_ai_preset_due_at = (
+                now + self._stage2_ai_preset_delay_after_turn_sec
+            )
+            message = (
+                f'mode=preset from=top_long to=right_side_arc '
+                f'delay={self._stage2_ai_preset_delay_after_turn_sec:.3f}s '
+                f'direction={self.direction}'
+            )
+        else:
+            if not self._stage2_ai_capture_enabled or self._stage2_ai_capture_sent:
+                return
+            if self._stage2_ai_capture_due_at is not None:
+                return
+            self._stage2_ai_capture_due_at = (
+                now + self._stage2_ai_capture_delay_after_turn_sec
+            )
+            message = (
+                f'mode=vision_race from=top_long to=right_side_arc '
+                f'delay={self._stage2_ai_capture_delay_after_turn_sec:.3f}s '
+                f'direction={self.direction}'
+            )
+        self.get_logger().info(f'[AI_CAPTURE] armed: {message}')
+        self._log_session('AI_CAPTURE_ARMED', message)
+
+    def _maybe_trigger_stage2_ai_capture(self, now: float) -> None:
+        if self._stage2_ai_preset_enabled:
+            due_at = self._stage2_ai_preset_due_at
+            if self._stage2_ai_preset_sent or due_at is None or now < due_at:
+                return
+            self._stage2_ai_preset_sent = True
+            text = (
+                self._stage2_ai_preset_clockwise_text
+                if self.direction == 'clockwise'
+                else self._stage2_ai_preset_counterclockwise_text
+            )
+            elapsed = now - (due_at - self._stage2_ai_preset_delay_after_turn_sec)
+            if not text:
+                message = (
+                    f'direction={self.direction} elapsed_after_entry={elapsed:.3f}s '
+                    'reason=empty_preset_text'
+                )
+                self.get_logger().error(f'[AI_PRESET] skipped: {message}')
+                self._log_session('AI_PRESET_SKIPPED', message)
+                return
+            result = String()
+            result.data = text
+            self._stage2_ai_result_pub.publish(result)
+            message = (
+                f'direction={self.direction} elapsed_after_entry={elapsed:.3f}s '
+                f'chars={len(text)} topic={self._stage2_ai_result_topic}'
+            )
+            self.get_logger().info(f'[AI_PRESET] published: {message}')
+            self._log_session('AI_PRESET_BROADCAST', message)
             return
-        if self._track_controller.active_segment_name != 'top_long':
-            return
-        target = self._track_controller.active_segment_target_m
-        progress = self._track_controller.active_segment_progress_m
-        remaining = max(0.0, target - progress)
-        if remaining > self._stage2_ai_capture_lead_m:
+
+        if (not self._stage2_ai_capture_enabled or self._stage2_ai_capture_sent
+                or self._stage2_ai_capture_due_at is None
+                or now < self._stage2_ai_capture_due_at):
             return
 
         self._stage2_ai_capture_sent = True
         self._stage2_ai_trigger_pub.publish(Empty())
         message = (
-            f'top_long progress={progress:.3f}/{target:.3f}m '
-            f'remaining={remaining:.3f}m direction={self.direction}'
+            f'right_side_arc elapsed_after_entry='
+            f'{now - (self._stage2_ai_capture_due_at - self._stage2_ai_capture_delay_after_turn_sec):.3f}s '
+            f'configured_delay={self._stage2_ai_capture_delay_after_turn_sec:.3f}s '
+            f'direction={self.direction}'
         )
         self.get_logger().info(f'[AI_CAPTURE] trigger published: {message}')
         self._log_session('AI_CAPTURE_TRIGGER', message)
@@ -1370,7 +1461,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 self.get_parameter('turn_obstacle_stop_m').value):
             command = self._track_controller.safe_stop('front_obstacle')
         else:
-            self._maybe_trigger_stage2_ai_capture()
+            self._maybe_trigger_stage2_ai_capture(now)
             visual = self._get_vision_line_status() if getattr(
                 self, '_vision_node', None) is not None else None
             self._log_turn_precheck()
@@ -1508,6 +1599,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                     f'ekf_s={self._track_distance_m:.3f} '
                     f'vision={visual_text}',
                 )
+            if previous_segment == 'top_long' and command.segment == 'right_side_arc':
+                self._arm_stage2_ai_capture_after_right_turn(now)
         cmd_msg = self.create_twist(command.linear, command.angular)
         self._log_control_timing(now, f'track:{command.segment or command.state}')
         self.cmd_pub.publish(cmd_msg)
