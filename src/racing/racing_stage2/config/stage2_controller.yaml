@@ -12,9 +12,8 @@
 #   -> exit_medium -> exit_turn_90 -> stage3_handoff_line
 #
 # 调参速查：
-#   两个 180° 前触发点：
-#     track_side_arc_vision_enabled=true：SEG 优先，map x 兜底
-#     track_side_arc_vision_enabled=false：只用 map x；TF 缺失时按距离降级
+#   两个 180° 前触发点：SEG 在名义窗口确认；map x 作为固定坐标强制兜底。
+#   S2 启动时将局部 map x 重置为 2.50m；IMU 保持航向与全部转角。
 #   直线速度：track_max_speed
 #   四弯速度：track_<segment>_linear / track_<segment>_angular
 #   90° / 180° 弯均按完整相对 IMU 转角和完整弧长结束，无提前收口。
@@ -72,12 +71,6 @@ stage2_inertial_navigator:
     stage2_vision_prewarm_on_task: true
     # Stage1 发布 phase=2 后立即启动 Stage2；不再额外等待 0.5s。
     start_delay_sec: 0.0
-    # 启动时允许的静止线速度阈值（m/s）
-    start_stationary_speed_mps: 0.03
-    # 启动时允许的静止角速度阈值（rad/s）
-    start_stationary_yaw_rate_rps: 0.08
-    # 只检查当前底盘是否仍在明显运动；不再要求连续静止保持 0.5s。
-    start_stationary_hold_sec: 0.0
     # 阶段反馈日志前缀
     test_feedback_prefix: 第二阶段
 
@@ -102,46 +95,36 @@ stage2_inertial_navigator:
     # 全局最大角速度（rad/s）
     track_max_angular: 1.5
 
-    # 四个弯各自的巡航线速度与角速度；建议始终保持 linear / angular = 半径。
+    # 四个弯各自的巡航线速度与角速度。
     # 入口 90°：0.50 / 1.25 = 0.40m。
     track_entry_arc_linear: 0.50
     track_entry_arc_angular: 1.25
-    # 第一侧 180°：0.35 / 1.40 = 0.25m。
-    track_left_side_arc_linear: 0.35
-    track_left_side_arc_angular: 1.40
+    # 第一侧 180°：独立设置，不与第二侧共享。
+    track_left_side_arc_linear: 0.70
+    track_left_side_arc_angular: 1.10
     # 第二侧 180°：独立设置，不与第一侧共享。
-    track_right_side_arc_linear: 0.35
-    track_right_side_arc_angular: 1.40
+    track_right_side_arc_linear: 0.70
+    track_right_side_arc_angular: 1.10
     # 出口 90°：独立设置，不与入口共享。
     track_exit_turn_90_linear: 0.50
     track_exit_turn_90_angular: 1.25
 
-    # 四个弯均固定曲率巡航，随后同方向低曲率收角；各弯独立调参。
-    # 到达本弯 IMU 转角容差即切下一段，绝不反向打舵或等待 yaw-rate 降零。
+    # 四个弯均按各自配置的线速度、角速度巡航。到达剩余提前角后
+    # 立即切入下一直线；残余航向由直线的 IMU 航向闭环和 yaw-rate 阻尼吸收。
     # entry_arc：入口 90°
-    track_entry_arc_exit_lead_deg: 50.0
-    track_entry_arc_exit_angular_scale: 0.25
-    track_entry_arc_completion_tolerance_deg: 3.0
+    track_entry_arc_exit_lead_deg: 30.0
     # left_side_arc：第一个 180°
-    track_left_side_arc_exit_lead_deg: 30.0
-    track_left_side_arc_exit_angular_scale: 0.25
-    track_left_side_arc_completion_tolerance_deg: 3.0
+    track_left_side_arc_exit_lead_deg: 25.0
     # right_side_arc：第二个 180°
-    track_right_side_arc_exit_lead_deg: 30.0
-    track_right_side_arc_exit_angular_scale: 0.25
-    track_right_side_arc_completion_tolerance_deg: 3.0
+    track_right_side_arc_exit_lead_deg: 35.0
     # exit_turn_90：出口 90°，进入 Stage3 交接直线前的最后一弯
-    track_exit_turn_90_exit_lead_deg: 50.0
-    track_exit_turn_90_exit_angular_scale: 0.25
-    track_exit_turn_90_completion_tolerance_deg: 3.0
-    # 四弯共同的最小里程比例，防止仅由异常 IMU 跳变提前切段。
-    track_arc_min_progress_ratio: 0.80
+    track_exit_turn_90_exit_lead_deg: 30.0
 
     # 第一个 180° 的标定中心：entry_arc 后 entry_medium 的名义距离。
     # 视觉触发开启后，此值不再是常规切段点，而是下方保护窗口的中心。
-    track_entry_medium_distance_m: 0.65
+    track_entry_medium_distance_m: 0.45
 
-    # 第一个 180° 的名义里程终点；视觉触发窗口见下方统一配置。
+    # 第一个 180° 的名义里程中心；横向激光边界丢失时才使用窗口上限兜底。
     track_entry_boundary_trigger_enabled: true
     track_entry_boundary_guard_half_width_m: 0.50 # 让纯视觉
     # 前方横边在分割 ROI 中自顶部向下的位置比例；值越大代表边界越靠近车头。
@@ -158,30 +141,26 @@ stage2_inertial_navigator:
     track_top_boundary_max_angle_deg: 20.0
     track_top_boundary_confirm_frames: 1
 
-    # 两个 180° 弯的总视觉开关。SEG 横边仅能在名义终点前
-    # track_side_arc_vision_trigger_lead_m 的窗口内切段；进入窗口即降至
-    # track_side_arc_vision_trigger_speed_mps，以稳定边界检测。
-    # track_turn_force_map_x_enabled 仍独立控制 TF x 与 TF 缺失后的距离降级策略。
+    # 兼容旧参数：SEG 不再参与切弯，窗口内仅降速让激光横边界确认稳定。
     track_side_arc_vision_enabled: true
     track_side_arc_vision_trigger_lead_m: 0.20
     track_side_arc_vision_trigger_speed_mps: 0.45
 
-    # 两个 180° 的视觉均未确认时，以 map <- base_footprint 的 x 强制转弯。
     # 顺时针：entry_medium x<=min，top_long x>=max；逆时针顺序相反。
-    # map TF 暂不可用时才回退到各段距离窗口上限，避免无限直行。
     track_turn_force_map_x_enabled: true
-    track_turn_force_min_map_x: 2.03
-    track_turn_force_max_map_x: 3.50
+    track_turn_force_min_map_x: 1.60
+    track_turn_force_max_map_x: 3.40
+    # S2 局部 map X 原点：交接瞬间强制重置为 2.50m，随后只累计实时 TF 的相对变化。
+    track_map_x_reset_m: 2.50
 
     # 第二个 180° 的名义里程中心，只用于视觉有效窗口和 TF 缺失保护。
     track_top_long_distance_m: 2.47
 
     # 出口最后直线长度：right_side_arc 后走多远判定 Stage2 完成。
     # 最新实车反馈最后一段偏长，缩短 20cm：1.49m -> 1.29m。
-    track_exit_medium_distance_m: 0.80
+    track_exit_medium_distance_m: 0.65
 
     # 两个 180° 和出口短直线完成后，按方向执行 90°：顺时针左转、逆时针右转。
-    # 该段使用独立的 track_exit_turn_90_linear / angular / radius 配置，
     # 随后沿 -Y 直行；实时 TF map_y 严格小于此值时交权给 Stage3。
     track_stage3_handoff_map_y: 2.25
     stage3_entry_anchor_topic: stage3_entry_anchor
@@ -192,11 +171,6 @@ stage2_inertial_navigator:
     stage3_preplan_map_y: 1.80
     # 正式交权后持续末段命令的最长时间；S3 未及时接管则安全停车。
     stage3_handoff_hold_timeout_sec: 1.0
-
-    # 名义半径：两个 180° 弯直径约 0.50m。控制器以 v/R 生成基准角速度，
-    # 并以 πR 作为弧长参考；入口/出口 90° 弯仍使用 track_entry_radius。
-    track_entry_radius: 0.40
-    track_corner_radius: 0.25
 
     # 直线段出弯修正
     track_line_heading_kp: 0.80
@@ -211,7 +185,6 @@ stage2_inertial_navigator:
     imu_heading_correction_enabled: true
     fusion_mode_enabled: true
     # 长直线视觉纠偏：近场中线负责横移拉回，远近差负责航向辅助。
-    # 保留 0.40rad/s 的强回正能力，但仅在连续可信且近远中线不矛盾时释放。
     track_vision_lateral_scale_m: 2.40
     track_vision_lateral_weight: 0.35
     track_vision_lateral_deadband: 0.06
@@ -227,7 +200,6 @@ stage2_inertial_navigator:
     track_vision_camera_offset: 0.0
     # 每个新 SEG 帧允许的视觉角速度变化；不是最大角速度限幅。
     track_vision_max_angular_step: 0.12
-    # 视觉修正本身保留 ±0.40rad/s，总输出仍受 track_max_angular=0.75rad/s 限制。
     track_vision_correction_max_angular: 0.40
 
     # /odom_combined 单步异常过滤，防 EKF 跳变误累计距离。
@@ -268,7 +240,9 @@ stage2_inertial_navigator:
     # 生产直线避障：在左右围栏约束内提前完成小横移，整个过程保持直线速度。
     # 无法从扫描中得到两侧围栏，或障碍两侧均不足车体包络时，不创建绕行计划。
     stage2_straight_avoid_enabled: true
-    stage2_straight_avoid_trigger_m: 1.50
+    # 0.66m/s 下须覆盖扫描确认、控制执行和制动距离；小于此距离才开始
+    # 局部规划会让 S 形候选在几何上来不及完成。
+    stage2_straight_avoid_trigger_m: 2.20
     stage2_straight_avoid_window_min_x: 0.18
     stage2_straight_avoid_window_half_width_m: 0.22
     # 只接受车头正前方 +/-15 度的障碍；赛道两侧围栏不触发绕行。
@@ -305,8 +279,31 @@ stage2_inertial_navigator:
     stage2_straight_avoid_min_shift_m: 0.06
     stage2_straight_avoid_forward_margin_m: 0.25
 
-    # 两个 180° 弯前探测：仅记录，不停车、不减速、不改变切段。
-    # 顺时针取右侧、逆时针取左侧；前方与同侧窗口共用上述聚类过滤规则。
+    # 受控停车距离 = v * response + v^2 / (2 * brake_decel) + margin。
+    # response 与 brake_decel 必须按实车日志/制动测试重新标定，不能用 odom yaw。
+    stage2_safety_response_sec: 0.30
+    stage2_safety_brake_decel_mps2: 0.70
+    stage2_safety_margin_m: 0.25
+
+    # 只有 top_long 中段使用滚动 MPPI；短直道尽头横墙不能送入通用避障器。
+    # 所有候选必须留在雷达估计的左右围栏内并避开障碍+车体安全包络；
+    # 已确认障碍但没有可行候选时，控制器发布零速而不是继续直行。
+    stage2_top_long_mppi_enabled: true
+    stage2_top_long_mppi_linear_speed_mps: 0.42
+    stage2_top_long_mppi_max_angular_speed_rps: 0.80
+    # 4s 预测时域在 0.42m/s 下覆盖 1.68m，包含触发后完整绕行或停车决策。
+    stage2_top_long_mppi_horizon_steps: 80
+    stage2_top_long_mppi_step_sec: 0.05
+    stage2_top_long_mppi_batch_size: 128
+    stage2_top_long_mppi_temperature: 12.0
+    stage2_top_long_mppi_angular_noise_rps: 0.45
+    stage2_top_long_mppi_recovery_lateral_tolerance_m: 0.04
+    stage2_top_long_mppi_recovery_heading_tolerance_deg: 4.0
+    # 末端会看到下一弯的已知横墙；该距离内不再创建通用障碍候选。
+    stage2_top_long_avoid_turn_guard_m: 0.60
+
+    # 两个 180° 弯前探测目前只写诊断日志。横墙是既有赛道边界，不能用
+    # 通用前方簇直接停车；转角避障须等待专用的边界簇/独立障碍分类器。
     stage2_turn_precheck_enabled: true
     stage2_turn_precheck_lead_m: 0.60
     stage2_turn_precheck_front_m: 0.50

@@ -103,8 +103,10 @@ class Stage3ReturnNavigator(Node):
         self._p_detector = None
         self._p_approaching = False
         self._p_consecutive_hits = 0
+        self._p_last_confirmed_stamp = None
         self._p_offset_filtered = 0.0
         self._p_target_yaw = None
+        self._p_heading_lock_offset = None
         self._p_last_heading_reacquire_at = None
         self._p_lost_since = None
         self._p_lost_reverse_started_at = None
@@ -1073,8 +1075,10 @@ class Stage3ReturnNavigator(Node):
         self.start_after_time = self._now_sec() + self.start_delay_sec
         self._p_approaching = False
         self._p_consecutive_hits = 0
+        self._p_last_confirmed_stamp = None
         self._p_offset_filtered = 0.0
         self._p_target_yaw = None
+        self._p_heading_lock_offset = None
         self._p_last_heading_reacquire_at = None
         self._p_lost_since = None
         self._p_lost_reverse_started_at = None
@@ -1119,8 +1123,10 @@ class Stage3ReturnNavigator(Node):
         self.recovery_uses_heading = False
         self._p_approaching = False
         self._p_consecutive_hits = 0
+        self._p_last_confirmed_stamp = None
         self._p_offset_filtered = 0.0
         self._p_target_yaw = None
+        self._p_heading_lock_offset = None
         self._p_last_heading_reacquire_at = None
         self._p_lost_since = None
         self._p_lost_reverse_started_at = None
@@ -1471,6 +1477,8 @@ class Stage3ReturnNavigator(Node):
     def _p_heading_before_loss(self, now):
         if self._p_avoidance_recovery_yaw is not None:
             return self._p_avoidance_recovery_yaw
+        if self._p_target_yaw is not None:
+            return self._p_target_yaw
         desired_time = now - self.p_loss_heading_lookback
         for stamp, yaw in reversed(self._p_visible_yaw_history):
             if stamp <= desired_time:
@@ -1480,13 +1488,19 @@ class Stage3ReturnNavigator(Node):
         return self.current_yaw
 
     def _update_p_detection(self):
-        detected, conf, bbox, _stamp, offset, _fill = self._p_detection()
+        detected, conf, bbox, stamp, offset, _fill = self._p_detection()
         confirmed = (
             self.phase == 3
             and detected
             and conf >= self.p_approach_conf
         )
-        self._p_consecutive_hits = self._p_consecutive_hits + 1 if confirmed else 0
+        if not confirmed:
+            self._p_consecutive_hits = 0
+            self._p_last_confirmed_stamp = None
+            return
+        if stamp != self._p_last_confirmed_stamp:
+            self._p_consecutive_hits += 1
+            self._p_last_confirmed_stamp = stamp
         if self._p_consecutive_hits < self.p_approach_hits_required:
             return
         if self._p_approaching:
@@ -1494,6 +1508,7 @@ class Stage3ReturnNavigator(Node):
         self._p_approaching = True
         self._p_offset_filtered = float(offset)
         self._p_target_yaw = self._visual_target_yaw(offset)
+        self._p_heading_lock_offset = self._p_offset_filtered
         self._p_last_heading_reacquire_at = self._now_sec()
         self.desired_heading = self._p_target_yaw
         self._p_lost_since = None
@@ -1530,10 +1545,10 @@ class Stage3ReturnNavigator(Node):
                 )
                 self.log.warn(
                     'P_DETECTION',
-                    'P lost after acquisition: reversing toward the P-visible heading '
-                    f'{self.p_loss_heading_lookback:.1f}s ago ({target_deg:.1f}deg)'
+                    'P lost after acquisition: reversing toward the locked visual heading '
+                    f'({target_deg:.1f}deg)'
                 )
-                self._publish_feedback('P lost: reverse toward the last P-visible heading')
+                self._publish_feedback('P lost: reverse toward the locked visual heading')
 
             reverse_elapsed = now - self._p_lost_reverse_started_at
             target_yaw = self._p_recovery_target_yaw
@@ -1556,8 +1571,9 @@ class Stage3ReturnNavigator(Node):
                 )
                 self.cmd_pub.publish(self._twist(-self.p_loss_reverse_speed, reverse_angular))
             else:
-                self._publish_state('p_visual_recovery_wait')
-                self.stop_robot()
+                self._resume_map_search_after_p_loss(
+                    reverse_elapsed, heading_restored, heading_error,
+                )
             return
 
         self._p_lost_since = None
@@ -1569,14 +1585,16 @@ class Stage3ReturnNavigator(Node):
         self._p_offset_filtered = alpha * float(offset) + (1.0 - alpha) * self._p_offset_filtered
         now = self._now_sec()
         reacquire_due = (
-            abs(self._p_offset_filtered) >= self.p_heading_reacquire_offset
-            and (
-                self._p_last_heading_reacquire_at is None
-                or now - self._p_last_heading_reacquire_at >= self.p_heading_reacquire_interval
-            )
+            self._p_heading_lock_offset is None
+            or abs(self._p_offset_filtered - self._p_heading_lock_offset)
+            >= self.p_heading_reacquire_offset
+        ) and (
+            self._p_last_heading_reacquire_at is None
+            or now - self._p_last_heading_reacquire_at >= self.p_heading_reacquire_interval
         )
         if self._p_target_yaw is None or reacquire_due:
             self._p_target_yaw = self._visual_target_yaw(self._p_offset_filtered)
+            self._p_heading_lock_offset = self._p_offset_filtered
             self._p_last_heading_reacquire_at = now
             self.log.segment(
                 f'P heading reacquire offset={self._p_offset_filtered:+.3f} '
@@ -1614,6 +1632,35 @@ class Stage3ReturnNavigator(Node):
             f'{self._p_depth_text(bbox)}',
         )
         self.cmd_pub.publish(self._twist(linear, angular))
+
+    def _resume_map_search_after_p_loss(self, reverse_elapsed, heading_restored, heading_error):
+        """Return to the calibrated search goal when an obstacle hides P."""
+        target_deg = (
+            math.degrees(self._p_recovery_target_yaw)
+            if self._p_recovery_target_yaw is not None else float('nan')
+        )
+        self._p_approaching = False
+        self._p_consecutive_hits = 0
+        self._p_last_confirmed_stamp = None
+        self._p_target_yaw = None
+        self._p_heading_lock_offset = None
+        self._p_last_heading_reacquire_at = None
+        self._p_lost_since = None
+        self._p_lost_reverse_started_at = None
+        self._p_recovery_target_yaw = None
+        self._p_avoidance_recovery_yaw = None
+        self._p_final_approach_latched = False
+        self._p_visible_yaw_history.clear()
+        self.desired_heading = None
+        self._filtered_heading_err = 0.0
+        recovery_reason = 'heading_restored' if heading_restored else 'reverse_timeout'
+        self._publish_state('map_search_p')
+        self.log.mission(
+            f'P lost recovery complete ({recovery_reason}): elapsed={reverse_elapsed:.2f}s '
+            f'target={target_deg:.1f}deg error={math.degrees(heading_error):+.1f}deg; '
+            'resume lidar-protected navigation to visual search goal'
+        )
+        self._publish_feedback('P occluded: resume navigation to visual search goal')
 
     def _visual_target_yaw(self, offset):
         """Turn one P-frame offset into a heading that IMU can hold straight."""

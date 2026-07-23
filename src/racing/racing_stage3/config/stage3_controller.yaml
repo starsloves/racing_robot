@@ -143,10 +143,10 @@ stage3_return_navigator:
     p_approach_conf_threshold: 0.5
 
     # 连续检测次数阈值 — 连续检测到 P 点此帧数后触发接近（抗抖动）
-    p_approach_consecutive_hits: 1
+    p_approach_consecutive_hits: 2
 
     # 接近线速度 (m/s) — P 已接近画面中心时的最高速度
-    p_approach_linear_speed: 0.60
+    p_approach_linear_speed: 0.35
 
     # P 检测结果的最大有效年龄 (s)
     p_detection_timeout_sec: 0.35
@@ -178,16 +178,17 @@ stage3_return_navigator:
     p_approach_offset_filter_alpha: 0.55
 
     # 首次识别 P 即按框偏差锁定 IMU 目标航向，随后直线保持。
-    # 只有偏差超过重捕获阈值并经过最短间隔后，才更新一次目标航向。
+    # 相对上次锁定偏差变化超过该阈值并经过最短间隔后，才更新一次目标航向。
     p_heading_bearing_gain_rad: 0.55
     p_heading_kp: 1.4
     p_heading_tolerance_deg: 3.0
     p_heading_max_angular_speed: 0.45
     p_heading_reacquire_offset: 0.18
-    p_heading_reacquire_interval_sec: 0.35
+    p_heading_reacquire_interval_sec: 0.60
 
     # P 接管后由视觉锁定的 IMU 航向保持直线，深度决定终停；不再使用 map 判据。
-    # P 丢失时低速倒车，并闭环回到仍能看见 P 时的历史航向。
+    # P 丢失时先低速倒车，并闭环回到仍能看见 P 时的历史航向；
+    # 回正或超时后恢复朝 P 视觉搜索终点的导航，重新启用常规雷达避障。
     p_loss_reverse_speed: 0.10
     p_loss_reverse_duration_sec: 2.00
     p_loss_reverse_max_angular: 0.35

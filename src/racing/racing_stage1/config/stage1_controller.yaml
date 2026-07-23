@@ -37,6 +37,8 @@ competition_controller:
     imu_initial_map_yaw_deg: 10.0
     # 发布给 Stage2 的 latched IMU->map 航向零点映射；Stage2 必须继承此值。
     imu_map_yaw_offset_topic: imu_map_yaw_offset
+    # 交权时将当前物理朝向重标定为 map 90°，并向 Stage2 发布同一持久 offset。
+    reset_imu_yaw_on_phase2_handoff: true
 
     # 里程计话题（EKF 融合后的位姿，用于路径记录和后退）
     odom_topic: /odom_combined
@@ -366,13 +368,12 @@ competition_controller:
     # 旧版圆形进入判定半径 (m) — 仅 terminal_enabled=false 时使用
     corridor_entry_region_radius_m: 0.10
 
-    # Stage1 -> Stage2 交权的最小 map Y (m) — 即使已进入圆形区域，也必须到达该 Y 门线后才放行
-    # 终端逼近持续到该门线，防止目标前提前交权
-    corridor_release_min_y_m: 2.50
+    # Stage1 -> Stage2 统一交权点为 map Y=2.55m（也是最终通道目标）。
+    # 仅留 +/−约4cm 控制窗口，避免不同 Y 位置启动 Stage2 首段。
+    corridor_release_min_y_m: 2.53
 
-    # 交权只允许在门线后的有限窗口内发生；超过该 Y 说明避障或回正已越点，
-    # 必须倒回 staging 区重新捕获，禁止高位直接进入 Stage2。
-    corridor_release_max_y_m: 2.62
+    # 超过 2.60m 仍未满足墙中心/yaw 才视为真正越点并重捕获。
+    corridor_release_max_y_m: 2.60
     # 终端重捕获的默认最高 staging Y。实际 staging 会根据当前横向偏差
     # 回退到更早的参考中心线点，保证在门线前可按受限角度重新并线。
     corridor_reacquire_y_m: 2.05
@@ -416,22 +417,22 @@ competition_controller:
 
     # 无双墙时，最后一小段 map X 兜底误差映射到期望航向的增益 (1/m)。
     # 双墙有效时终端目标航向固定为 corridor_goal_yaw，不使用该项拉偏 IMU yaw。
-    corridor_terminal_lateral_gain: 0.8
+    corridor_terminal_lateral_gain: 1.2
 
     # 期望航向误差到角速度的比例增益
-    corridor_terminal_heading_kp: 1.0
+    corridor_terminal_heading_kp: 1.4
 
     # 航向死区 (°) — 死区内 w=0，防止持续反复打舵
     corridor_terminal_yaw_deadband_deg: 1.0
 
     # 终端逼近角速度绝对上限 (rad/s)
-    corridor_terminal_max_angular_speed: 0.30
+    corridor_terminal_max_angular_speed: 0.40
 
     # 最后一小段 X 微调的角速度绝对上限 (rad/s)
-    corridor_terminal_micro_max_angular_speed: 0.12
+    corridor_terminal_micro_max_angular_speed: 0.18
 
     # 终端逼近角速度每秒最大变化量 (rad/s²)，限制左右反打
-    corridor_terminal_angular_slew_rate_rad_s2: 0.25
+    corridor_terminal_angular_slew_rate_rad_s2: 0.60
 
     # 仅用于终端横向闭环的 X 误差低通时间常数 (s)；交权判据仍使用原始 map X
     corridor_terminal_x_filter_tau_sec: 0.20
@@ -478,37 +479,54 @@ competition_controller:
     corridor_terminal_wall_width_max_m: 5.60
     corridor_terminal_wall_filter_tau_sec: 0.18
     corridor_terminal_wall_max_age_sec: 0.25
+    # 墙簇被入口边缘短暂遮住时，最多沿用该双墙数据持续收敛；交权仍须新鲜锁或合格锁存。
+    corridor_terminal_wall_control_hold_sec: 0.75
     # 双墙短暂被入口边缘遮挡时，终端可复用最近一次合格物理中心；只用于交权段。
     corridor_terminal_wall_latch_max_age_sec: 4.0
     # 车体参考点不在物理通道中心时，在此填入中心线在车体系的 Y 偏置；默认 0。
     corridor_terminal_wall_center_offset_m: 0.0
 
-    # 交权前必须同时满足 map X、IMU yaw、Y 门线与两侧围墙局部几何，并持续 hold 时间。
-    corridor_terminal_wall_release_center_tolerance_m: 0.060
+    # 交权以双墙物理中线为准：进入 12cm 带、到达 Y 门线且 IMU yaw 合格即可交给 Stage2。
+    # map X 仅诊断，不再阻塞；12cm 与终端捕获带一致，避免接近入口又被死门禁倒回。
+    corridor_terminal_wall_release_center_tolerance_m: 0.120
     corridor_terminal_wall_release_heading_deg: 2.5
     corridor_terminal_release_hold_sec: 0.20
+    # 首次入墙时可能仍有约 15cm 横向偏差；在交权 Y 门线前 1.20m 开始居中，
+    # 给低速横向收敛保留足够距离，避免到门线才被迫倒回重捕获。
+    corridor_terminal_capture_y_margin_m: 1.20
+    # 墙中心误差进入 12cm 以内才允许切入低速终端段；大误差继续由高速墙跟随消化。
+    corridor_terminal_capture_max_center_error_m: 0.12
 
     # 到 Y 门线前 0.35m 已居中平行则提交为直线段；提交后禁止再用横向误差反打。
-    # 若中心或平行误差超过 abort 门限，立即倒回 staging 重捕获。
+    # 提交后以该次合格墙锁存作为物理交权依据；新鲜墙短暂波动不得触发整段倒回。
     corridor_terminal_commit_y_margin_m: 0.35
     corridor_terminal_commit_speed_mps: 0.28
-    corridor_terminal_commit_center_tolerance_m: 0.060
-    corridor_terminal_commit_heading_deg: 2.0
+    corridor_terminal_commit_center_tolerance_m: 0.120
+    # 居中后允许在 90°±5° 内提交直线段；提交后的固定 90°闭环和最终±10°交权门保持不变。
+    corridor_terminal_commit_heading_deg: 5.0
     corridor_terminal_commit_abort_center_m: 0.100
-    corridor_terminal_commit_abort_heading_deg: 4.0
+    # 只有航向偏离超过 12° 或提交锁存失效才撤销提交，避免与±5°提交门槛互相矛盾。
+    corridor_terminal_commit_abort_heading_deg: 12.0
 
     # 二维码倒退结束即进入围墙直跟：只有成对且轴向正确的围墙可接管方向。
     # 未形成双墙时低速 IMU 对正通道轴，禁止单墙横向结构把车带偏。
     corridor_wall_follow_enabled: true
     corridor_wall_follow_require_lock: true
-    corridor_wall_follow_linear_speed_mps: 0.32
-    corridor_wall_follow_lateral_gain: 0.80
-    corridor_wall_follow_heading_kp: 1.0
-    corridor_wall_follow_max_angular_speed: 0.24
+    # 居中后以 0.36m/s 巡航；偏差超过 12cm 时减到 0.22m/s，让更大的转角收敛。
+    corridor_wall_follow_linear_speed_mps: 0.36
+    corridor_wall_follow_correction_speed_mps: 0.22
+    corridor_wall_follow_slow_center_error_m: 0.12
+    corridor_wall_follow_lateral_gain: 1.0
+    corridor_wall_follow_heading_kp: 1.4
+    corridor_wall_follow_max_angular_speed: 0.45
     corridor_wall_follow_no_lock_log_sec: 1.0
-    corridor_wall_acquire_speed_mps: 0.10
-    corridor_wall_acquire_heading_kp: 0.80
-    corridor_wall_acquire_max_angular_speed: 0.18
+    # 阿克曼底盘不能原地转。未形成双墙时，大角度以 0.12m/s 行驶并快速转向；
+    # 小于 20° 后提高到 0.16m/s 取墙，始终禁止发布 v=0。
+    corridor_wall_acquire_speed_mps: 0.16
+    corridor_wall_acquire_turn_linear_speed_mps: 0.12
+    corridor_wall_acquire_heading_kp: 1.20
+    corridor_wall_acquire_max_angular_speed: 0.45
+    corridor_wall_acquire_turn_in_place_angle_deg: 20.0
     # 单墙不能区分底边/侧边，只保留诊断，不允许决定通道行进方向。
     corridor_wall_follow_single_wall_enabled: false
     corridor_wall_follow_single_wall_speed_mps: 0.20

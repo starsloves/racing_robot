@@ -36,14 +36,13 @@ class TrackControllerTest(unittest.TestCase):
         self.assertEqual(command.segment, 'entry_medium')
         self.assertGreater(command.linear, 0.0)
 
-    def test_entry_arc_hands_off_after_lead_exit_reaches_target(self):
+    def test_entry_arc_hands_off_at_cutoff(self):
         controller = Stage2TrackController()
         controller.start('clockwise', (0.0, 0.0), 0.0, 0.0, distance_m=0.0)
-        # The exit section starts before 90 degrees.  Once the measured turn
-        # reaches the completion tolerance, residual yaw rate must not hold
-        # Stage2 in the entry corner.
+        # The cutoff begins before 90 degrees and immediately transfers
+        # ownership to the following straight.
         command = controller.step(
-            1.0, (-0.34, 0.30), math.radians(88.0),
+            1.0, (-0.34, 0.30), math.radians(60.0),
             yaw_rate=1.20, distance_m=0.61,
         )
         self.assertEqual(command.state, controller.TRACK)
@@ -300,10 +299,10 @@ class TrackControllerTest(unittest.TestCase):
         )
         self.assertEqual(command.segment, 'top_long')
 
-    def test_side_arc_uses_configured_geometric_curvature(self):
+    def test_side_arc_uses_configured_angular_command(self):
         controller = Stage2TrackController(
+            max_angular=2.0,
             corner_speed=0.35,
-            corner_radius=0.25,
             corner_angular=1.5,
         )
         self._enter_medium(controller)
@@ -312,12 +311,12 @@ class TrackControllerTest(unittest.TestCase):
             1.2, (-0.85, 1.35), 0.0,
             yaw_rate=-1.46, distance_m=2.00,
         )
-        self.assertAlmostEqual(command.linear / abs(command.angular), 0.25, places=6)
+        self.assertAlmostEqual(command.linear, 0.35, places=6)
+        self.assertAlmostEqual(command.angular, -1.5, places=6)
 
     def test_side_arc_latches_actual_entry_yaw_without_counting_entry_error(self):
         controller = Stage2TrackController(
             corner_speed=0.35,
-            corner_radius=0.25,
         )
         self._enter_medium(controller)
         # The boundary can be reached while the vehicle has a residual 17°
@@ -340,37 +339,42 @@ class TrackControllerTest(unittest.TestCase):
         self.assertGreater(command.linear, 0.08)
         self.assertLess(command.linear, 0.35)
 
-        # The corner stays active until the complete relative 180 degree turn.
+        # Reaching the configured 30 degree remaining-angle cutoff immediately
+        # hands control to top_long instead of waiting for passive rotation.
         command = controller.step(
-            1.3, (-0.85, 1.35), math.radians(-62.0), yaw_rate=-0.10,
+            1.3, (-0.85, 1.35), math.radians(-43.0), yaw_rate=-0.10,
             distance_m=3.20,
         )
-        self.assertEqual(command.segment, 'left_side_arc')
-
-        # Crossing the full 180-degree target advances to top_long.
-        command = controller.step(
-            1.4, (-0.85, 1.35), math.radians(-73.0), yaw_rate=-0.10,
-            distance_m=3.25,
-        )
         self.assertEqual(command.segment, 'top_long')
-        self.assertEqual(command.arc_completion_reason, 'lead_exit_complete')
+        self.assertEqual(command.arc_completion_reason, 'cutoff_handoff')
 
-    def test_side_arc_does_not_finish_before_full_180_degrees(self):
+    def test_side_arc_hands_off_at_its_180_degree_cutoff(self):
         controller = Stage2TrackController()
         self._enter_medium(controller)
         controller.step(1.1, (-0.85, 1.35), math.pi / 2.0,
                         yaw_rate=0.0, distance_m=1.71)
         command = controller.step(
-            1.2, (-0.85, 1.35), -math.radians(82.0),
-            yaw_rate=-0.10, distance_m=3.20,
-        )
-        self.assertEqual(command.segment, 'left_side_arc')
-        command = controller.step(
-            1.3, (-0.85, 1.35), -math.pi / 2.0,
+            1.2, (-0.85, 1.35), -math.radians(60.0),
             yaw_rate=-0.10, distance_m=3.20,
         )
         self.assertEqual(command.segment, 'top_long')
-        self.assertEqual(command.arc_completion_reason, 'lead_exit_complete')
+        self.assertEqual(command.arc_completion_reason, 'cutoff_handoff')
+
+    def test_arc_cutoff_sets_angular_to_zero_without_reducing_linear_speed(self):
+        controller = Stage2TrackController(entry_arc_exit_lead_deg=20.0)
+        controller.start('clockwise', (0.0, 0.0), 0.0, 0.0, distance_m=0.0)
+        controller.step(
+            0.9, (0.0, 0.0), 0.0,
+            yaw_rate=0.0, distance_m=0.0,
+        )
+        command = controller.step(
+            1.0, (-0.20, 0.40), math.radians(72.0),
+            yaw_rate=1.0, distance_m=0.50,
+        )
+        self.assertEqual(command.segment, 'entry_medium')
+        self.assertTrue(command.arc_cutoff_active)
+        self.assertEqual(command.angular, 0.0)
+        self.assertAlmostEqual(command.linear, controller.entry_speed)
 
     def test_top_long_uses_full_259m(self):
         controller = Stage2TrackController()

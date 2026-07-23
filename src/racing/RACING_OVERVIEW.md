@@ -119,16 +119,17 @@ entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
 
 - `entry_arc` 是入口 90 度弧；随后两个 `*_side_arc` 是 180 度弧。
 - 方向由 QR 决定：入口及出口 90 度和两次 180 度的转向符号按 `clockwise/counterclockwise` 镜像。
-- `track_side_arc_vision_enabled=true` 时，`entry_medium -> left_side_arc` 与 `top_long -> right_side_arc` 仅在名义终点前 `track_side_arc_vision_trigger_lead_m`（当前 0.20m）的窗口内由 SEG 前方横边确认；从进入该窗口起线速度降为 `track_side_arc_vision_trigger_speed_mps`（当前 0.45m/s）。窗口外 SEG 不得切段；未确认时仍由 `map <- base_footprint` 的 `track_turn_force_min/max_map_x` 强制切段。设为 `false` 时，两个 180 度弯忽略 SEG，只按 TF x 切段；TF 缺失才回退里程保护窗口。
-- 直线完成距离用 `/odom_combined` xy 累计。四个弯道均由 IMU 相对转角驱动：入口和出口弯目标为 `90°`，两个侧弯从入弯时锁存的实际 IMU yaw 累积 `180°`。入口 `entry_arc`、第一侧弯 `left_side_arc`、第二侧弯 `right_side_arc` 和出口 `exit_turn_90` 分别具有独立的提前角、收角比例和完成角度容差。每段先按 `v / omega = R` 的固定曲率巡航，再按其自身 `track_<segment>_*` 参数切为同方向低角速度收角；收角只改变角速度，线速度始终保持该弯独立配置，达到该段容差且已走过最小弧长比例即切下一段。绝不反向打舵，也不把低 IMU yaw-rate 作为切段硬门槛，防止残余惯性让任一弯卡死并阻塞 Stage3 交接。两个 180 度弯直径约 `0.50m`，即 `track_corner_radius=0.25m`；其巡航 `0.35m/s` 与 `1.40rad/s` 指令满足该半径的曲率关系。
-- 进入 `stage3_handoff_line` 后，S2 以实时 map TF 发布预测起点；当 map Y 小于 `track_stage3_handoff_map_y`（当前 2.40）时发布交接锚点和 `stage2_state=complete`。
+- S2 启动时锁存当前 `map <- base_footprint` 的 X，并将其在 S2 局部坐标中强制重置为 `track_map_x_reset_m=2.50m`；后续 `track_x=2.50+(当前 map_x-交接 map_x)`。此重置不改写 TF，也不影响 Stage3 的真实 map 锚点。
+- `entry_medium -> left_side_arc` 与 `top_long -> right_side_arc` 在各自名义终点前的视觉窗口内由 SEG 横边确认；视觉未确认时，仍由重置后的 `track_x` 与原 `track_turn_force_min/max_map_x` 阈值强制切段。直线仅由 IMU 航向、可信 SEG 中线小修正和 yaw-rate 阻尼控制，雷达只参与既有避障。
+- 直线完成距离用 `/odom_combined` xy 累计。四个弯道均由 IMU 相对转角驱动：入口和出口弯名义目标为 `90°`，两个侧弯名义目标为从入弯时锁存实际 IMU yaw 起累计 `180°`。每弯只使用独立的线速度、角速度和提前收角；一旦达到 `track_<segment>_exit_lead_deg` 的收角点，立即切入下一直线，由直线的 IMU 航向闭环和 yaw-rate 阻尼吸收余摆。绝不等待残余惯性补足名义角度、绝不反向打舵，也不把低 IMU yaw-rate 作为切段硬门槛，防止任一弯占用后续直线。
+- 进入 `stage3_handoff_line` 后，S2 以实时 map TF 发布预测起点；当 map Y 小于 `track_stage3_handoff_map_y` 时发布交接锚点和 `stage2_state=complete`。
 
 ### 3.2 控制与安全
 
-- 生产速度、弧线控制、视觉修正和交权门限全部在 `stage2_controller.yaml` 的 `track_*` 参数中。四个弯各自拥有独立的 `track_<segment>_linear` 与 `track_<segment>_angular`，入口和出口 90 度弯使用 `0.40m` 半径，两个 180 度弯使用 `0.25m` 半径；每一组线速度和角速度应以 `v / omega = R` 配对，当前直线最大速度为 0.66 m/s。
-- 直线段由 IMU 航向保持为主，可信 SEG 中线只作小幅横向修正；SEG 不可单独结束转弯。
-- `StraightAvoidanceController` 只在直线段接管。雷达聚类先经过正前方 +/-15 度及最小横向尺寸过滤，并须在连续扫描中保持位置、横向和尺寸关联达到 `stage2_straight_avoid_confirm_frames`（当前 3 帧），才成为可规划障碍；弧线段和两个 180 度弯前预检区会清空候选，不能跨段触发。它从同一帧雷达估计两侧围栏内缘，并以车体半宽、障碍宽度和安全边界求可行的最小横移；只有完整 S 形横移可在障碍前完成且不扫到任一围栏时才接管。避障全程保持当前直线速度，偏航量由所需横移反算并受最大角度限制，结束后进入短冷却再接受新候选。弧线段关闭前方硬停车，避免扫到赛道边界误停。
-- 两个 180 度弯前的 `stage2_turn_precheck_*` 当前只写诊断日志，不停车、不减速、不改变切段。
+- 生产速度、弧线控制、视觉修正、重置后 map-X 阈值和交权门限全部在 `stage2_controller.yaml` 的 `track_*` 参数中。四个弯各自拥有独立的 `track_<segment>_linear` 与 `track_<segment>_angular`，入口和出口 90 度弯使用 `0.40m` 半径，两个 180 度弯使用 `0.25m` 半径；每一组线速度和角速度应以 `v / omega = R` 配对，当前直线最大速度为 0.66 m/s。
+- `TRACK_MAP_X_RESET` 日志记录交接瞬间锁存的真实 map X 与局部重置值；`TURN_TRIGGER` 同时记录真实 `map_xy` 和重置后的 `track_map_x`，可直接核验两个 `track_turn_force_*` 阈值是否在预期位置切弯。
+- 通用前方簇无法区分短直道尽头横墙与独立障碍，因此只有 `top_long` 的中段可以建立避障候选；`entry_medium`、`exit_medium` 与 `stage3_handoff_line` 只执行赛道控制，不能被通用避障簇抢占。`top_long` 的候选窗口还会在距下一弯 `stage2_top_long_avoid_turn_guard_m` 内关闭，禁止将已知转弯横墙交给 MPPI。MPPI 每个 20Hz 控制周期在雷达围栏内采样未来 yaw-rate 序列，按障碍净距、回归直线、航向与控制平滑代价加权更新首个指令。角度唯一来自 IMU；横移由 `/odom_combined` xy 向冻结的 IMU 直线法向投影，绝不使用 odom orientation。绕行期间冻结本段进度。已确认障碍进入制动距离或围栏完整却无碰撞自由候选时，MPPI 必须输出零速，不能继续直行。
+- 安全距离统一为 `v * response + v^2 / (2 * brake_decel) + margin`，生产 YAML 的 `stage2_safety_*` 是首版保守值，必须按实车扫描、执行和制动日志标定。两个 180 度弯前的 `stage2_turn_precheck_*` 当前仅记录前方/内侧簇诊断：赛道横墙和围栏本身会进入这些窗口，在没有“边界簇与独立障碍簇”分类器前，禁止用该诊断直接停车或在弧线内做 S 形横移。
 - 控制循环超过 `control_gap_stop_sec`（当前 1.0 秒）未刷新时，命令心跳发布零速度；控制循环恢复后从当前段继续。
 - `top_long` 距离末端 `stage2_ai_capture_lead_m`（当前 0.50 m）时只发一次异步图像分析触发，不等待云端或语音；图生文三模型并发竞速，语音从胜出模型的第一条完整短句开始播报。
 
@@ -160,12 +161,12 @@ Phase 3
 - 交权瞬间把原始 IMU yaw 映射至 map -Y（`stage3_entry_map_yaw_deg=-90`），后续仅累计 IMU 相对转角。
 - 初始目标方位误差达到 `initial_align_trigger_deg` 才进入 `initial_align`；阿克曼底盘以非零低速摆弧对准，不能原地转向。
 - 未识别 P 时，向 `return_waypoints_json` 中当前单一视觉搜索目标行驶；到 `waypoint_tolerance`（当前 0.25 m）范围后停车等待 P，不能继续盲走。
-- P 连续识别满足门限后立即接管。首次检测框偏差换算为锁定的 IMU 目标航向，车辆以该航向直线接近；只有框偏差越过 `p_heading_reacquire_offset` 且满足重捕获间隔时才更新目标航向，避免远距离逐帧追框走弧线。P 框中心 ROI 的有效深度中位数小于 `p_depth_stop_distance_m`（当前 0.37 m）立即发布 `stage3_state=complete`。
+- P 连续识别满足门限后接管。首次检测框偏差换算为锁定的 IMU 目标航向，车辆以该航向直线接近；只有滤波后的框偏差相对上次锁定值变化达到 `p_heading_reacquire_offset` 且满足重捕获间隔时才更新目标航向，避免远距离逐帧追框走弧线。P 短时丢失时，倒车回正目标优先使用当前锁定的视觉航向，不能回到过期的历史车体航向。P 框中心 ROI 的有效深度中位数小于 `p_depth_stop_distance_m`（当前 0.50 m）立即发布 `stage3_state=complete`。
 - P 接近中有效深度首次不大于 `p_approach_disable_avoidance_distance_m`（当前 0.75 m）后，本次任务跳过常规雷达避障直到完成；近距离雷达聚类仍会触发限时倒车加侧转，随后重新进入常规避障，禁止原地等待。
 
 ### 4.2 避障与丢失恢复
 
-Stage3 粗导航复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前 P 视觉搜索目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。紧急近障不再由 Stage1 仲裁器硬停车：S3 以紧急前方聚类触发 `emergency_reversing`，在 YAML 限定的时间内低速倒车并向安全侧反向侧转，完成后回到 `forward` 重新判定常规避障。P 视觉接管后，普通避障开始时锁存当前 P 视觉航向；反舵和恢复阶段必须回到该锁定 IMU 航向，不能改用地图搜索点方向。若此后 P 丢失，低速倒车回正也复用同一锁定航向；P 重新识别后才按新框偏差更新航向。超时仍未重获则停车等待，禁止回退到粗导航盲走。
+Stage3 粗导航复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前 P 视觉搜索目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。紧急近障不再由 Stage1 仲裁器硬停车：S3 以紧急前方聚类触发 `emergency_reversing`，在 YAML 限定的时间内低速倒车并向安全侧反向侧转，完成后回到 `forward` 重新判定常规避障。P 视觉接管后，普通避障开始时锁存当前 P 视觉航向；反舵和恢复阶段必须回到该锁定 IMU 航向，不能改用地图搜索点方向。若此后 P 丢失，先低速倒车回正并复用同一锁定航向；回正或倒车时限到达后，清除视觉锁并恢复向 `return_waypoints_json` 末端搜索点的粗导航，同时重新启用常规雷达避障。P 重新识别后才按新框偏差更新航向。
 
 ---
 

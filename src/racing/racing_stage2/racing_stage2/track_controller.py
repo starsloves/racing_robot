@@ -54,7 +54,7 @@ class TrackCommand:
     arc_final_heading_error_rad: float = 0.0
     arc_base_angular: float = 0.0
     arc_damping_angular: float = 0.0
-    arc_taper_scale: float = 0.0
+    arc_cutoff_active: bool = False
     arc_completion_reason: str = ''
 
 
@@ -172,7 +172,6 @@ class Stage2TrackController:
                  corner_angular: float = 0.75,
                  entry_linear: float = 0.18,
                  entry_min_linear: float = 0.04,
-                 entry_radius: float = 0.40,
                  entry_medium_distance_m: float = 0.85,
                  entry_boundary_trigger_enabled: bool = False,
                  entry_boundary_guard_half_width_m: float = 0.15,
@@ -199,20 +198,10 @@ class Stage2TrackController:
                  entry_align_error_tolerance: float = 0.08,
                  entry_align_hold_sec: float = 0.20,
                  entry_align_visual_kp: float = 0.55,
-                 corner_radius: float = 0.40,
                  entry_arc_exit_lead_deg: float = 20.0,
-                 entry_arc_exit_angular_scale: float = 0.25,
-                 entry_arc_completion_tolerance_deg: float = 3.0,
                  left_side_arc_exit_lead_deg: float = 20.0,
-                 left_side_arc_exit_angular_scale: float = 0.25,
-                 left_side_arc_completion_tolerance_deg: float = 3.0,
                  right_side_arc_exit_lead_deg: float = 20.0,
-                 right_side_arc_exit_angular_scale: float = 0.25,
-                 right_side_arc_completion_tolerance_deg: float = 3.0,
                  exit_turn_90_exit_lead_deg: float = 20.0,
-                 exit_turn_90_exit_angular_scale: float = 0.25,
-                 exit_turn_90_completion_tolerance_deg: float = 3.0,
-                 arc_min_progress_ratio: float = 0.80,
                  entry_arc_linear: Optional[float] = None,
                  entry_arc_angular: Optional[float] = None,
                  left_side_arc_linear: Optional[float] = None,
@@ -268,7 +257,6 @@ class Stage2TrackController:
                 arc_angular(exit_turn_90_angular, entry_angular),
             ),
         }
-        self.entry_radius = max(0.05, entry_radius)
         self.entry_medium_distance = max(0.05, entry_medium_distance_m)
         self.entry_boundary_trigger_enabled = bool(entry_boundary_trigger_enabled)
         self.entry_boundary_guard_half_width = max(0.0, entry_boundary_guard_half_width_m)
@@ -292,27 +280,17 @@ class Stage2TrackController:
             )
         self.top_long_distance = max(0.20, top_long_distance_m)
         self.exit_medium_distance = max(0.05, exit_medium_distance_m)
-        self.corner_radius = max(0.05, corner_radius)
-        # The chassis retains a substantial yaw rate after its steering
-        # command changes.  Every arc therefore enters a same-direction,
-        # lower-curvature exit section before the target heading.  Do not use
-        # an opposite steering command or wait for a near-zero yaw rate: both
-        # actions caused the four corners to oscillate and block Stage3.
-        self._arc_exit_profiles = {
-            'entry_arc': self._arc_exit_profile(
-                entry_arc_exit_lead_deg, entry_arc_exit_angular_scale,
-                entry_arc_completion_tolerance_deg),
-            'left_side_arc': self._arc_exit_profile(
-                left_side_arc_exit_lead_deg, left_side_arc_exit_angular_scale,
-                left_side_arc_completion_tolerance_deg),
-            'right_side_arc': self._arc_exit_profile(
-                right_side_arc_exit_lead_deg, right_side_arc_exit_angular_scale,
-                right_side_arc_completion_tolerance_deg),
-            'exit_turn_90': self._arc_exit_profile(
-                exit_turn_90_exit_lead_deg, exit_turn_90_exit_angular_scale,
-                exit_turn_90_completion_tolerance_deg),
+        # Each corner has only three trajectory inputs: its linear speed,
+        # angular speed, and remaining-angle cutoff.  At the cutoff the
+        # steering command goes directly to zero; residual chassis yaw carries
+        # the vehicle to the IMU turn target without low-rate steering or a
+        # counter-steer correction.
+        self._arc_cutoff_leads = {
+            'entry_arc': self._arc_cutoff_lead(entry_arc_exit_lead_deg),
+            'left_side_arc': self._arc_cutoff_lead(left_side_arc_exit_lead_deg),
+            'right_side_arc': self._arc_cutoff_lead(right_side_arc_exit_lead_deg),
+            'exit_turn_90': self._arc_cutoff_lead(exit_turn_90_exit_lead_deg),
         }
-        self.arc_min_progress_ratio = max(0.50, min(1.0, arc_min_progress_ratio))
         self.heading_slowdown = math.radians(max(1.0, heading_slowdown_deg))
         self.entry_heading_kp = max(0.1, entry_heading_kp)
         self.yaw_rate_damping = max(0.0, yaw_rate_damping)
@@ -370,27 +348,26 @@ class Stage2TrackController:
         # never two 90 degree arcs with a zero-length line between them.
         return [
             _SegmentSpec('entry_medium', 'LINE', self.entry_medium_distance, self.max_speed),
-            _SegmentSpec('left_side_arc', 'ARC', math.pi * self.corner_radius,
+            _SegmentSpec('left_side_arc', 'ARC', self._arc_target_m('left_side_arc', math.pi),
                          self._arc_cruise['left_side_arc'][0], sign * math.pi),
             _SegmentSpec('top_long', 'LINE', self.top_long_distance, self.max_speed),
-            _SegmentSpec('right_side_arc', 'ARC', math.pi * self.corner_radius,
+            _SegmentSpec('right_side_arc', 'ARC', self._arc_target_m('right_side_arc', math.pi),
                          self._arc_cruise['right_side_arc'][0], sign * math.pi),
             _SegmentSpec('exit_medium', 'LINE', self.exit_medium_distance, self.max_speed),
             # Leave the rectangle toward -Y before handing control to Stage3.
             # This final 90-degree arc has its own speed/angular configuration.
-            _SegmentSpec('exit_turn_90', 'ARC', math.pi * self.entry_radius / 2.0,
+            _SegmentSpec('exit_turn_90', 'ARC', self._arc_target_m('exit_turn_90', math.pi / 2.0),
                          self._arc_cruise['exit_turn_90'][0], -sign * math.pi / 2.0),
             _SegmentSpec('stage3_handoff_line', 'LINE', float('inf'), self.max_speed),
         ]
 
     @staticmethod
-    def _arc_exit_profile(lead_deg: float, angular_scale: float,
-                          completion_tolerance_deg: float) -> Tuple[float, float, float]:
-        return (
-            math.radians(max(1.0, min(60.0, lead_deg))),
-            max(0.05, min(1.0, angular_scale)),
-            math.radians(max(0.5, min(15.0, completion_tolerance_deg))),
-        )
+    def _arc_cutoff_lead(lead_deg: float) -> float:
+        return math.radians(max(0.0, min(179.0, lead_deg)))
+
+    def _arc_target_m(self, segment: str, turn_rad: float) -> float:
+        linear, angular = self._arc_cruise[segment]
+        return abs(turn_rad) * linear / angular
 
     def start(self, direction: str, position: Tuple[float, float], yaw: float,
               now: float, distance_m: float = 0.0) -> None:
@@ -399,7 +376,7 @@ class Stage2TrackController:
         self._clockwise = clockwise
         entry_sign = 1.0 if clockwise else -1.0
         self._entry_heading = wrap_angle(yaw + entry_sign * math.pi / 2.0)
-        self._specs = [_SegmentSpec('entry_arc', 'ARC', math.pi * self.entry_radius / 2.0,
+        self._specs = [_SegmentSpec('entry_arc', 'ARC', self._arc_target_m('entry_arc', math.pi / 2.0),
                                     self._arc_cruise['entry_arc'][0], entry_sign * math.pi / 2.0)]
         self._specs.extend(self._build_specs(clockwise))
         self._index = 0
@@ -539,7 +516,7 @@ class Stage2TrackController:
                  vision_angular=0.0, yaw_rate_damping_angular=0.0,
                  arc_reference_yaw=0.0, arc_final_heading_error=0.0,
                  arc_base_angular=0.0, arc_damping_angular=0.0,
-                 arc_taper_scale=0.0, arc_completion_reason=''):
+                 arc_cutoff_active=False, arc_completion_reason=''):
         spec = active.spec if active is not None else None
         progress = max(0.0, distance - active.start_distance) if active is not None else 0.0
         return TrackCommand(linear, angular, self.state, distance, cross, heading_error, linear,
@@ -558,12 +535,12 @@ class Stage2TrackController:
                             arc_final_heading_error,
                             arc_base_angular,
                             arc_damping_angular,
-                            arc_taper_scale,
+                            arc_cutoff_active,
                             arc_completion_reason)
 
     def _boundary_ready(self, segment: str, progress: float, visual: Optional[dict],
                         map_x: Optional[float]) -> bool:
-        """Prefer SEG corner evidence; force the matching physical turn at map x."""
+        """Use the original SEG-in-window, map-x-rebased inertial trigger."""
         is_entry = segment == 'entry_medium'
         nominal_distance = self.entry_medium_distance if is_entry else self.top_long_distance
         guard_half_width = (
@@ -574,6 +551,8 @@ class Stage2TrackController:
             self.entry_boundary_trigger_enabled if is_entry
             else self.top_boundary_trigger_enabled
         )
+        guard_min = max(0.0, nominal_distance - guard_half_width)
+        guard_max = nominal_distance + guard_half_width
         top_y_ratio = (
             self.entry_boundary_top_y_ratio if is_entry
             else self.top_boundary_top_y_ratio
@@ -586,18 +565,12 @@ class Stage2TrackController:
             self.entry_boundary_confirm_target if is_entry
             else self.top_boundary_confirm_target
         )
-        guard_min = max(0.0, nominal_distance - guard_half_width)
-        guard_max = nominal_distance + guard_half_width
         vision_gate_min = max(0.0, nominal_distance - self.side_arc_vision_trigger_lead)
         vision_gate_max = nominal_distance
         self._entry_boundary_top_y = float((visual or {}).get('boundary_top_y_ratio', 0.0) or 0.0)
         boundary_angle = (visual or {}).get('boundary_angle_deg')
-        self._entry_boundary_angle_deg = (
-            90.0 if boundary_angle is None else float(boundary_angle)
-        )
+        self._entry_boundary_angle_deg = 90.0 if boundary_angle is None else float(boundary_angle)
 
-        # Clockwise reaches the low-x end first; counterclockwise reaches the
-        # high-x end first. The second 180-degree turn uses the opposite end.
         force_low_x = (is_entry and self._clockwise) or (not is_entry and not self._clockwise)
         map_force_ready = (
             self.turn_force_map_x_enabled and map_x is not None and (
@@ -610,10 +583,6 @@ class Stage2TrackController:
             self._entry_boundary_confirmed_frames = 0
             return True
 
-        # This global switch selects the turn source for both 180-degree arcs.
-        # Keep the map-x switch independent: with TF forcing disabled, retain
-        # the previous nominal-distance behavior; with TF unavailable, retain
-        # its guarded distance fallback.
         if not self.side_arc_vision_enabled:
             self._entry_boundary_confirmed_frames = 0
             if not self.turn_force_map_x_enabled:
@@ -629,8 +598,6 @@ class Stage2TrackController:
             self._entry_boundary_trigger = 'distance_nominal'
             return progress >= nominal_distance - self.distance_tolerance
 
-        # Boundary SEG may turn only in the configured pre-corner gate.  Map
-        # x and TF-loss fallbacks above remain independent safety exits.
         if progress < vision_gate_min:
             self._entry_boundary_trigger = 'before_vision_trigger_gate'
             self._entry_boundary_confirmed_frames = 0
@@ -661,8 +628,6 @@ class Stage2TrackController:
             self._entry_boundary_confirmed_frames = 0
             self._entry_boundary_trigger = 'vision_rejected'
 
-        # map x is the configured fallback. Retain a distance-only escape
-        # hatch only while map TF is unavailable.
         if map_x is None and progress >= guard_max - 1e-6:
             self._entry_boundary_trigger = 'distance_fallback_no_map_tf'
             return True
@@ -688,11 +653,10 @@ class Stage2TrackController:
                 else self.top_boundary_trigger_enabled
             )
             nominal_distance = self.entry_medium_distance if is_entry else self.top_long_distance
-            vision_gate_min = max(0.0, nominal_distance - self.side_arc_vision_trigger_lead)
             if (
                 self.side_arc_vision_enabled
                 and trigger_enabled
-                and progress >= vision_gate_min
+                and progress >= max(0.0, nominal_distance - self.side_arc_vision_trigger_lead)
             ):
                 speed = min(speed, self.side_arc_vision_trigger_speed)
             ready_for_corner = self._boundary_ready(active.spec.name, progress, visual, map_x)
@@ -720,44 +684,25 @@ class Stage2TrackController:
         active.last_yaw = yaw
         signed_turn = active.turn_progress_rad
         target_turn = abs(active.spec.turn_rad)
-        progress = distance - active.start_distance
-        radius = self.corner_radius if active.spec.name in (
-            'left_side_arc', 'right_side_arc'
-        ) else self.entry_radius
-        angular_limit = self._arc_cruise[active.spec.name][1]
-        cruise_rate = min(angular_limit, active.spec.speed_mps / radius)
+        cruise_rate = self._arc_cruise[active.spec.name][1]
         final_yaw = wrap_angle(
             (active.arc_entry_yaw if active.arc_entry_yaw is not None else yaw)
             + turn_sign * target_turn
         )
         final_error = target_turn - signed_turn
-        # Fixed-radius cruise followed by a configurable, same-direction
-        # collection section.  The IMU is used only to measure turn progress;
-        # it must never reverse the steering command at a corner endpoint.
-        exit_lead, exit_angular_scale, completion_tolerance = self._arc_exit_profiles[
-            active.spec.name
-        ]
-        in_exit_section = final_error <= exit_lead
-        commanded_rate = cruise_rate * (
-            exit_angular_scale if in_exit_section else 1.0
-        )
-        base_angular = turn_sign * commanded_rate
-        taper_scale = min(1.0, abs(commanded_rate) / max(cruise_rate, 1e-6))
-        # Exit collection is steering-only.  Coupling its linear speed to the
-        # reduced angular rate silently dropped every corner to 25% speed,
-        # which appeared as a stop before the following straight.  Each arc's
-        # configured linear speed remains continuous until its next segment
-        # command takes over in this same control cycle.
+        cutoff_active = final_error <= self._arc_cutoff_leads[active.spec.name]
+        base_angular = 0.0 if cutoff_active else turn_sign * cruise_rate
+        # The cutoff is steering-only.  Each arc's configured linear speed
+        # remains continuous until its next segment command takes over.
         linear_speed = active.spec.speed_mps
 
-        # Do not let a residual yaw-rate turn a corner into an unbounded
-        # correction loop.  Once the measured relative turn reaches its target
-        # (within IMU sampling tolerance) and most of the geometric arc was
-        # travelled, hand the nominal target heading to the following line.
-        complete_ready = (
-            progress >= active.spec.target_m * self.arc_min_progress_ratio
-            and signed_turn >= target_turn - completion_tolerance
-        )
+        # A cutoff is the segment handoff point for every arc.  The following
+        # line owns any residual yaw through its existing IMU heading and
+        # yaw-rate damping; an arc must never keep driving straight while
+        # waiting for passive chassis rotation to reach its nominal angle.
+        cutoff_handoff = cutoff_active
+        complete_ready = cutoff_handoff
+        completion_reason = 'cutoff_handoff'
         if complete_ready:
             if self._activate_next(position, distance):
                 next_command = self._step_active(position, yaw, yaw_rate, distance, visual, now)
@@ -767,10 +712,10 @@ class Stage2TrackController:
                     arc_final_heading_error_rad=final_error,
                     arc_base_angular=base_angular,
                     arc_damping_angular=0.0,
-                    arc_taper_scale=taper_scale,
-                    arc_completion_reason='lead_exit_complete',
+                    arc_cutoff_active=cutoff_active,
+                    arc_completion_reason=completion_reason,
                 )
-            return self._command(complete=True, arc_completion_reason='lead_exit_complete')
+            return self._command(complete=True, arc_completion_reason=completion_reason)
         return self._command(
             linear_speed, base_angular, active=active, distance=distance,
             heading_error=final_error, turn=signed_turn,
@@ -778,7 +723,7 @@ class Stage2TrackController:
             arc_final_heading_error=final_error,
             arc_base_angular=base_angular,
             arc_damping_angular=0.0,
-            arc_taper_scale=taper_scale,
+            arc_cutoff_active=cutoff_active,
         )
 
     def _align_command(self, active, position, yaw, yaw_rate, distance, visual, now):
