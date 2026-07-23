@@ -36,16 +36,15 @@ class TrackControllerTest(unittest.TestCase):
         self.assertEqual(command.segment, 'entry_medium')
         self.assertGreater(command.linear, 0.0)
 
-    def test_entry_arc_uses_imu_prediction_not_exact_distance_angle_sync(self):
+    def test_entry_arc_hands_off_after_lead_exit_reaches_target(self):
         controller = Stage2TrackController()
         controller.start('clockwise', (0.0, 0.0), 0.0, 0.0, distance_m=0.0)
-        # Mirrors the real log shape: arc distance is still short of the
-        # nominal 0.628 m, but IMU yaw plus current yaw-rate will cross 90°
-        # before the next control cycle.  This must hand off instead of
-        # continuing the arc and spiraling past the entry.
+        # The exit section starts before 90 degrees.  Once the measured turn
+        # reaches the completion tolerance, residual yaw rate must not hold
+        # Stage2 in the entry corner.
         command = controller.step(
-            1.0, (-0.34, 0.30), math.radians(86.4),
-            yaw_rate=0.48, distance_m=0.487,
+            1.0, (-0.34, 0.30), math.radians(88.0),
+            yaw_rate=1.20, distance_m=0.61,
         )
         self.assertEqual(command.state, controller.TRACK)
         self.assertEqual(command.segment, 'entry_medium')
@@ -291,18 +290,13 @@ class TrackControllerTest(unittest.TestCase):
         command = controller.step(1.3, (-0.85, 1.35), -math.pi / 2.0, distance_m=3.00)
         self.assertEqual(command.segment, 'top_long')
 
-    def test_side_arc_waits_for_yaw_rate_to_settle_at_full_turn(self):
+    def test_side_arc_does_not_wait_for_yaw_rate_to_settle_at_full_turn(self):
         controller = Stage2TrackController()
         self._enter_medium(controller)
         controller.step(1.1, (-0.85, 1.35), math.pi / 2.0, yaw_rate=0.0, distance_m=1.71)
         command = controller.step(
             1.2, (-0.85, 1.35), -math.pi / 2.0,
             yaw_rate=-1.0, distance_m=3.00,
-        )
-        self.assertEqual(command.segment, 'left_side_arc')
-        command = controller.step(
-            1.3, (-0.85, 1.35), -math.pi / 2.0,
-            yaw_rate=0.0, distance_m=3.00,
         )
         self.assertEqual(command.segment, 'top_long')
 
@@ -359,7 +353,7 @@ class TrackControllerTest(unittest.TestCase):
             distance_m=3.25,
         )
         self.assertEqual(command.segment, 'top_long')
-        self.assertEqual(command.arc_completion_reason, 'full_arc_settled')
+        self.assertEqual(command.arc_completion_reason, 'lead_exit_complete')
 
     def test_side_arc_does_not_finish_before_full_180_degrees(self):
         controller = Stage2TrackController()
@@ -376,7 +370,7 @@ class TrackControllerTest(unittest.TestCase):
             yaw_rate=-0.10, distance_m=3.20,
         )
         self.assertEqual(command.segment, 'top_long')
-        self.assertEqual(command.arc_completion_reason, 'full_arc_settled')
+        self.assertEqual(command.arc_completion_reason, 'lead_exit_complete')
 
     def test_top_long_uses_full_259m(self):
         controller = Stage2TrackController()

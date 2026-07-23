@@ -82,11 +82,27 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_entry_align_hold_sec', 0.20)
         self.declare_parameter('track_entry_align_visual_kp', 0.55)
         self.declare_parameter('track_corner_radius', 0.18)
-        self.declare_parameter('track_arc_yaw_decel_rps2', 2.0)
-        self.declare_parameter('track_arc_yaw_rate_kp', 0.60)
-        self.declare_parameter('track_arc_terminal_yaw_rate_rps', 0.15)
-        self.declare_parameter('track_arc_terminal_angle_deg', 0.75)
-        self.declare_parameter('track_arc_terminal_min_speed_mps', 0.08)
+        self.declare_parameter('track_entry_arc_exit_lead_deg', 20.0)
+        self.declare_parameter('track_entry_arc_exit_angular_scale', 0.25)
+        self.declare_parameter('track_entry_arc_completion_tolerance_deg', 3.0)
+        self.declare_parameter('track_left_side_arc_exit_lead_deg', 20.0)
+        self.declare_parameter('track_left_side_arc_exit_angular_scale', 0.25)
+        self.declare_parameter('track_left_side_arc_completion_tolerance_deg', 3.0)
+        self.declare_parameter('track_right_side_arc_exit_lead_deg', 20.0)
+        self.declare_parameter('track_right_side_arc_exit_angular_scale', 0.25)
+        self.declare_parameter('track_right_side_arc_completion_tolerance_deg', 3.0)
+        self.declare_parameter('track_exit_turn_90_exit_lead_deg', 20.0)
+        self.declare_parameter('track_exit_turn_90_exit_angular_scale', 0.25)
+        self.declare_parameter('track_exit_turn_90_completion_tolerance_deg', 3.0)
+        self.declare_parameter('track_arc_min_progress_ratio', 0.80)
+        self.declare_parameter('track_entry_arc_linear', 0.08)
+        self.declare_parameter('track_entry_arc_angular', 0.75)
+        self.declare_parameter('track_left_side_arc_linear', 0.12)
+        self.declare_parameter('track_left_side_arc_angular', 0.75)
+        self.declare_parameter('track_right_side_arc_linear', 0.12)
+        self.declare_parameter('track_right_side_arc_angular', 0.75)
+        self.declare_parameter('track_exit_turn_90_linear', 0.08)
+        self.declare_parameter('track_exit_turn_90_angular', 0.75)
         self.declare_parameter('track_vision_lateral_scale_m', 0.30)
         self.declare_parameter('track_vision_lateral_weight', 0.35)
         self.declare_parameter('track_vision_correction_max_angular', 0.10)
@@ -375,20 +391,64 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 self.get_parameter('track_entry_align_visual_kp').value
             ),
             corner_radius=float(self.get_parameter('track_corner_radius').value),
-            arc_yaw_decel_rps2=float(
-                self.get_parameter('track_arc_yaw_decel_rps2').value
+            entry_arc_exit_lead_deg=float(
+                self.get_parameter('track_entry_arc_exit_lead_deg').value
             ),
-            arc_yaw_rate_kp=float(
-                self.get_parameter('track_arc_yaw_rate_kp').value
+            entry_arc_exit_angular_scale=float(
+                self.get_parameter('track_entry_arc_exit_angular_scale').value
             ),
-            arc_terminal_yaw_rate_rps=float(
-                self.get_parameter('track_arc_terminal_yaw_rate_rps').value
+            entry_arc_completion_tolerance_deg=float(
+                self.get_parameter('track_entry_arc_completion_tolerance_deg').value
             ),
-            arc_terminal_angle_deg=float(
-                self.get_parameter('track_arc_terminal_angle_deg').value
+            left_side_arc_exit_lead_deg=float(
+                self.get_parameter('track_left_side_arc_exit_lead_deg').value
             ),
-            arc_terminal_min_speed_mps=float(
-                self.get_parameter('track_arc_terminal_min_speed_mps').value
+            left_side_arc_exit_angular_scale=float(
+                self.get_parameter('track_left_side_arc_exit_angular_scale').value
+            ),
+            left_side_arc_completion_tolerance_deg=float(
+                self.get_parameter('track_left_side_arc_completion_tolerance_deg').value
+            ),
+            right_side_arc_exit_lead_deg=float(
+                self.get_parameter('track_right_side_arc_exit_lead_deg').value
+            ),
+            right_side_arc_exit_angular_scale=float(
+                self.get_parameter('track_right_side_arc_exit_angular_scale').value
+            ),
+            right_side_arc_completion_tolerance_deg=float(
+                self.get_parameter('track_right_side_arc_completion_tolerance_deg').value
+            ),
+            exit_turn_90_exit_lead_deg=float(
+                self.get_parameter('track_exit_turn_90_exit_lead_deg').value
+            ),
+            exit_turn_90_exit_angular_scale=float(
+                self.get_parameter('track_exit_turn_90_exit_angular_scale').value
+            ),
+            exit_turn_90_completion_tolerance_deg=float(
+                self.get_parameter('track_exit_turn_90_completion_tolerance_deg').value
+            ),
+            arc_min_progress_ratio=float(
+                self.get_parameter('track_arc_min_progress_ratio').value
+            ),
+            entry_arc_linear=float(self.get_parameter('track_entry_arc_linear').value),
+            entry_arc_angular=float(self.get_parameter('track_entry_arc_angular').value),
+            left_side_arc_linear=float(
+                self.get_parameter('track_left_side_arc_linear').value
+            ),
+            left_side_arc_angular=float(
+                self.get_parameter('track_left_side_arc_angular').value
+            ),
+            right_side_arc_linear=float(
+                self.get_parameter('track_right_side_arc_linear').value
+            ),
+            right_side_arc_angular=float(
+                self.get_parameter('track_right_side_arc_angular').value
+            ),
+            exit_turn_90_linear=float(
+                self.get_parameter('track_exit_turn_90_linear').value
+            ),
+            exit_turn_90_angular=float(
+                self.get_parameter('track_exit_turn_90_angular').value
             ),
             vision_lateral_scale_m=float(self.get_parameter('track_vision_lateral_scale_m').value),
             vision_lateral_weight=float(self.get_parameter('track_vision_lateral_weight').value),

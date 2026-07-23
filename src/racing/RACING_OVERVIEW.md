@@ -120,12 +120,12 @@ entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
 - `entry_arc` 是入口 90 度弧；随后两个 `*_side_arc` 是 180 度弧。
 - 方向由 QR 决定：入口及出口 90 度和两次 180 度的转向符号按 `clockwise/counterclockwise` 镜像。
 - `track_side_arc_vision_enabled=true` 时，`entry_medium -> left_side_arc` 与 `top_long -> right_side_arc` 仅在名义终点前 `track_side_arc_vision_trigger_lead_m`（当前 0.20m）的窗口内由 SEG 前方横边确认；从进入该窗口起线速度降为 `track_side_arc_vision_trigger_speed_mps`（当前 0.45m/s）。窗口外 SEG 不得切段；未确认时仍由 `map <- base_footprint` 的 `track_turn_force_min/max_map_x` 强制切段。设为 `false` 时，两个 180 度弯忽略 SEG，只按 TF x 切段；TF 缺失才回退里程保护窗口。
-- 直线完成距离用 `/odom_combined` xy 累计。四个弯道均由 IMU 相对转角驱动，入口和出口弯必须累积完整 `90°`，两个侧弯必须从入弯时锁存的实际 IMU yaw 累积完整 `180°`。弯道用 `sqrt(2 * decel * remaining_angle)` 结合实时 IMU yaw-rate 连续降低速度和曲率，只有完整几何弧长、目标角度和低 yaw-rate 同时满足才切入直线；若惯性穿过目标，仍在当前弯内低速反向曲率校正，禁止把过转交给直线消化。两个 180 度弯直径约 `0.50m`，即 `track_corner_radius=0.25m`；其巡航 `0.35m/s` 与 `1.40rad/s` 指令满足该半径的曲率关系。
+- 直线完成距离用 `/odom_combined` xy 累计。四个弯道均由 IMU 相对转角驱动：入口和出口弯目标为 `90°`，两个侧弯从入弯时锁存的实际 IMU yaw 累积 `180°`。入口 `entry_arc`、第一侧弯 `left_side_arc`、第二侧弯 `right_side_arc` 和出口 `exit_turn_90` 分别具有独立的提前角、收角比例和完成角度容差。每段先按 `v / omega = R` 的固定曲率巡航，再按其自身 `track_<segment>_*` 参数切为同方向低角速度收角；收角只改变角速度，线速度始终保持该弯独立配置，达到该段容差且已走过最小弧长比例即切下一段。绝不反向打舵，也不把低 IMU yaw-rate 作为切段硬门槛，防止残余惯性让任一弯卡死并阻塞 Stage3 交接。两个 180 度弯直径约 `0.50m`，即 `track_corner_radius=0.25m`；其巡航 `0.35m/s` 与 `1.40rad/s` 指令满足该半径的曲率关系。
 - 进入 `stage3_handoff_line` 后，S2 以实时 map TF 发布预测起点；当 map Y 小于 `track_stage3_handoff_map_y`（当前 2.40）时发布交接锚点和 `stage2_state=complete`。
 
 ### 3.2 控制与安全
 
-- 生产速度、弧线控制、视觉修正和交权门限全部在 `stage2_controller.yaml` 的 `track_*` 参数中。90 度弯使用 `0.40m` 半径，两个 180 度弯使用 `0.25m` 半径；弯道线速度和角速度以 `v / omega = R` 配对配置，当前直线最大速度为 0.66 m/s。
+- 生产速度、弧线控制、视觉修正和交权门限全部在 `stage2_controller.yaml` 的 `track_*` 参数中。四个弯各自拥有独立的 `track_<segment>_linear` 与 `track_<segment>_angular`，入口和出口 90 度弯使用 `0.40m` 半径，两个 180 度弯使用 `0.25m` 半径；每一组线速度和角速度应以 `v / omega = R` 配对，当前直线最大速度为 0.66 m/s。
 - 直线段由 IMU 航向保持为主，可信 SEG 中线只作小幅横向修正；SEG 不可单独结束转弯。
 - `StraightAvoidanceController` 只在直线段接管。雷达聚类先经过正前方 +/-15 度及最小横向尺寸过滤，并须在连续扫描中保持位置、横向和尺寸关联达到 `stage2_straight_avoid_confirm_frames`（当前 3 帧），才成为可规划障碍；弧线段和两个 180 度弯前预检区会清空候选，不能跨段触发。它从同一帧雷达估计两侧围栏内缘，并以车体半宽、障碍宽度和安全边界求可行的最小横移；只有完整 S 形横移可在障碍前完成且不扫到任一围栏时才接管。避障全程保持当前直线速度，偏航量由所需横移反算并受最大角度限制，结束后进入短冷却再接受新候选。弧线段关闭前方硬停车，避免扫到赛道边界误停。
 - 两个 180 度弯前的 `stage2_turn_precheck_*` 当前只写诊断日志，不停车、不减速、不改变切段。

@@ -16,8 +16,7 @@
 #     track_side_arc_vision_enabled=true：SEG 优先，map x 兜底
 #     track_side_arc_vision_enabled=false：只用 map x；TF 缺失时按距离降级
 #   直线速度：track_max_speed
-#   弯道速度：track_corner_speed / track_entry_linear
-#   弯道转向力度：track_entry_angular / track_corner_angular
+#   四弯速度：track_<segment>_linear / track_<segment>_angular
 #   90° / 180° 弯均按完整相对 IMU 转角和完整弧长结束，无提前收口。
 #   出弯反修过猛：track_line_heading_kp / track_yaw_rate_damping
 # ================================================================================
@@ -103,15 +102,40 @@ stage2_inertial_navigator:
     # 全局最大角速度（rad/s）
     track_max_angular: 1.5
 
-    # 入口 90° 弯：线速度 + 角速度
-    # 0.50 / 1.25 = 0.40m，与入口/出口 90° 弯半径一致。
-    track_entry_linear: 0.50
-    track_entry_angular: 1.25
+    # 四个弯各自的巡航线速度与角速度；建议始终保持 linear / angular = 半径。
+    # 入口 90°：0.50 / 1.25 = 0.40m。
+    track_entry_arc_linear: 0.50
+    track_entry_arc_angular: 1.25
+    # 第一侧 180°：0.35 / 1.40 = 0.25m。
+    track_left_side_arc_linear: 0.35
+    track_left_side_arc_angular: 1.40
+    # 第二侧 180°：独立设置，不与第一侧共享。
+    track_right_side_arc_linear: 0.35
+    track_right_side_arc_angular: 1.40
+    # 出口 90°：独立设置，不与入口共享。
+    track_exit_turn_90_linear: 0.50
+    track_exit_turn_90_angular: 1.25
 
-    # 后续 180° 弯：线速度 + 角速度上限
-    # 180° 弯直径约 0.50m，即 R=0.25m；0.35 / 1.40 = 0.25m。
-    track_corner_speed: 0.35
-    track_corner_angular: 1.5
+    # 四个弯均固定曲率巡航，随后同方向低曲率收角；各弯独立调参。
+    # 到达本弯 IMU 转角容差即切下一段，绝不反向打舵或等待 yaw-rate 降零。
+    # entry_arc：入口 90°
+    track_entry_arc_exit_lead_deg: 50.0
+    track_entry_arc_exit_angular_scale: 0.25
+    track_entry_arc_completion_tolerance_deg: 3.0
+    # left_side_arc：第一个 180°
+    track_left_side_arc_exit_lead_deg: 30.0
+    track_left_side_arc_exit_angular_scale: 0.25
+    track_left_side_arc_completion_tolerance_deg: 3.0
+    # right_side_arc：第二个 180°
+    track_right_side_arc_exit_lead_deg: 30.0
+    track_right_side_arc_exit_angular_scale: 0.25
+    track_right_side_arc_completion_tolerance_deg: 3.0
+    # exit_turn_90：出口 90°，进入 Stage3 交接直线前的最后一弯
+    track_exit_turn_90_exit_lead_deg: 50.0
+    track_exit_turn_90_exit_angular_scale: 0.25
+    track_exit_turn_90_completion_tolerance_deg: 3.0
+    # 四弯共同的最小里程比例，防止仅由异常 IMU 跳变提前切段。
+    track_arc_min_progress_ratio: 0.80
 
     # 第一个 180° 的标定中心：entry_arc 后 entry_medium 的名义距离。
     # 视觉触发开启后，此值不再是常规切段点，而是下方保护窗口的中心。
@@ -147,7 +171,7 @@ stage2_inertial_navigator:
     # map TF 暂不可用时才回退到各段距离窗口上限，避免无限直行。
     track_turn_force_map_x_enabled: true
     track_turn_force_min_map_x: 2.03
-    track_turn_force_max_map_x: 4.10
+    track_turn_force_max_map_x: 3.50
 
     # 第二个 180° 的名义里程中心，只用于视觉有效窗口和 TF 缺失保护。
     track_top_long_distance_m: 2.47
@@ -157,9 +181,9 @@ stage2_inertial_navigator:
     track_exit_medium_distance_m: 0.80
 
     # 两个 180° 和出口短直线完成后，按方向执行 90°：顺时针左转、逆时针右转。
-    # 该段复用入口 90° 的 track_entry_linear / track_entry_angular / radius 配置，
+    # 该段使用独立的 track_exit_turn_90_linear / angular / radius 配置，
     # 随后沿 -Y 直行；实时 TF map_y 严格小于此值时交权给 Stage3。
-    track_stage3_handoff_map_y: 2.30
+    track_stage3_handoff_map_y: 2.25
     stage3_entry_anchor_topic: stage3_entry_anchor
     # S3 交接锚点只取 map <- base_footprint 的实时 TF xy；TF 不可用时暂停交权。
     stage3_entry_anchor_base_frame: base_footprint
@@ -173,16 +197,6 @@ stage2_inertial_navigator:
     # 并以 πR 作为弧长参考；入口/出口 90° 弯仍使用 track_entry_radius。
     track_entry_radius: 0.40
     track_corner_radius: 0.25
-
-    # 四个弯以完整弧长和完整 IMU 转角为目标。末段的允许角速度按
-    # sqrt(2 * decel * remaining_angle) 实时计算，角速度越高越早制动；
-    # 没有固定提前角。只有目标转角和 IMU yaw-rate 均收敛才切直线。
-    track_arc_yaw_decel_rps2: 2.0
-    track_arc_yaw_rate_kp: 0.60
-    track_arc_terminal_yaw_rate_rps: 0.15
-    track_arc_terminal_angle_deg: 0.75
-    # 终点反向曲率校正时保持阿克曼底盘可转向的最低正向速度。
-    track_arc_terminal_min_speed_mps: 0.08
 
     # 直线段出弯修正
     track_line_heading_kp: 0.80

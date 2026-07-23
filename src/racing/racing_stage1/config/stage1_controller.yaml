@@ -287,12 +287,12 @@ competition_controller:
     # --- 通道路点 (Waypoints in map frame) ---
     # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
     # 按数组顺序逐点跟踪；用于中继点推进与最终交接判据。
-    corridor_waypoints_json: '[{"x":2.60,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.60,"y":2.55,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
+    corridor_waypoints_json: '[{"x":2.55,"y":1.20,"speed":0.20,"description":"corridor_mid_1"},{"x":2.55,"y":2.55,"speed":0.18,"yaw_deg":90.0,"description":"corridor_goal"}]'
 
     # 使用实车测得的快速中心线。正常行驶及激光避障恢复均沿该线跟踪，
     # 不因局部偏差反复运行全局 A*；障碍避让仍由既有激光状态机接管。
     corridor_reference_path_enabled: true
-    corridor_reference_path_json: '[{"x":2.18,"y":0.72},{"x":2.38,"y":0.96},{"x":2.45,"y":1.20},{"x":2.60,"y":1.75},{"x":2.60,"y":2.20},{"x":2.60,"y":2.55}]'
+    corridor_reference_path_json: '[{"x":2.18,"y":0.72},{"x":2.38,"y":0.96},{"x":2.45,"y":1.20},{"x":2.55,"y":1.75},{"x":2.55,"y":2.20},{"x":2.55,"y":2.55}]'
 
     # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
     corridor_waypoint_tolerance: 0.25
