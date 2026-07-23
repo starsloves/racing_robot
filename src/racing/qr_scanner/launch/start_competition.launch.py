@@ -1,9 +1,29 @@
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler
 from launch.conditions import IfCondition
+from launch.event_handlers import OnShutdown
 from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration
+
+
+def _release_aurora_action():
+    return ExecuteProcess(
+        cmd=[
+            'bash',
+            '-c',
+            (
+                'set +e; '
+                'pkill -CONT -x aurora930_node 2>/dev/null; '
+                'pkill -15 -x aurora930_node 2>/dev/null; '
+                'sleep 0.3; '
+                'pkill -9 -x aurora930_node 2>/dev/null; '
+                'true'
+            ),
+        ],
+        output='log',
+    )
+
 
 def generate_launch_description():
     # 保留 device 参数以兼容上层 launch 透传，但 Aurora 方案不再使用它。
@@ -62,5 +82,6 @@ def generate_launch_description():
         rgb_fps_arg,
         resolution_mode_index_arg,
         aurora_node,
-        qr_node
+        qr_node,
+        RegisterEventHandler(OnShutdown(on_shutdown=[_release_aurora_action()])),
     ])

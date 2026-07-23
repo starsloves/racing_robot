@@ -7,7 +7,7 @@ import time
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.callback_groups import ReentrantCallbackGroup
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from std_msgs.msg import Empty, String
@@ -21,6 +21,8 @@ from racing_stage2.track_controller import ImuDistancePose, Stage2TrackControlle
 
 
 class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
+    ARC_PROFILE_SEGMENTS = ('entry_arc', 'left_side_arc', 'right_side_arc', 'exit_turn_90')
+
     def __init__(self):
         super().__init__(node_name='stage2_inertial_navigator')
         
@@ -61,6 +63,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_turn_force_min_map_x', 0.50)
         self.declare_parameter('track_turn_force_max_map_x', 4.00)
         self.declare_parameter('track_map_x_reset_m', 2.50)
+        self.declare_parameter('stage2_entry_pose_topic', 'stage2_entry_pose')
+        self.declare_parameter('stage2_entry_pose_max_age_sec', 2.0)
         self.declare_parameter('track_top_long_distance_m', 2.59)
         self.declare_parameter('track_exit_medium_distance_m', 1.49)
         self.declare_parameter('track_entry_heading_kp', 1.0)
@@ -82,6 +86,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_right_side_arc_angular', 0.75)
         self.declare_parameter('track_exit_turn_90_linear', 0.08)
         self.declare_parameter('track_exit_turn_90_angular', 0.75)
+        for direction_prefix in ('track_clockwise', 'track_counterclockwise'):
+            for segment in self.ARC_PROFILE_SEGMENTS:
+                self.declare_parameter(f'{direction_prefix}_{segment}_linear', math.nan)
+                self.declare_parameter(f'{direction_prefix}_{segment}_angular', math.nan)
+                self.declare_parameter(f'{direction_prefix}_{segment}_exit_lead_deg', math.nan)
         self.declare_parameter('track_vision_lateral_scale_m', 0.30)
         self.declare_parameter('track_vision_lateral_weight', 0.35)
         self.declare_parameter('track_vision_correction_max_angular', 0.10)
@@ -317,6 +326,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             exit_turn_90_angular=float(
                 self.get_parameter('track_exit_turn_90_angular').value
             ),
+            direction_arc_profiles=self._read_direction_arc_profiles(),
             vision_lateral_scale_m=float(self.get_parameter('track_vision_lateral_scale_m').value),
             vision_lateral_weight=float(self.get_parameter('track_vision_lateral_weight').value),
             vision_correction_max_angular=float(
@@ -413,6 +423,22 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._stage3_handoff_deadline = None
         self._track_map_x_reset_m = float(self.get_parameter('track_map_x_reset_m').value)
         self._track_map_x_reset_origin = None
+        self._track_map_x_correction_offset = 0.0
+        self._stage2_entry_pose = None
+        self._stage2_entry_pose_max_age = max(
+            0.1, float(self.get_parameter('stage2_entry_pose_max_age_sec').value)
+        )
+        entry_pose_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self.create_subscription(
+            PoseStamped,
+            str(self.get_parameter('stage2_entry_pose_topic').value),
+            self.stage2_entry_pose_callback,
+            entry_pose_qos,
+        )
         # The track controller works in an IMU-aligned local frame.  The EKF
         # odometry contributes only travelled distance; its orientation is
         # deliberately never used by Stage2 navigation.
@@ -1162,6 +1188,36 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         direction = self.direction or self.test_direction or 'clockwise'
         return '顺时针' if direction == 'clockwise' else '逆时针'
 
+    def _finite_parameter_or_none(self, name):
+        try:
+            value = float(self.get_parameter(name).value)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    def _read_arc_profile(self, prefix):
+        profile = {}
+        for segment in self.ARC_PROFILE_SEGMENTS:
+            values = {}
+            linear = self._finite_parameter_or_none(f'{prefix}_{segment}_linear')
+            angular = self._finite_parameter_or_none(f'{prefix}_{segment}_angular')
+            lead = self._finite_parameter_or_none(f'{prefix}_{segment}_exit_lead_deg')
+            if linear is not None:
+                values['linear'] = linear
+            if angular is not None:
+                values['angular'] = angular
+            if lead is not None:
+                values['exit_lead_deg'] = lead
+            if values:
+                profile[segment] = values
+        return profile
+
+    def _read_direction_arc_profiles(self):
+        return {
+            'clockwise': self._read_arc_profile('track_clockwise'),
+            'counterclockwise': self._read_arc_profile('track_counterclockwise'),
+        }
+
     def nav_succeeded_for_test_start(self):
         if self.test_start_mode in ('after_corridor', 'nav_succeeded', 'corridor', 'true'):
             return True
@@ -1169,12 +1225,58 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             return False
         return bool(self.use_corridor_path)
 
+    def stage2_entry_pose_callback(self, msg: PoseStamped):
+        stamp = float(msg.header.stamp.sec) + 1e-9 * float(msg.header.stamp.nanosec)
+        if stamp <= 0.0:
+            stamp = self.get_clock().now().nanoseconds / 1e9
+        yaw = self.quaternion_to_yaw(msg.pose.orientation)
+        self._stage2_entry_pose = {
+            'stamp': stamp,
+            'x': float(msg.pose.position.x),
+            'y': float(msg.pose.position.y),
+            'yaw': yaw,
+            'frame_id': msg.header.frame_id or self.global_frame_id,
+        }
+        self._log_session(
+            'STAGE2_ENTRY_POSE_RX',
+            f'map=({self._stage2_entry_pose["x"]:.3f},'
+            f'{self._stage2_entry_pose["y"]:.3f}) '
+            f'yaw={math.degrees(yaw):.1f}deg frame={self._stage2_entry_pose["frame_id"]}',
+        )
+        if self.waiting_for_phase2_start:
+            self.try_start_mission()
+
+    def _fresh_stage2_entry_pose(self, now=None):
+        if self._stage2_entry_pose is None:
+            return None
+        now = self.get_clock().now().nanoseconds / 1e9 if now is None else float(now)
+        age = now - self._stage2_entry_pose['stamp']
+        if age < -0.25 or age > self._stage2_entry_pose_max_age:
+            self._log_session(
+                'STAGE2_ENTRY_POSE_STALE',
+                f'age={age:.3f}s max={self._stage2_entry_pose_max_age:.3f}s ignored',
+            )
+            return None
+        if self._stage2_entry_pose['frame_id'] != self.global_frame_id:
+            self._log_session(
+                'STAGE2_ENTRY_POSE_STALE',
+                f'frame={self._stage2_entry_pose["frame_id"]} expected={self.global_frame_id} ignored',
+            )
+            return None
+        return self._stage2_entry_pose
+
     def _start_track_mission(self):
         if self._last_ekf_position is None or self.current_yaw is None:
             return False
         now = self.get_clock().now().nanoseconds / 1e9
         entry_map_xy = self._track_map_position()
-        self._track_map_x_reset_origin = None if entry_map_xy is None else entry_map_xy[0]
+        entry_pose = self._fresh_stage2_entry_pose(now)
+        self._track_map_x_correction_offset = 0.0
+        if entry_pose is not None and entry_map_xy is not None:
+            self._track_map_x_correction_offset = entry_pose['x'] - entry_map_xy[0]
+            self._track_map_x_reset_origin = entry_pose['x']
+        else:
+            self._track_map_x_reset_origin = None if entry_map_xy is None else entry_map_xy[0]
         self._track_pose_integrator.reset(self._last_ekf_position, self.current_yaw)
         self._track_pose = self._track_pose_integrator.pose
         self._track_distance_m = self._track_pose_integrator.total_distance_m
@@ -1202,9 +1304,17 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             f'imu_map_offset={math.degrees(self.imu_map_yaw_offset_rad):+.1f}',
         )
         self._log_session(
+            'TRACK_ARC_PROFILE',
+            f'direction={self.direction} '
+            f'{self._track_controller.arc_profile_summary(self.direction)}',
+        )
+        self._log_session(
             'TRACK_MAP_X_RESET',
             f'reset_x={self._track_map_x_reset_m:.3f} '
-            f'origin_map_x={self._track_map_x_reset_origin if self._track_map_x_reset_origin is not None else "unavailable"}',
+            f'origin_map_x={self._track_map_x_reset_origin if self._track_map_x_reset_origin is not None else "unavailable"} '
+            f'tf_entry_x={entry_map_xy[0] if entry_map_xy is not None else "unavailable"} '
+            f'wall_offset={self._track_map_x_correction_offset:+.3f} '
+            f'entry_pose_age={now - entry_pose["stamp"] if entry_pose is not None else "unavailable"}',
         )
         self.publish_feedback(
             f'{self.test_feedback_prefix}圆角轨迹闭环启动，方向: {self.direction_text()}'
@@ -1458,14 +1568,17 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         """Return map X in the S2 frame whose handoff origin is 2.5m."""
         if map_xy is None:
             return None
+        corrected_map_x = float(map_xy[0]) + self._track_map_x_correction_offset
         if self._track_map_x_reset_origin is None:
-            self._track_map_x_reset_origin = float(map_xy[0])
+            self._track_map_x_reset_origin = corrected_map_x
             self._log_session(
                 'TRACK_MAP_X_RESET',
                 f'reset_x={self._track_map_x_reset_m:.3f} '
-                f'origin_map_x={self._track_map_x_reset_origin:.3f} source=first_tf',
+                f'origin_map_x={self._track_map_x_reset_origin:.3f} '
+                f'tf_entry_x={float(map_xy[0]):.3f} '
+                f'wall_offset={self._track_map_x_correction_offset:+.3f} source=first_tf',
             )
-        return self._track_map_x_reset_m + float(map_xy[0]) - self._track_map_x_reset_origin
+        return self._track_map_x_reset_m + corrected_map_x - self._track_map_x_reset_origin
 
     def _publish_stage3_entry_anchor(self):
         map_xy = self._track_map_position()

@@ -5,7 +5,7 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -62,6 +62,11 @@ def generate_launch_description():
     map_to_odom_yaw_arg = DeclareLaunchArgument(
         'map_to_odom_yaw', default_value=map_to_odom_yaw_default
     )
+
+    # Disable Fast DDS shared-memory transport for child processes. Repeated
+    # launch/stop cycles on the RDKX5 can leave /dev/shm port locks behind.
+    disable_fastdds_shm = SetEnvironmentVariable('RMW_FASTRTPS_USE_SHM', '0')
+    force_fastdds_udp = SetEnvironmentVariable('RMW_FASTRTPS_TRANSPORT', 'UDPv4')
 
     map_overlay_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(map_overlay_launch_path),
@@ -149,6 +154,8 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        disable_fastdds_shm,
+        force_fastdds_udp,
         include_map_overlay_arg,
         include_stage1_arg,
         include_stage2_arg,

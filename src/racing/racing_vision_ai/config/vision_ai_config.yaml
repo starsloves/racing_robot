@@ -1,11 +1,11 @@
-# Stage2 图生文配置。三路模型并发请求，首个有效中文短句用于播报。
+# Stage2 图生文配置。三路模型并发请求，默认等待完整结果一次性播报。
 # 所有图生文参数直接从本文件读取。
 
 vision_models:
   ark:
     enabled: true
     provider: ark
-    base_url: "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    base_rl: "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
     api_key: ""
     api_key_env: "ark-api-key"
     model_id: "doubao-seed-2-0-mini-260428"
@@ -60,6 +60,8 @@ vision_models:
     log_path: "/home/sunrise/dev_ws/log/local-smolvlm.log"
 
 response:
+  # false: 等模型完整生成后一次性播报；true: 按首个有效流式短句播报。
+  streaming_enabled: false
   max_description_chars: 40
 
 image:

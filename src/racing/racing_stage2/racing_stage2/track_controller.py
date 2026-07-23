@@ -8,7 +8,7 @@ different side or corner.
 
 from dataclasses import dataclass, replace
 import math
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 def wrap_angle(value: float) -> float:
@@ -210,6 +210,7 @@ class Stage2TrackController:
                  right_side_arc_angular: Optional[float] = None,
                  exit_turn_90_linear: Optional[float] = None,
                  exit_turn_90_angular: Optional[float] = None,
+                 direction_arc_profiles: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
                  vision_lateral_scale_m: float = 0.30,
                  vision_lateral_weight: float = 0.35,
                  vision_correction_max_angular: float = 0.10,
@@ -245,7 +246,7 @@ class Stage2TrackController:
         self.entry_angular = arc_angular(entry_arc_angular, entry_angular)
         self.corner_speed = arc_speed(left_side_arc_linear, corner_speed)
         self.corner_angular = arc_angular(left_side_arc_angular, corner_angular)
-        self._arc_cruise = {
+        base_arc_cruise = {
             'entry_arc': (self.entry_speed, self.entry_angular),
             'left_side_arc': (self.corner_speed, self.corner_angular),
             'right_side_arc': (
@@ -257,6 +258,35 @@ class Stage2TrackController:
                 arc_angular(exit_turn_90_angular, entry_angular),
             ),
         }
+        base_arc_cutoff_leads = {
+            'entry_arc': self._arc_cutoff_lead(entry_arc_exit_lead_deg),
+            'left_side_arc': self._arc_cutoff_lead(left_side_arc_exit_lead_deg),
+            'right_side_arc': self._arc_cutoff_lead(right_side_arc_exit_lead_deg),
+            'exit_turn_90': self._arc_cutoff_lead(exit_turn_90_exit_lead_deg),
+        }
+        self._base_arc_cruise = dict(base_arc_cruise)
+        self._base_arc_cutoff_leads = dict(base_arc_cutoff_leads)
+        self._direction_arc_profiles = {}
+        for direction, overrides in (direction_arc_profiles or {}).items():
+            cruise = dict(base_arc_cruise)
+            leads = dict(base_arc_cutoff_leads)
+            for segment, values in (overrides or {}).items():
+                if segment not in cruise:
+                    continue
+                current_linear, current_angular = cruise[segment]
+                linear = values.get('linear')
+                angular = values.get('angular')
+                if linear is not None:
+                    current_linear = arc_speed(linear, current_linear)
+                if angular is not None:
+                    current_angular = arc_angular(angular, current_angular)
+                cruise[segment] = (current_linear, current_angular)
+                lead = values.get('exit_lead_deg')
+                if lead is not None:
+                    leads[segment] = self._arc_cutoff_lead(lead)
+            self._direction_arc_profiles[str(direction).lower()] = (cruise, leads)
+        self._arc_cruise = dict(base_arc_cruise)
+        self._arc_cutoff_leads = dict(base_arc_cutoff_leads)
         self.entry_medium_distance = max(0.05, entry_medium_distance_m)
         self.entry_boundary_trigger_enabled = bool(entry_boundary_trigger_enabled)
         self.entry_boundary_guard_half_width = max(0.0, entry_boundary_guard_half_width_m)
@@ -285,12 +315,6 @@ class Stage2TrackController:
         # steering command goes directly to zero; residual chassis yaw carries
         # the vehicle to the IMU turn target without low-rate steering or a
         # counter-steer correction.
-        self._arc_cutoff_leads = {
-            'entry_arc': self._arc_cutoff_lead(entry_arc_exit_lead_deg),
-            'left_side_arc': self._arc_cutoff_lead(left_side_arc_exit_lead_deg),
-            'right_side_arc': self._arc_cutoff_lead(right_side_arc_exit_lead_deg),
-            'exit_turn_90': self._arc_cutoff_lead(exit_turn_90_exit_lead_deg),
-        }
         self.heading_slowdown = math.radians(max(1.0, heading_slowdown_deg))
         self.entry_heading_kp = max(0.1, entry_heading_kp)
         self.yaw_rate_damping = max(0.0, yaw_rate_damping)
@@ -369,11 +393,37 @@ class Stage2TrackController:
         linear, angular = self._arc_cruise[segment]
         return abs(turn_rad) * linear / angular
 
+    def _apply_direction_arc_profile(self, direction: str) -> None:
+        profile = self._direction_arc_profiles.get(str(direction).lower())
+        if profile is None:
+            self._arc_cruise = dict(self._base_arc_cruise)
+            self._arc_cutoff_leads = dict(self._base_arc_cutoff_leads)
+            return
+        cruise, leads = profile
+        self._arc_cruise = dict(cruise)
+        self._arc_cutoff_leads = dict(leads)
+
+    def arc_profile_summary(self, direction: str) -> str:
+        profile = self._direction_arc_profiles.get(str(direction).lower())
+        cruise, leads = profile if profile is not None else (
+            self._base_arc_cruise,
+            self._base_arc_cutoff_leads,
+        )
+        parts = []
+        for segment in ('entry_arc', 'left_side_arc', 'right_side_arc', 'exit_turn_90'):
+            linear, angular = cruise[segment]
+            parts.append(
+                f'{segment}:v={linear:.2f},w={angular:.2f},'
+                f'lead={math.degrees(leads[segment]):.1f}deg'
+            )
+        return '; '.join(parts)
+
     def start(self, direction: str, position: Tuple[float, float], yaw: float,
               now: float, distance_m: float = 0.0) -> None:
         del now
         clockwise = str(direction).lower().startswith('clock')
         self._clockwise = clockwise
+        self._apply_direction_arc_profile('clockwise' if clockwise else 'counterclockwise')
         entry_sign = 1.0 if clockwise else -1.0
         self._entry_heading = wrap_angle(yaw + entry_sign * math.pi / 2.0)
         self._specs = [_SegmentSpec('entry_arc', 'ARC', self._arc_target_m('entry_arc', math.pi / 2.0),

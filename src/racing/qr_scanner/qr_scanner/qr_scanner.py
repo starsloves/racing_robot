@@ -33,6 +33,8 @@ class QRScannerNode(Node):
         self.declare_parameter('diagnostics_interval_sec', 1.0)
         self.declare_parameter('diagnostics_log_subdir', 'competition_stage1')
         self.declare_parameter('diagnostics_log_filename', 'latest.log')
+        self.declare_parameter('debug_image_enabled', True)
+        self.declare_parameter('debug_image_filename', 'qr_latest.jpg')
         self.declare_parameter('wechat_detect_prototxt', '')
         self.declare_parameter('wechat_detect_caffemodel', '')
         self.declare_parameter('wechat_sr_prototxt', '')
@@ -65,6 +67,10 @@ class QRScannerNode(Node):
         self.diagnostics_log_filename = str(
             self.get_parameter('diagnostics_log_filename').value
         ).strip()
+        self.debug_image_enabled = bool(self.get_parameter('debug_image_enabled').value)
+        self.debug_image_filename = str(
+            self.get_parameter('debug_image_filename').value
+        ).strip() or 'qr_latest.jpg'
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -156,7 +162,8 @@ class QRScannerNode(Node):
             f'backend={self.active_backend} topic={self.camera_topic} '
             f'arm_x>{self.scan_start_x_m:.2f}m crop_px={self.crop_top_px} '
             f'upscale={self.upscale_factor:.1f}x order={self.detection_order} '
-            f'path={self.active_backend}_raw latest_frame_worker=true'
+            f'path={self.active_backend}_raw latest_frame_worker=true '
+            f'debug_image={self.debug_image_path() or "disabled"}'
         )
 
     def diagnostic_log_path(self):
@@ -168,6 +175,15 @@ class QRScannerNode(Node):
         subdir = self.diagnostics_log_subdir or 'competition_stage1'
         filename = self.diagnostics_log_filename or 'latest.log'
         return os.path.join(workspace_root, 'log', subdir, filename)
+
+    def debug_image_path(self):
+        if not self.debug_image_enabled:
+            return ''
+
+        log_path = self.diagnostic_log_path()
+        if not log_path:
+            return ''
+        return os.path.join(os.path.dirname(log_path), self.debug_image_filename)
 
     def write_diagnostic(self, message):
         """Append QR processing evidence without taking ownership of the Stage1 log."""
@@ -188,6 +204,59 @@ class QRScannerNode(Node):
                     fcntl.flock(log_file.fileno(), fcntl.LOCK_UN)
         except OSError as exc:
             self.get_logger().warn(f'failed to write QR diagnostic log: {exc}')
+
+    def write_debug_image(self, gray_image, candidate_descriptions, results):
+        path = self.debug_image_path()
+        if not path:
+            return
+
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            vis_image = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
+            height, width = gray_image.shape[:2]
+            crop_top = self.compute_crop_top(height)
+            if 0 < crop_top < height:
+                cv2.line(vis_image, (0, crop_top), (width - 1, crop_top), (0, 255, 255), 2)
+                cv2.putText(
+                    vis_image,
+                    f'detect area below y={crop_top}',
+                    (8, min(height - 8, crop_top + 24)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            status = 'decoded' if results else 'no_decode'
+            candidate_text = ','.join(candidate_descriptions) or 'none'
+            x_text = 'nan' if self.current_x is None else f'{self.current_x:.2f}'
+            overlay_lines = [
+                f'QR {status} x={x_text}m phase={self.phase}',
+                f'order={self.detection_order} candidate={candidate_text}',
+            ]
+            if results:
+                overlay_lines.append(f'content={results[0][:48]}')
+
+            for index, text in enumerate(overlay_lines):
+                y = 24 + index * 24
+                cv2.putText(
+                    vis_image,
+                    text,
+                    (8, y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 0) if results else (0, 0, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            path_root, path_ext = os.path.splitext(path)
+            tmp_path = f'{path_root}.tmp{path_ext or ".jpg"}'
+            if cv2.imwrite(tmp_path, vis_image, [cv2.IMWRITE_JPEG_QUALITY, 85]):
+                os.replace(tmp_path, path)
+        except Exception as exc:
+            self.get_logger().warn(f'failed to write QR debug image: {exc}')
 
     def reset_diagnostic_window(self):
         self.diag_window_started_at = time.monotonic()
@@ -436,6 +505,7 @@ class QRScannerNode(Node):
         self.diag_total_decode_ms += decode_ms
         self.diag_max_decode_ms = max(self.diag_max_decode_ms, decode_ms)
         self.diag_last_candidates = candidate_descriptions
+        self.write_debug_image(gray_image, candidate_descriptions, results)
 
         if not results:
             self.log_diagnostic_summary()

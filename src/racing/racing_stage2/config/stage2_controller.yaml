@@ -103,15 +103,16 @@ stage2_inertial_navigator:
     track_max_angular: 1.5
 
     # 四个弯各自的巡航线速度与角速度。
+    # 无前缀参数保留为兼容默认；当前实车基准按逆时针配置。
     # 入口 90°：0.50 / 1.25 = 0.40m。
     track_entry_arc_linear: 0.50
     track_entry_arc_angular: 1.25
     # 第一侧 180°：独立设置，不与第二侧共享。
     track_left_side_arc_linear: 0.70
-    track_left_side_arc_angular: 1.25
+    track_left_side_arc_angular: 1.30
     # 第二侧 180°：独立设置，不与第一侧共享。
     track_right_side_arc_linear: 0.70
-    track_right_side_arc_angular: 1.25
+    track_right_side_arc_angular: 1.30
     # 出口 90°：独立设置，不与入口共享。
     track_exit_turn_90_linear: 0.50
     track_exit_turn_90_angular: 1.25
@@ -119,20 +120,50 @@ stage2_inertial_navigator:
     # 四个弯均按各自配置的线速度、角速度巡航。到达剩余提前角后
     # 立即切入下一直线；残余航向由直线的 IMU 航向闭环和 yaw-rate 阻尼吸收。
     # entry_arc：入口 90°
-    track_entry_arc_exit_lead_deg: 30.0
+    track_entry_arc_exit_lead_deg: 45.0
     # left_side_arc：第一个 180°
-    track_left_side_arc_exit_lead_deg: 45.0
+    track_left_side_arc_exit_lead_deg: 35.0
     # right_side_arc：第二个 180°
-    track_right_side_arc_exit_lead_deg: 45.0
+    track_right_side_arc_exit_lead_deg: 35.0
     # exit_turn_90：出口 90°，进入 Stage3 交接直线前的最后一弯
-    track_exit_turn_90_exit_lead_deg: 38.0
+    track_exit_turn_90_exit_lead_deg: 45.0
+
+    # 方向独立弯道参数。二维码方向为 counterclockwise 时使用本组，
+    # 保持当前逆时针实车效果；若某项填 nan 或删除，则回退到上方无前缀默认。
+    track_counterclockwise_entry_arc_linear: 0.50
+    track_counterclockwise_entry_arc_angular: 1.25
+    track_counterclockwise_entry_arc_exit_lead_deg: 45.0
+    track_counterclockwise_left_side_arc_linear: 0.70
+    track_counterclockwise_left_side_arc_angular: 1.30
+    track_counterclockwise_left_side_arc_exit_lead_deg: 35.0
+    track_counterclockwise_right_side_arc_linear: 0.70
+    track_counterclockwise_right_side_arc_angular: 1.30
+    track_counterclockwise_right_side_arc_exit_lead_deg: 35.0
+    track_counterclockwise_exit_turn_90_linear: 0.50
+    track_counterclockwise_exit_turn_90_angular: 1.25
+    track_counterclockwise_exit_turn_90_exit_lead_deg: 45.0
+
+    # 顺时针单独参数。顺时针上一轮在入口/末段提前收角后仍带较大正 yaw-rate，
+    # 因此先减小提前角，让主动转向多打一段，再交给直线阻尼吸收。
+    track_clockwise_entry_arc_linear: 0.50
+    track_clockwise_entry_arc_angular: 1.25
+    track_clockwise_entry_arc_exit_lead_deg: 25.0
+    track_clockwise_left_side_arc_linear: 0.70
+    track_clockwise_left_side_arc_angular: 1.25
+    track_clockwise_left_side_arc_exit_lead_deg: 40.0
+    track_clockwise_right_side_arc_linear: 0.70
+    track_clockwise_right_side_arc_angular: 1.25
+    track_clockwise_right_side_arc_exit_lead_deg: 30.0
+    track_clockwise_exit_turn_90_linear: 0.50
+    track_clockwise_exit_turn_90_angular: 1.25
+    track_clockwise_exit_turn_90_exit_lead_deg: 30.0
 
     # 第一个 180° 的标定中心：entry_arc 后 entry_medium 的名义距离。
     # 视觉触发开启后，此值不再是常规切段点，而是下方保护窗口的中心。
-    track_entry_medium_distance_m: 0.45
+    track_entry_medium_distance_m: 0.65
 
     # 第一个 180° 的名义里程中心；横向激光边界丢失时才使用窗口上限兜底。
-    track_entry_boundary_trigger_enabled: true
+    track_entry_boundary_trigger_enabled: false
     track_entry_boundary_guard_half_width_m: 0.50 # 让纯视觉
     # 前方横边在分割 ROI 中自顶部向下的位置比例；值越大代表边界越靠近车头。
     track_entry_boundary_top_y_ratio: 0.20
@@ -142,7 +173,7 @@ stage2_inertial_navigator:
     track_entry_boundary_confirm_frames: 1
 
     # 第二个 180°：复用第一个弯的 SEG 横边判定，独立保留调参入口。
-    track_top_boundary_trigger_enabled: true
+    track_top_boundary_trigger_enabled: false
     track_top_boundary_guard_half_width_m: 0.50
     track_top_boundary_top_y_ratio: 0.20
     track_top_boundary_max_angle_deg: 20.0
@@ -156,10 +187,13 @@ stage2_inertial_navigator:
 
     # 顺时针：entry_medium x<=min，top_long x>=max；逆时针顺序相反。
     track_turn_force_map_x_enabled: true
-    track_turn_force_min_map_x: 1.65
+    track_turn_force_min_map_x: 1.70
     track_turn_force_max_map_x: 3.65
     # S2 局部 map X 原点：交接瞬间强制重置为 2.50m，随后只累计实时 TF 的相对变化。
     track_map_x_reset_m: 2.50
+    # Stage1 在 Y 门线发布墙修正入口位姿；S2 用其 X 作为局部 map-X 偏置来源。
+    stage2_entry_pose_topic: stage2_entry_pose
+    stage2_entry_pose_max_age_sec: 2.0
 
     # 第二个 180° 的名义里程中心，只用于视觉有效窗口和 TF 缺失保护。
     track_top_long_distance_m: 2.47

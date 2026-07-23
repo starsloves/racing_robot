@@ -133,6 +133,16 @@ class Stage3ReturnNavigator(Node):
         self._p_final_run_start_odom = None
         self._p_final_run_target_yaw = None
         self._p_final_run_depth_m = None
+        self._p_final_run_trigger = ''
+        self._p_final_last_progress_odom = None
+        self._p_final_last_progress_at = None
+        self._p_last_fill_ratio = 0.0
+        self._p_last_fill_at = None
+        self._p_last_valid_depth_m = None
+        self._p_last_valid_depth_at = None
+        self._p_last_valid_depth_status = ''
+        self._p_visual_near_since = None
+        self._p_visual_near_last_at = None
         self._p_visible_yaw_history = deque()
         self._p_recovery_target_yaw = None
         # Preserve the visual heading while lidar temporarily takes control.
@@ -284,12 +294,21 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_depth_max_m', 4.00)
         self.declare_parameter('p_depth_roi_fraction', 0.50)
         self.declare_parameter('p_depth_stop_distance_m', 0.50)
+        self.declare_parameter('p_final_visual_fill_trigger_ratio', 0.45)
+        self.declare_parameter('p_final_visual_depth_assist_m', 0.75)
+        self.declare_parameter('p_final_visual_evidence_hold_sec', 0.10)
+        self.declare_parameter('p_final_visual_evidence_timeout_sec', 1.20)
         self.declare_parameter('p_approach_slow_linear_speed', 0.12)
         self.declare_parameter('p_final_odom_travel_m', 0.50)
         self.declare_parameter('p_final_brake_response_sec', 0.12)
         self.declare_parameter('p_final_brake_decel_mps2', 0.80)
         self.declare_parameter('p_final_brake_margin_m', 0.015)
         self.declare_parameter('p_final_completion_tolerance_m', 0.040)
+        self.declare_parameter('p_final_heading_tolerance_deg', 10.0)
+        self.declare_parameter('p_final_heading_max_angular_speed', 0.12)
+        self.declare_parameter('p_final_progress_min_delta_m', 0.015)
+        self.declare_parameter('p_final_progress_timeout_sec', 0.75)
+        self.declare_parameter('p_final_stall_completion_min_m', 0.30)
         self.declare_parameter('p_approach_disable_avoidance_distance_m', 0.0)
 
         # ── P 墙角终端校正 ──
@@ -525,6 +544,24 @@ class Stage3ReturnNavigator(Node):
         self.p_depth_stop_distance = max(
             0.0, float(self.get_parameter('p_depth_stop_distance_m').value)
         )
+        self.p_final_visual_fill_trigger = min(
+            1.0,
+            max(0.0, float(
+                self.get_parameter('p_final_visual_fill_trigger_ratio').value
+            )),
+        )
+        self.p_final_visual_depth_assist = max(
+            self.p_depth_stop_distance,
+            float(self.get_parameter('p_final_visual_depth_assist_m').value),
+        )
+        self.p_final_visual_evidence_hold = max(
+            0.0,
+            float(self.get_parameter('p_final_visual_evidence_hold_sec').value),
+        )
+        self.p_final_visual_evidence_timeout = max(
+            0.0,
+            float(self.get_parameter('p_final_visual_evidence_timeout_sec').value),
+        )
         self.p_approach_slow_linear = max(
             0.02, float(self.get_parameter('p_approach_slow_linear_speed').value)
         )
@@ -543,6 +580,22 @@ class Stage3ReturnNavigator(Node):
         self.p_final_completion_tolerance = min(
             self.p_final_odom_travel,
             max(0.005, float(self.get_parameter('p_final_completion_tolerance_m').value)),
+        )
+        self.p_final_heading_tolerance = math.radians(max(
+            0.1, float(self.get_parameter('p_final_heading_tolerance_deg').value)
+        ))
+        self.p_final_heading_max_angular = max(
+            0.0, float(self.get_parameter('p_final_heading_max_angular_speed').value)
+        )
+        self.p_final_progress_min_delta = max(
+            0.001, float(self.get_parameter('p_final_progress_min_delta_m').value)
+        )
+        self.p_final_progress_timeout = max(
+            0.1, float(self.get_parameter('p_final_progress_timeout_sec').value)
+        )
+        self.p_final_stall_completion_min = min(
+            self.p_final_odom_travel,
+            max(0.0, float(self.get_parameter('p_final_stall_completion_min_m').value)),
         )
         self.p_approach_disable_avoidance_distance = max(
             0.0, float(self.get_parameter(
@@ -1309,6 +1362,10 @@ class Stage3ReturnNavigator(Node):
         self._p_final_run_start_odom = None
         self._p_final_run_target_yaw = None
         self._p_final_run_depth_m = None
+        self._p_final_run_trigger = ''
+        self._p_final_last_progress_odom = None
+        self._p_final_last_progress_at = None
+        self._reset_p_final_visual_evidence()
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
         self._p_avoidance_recovery_yaw = None
@@ -1361,6 +1418,10 @@ class Stage3ReturnNavigator(Node):
         self._p_final_run_start_odom = None
         self._p_final_run_target_yaw = None
         self._p_final_run_depth_m = None
+        self._p_final_run_trigger = ''
+        self._p_final_last_progress_odom = None
+        self._p_final_last_progress_at = None
+        self._reset_p_final_visual_evidence()
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
         self._p_avoidance_recovery_yaw = None
@@ -1632,6 +1693,8 @@ class Stage3ReturnNavigator(Node):
         if self.avoid_state == 'emergency_reversing':
             self._run_emergency_reverse()
             return True
+        if self._p_approach_avoidance_disabled():
+            return False
         if self.latest_scan is None:
             return False
         obstacle = self._find_nearest_obstacle(self.latest_scan, emergency=True)
@@ -1769,6 +1832,62 @@ class Stage3ReturnNavigator(Node):
         if depth_m is None:
             return f'depth=invalid samples={samples} ({status})'
         return f'depth={depth_m:.3f}m samples={samples} ({status})'
+
+    def _reset_p_final_visual_evidence(self):
+        self._p_last_fill_ratio = 0.0
+        self._p_last_fill_at = None
+        self._p_last_valid_depth_m = None
+        self._p_last_valid_depth_at = None
+        self._p_last_valid_depth_status = ''
+        self._p_visual_near_since = None
+        self._p_visual_near_last_at = None
+
+    def _update_p_final_visual_evidence(self, fill, depth_m, depth_status):
+        now = self._now_sec()
+        self._p_last_fill_ratio = float(fill or 0.0)
+        self._p_last_fill_at = now
+        if depth_m is not None:
+            self._p_last_valid_depth_m = float(depth_m)
+            self._p_last_valid_depth_at = now
+            self._p_last_valid_depth_status = str(depth_status or '')
+
+        recent_depth_ok = (
+            self._p_last_valid_depth_m is not None
+            and self._p_last_valid_depth_at is not None
+            and now - self._p_last_valid_depth_at <= self.p_final_visual_evidence_timeout
+            and self._p_last_valid_depth_m <= self.p_final_visual_depth_assist
+        )
+        near_now = (
+            self._p_last_fill_ratio >= self.p_final_visual_fill_trigger
+            and recent_depth_ok
+        )
+        if near_now:
+            if self._p_visual_near_since is None:
+                self._p_visual_near_since = now
+            self._p_visual_near_last_at = now
+        elif (
+            self._p_visual_near_last_at is None
+            or now - self._p_visual_near_last_at > self.p_final_visual_evidence_timeout
+        ):
+            self._p_visual_near_since = None
+            self._p_visual_near_last_at = None
+
+    def _p_visual_near_ready(self):
+        if self.p_final_visual_fill_trigger <= 0.0:
+            return False
+        now = self._now_sec()
+        if self._p_visual_near_since is None or self._p_visual_near_last_at is None:
+            return False
+        if now - self._p_visual_near_last_at > self.p_final_visual_evidence_timeout:
+            return False
+        if now - self._p_visual_near_since < self.p_final_visual_evidence_hold:
+            return False
+        return True
+
+    def _p_final_depth_start_text(self):
+        if self._p_final_run_depth_m is None:
+            return 'visual_fallback'
+        return f'{self._p_final_run_depth_m:.3f}m'
 
     def _record_p_visible_yaw(self, now):
         if self.current_yaw is None:
@@ -2250,6 +2369,10 @@ class Stage3ReturnNavigator(Node):
         self._p_final_run_start_odom = None
         self._p_final_run_target_yaw = None
         self._p_final_run_depth_m = None
+        self._p_final_run_trigger = ''
+        self._p_final_last_progress_odom = None
+        self._p_final_last_progress_at = None
+        self._reset_p_final_visual_evidence()
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
         self._publish_state('p_approach')
@@ -2276,19 +2399,16 @@ class Stage3ReturnNavigator(Node):
                 self._p_lost_reverse_started_at = now
                 self._p_recovery_target_yaw = self._p_heading_before_loss(now)
                 self.desired_heading = self._p_recovery_target_yaw
-                target_deg = (
-                    math.degrees(self._p_recovery_target_yaw)
-                    if self._p_recovery_target_yaw is not None else float('nan')
-                )
                 self.log.warn(
                     'P_DETECTION',
                     'P lost after acquisition: reversing toward the locked visual heading '
-                    f'({target_deg:.1f}deg)'
+                    f'({self._format_optional_yaw_deg(self._p_recovery_target_yaw)})'
                 )
                 self._publish_feedback('P lost: reverse toward the locked visual heading')
 
             reverse_elapsed = now - self._p_lost_reverse_started_at
             target_yaw = self._p_recovery_target_yaw
+            target_text = self._format_optional_yaw_deg(target_yaw)
             heading_error = (
                 self._angle_error(target_yaw, self.current_yaw)
                 if target_yaw is not None and self.current_yaw is not None else 0.0
@@ -2303,7 +2423,7 @@ class Stage3ReturnNavigator(Node):
                 self.log.telemetry(
                     'P_RECOVER',
                     f'loss_t={reverse_elapsed:.2f}s v={-self.p_loss_reverse_speed:.2f} '
-                    f'target={math.degrees(target_yaw):.1f}° '
+                    f'target={target_text} '
                     f'err={math.degrees(heading_error):+.1f}° w={reverse_angular:.2f}'
                 )
                 self.cmd_pub.publish(self._twist(-self.p_loss_reverse_speed, reverse_angular))
@@ -2348,12 +2468,13 @@ class Stage3ReturnNavigator(Node):
         linear = self.p_approach_linear
         self._p_last_angular = angular
         depth_m, samples, depth_status = self._p_depth_measurement(bbox)
+        self._update_p_final_visual_evidence(fill, depth_m, depth_status)
         if (
             depth_m is not None
             and depth_m <= self.p_approach_disable_avoidance_distance
         ):
             self._p_final_approach_latched = True
-        if self._try_arm_p_final_odometry(depth_m, samples, depth_status):
+        if self._try_arm_p_final_odometry(depth_m, samples, depth_status, fill):
             self._run_p_final_odometry()
             return
         self._publish_state('p_approach')
@@ -2366,16 +2487,34 @@ class Stage3ReturnNavigator(Node):
         )
         self.cmd_pub.publish(self._twist(linear, angular))
 
-    def _try_arm_p_final_odometry(self, depth_m=None, samples=None, depth_status=None):
+    def _try_arm_p_final_odometry(
+        self, depth_m=None, samples=None, depth_status=None, fill=None,
+    ):
         """Start the final run before any lidar avoidance can arbitrate a command."""
         if self._p_final_run_start_odom is not None:
             return True
+        trigger_text = None
         if depth_m is None:
-            detected, conf, bbox, _stamp, _offset, _fill = self._p_detection()
-            if not detected or conf < self.p_approach_conf:
-                return False
-            depth_m, samples, depth_status = self._p_depth_measurement(bbox)
-        if depth_m is None or depth_m > self.p_depth_stop_distance:
+            detected, conf, bbox, _stamp, _offset, detected_fill = self._p_detection()
+            if detected and conf >= self.p_approach_conf:
+                depth_m, samples, depth_status = self._p_depth_measurement(bbox)
+                fill = detected_fill
+                self._update_p_final_visual_evidence(fill, depth_m, depth_status)
+        if depth_m is not None and depth_m <= self.p_depth_stop_distance:
+            trigger_text = (
+                f'depth={depth_m:.3f}m <= {self.p_depth_stop_distance:.3f}m '
+                f'samples={samples} ({depth_status})'
+            )
+        elif self._p_visual_near_ready():
+            depth_m = self._p_last_valid_depth_m
+            trigger_text = (
+                f'visual_fill={self._p_last_fill_ratio:.2%} >= '
+                f'{self.p_final_visual_fill_trigger:.2%}; recent_depth='
+                f'{self._p_last_valid_depth_m:.3f}m <= '
+                f'{self.p_final_visual_depth_assist:.3f}m '
+                f'({self._p_last_valid_depth_status})'
+            )
+        else:
             return False
         if self._last_raw_odom_xy is None or self._p_target_yaw is None:
             self.stop_robot()
@@ -2386,6 +2525,9 @@ class Stage3ReturnNavigator(Node):
         self._p_final_run_start_odom = self._last_raw_odom_xy
         self._p_final_run_target_yaw = self._p_target_yaw
         self._p_final_run_depth_m = depth_m
+        self._p_final_run_trigger = trigger_text
+        self._p_final_last_progress_odom = self._last_raw_odom_xy
+        self._p_final_last_progress_at = self._now_sec()
         self.desired_heading = self._p_final_run_target_yaw
         self.avoid_state = 'forward'
         self.avoid_started_time = None
@@ -2396,8 +2538,7 @@ class Stage3ReturnNavigator(Node):
         self.emergency_reverse_deadline = None
         self.recovery_uses_heading = False
         self.log.segment(
-            f'P final odometry run armed: depth={depth_m:.3f}m <= '
-            f'{self.p_depth_stop_distance:.3f}m samples={samples} ({depth_status}) '
+            f'P final odometry run armed: {trigger_text} '
             f'runout={self.p_final_odom_travel:.3f}m '
             f'v={self.p_approach_slow_linear:.2f}; lidar avoidance disabled'
         )
@@ -2431,6 +2572,42 @@ class Stage3ReturnNavigator(Node):
                 brake_distance, self.p_final_completion_tolerance,
             ),
         )
+        now = self._now_sec()
+        if self._p_final_last_progress_odom is None:
+            self._p_final_last_progress_odom = self._last_raw_odom_xy
+            self._p_final_last_progress_at = now
+        else:
+            progress_delta = math.hypot(
+                self._last_raw_odom_xy[0] - self._p_final_last_progress_odom[0],
+                self._last_raw_odom_xy[1] - self._p_final_last_progress_odom[1],
+            )
+            if progress_delta >= self.p_final_progress_min_delta:
+                self._p_final_last_progress_odom = self._last_raw_odom_xy
+                self._p_final_last_progress_at = now
+            elif (
+                self._p_final_last_progress_at is not None
+                and now - self._p_final_last_progress_at >= self.p_final_progress_timeout
+            ):
+                self.stop_robot()
+                if travelled >= self.p_final_stall_completion_min:
+                    self.log.segment(
+                        f'P final stall complete: travelled={travelled:.3f}m '
+                        f'min={self.p_final_stall_completion_min:.3f}m '
+                        f'no_progress={now - self._p_final_last_progress_at:.2f}s '
+                        f'target={self.p_final_odom_travel:.3f}m '
+                        f'depth_start={self._p_final_depth_start_text()} '
+                        f'trigger={self._p_final_run_trigger}'
+                    )
+                    self._finish_mission('return complete, P final run reached terminal wall')
+                else:
+                    self._publish_state('p_final_terminal_guard')
+                    self.log.warn(
+                        'P_FINAL_ODOMETRY',
+                        f'no odom progress for {now - self._p_final_last_progress_at:.2f}s '
+                        f'before minimum terminal run: travelled={travelled:.3f}m '
+                        f'min={self.p_final_stall_completion_min:.3f}m',
+                    )
+                return
         if travelled >= completion_floor:
             self.stop_robot()
             self.log.segment(
@@ -2438,16 +2615,17 @@ class Stage3ReturnNavigator(Node):
                 f'target={self.p_final_odom_travel:.3f}m '
                 f'completion_floor={completion_floor:.3f}m '
                 f'brake_distance={brake_distance:.3f}m '
-                f'depth_start={self._p_final_run_depth_m:.3f}m'
+                f'depth_start={self._p_final_depth_start_text()} '
+                f'trigger={self._p_final_run_trigger}'
             )
             self._finish_mission('return complete, P visual final braking window reached')
             return
         heading_error = self._angle_error(self._p_final_run_target_yaw, self.current_yaw)
         angular = self._clamp(
             self.p_heading_kp * heading_error,
-            self.p_heading_max_angular,
+            self.p_final_heading_max_angular,
         )
-        if abs(heading_error) <= self.p_heading_tolerance:
+        if abs(heading_error) <= self.p_final_heading_tolerance:
             angular = 0.0
         self._publish_state('p_final_odometry')
         self.log.telemetry(
@@ -2455,7 +2633,7 @@ class Stage3ReturnNavigator(Node):
             f'travelled={travelled:.3f}/{self.p_final_odom_travel:.3f}m '
             f'remain={self.p_final_odom_travel - travelled:.3f}m '
             f'brake_at={completion_floor:.3f}m brake_distance={brake_distance:.3f}m '
-            f'depth_start={self._p_final_run_depth_m:.3f}m '
+            f'depth_start={self._p_final_depth_start_text()} '
             f'heading_err={math.degrees(heading_error):+.1f}deg '
             f'v={final_speed:.2f} w={angular:.2f}',
         )
@@ -2481,6 +2659,10 @@ class Stage3ReturnNavigator(Node):
         self._p_final_run_start_odom = None
         self._p_final_run_target_yaw = None
         self._p_final_run_depth_m = None
+        self._p_final_run_trigger = ''
+        self._p_final_last_progress_odom = None
+        self._p_final_last_progress_at = None
+        self._reset_p_final_visual_evidence()
         self._p_visible_yaw_history.clear()
         self.desired_heading = None
         self._filtered_heading_err = 0.0
@@ -2492,6 +2674,12 @@ class Stage3ReturnNavigator(Node):
             'resume lidar-protected navigation to visual search goal'
         )
         self._publish_feedback('P occluded: resume navigation to visual search goal')
+
+    @staticmethod
+    def _format_optional_yaw_deg(yaw_rad):
+        if yaw_rad is None:
+            return 'nan'
+        return f'{math.degrees(yaw_rad):.1f}deg'
 
     def _visual_target_yaw(self, offset):
         """Turn one P-frame offset into a heading that IMU can hold straight."""
@@ -2862,8 +3050,11 @@ class Stage3ReturnNavigator(Node):
     def _p_approach_avoidance_disabled(self):
         """Skip normal lidar detours once the P final approach has begun."""
         if not self._p_approaching or self.p_approach_disable_avoidance_distance <= 0.0:
-            return False
+            return self._p_final_run_start_odom is not None
         if self._p_final_approach_latched:
+            return True
+        if self._p_final_run_start_odom is not None or self._p_visual_near_ready():
+            self._p_final_approach_latched = True
             return True
         detected, conf, bbox, _stamp, _offset, _fill = self._p_detection()
         if detected and conf >= self.p_approach_conf:

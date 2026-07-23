@@ -25,8 +25,11 @@ def _emergency_stop_action():
                 '"{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" '
                 '>/dev/null 2>&1 || true; '
                 # 杀掉相关进程
+                'pkill -CONT -x aurora930_node 2>/dev/null; '
+                'pkill -15 -x aurora930_node 2>/dev/null; '
                 'pkill -15 -f lslidar_driver_node 2>/dev/null; '
                 'sleep 0.3; '
+                'pkill -9 -x aurora930_node 2>/dev/null; '
                 'pkill -9 -f lslidar_driver_node 2>/dev/null; '
                 'pkill -9 -f competition_controller 2>/dev/null; '
                 'pkill -9 -f qr_scanner 2>/dev/null; '

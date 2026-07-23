@@ -37,7 +37,7 @@ Phase 3: Stage3 /stage3_cmd_vel ── Stage1 supervisor ────> /cmd_vel
 | Stage2 | 8082 | SEG 预览只在 Phase 2 提供；二维码任务到达后可预热模型。 |
 | Stage3 | 8083 | P 视觉只在 Phase 3 武装；离开阶段或完成后释放。 |
 
-`/vision_debug` 不受 HTTP 生命周期限制。`racing_vision_ai` 在节点启动时加载本地 SmolVLM 服务；Stage1 发布二维码任务后，立即缓存相机帧并用小图完成一次多模态视觉预填充，避免展示牌抓拍时才加载模型或首次执行视觉编码。Phase 2 只控制新抓拍是否接受；进入 Phase 3 后停止新触发，但绝不取消已提交的图生文，节点关闭时也会等待该请求写出结果。收到 `stage2_ai_capture` 后会将送入模型的同一帧覆盖保存为 `~/dev_ws/log/competition_stage2/ai_capture.jpg`，再由豆包 Ark 官方 SDK 的 Responses API、已配置的 Qwen 与就绪的本地 VLM 并发图生文，首个有效流式输出按短句发布到 `ai_description` 并成为胜者；生产 YAML 对 Ark 和 Qwen 均显式关闭思考模式，Ark 流式调用也只发布最终文本事件。仅在该决胜时请求取消其余两个请求，绝不由阶段切换取消。本地服务在本地模型落败时随决胜释放；本地模型胜出时仅在 `stage3_state=complete` 且胜出播报结束后关闭。`latest.log` 的 `[LOCAL_TIMING]` 记录抓拍至本地请求、首个输出和完整生成的耗时。该过程不阻塞底盘控制。
+`/vision_debug` 不受 HTTP 生命周期限制。`racing_vision_ai` 在节点启动时加载本地 SmolVLM 服务；Stage1 发布二维码任务后，立即缓存相机帧并用小图完成一次多模态视觉预填充，避免展示牌抓拍时才加载模型或首次执行视觉编码。Phase 2 只控制新抓拍是否接受；进入 Phase 3 后停止新触发，但绝不取消已提交的图生文，节点关闭时也会等待该请求写出结果。收到 `stage2_ai_capture` 后会将送入模型的同一帧覆盖保存为 `~/dev_ws/log/competition_stage2/ai_capture.jpg`，再由豆包 Ark 官方 SDK 的 Responses API、已配置的 Qwen 与就绪的本地 VLM 并发图生文。`vision_ai_config.yaml` 中 `response.streaming_enabled` 默认 `false`，即等待胜出模型生成完整描述后一次性发布到 `ai_description` 并播报；需要抢首句时改为 `true`，按首个有效流式输出短句发布并成为胜者。生产 YAML 对 Ark 和 Qwen 均显式关闭思考模式，Ark 流式调用也只发布最终文本事件。仅在该决胜时请求取消其余两个请求，绝不由阶段切换取消。本地服务在本地模型落败时随决胜释放；本地模型胜出时仅在 `stage3_state=complete` 且胜出播报结束后关闭。`latest.log` 的 `[LOCAL_TIMING]` 记录抓拍至本地请求、首个输出和完整生成的耗时。该过程不阻塞底盘控制。
 
 ### 1.3 关键话题
 
@@ -60,8 +60,8 @@ Phase 3: Stage3 /stage3_cmd_vel ── Stage1 supervisor ────> /cmd_vel
 
 - `/odom` 仅用于启动诊断和轮速预热，禁止用其 orientation/yaw 导航。
 - `/odom_combined` 只使用 xy。Stage2 对相邻 xy 累计欧氏距离；Stage3 从 S2 锚点起以 xy 增量更新 map 位置。
-- `/imu/data` 是所有航向、转角、激光角度基准的唯一来源，禁止使用 `/odom` 或 `/odom_combined` 的 orientation。Stage1 在首帧将原始 IMU 映射到 `imu_initial_map_yaw_deg`，并以 transient-local `imu_map_yaw_offset` 发布该固定零点；Stage2 必须继承此映射，不能把原始 IMU yaw 直接当作 map yaw。
-- Stage1 通道导航目标是 map 坐标，位置由 `map <- base_footprint` TF 获取；其 IMU 首帧映射到 `stage1_controller.yaml` 的 `imu_initial_map_yaw_deg`，以后仅累计原始 IMU 相对转角。
+- `/imu/data` 是所有常规航向、转角和激光角度基准的来源，禁止使用 `/odom` 或 `/odom_combined` 的 orientation。Stage1 在首帧将原始 IMU 映射到 `imu_initial_map_yaw_deg`，并以 transient-local `imu_map_yaw_offset` 发布该固定零点；二维码倒退完成后用 IMU 滚动对正到通道 90°，再进入通道。Stage2 不能把原始 IMU yaw 直接当作 map yaw。
+- Stage1 通道导航目标是 map 坐标，位置由 `map <- base_footprint` TF 获取；其 IMU 首帧映射到 `stage1_controller.yaml` 的 `imu_initial_map_yaw_deg`，以后仅累计原始 IMU 相对转角。Stage1 -> Stage2 交权使用固定 map Y 门线触发检查：最终路点状态下 `map_y >= corridor_release_max_y_m` 后，必须满足墙修正 X 窗口和 IMU yaw 窗口才切 Phase2，否则倒退到 staging 重新修正；首次交接门拒绝后累计超过 `corridor_handoff_force_after_reject_sec`（当前 10s）仍未成功时，在该 Y 门线强制发布 Stage2 入口位姿并切 Phase2。
 - map 到 `odom_combined` 的静态变换由 Stage1 YAML 作为总启动默认值注入：平移读取 `map_to_odom_x/y`，yaw 从 `imu_initial_map_yaw_deg` 派生。两者必须同源，防止 IMU 航向闭环和 map 轨迹坐标系出现固定偏角。
 
 ---
@@ -83,9 +83,9 @@ Phase 1 blind drive
 
 1. Stage1 初始盲驱使用 YAML `blind_linear_speed`（当前 0.50 m/s）和 `blind_angular_speed`；`/odom_combined` X 超过 `blind_qr_slowdown_start_x_m`（当前 1.5m）后，普通盲驱直行改用 `blind_qr_slowdown_linear_speed`（当前 0.4 m/s）以减少扫码运动模糊。二维码解码从 `blind_scan_capture_start_odom_x_m`（当前 1.0m）武装，但不产生转向；未识别时仅到 `blind_scan_guidance_start_odom_x_m`（当前 3.0m）才开始向 `blind_scan_centerline_json` 的 map 折线平滑切入，切入角速度在 `blind_scan_guidance_ramp_m`（当前 0.8m）内逐步增加。扫描带两侧 `blind_scan_corridor_half_width_m` 始终用于限制避障候选。
 2. `qr_scanner` 使用 WeChat CV 发布 `qr_scan_result`；Stage1 解析并锁存方向后发布 `competition_qr_task`，进入记录路径倒退。
-3. 倒退使用 `/odom_combined` 的历史 xy 回放，负线速度追踪倒序路径；角速度以 IMU 和几何目标闭环，不能直接复用历史 yaw。
-4. 倒退完成后，Stage1 从 `/scan` 拟合两侧围墙。每侧激光点按扫描顺序聚类，只有相邻点距离不超过 `0.30m` 的连续簇才会单独拟合；墙簇还必须满足点数、前向跨度、直线残差、轴向、平行度和宽度检验，零散障碍物或入口横墙不得参与。日志记录 `wall_cluster_source_lock` 的点数、跨度、残差、距离和切线角。双墙拟合仅用于通道有效性、物理中线质量、偏差降速和最终交权判据；从通道入口到交权，车辆绝对航向唯一由 IMU 闭环保持 `corridor_goal_yaw=90°`，局部墙切线、墙中心、map X、A* 与 Pure Pursuit 均不得生成转向。单墙同样不得决定前进方向。雷达障碍检测仍只使用车前窄窗口的独立短小聚类，侧墙点不会触发避障。
-5. 围墙直跟仍只用激光相对几何；绝对 yaw 唯一来自 IMU，里程计角度绝不参与。最后 Y 门线前，双墙中心和墙轴质量只作为物理位置/边界判据；从预对正区起，终端控制的目标航向始终固定为 `corridor_goal_yaw=90°`，禁止将局部墙切线或 map X 横向误差叠加到最终 IMU yaw。进入终端时固定最后一次合格的双墙中心/轴质量；后续扫描只作诊断，该快照仅在新的重捕获尝试开始时重置，不能因单帧失锁或时效门槛撤销提交。双墙中心、IMU yaw、Y 门线满足门限时锁存 `terminal_commit_straight`，以固定出口 IMU 航向直行，禁止根据新横向误差反向打舵。交权候选成立后立即进入 `terminal_release_hold`，发布零线速度而只维持 IMU 航向，持续满足 YAML hold 时间才切 Phase2；围墙中心是物理横向依据，map X 仅记录诊断，默认不再阻塞交权。Y 上限对已提交直行同样生效，终端避障或提交失败导致 Y 超过窗口时，必须持续低速倒回 staging 后重新捕获；倒退开始后 map Y 若仍继续升高超过 YAML 守卫，切换为大半径反向回正并持续倒退，禁止紧弯画圈或高位交权。通道超时会停车等待，不应绕过终端判据直接放行。
+3. 倒退使用 `/odom_combined` 的历史 xy 回放，负线速度 `back_linear_speed`（当前 -0.45 m/s）追踪倒序路径；角速度以 IMU 和几何目标闭环，不能直接复用历史 yaw。
+4. 倒退完成后，Stage1 先用 IMU 以非零前进速度滚动对正到 `back_align_yaw_deg=90°`，再进入通道；阿克曼底盘禁止用 `v=0` 原地转向。进入通道后从 `/scan` 拟合两侧围墙作居中、map-X 修正和入口 yaw 修正。取墙速度当前为 0.30 m/s（大角度滚动转向 0.22 m/s），双墙居中后以 0.48 m/s 跟随，偏差较大时降到 0.32 m/s，最终预对正速度为 0.28 m/s，提交直线为 0.42 m/s。每侧激光点按扫描顺序聚类，只有相邻点距离不超过 `0.30m` 的连续簇才会单独拟合；墙簇还必须满足点数、前向跨度、直线残差、车体系轴向、平行度和宽度检验，零散障碍物或入口横墙不得参与。单墙仍不得决定前进方向。雷达障碍检测仍只使用车前窄窗口的独立短小聚类，侧墙点不会触发避障。
+5. 通道行驶以双墙中心和 IMU 90°为主；墙轴进入 `10°` 内时重标 IMU->map yaw，墙中心距离推断 Stage1 修正 map X。Stage1 -> Stage2 放行使用 `corridor_release_max_y_m` 触发硬检查：墙修正 X 必须在 `2.38-2.62m`，yaw 必须在 `90°±10°`，且双墙居中/轴向合格；任一不满足则记录 `handoff gate rejected` 并倒退到 staging 重捕获。重捕获倒退、重新前进和最终提交直线段都保留基于 X 窗口的有界航向修正，避免重复沿同一直线失败。若首次拒绝后累计超过 `10s` 仍未合格，则在该 Y 门线强制发布 `stage2_entry_pose` 并切 Phase2，日志为 `forced Y gate handoff`。合格时 Stage1 发布 `stage2_entry_pose`，日志为 `STAGE2_ENTRY_POSE` 和 `Y gate handoff`。通道墙取点侧向窗口为 `4.00m`，适配 5m 场地宽度。
 
 ### 2.2 Stage1 避障
 
@@ -108,7 +108,7 @@ forward -> avoiding -> countersteering -> recovering -> forward
 
 **生产包/配置**：`racing_stage2`，`config/stage2_controller.yaml`。
 
-> 当前生产只有一个统一 YAML。旧 `inertial_stage2.yaml`、矩形 `rect_*` 路点和 `field_track_*.yaml` 已不被生产 launch 使用。
+> 当前生产仍只加载 `stage2_controller.yaml`，但弯道速度和提前收角已在该 YAML 内按 `clockwise/counterclockwise` 拆成方向 profile。旧 `inertial_stage2.yaml`、矩形 `rect_*` 路点和 `field_track_*.yaml` 已不被生产 launch 使用。
 
 ### 3.1 固定段序
 
@@ -119,18 +119,18 @@ entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
 
 - `entry_arc` 是入口 90 度弧；随后两个 `*_side_arc` 是 180 度弧。
 - 方向由 QR 决定：入口及出口 90 度和两次 180 度的转向符号按 `clockwise/counterclockwise` 镜像。
-- S2 启动时锁存当前 `map <- base_footprint` 的 X，并将其在 S2 局部坐标中强制重置为 `track_map_x_reset_m=2.50m`；后续 `track_x=2.50+(当前 map_x-交接 map_x)`。此重置不改写 TF，也不影响 Stage3 的真实 map 锚点。
+- S2 启动时优先读取 Stage1 发布的 `stage2_entry_pose` 墙修正入口 X，并以 `wall_offset=entry_pose.x - TF_entry_x` 作为局部 map-X 偏置；随后 `track_x=2.50+(当前 TF map_x + wall_offset - corrected_entry_x)`。没有新鲜入口位姿时退回实时 TF X。此重置不改写 TF，也不影响 Stage3 的真实 map 锚点。
 - `entry_medium -> left_side_arc` 与 `top_long -> right_side_arc` 在各自名义终点前的视觉窗口内由 SEG 横边确认；视觉未确认时，仍由重置后的 `track_x` 与原 `track_turn_force_min/max_map_x` 阈值强制切段。直线仅由 IMU 航向、可信 SEG 中线小修正和 yaw-rate 阻尼控制；雷达避障仅在 `top_long` 直线段接管。
-- 直线完成距离用 `/odom_combined` xy 累计。四个弯道均由 IMU 相对转角驱动：入口和出口弯名义目标为 `90°`，两个侧弯名义目标为从入弯时锁存实际 IMU yaw 起累计 `180°`。每弯只使用独立的线速度、角速度和提前收角；一旦达到 `track_<segment>_exit_lead_deg` 的收角点，立即切入下一直线，由直线的 IMU 航向闭环和 yaw-rate 阻尼吸收余摆。绝不等待残余惯性补足名义角度、绝不反向打舵，也不把低 IMU yaw-rate 作为切段硬门槛，防止任一弯占用后续直线。
+- 直线完成距离用 `/odom_combined` xy 累计。四个弯道均由 IMU 相对转角驱动：入口和出口弯名义目标为 `90°`，两个侧弯名义目标为从入弯时锁存实际 IMU yaw 起累计 `180°`。每弯只使用当前方向 profile 的线速度、角速度和提前收角；`track_counterclockwise_*` 保持当前逆时针基准，`track_clockwise_*` 单独用于顺时针，不再强行共用同一提前角。一旦达到对应 `exit_lead_deg` 收角点，立即切入下一直线，由直线的 IMU 航向闭环和 yaw-rate 阻尼吸收余摆。绝不等待残余惯性补足名义角度、绝不反向打舵，也不把低 IMU yaw-rate 作为切段硬门槛，防止任一弯占用后续直线。
 - 进入 `stage3_handoff_line` 后，S2 以实时 map TF 发布预测起点；当 map Y 小于 `track_stage3_handoff_map_y` 时发布交接锚点和 `stage2_state=complete`。
 
 ### 3.2 控制与安全
 
 - 生产速度、弧线控制、视觉修正、重置后 map-X 阈值和交权门限全部在 `stage2_controller.yaml` 的 `track_*` 参数中。四个弯各自拥有独立的 `track_<segment>_linear` 与 `track_<segment>_angular`，入口和出口 90 度弯使用 `0.40m` 半径，两个 180 度弯使用 `0.25m` 半径；每一组线速度和角速度应以 `v / omega = R` 配对，当前直线最大速度为 0.66 m/s。
-- `TRACK_MAP_X_RESET` 日志记录交接瞬间锁存的真实 map X 与局部重置值；`TURN_TRIGGER` 同时记录真实 `map_xy` 和重置后的 `track_map_x`，可直接核验两个 `track_turn_force_*` 阈值是否在预期位置切弯。
+- `TRACK_MAP_X_RESET` 日志记录交接瞬间锁存的修正入口 X、实时 TF X、`wall_offset` 与局部重置值；`TURN_TRIGGER` 同时记录真实 `map_xy` 和重置后的 `track_map_x`，可直接核验两个 `track_turn_force_*` 阈值是否在预期位置切弯。
 - S2 移除 MPPI、围栏推断、连续帧门控、局部横移规划、制动安全门、弯道预检和旧的插入式 S 形绕行。仅在 `top_long` 使用与 S1 同构的前向聚类状态机：`forward -> avoiding -> countersteering -> recovering -> forward`。聚类按 `stage2_s1_avoid_*` 的前向矩形窗口、点数和宽度过滤；障碍在左前则右转、障碍在右前则左转。避障命令期间冻结本段进度，反舵后以该段锁存的 IMU 航向回正。`entry_medium`、所有弧段、`exit_medium` 与 `stage3_handoff_line` 不执行雷达避障，避免赛道边墙误触发。
 - 控制循环超过 `control_gap_stop_sec`（当前 1.0 秒）未刷新时，命令心跳发布零速度；控制循环恢复后从当前段继续。
-- 默认模式下，`top_long` 切入 `right_side_arc` 的入弯瞬间开始计时，满 `stage2_ai_capture_delay_after_turn_sec`（当前 0.20 s）后只发一次异步图像分析触发，确保相机已转向展示牌；图生文三模型并发竞速，语音从胜出模型的第一条完整短句开始播报。本地 VLM 的 `timeout_sec: 0` 表示本地 HTTP 推理和竞速首字等待不超时，云端不可用时持续等待本地结果。每次本地生成在 S2 `latest.log` 中输出 `[LOCAL_TIMING] request_started`、`first_delta`、`request_complete`，分别给出从抓拍至请求、首字和完整响应的秒数。若 YAML 的 `stage2_ai_preset_enabled` 开启，则不触发图生文；从同一入弯点等待 `stage2_ai_preset_delay_after_turn_sec`（当前 5.0 s）后，按二维码方向直接向 `ai_description` 发布 `stage2_ai_preset_clockwise_text` 或 `stage2_ai_preset_counterclockwise_text`。
+- 默认模式下，`top_long` 切入 `right_side_arc` 的入弯瞬间开始计时，满 `stage2_ai_capture_delay_after_turn_sec`（当前 0.20 s）后只发一次异步图像分析触发，确保相机已转向展示牌；图生文三模型并发竞速，`vision_ai_config.yaml` 的 `response.streaming_enabled` 默认关闭，语音等待胜出模型完整生成后一次性播报。若改为 `true`，则从胜出模型的第一条完整短句开始流式播报。本地 VLM 的 `timeout_sec: 0` 表示本地 HTTP 推理和包含本地候选的竞速等待不超时，云端不可用时持续等待本地结果。每次本地生成在 S2 `latest.log` 中输出 `[LOCAL_TIMING] request_started`、`first_delta`、`request_complete`，分别给出从抓拍至请求、首字和完整响应的秒数。非流式模式下不会产生 `first_delta`，以 `request_complete` 核验完整生成耗时。若 YAML 的 `stage2_ai_preset_enabled` 开启，则不触发图生文；从同一入弯点等待 `stage2_ai_preset_delay_after_turn_sec`（当前 5.0 s）后，按二维码方向直接向 `ai_description` 发布 `stage2_ai_preset_clockwise_text` 或 `stage2_ai_preset_counterclockwise_text`。
 
 ### 3.3 启动模式
 
@@ -160,13 +160,13 @@ Phase 3
 - S3 锁存 `stage3_entry_anchor` 与当时 `/odom_combined` xy；后续 map 位置为锚点加上旋转后的 odom xy 增量，运行中不使用实时 map TF 覆写控制位置。
 - 交权瞬间把原始 IMU yaw 映射至 map -Y（`stage3_entry_map_yaw_deg=-90`），后续仅累计 IMU 相对转角。
 - 初始目标方位误差达到 `initial_align_trigger_deg` 才进入 `initial_align`；阿克曼底盘以非零低速摆弧对准，不能原地转向。
-- 粗导航只向 `return_waypoints_json` 的单一视觉搜索点 `(0.50, 0.10)` 行驶；它只用于将车带回可看见 P 的区域，不能发布完成。连续 P 检测在任何返程位置均可接管控制，按 P 框偏差锁定 IMU 目标航向后保持 `p_approach_linear_speed` 前进。
+- 粗导航只向 `return_waypoints_json` 的单一视觉搜索点 `(0.50, 0.10)` 行驶，当前 `pursuit_linear_speed=0.72m/s`；它只用于将车带回可看见 P 的区域，不能发布完成。连续 P 检测在任何返程位置均可接管控制，按 P 框偏差锁定 IMU 目标航向后保持 `p_approach_linear_speed=0.48m/s` 前进。
 - P 临时丢失时，车辆按最后锁定的视觉航向低速倒退 `p_loss_reverse_duration_sec`，随后恢复锚点地图导航并再次寻找 P；重获 P 后重新接管。正常雷达避障在视觉接近期间仍有效，直至 P 框深度进入最终阈值。
-- P 框内有效深度不大于 `p_depth_stop_distance_m=0.50m` 时，锁定该时刻 IMU 航向，改用 `p_approach_slow_linear_speed` 低速前进。最终段只以 `/odom_combined` xy 计算欧氏位移；根据当前最终段速度，以 `v * p_final_brake_response_sec + v^2 / (2 * p_final_brake_decel_mps2) + p_final_brake_margin_m` 预留制动距离，在距 `p_final_odom_travel_m=0.50m` 的预测制动点先发布零速并在受控容差内发布 `stage3_state=complete`，不能等到跨过 0.50m 才停车。P 在这段中自然丢失不影响完成。角度始终只使用 IMU，禁止使用 odom orientation。墙角 TLS 代码保留用于离线调试，生产 YAML 已关闭且不参与完成门槛。
+- P 框内有效深度不大于 `p_depth_stop_distance_m=0.50m` 时，锁定该时刻 IMU 航向，改用 `p_approach_slow_linear_speed=0.16m/s` 低速前进。若 Aurora 近距离深度在 P 框放大后失效，则以 `p_final_visual_fill_trigger_ratio=0.45` 的 P 框占比和最近 `p_final_visual_depth_assist_m=0.75m` 内有效深度作为备用证据，同样切入最终里程段，避免把近处 P/终点墙当作雷达障碍倒退。最终段只以 `/odom_combined` xy 计算欧氏位移；根据当前最终段速度，以 `v * p_final_brake_response_sec + v^2 / (2 * p_final_brake_decel_mps2) + p_final_brake_margin_m` 预留制动距离，在距 `p_final_odom_travel_m=0.50m` 的预测制动点先发布零速并在受控容差内发布 `stage3_state=complete`，不能等到跨过 0.50m 才停车。若终段已行驶不小于 `p_final_stall_completion_min_m=0.30m` 后，前进命令下 `/odom_combined` 超过 `p_final_progress_timeout_sec=0.75s` 无有效 xy 增量，则判定已顶到终点墙，立即停车并发布 `complete`；终段航向修正使用独立小角速度上限和 `10°` 死区，避免顶墙后继续绕圈。P 在这段中自然丢失不影响完成。角度始终只使用 IMU，禁止使用 odom orientation。墙角 TLS 代码保留用于离线调试，生产 YAML 已关闭且不参与完成门槛。
 
 ### 4.2 避障与丢失恢复
 
-Stage3 在地图搜索和 P 视觉接近期间复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前搜索目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。紧急近障触发 `emergency_reversing`，完成后回到 `forward` 重新判定常规避障。P 接管且深度进入 `0.50m` 最终段的同一控制周期就会取消已有避障状态，并跳过普通和紧急雷达避障；此后只以锁定 IMU 航向和受限 `0.50m` 里程完成终停。
+Stage3 在地图搜索和 P 视觉接近期间复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前搜索目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。紧急近障触发 `emergency_reversing`，完成后回到 `forward` 重新判定常规避障。普通避障、反舵、恢复和紧急倒车线速度当前分别为 0.16、0.16、0.18 和 0.14 m/s。P 接管且深度或视觉填充备用证据进入最终段的同一控制周期就会取消已有避障状态，并跳过普通和紧急雷达避障；此后只以锁定 IMU 航向和受限 `0.50m` 里程完成终停。
 
 ---
 
@@ -178,8 +178,8 @@ Stage3 在地图搜索和 P 视觉接近期间复用 Stage1 的 `forward -> avoi
 | Stage2 日志 | `~/dev_ws/log/competition_stage2/latest.log`，仅在首次进入 Phase 2 时创建并覆盖；S2 主控与图生文节点均以同一文件锁写入，图生文追加抓拍、模型竞速、结果与失败诊断。 |
 | Stage3 日志 | `~/dev_ws/log/competition_stage3/latest.log`，仅在首次进入 Phase 3 时创建并覆盖 |
 | QR | `qr_scanner`，WeChat CV 解码 |
-| 图生文 | `racing_vision_ai`，接收 Stage2 一次性触发，豆包/Qwen/本地 VLM 流式竞速 |
-| 语音 | `voice_driver`，异步顺序播报 `ai_description` 流式短句 |
+| 图生文 | `racing_vision_ai`，接收 Stage2 一次性触发，豆包/Qwen/本地 VLM 并发竞速；默认完整结果一次发布，可用 `vision_ai_config.yaml` 的 `response.streaming_enabled: true` 打开流式短句发布 |
+| 语音 | `voice_driver`，异步顺序播报 `ai_description` 文本 |
 | 通用日志/Marker | `racing_common` |
 
 ```bash
@@ -193,8 +193,11 @@ ros2 launch racing_stage2 competition_stage2.launch.py
 ros2 launch racing_stage3 competition_stage3.launch.py
 ```
 
+正式总启动会为所有子进程设置 `RMW_FASTRTPS_USE_SHM=0` 与 `RMW_FASTRTPS_TRANSPORT=UDPv4`，避免 RDKX5 多次启停后残留的 `/dev/shm/fastrtps_port*` 锁导致 Fast DDS shared-memory transport 初始化报错。若需要连 `ros2 launch` 父进程本身也不打印该类错误，可在执行启动命令前手动导出同名环境变量。
+
 ## 6. 维护注意事项
 
 1. 修改阶段状态机、生产 YAML、launch 话题或交权坐标时，必须同步更新本文档和 `docs/CHANGELOG.md`。
 2. 不要把 `bak/`、参数测试包或已删除矩形赛道方案写成生产行为。
 3. 生产参数的准确数值优先以 `stage1_controller.yaml`、`stage2_controller.yaml`、`stage3_controller.yaml` 为准；本文只保留对流程有决定意义的当前值。
+4. 正式总启动的 Stage1 shutdown 清理会先发布 `/cmd_vel` 零速，再对 `aurora930_node` 执行 `CONT/TERM/KILL` 释放 Aurora 930 USB 句柄；单独启动 `qr_scanner/start_competition.launch.py` 时也执行同样的相机释放。

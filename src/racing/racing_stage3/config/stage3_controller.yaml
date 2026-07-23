@@ -73,7 +73,7 @@ stage3_return_navigator:
 
     # 途经路点列表（JSON 格式）
     # [{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
-    return_waypoints_json: '[{"x":0.50,"y":0.10,"speed":0.45,"description":"P_visual_search_goal"}]'
+    return_waypoints_json: '[{"x":0.50,"y":0.10,"speed":0.65,"description":"P_visual_search_goal"}]'
 
     # 终端采集等待点容差 (m) — 到达后停车，等待 P 语义和墙角锚点。
     waypoint_tolerance: 0.25
@@ -86,7 +86,7 @@ stage3_return_navigator:
     # ────────────────────────────────────────────────────────────────────────
 
     # 视觉搜索入口直行速度 (m/s) — 尚未识别到 P 时沿右下方向快速驶入入口。
-    pursuit_linear_speed: 0.60
+    pursuit_linear_speed: 0.72
 
     # 前视距离 (m) — 追踪路径上前方此距离的点
     pursuit_lookahead_m: 0.45
@@ -98,7 +98,7 @@ stage3_return_navigator:
     pursuit_turn_kp: 1.2
 
     # 转弯最低线速度 (m/s)
-    pursuit_turn_linear_speed: 0.08
+    pursuit_turn_linear_speed: 0.14
 
     # A* 转弯最小半径 (m)。跟踪时线速度至少为 |angular_z| * 此值，
     # 避免低速饱和打舵而无法完成大角度转弯。
@@ -112,13 +112,13 @@ stage3_return_navigator:
 
     # 预对正角速度 (rad/s) 和线速度 (m/s)。阿克曼底盘须低速前进摆弧，不能原地旋转。
     initial_align_angular_speed: 1.5
-    initial_align_linear_speed: 0.12
+    initial_align_linear_speed: 0.18
 
     # 全局最大角速度 (rad/s)
-    max_angular_speed: 0.8
+    max_angular_speed: 0.9
 
     # 最小角速度 (rad/s) — 防止转速过低
-    min_angular_speed: 0.20
+    min_angular_speed: 0.22
 
     # ────────────────────────────────────────────────────────────────────────
     # P 点视觉检测与伺服接近 (P-Mark Visual Detection and Servo Approach)
@@ -145,7 +145,7 @@ stage3_return_navigator:
     p_approach_consecutive_hits: 2
 
     # 接近线速度 (m/s) — P 已接近画面中心时的最高速度
-    p_approach_linear_speed: 0.35
+    p_approach_linear_speed: 0.48
 
     # P 检测结果的最大有效年龄 (s)
     p_detection_timeout_sec: 0.35
@@ -163,7 +163,14 @@ stage3_return_navigator:
     # P 框内有效深度中位数不大于此值时，锁定当时 IMU 航向并开始
     # 最终低速里程段；不要求 P 在该段内持续可见。
     p_depth_stop_distance_m: 0.50
-    p_approach_slow_linear_speed: 0.12
+    # Aurora 近距离深度在 P 框放大后可能出现空洞。若 P 框已占画面较大比例，
+    # 且最近一次有效深度已进入近距离辅助阈值，也允许提前切最终里程段；
+    # 该备用证据只在 P 已连续确认接管后生效。
+    p_final_visual_fill_trigger_ratio: 0.45
+    p_final_visual_depth_assist_m: 0.75
+    p_final_visual_evidence_hold_sec: 0.10
+    p_final_visual_evidence_timeout_sec: 1.20
+    p_approach_slow_linear_speed: 0.16
     p_final_odom_travel_m: 0.50
     # 最终段按当前下发速度预留制动距离：v*响应时间 + v^2/(2*减速度) + 余量。
     # 进入制动窗立即发零速，完成允许落在该受控窗内，避免指令滞后越过 P 点。
@@ -171,6 +178,13 @@ stage3_return_navigator:
     p_final_brake_decel_mps2: 0.80
     p_final_brake_margin_m: 0.015
     p_final_completion_tolerance_m: 0.040
+    # 终段只做小幅航向保持。若已经顶到终点墙导致 odom 不再增长，
+    # 且已完成最低可信终段距离，则立即停车并发布 complete，避免持续顶墙绕圈。
+    p_final_heading_tolerance_deg: 10.0
+    p_final_heading_max_angular_speed: 0.12
+    p_final_progress_min_delta_m: 0.015
+    p_final_progress_timeout_sec: 0.75
+    p_final_stall_completion_min_m: 0.30
 
     # 进入最终里程段时取消普通和紧急雷达避障，避免 P/终点墙抢占控制。
     p_approach_disable_avoidance_distance_m: 0.50
@@ -183,14 +197,14 @@ stage3_return_navigator:
     p_heading_bearing_gain_rad: 0.55
     p_heading_kp: 1.4
     p_heading_tolerance_deg: 3.0
-    p_heading_max_angular_speed: 0.45
+    p_heading_max_angular_speed: 0.55
     p_heading_reacquire_offset: 0.18
     p_heading_reacquire_interval_sec: 0.60
 
     # P 丢失时短暂倒退并恢复到地图搜索点，重获 P 后再次由视觉接管。
-    p_loss_reverse_speed: 0.10
+    p_loss_reverse_speed: 0.14
     p_loss_reverse_duration_sec: 2.00
-    p_loss_reverse_max_angular: 0.35
+    p_loss_reverse_max_angular: 0.42
     # P 丢失时取此前该时长的有效 P 画面对应 IMU 航向作为回转目标。
     p_loss_heading_lookback_sec: 1.0
     p_loss_heading_tolerance_deg: 6.0
@@ -262,7 +276,7 @@ stage3_return_navigator:
 
     # --- 避障动作参数 ---
     # 避障线速度 (m/s) — 避障期间前进速度
-    avoid_linear_speed: 0.10
+    avoid_linear_speed: 0.16
 
     # 避障角速度 (rad/s) — 转向速度（根据障碍物方向选择±）
     avoid_angular_speed: 0.80
@@ -292,13 +306,13 @@ stage3_return_navigator:
 
     # 紧急近障距离 (m) — 命中后限时倒车并带反向侧转，再重新进入常规避障。
     emergency_stop_distance: 0.22
-    emergency_reverse_speed: 0.10
+    emergency_reverse_speed: 0.14
     emergency_reverse_duration_sec: 0.80
     emergency_reverse_angular_speed: 0.35
 
     # --- 反舵阶段 (Counter Steering) ---
     # 反舵线速度 (m/s)
-    counter_steer_linear_speed: 0.10
+    counter_steer_linear_speed: 0.16
 
     # 反舵角速度 (rad/s)
     counter_steer_angular_speed: 0.95
@@ -314,10 +328,10 @@ stage3_return_navigator:
 
     # --- 恢复阶段 (Recovery) ---
     # 恢复线速度 (m/s) — 直行恢复速度
-    recovery_linear_speed: 0.12
+    recovery_linear_speed: 0.18
 
     # 恢复转弯线速度 (m/s) — 转弯修正时的前进速度
-    recovery_turn_linear_speed: 0.08
+    recovery_turn_linear_speed: 0.12
 
     # 恢复角速度 (rad/s) — 基于时间的恢复转向速度
     recovery_angular_speed: 0.75

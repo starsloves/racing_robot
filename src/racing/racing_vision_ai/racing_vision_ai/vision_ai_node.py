@@ -45,7 +45,6 @@ class VisionAINode(Node):
         self.declare_parameter('phase_gated', True)
         self.declare_parameter('mission_state_topic', 'stage3_state')
         self.declare_parameter('prewarm_task_topic', 'competition_qr_task')
-        self.declare_parameter('streaming_enabled', True)
         self.declare_parameter('stream_sentence_min_chars', 4)
         self.declare_parameter(
             'env_path', '/home/sunrise/dev_ws/src/racing/racing_vision_ai/config/.env'
@@ -54,10 +53,15 @@ class VisionAINode(Node):
         self._config = self._load_config()
         self._env_values = self._load_env_values()
         models = self._config.get('vision_models', {})
+        response_config = self._config.get('response', {})
+        if not isinstance(response_config, dict):
+            response_config = {}
         self._max_description_chars = max(
-            1, int(self._config.get('response', {}).get('max_description_chars', 20))
+            1, int(response_config.get('max_description_chars', 20))
         )
-        self._streaming_enabled = bool(self.get_parameter('streaming_enabled').value)
+        self._streaming_enabled = self._config_bool(
+            response_config.get('streaming_enabled', False)
+        )
         self._stream_sentence_min_chars = max(
             1, int(self.get_parameter('stream_sentence_min_chars').value)
         )
@@ -173,7 +177,8 @@ class VisionAINode(Node):
         self.get_logger().info(
             f'[VISION_AI] trigger_topic={trigger_topic} '
             f'image_topic={image_topic} max_age={self._frame_max_age_sec:.1f}s '
-            f'capture_path={self._capture_image_path}'
+            f'capture_path={self._capture_image_path} '
+            f'streaming_enabled={self._streaming_enabled}'
         )
 
         for name, analyzer in self._vision_models.items():
@@ -266,6 +271,14 @@ class VisionAINode(Node):
                 self.get_logger().debug(f'[VISION_AI] config unavailable path={path}: {exc}')
         self.get_logger().warn('[VISION_AI] no config file found; using environment/defaults')
         return {}
+
+    @staticmethod
+    def _config_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+        return bool(value)
 
     def _image_callback(self, msg: Image) -> None:
         if not self._should_cache_frame():
@@ -593,11 +606,14 @@ class VisionAINode(Node):
                 self._publish_status('analysis_failed:no_vision_provider_ready')
                 return
             started = time.monotonic()
+            mode = 'stream' if self._streaming_enabled else 'complete'
             self.get_logger().info(
-                f'[VISION_AI] stream race candidates={", ".join(name for name, _ in self._stream_candidates())}'
+                f'[VISION_AI] {mode} race candidates='
+                f'{", ".join(name for name, _ in self._stream_candidates())}'
             )
             self._write_stage2_log(
-                f'[RACE] candidates={", ".join(name for name, _ in self._stream_candidates())} '
+                f'[RACE] mode={mode} '
+                f'candidates={", ".join(name for name, _ in self._stream_candidates())} '
                 f'capture_to_race={started - captured_at:.3f}s'
             )
             if self._streaming_enabled:
@@ -612,6 +628,11 @@ class VisionAINode(Node):
             description = content.strip()[:self._max_description_chars]
             if not winner.endswith('_stream'):
                 self._publish_result(description)
+            self._write_stage2_log(
+                f'[RESULT] winner={winner} elapsed={elapsed:.3f}s '
+                f'chars={len(description)} raw_chars={len(content.strip())} '
+                f'text="{self._log_safe_text(description)}"'
+            )
             self.get_logger().info(
                 f'[VISION_AI] result published topic={self._result_topic} '
                 f'winner={winner} elapsed={elapsed:.3f}s chars={len(description)} '
@@ -765,7 +786,17 @@ class VisionAINode(Node):
         result.data = text
         self._result_pub.publish(result)
         self.get_logger().info(
-            f'[VISION_AI] stream phrase published topic={self._result_topic} chars={len(text)}'
+            f'[VISION_AI] result published topic={self._result_topic} chars={len(text)}'
+        )
+
+    @staticmethod
+    def _log_safe_text(text: str) -> str:
+        return (
+            text.replace('\\', '\\\\')
+            .replace('\r', '\\r')
+            .replace('\n', '\\n')
+            .replace('\t', '\\t')
+            .replace('"', '\\"')
         )
 
     def _analyze_race(self, frame: Any, captured_at: float) -> tuple[str | None, str]:
