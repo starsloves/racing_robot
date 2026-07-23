@@ -1,5 +1,5 @@
-"""Stage3 官方返程导航：通道对中 + 地图粗导航 + P 视觉最终到达 + Stage1 4态避障
-- 状态机: idle → armed → pre_return_channel_yolo → running(map_search_p) → p_approach → complete
+"""Stage3 官方返程导航：地图找 P + P 视觉接管 + 终端里程段 + Stage1 4态避障
+- 状态机: idle → armed → running(map_search_p) → p_approach → p_final_odometry → complete
 - running 时可中断：avoiding → countersteer → recovering → running
 - 仅在 competition_phase=3 时启动
 - 输出 /cmd_vel（phase3 由 Stage1 礼让）
@@ -130,6 +130,9 @@ class Stage3ReturnNavigator(Node):
         self._p_last_angular = 0.0
         # Once P is within the final approach distance, lidar must not detour around it.
         self._p_final_approach_latched = False
+        self._p_final_run_start_odom = None
+        self._p_final_run_target_yaw = None
+        self._p_final_run_depth_m = None
         self._p_visible_yaw_history = deque()
         self._p_recovery_target_yaw = None
         # Preserve the visual heading while lidar temporarily takes control.
@@ -281,6 +284,12 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_depth_max_m', 4.00)
         self.declare_parameter('p_depth_roi_fraction', 0.50)
         self.declare_parameter('p_depth_stop_distance_m', 0.50)
+        self.declare_parameter('p_approach_slow_linear_speed', 0.12)
+        self.declare_parameter('p_final_odom_travel_m', 0.50)
+        self.declare_parameter('p_final_brake_response_sec', 0.12)
+        self.declare_parameter('p_final_brake_decel_mps2', 0.80)
+        self.declare_parameter('p_final_brake_margin_m', 0.015)
+        self.declare_parameter('p_final_completion_tolerance_m', 0.040)
         self.declare_parameter('p_approach_disable_avoidance_distance_m', 0.0)
 
         # ── P 墙角终端校正 ──
@@ -515,6 +524,25 @@ class Stage3ReturnNavigator(Node):
         )
         self.p_depth_stop_distance = max(
             0.0, float(self.get_parameter('p_depth_stop_distance_m').value)
+        )
+        self.p_approach_slow_linear = max(
+            0.02, float(self.get_parameter('p_approach_slow_linear_speed').value)
+        )
+        self.p_final_odom_travel = max(
+            0.05, float(self.get_parameter('p_final_odom_travel_m').value)
+        )
+        self.p_final_brake_response = max(
+            0.0, float(self.get_parameter('p_final_brake_response_sec').value)
+        )
+        self.p_final_brake_decel = max(
+            0.05, float(self.get_parameter('p_final_brake_decel_mps2').value)
+        )
+        self.p_final_brake_margin = max(
+            0.0, float(self.get_parameter('p_final_brake_margin_m').value)
+        )
+        self.p_final_completion_tolerance = min(
+            self.p_final_odom_travel,
+            max(0.005, float(self.get_parameter('p_final_completion_tolerance_m').value)),
         )
         self.p_approach_disable_avoidance_distance = max(
             0.0, float(self.get_parameter(
@@ -1278,6 +1306,9 @@ class Stage3ReturnNavigator(Node):
         self._p_lost_reverse_started_at = None
         self._p_last_angular = 0.0
         self._p_final_approach_latched = False
+        self._p_final_run_start_odom = None
+        self._p_final_run_target_yaw = None
+        self._p_final_run_depth_m = None
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
         self._p_avoidance_recovery_yaw = None
@@ -1327,6 +1358,9 @@ class Stage3ReturnNavigator(Node):
         self._p_lost_reverse_started_at = None
         self._p_last_angular = 0.0
         self._p_final_approach_latched = False
+        self._p_final_run_start_odom = None
+        self._p_final_run_target_yaw = None
+        self._p_final_run_depth_m = None
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
         self._p_avoidance_recovery_yaw = None
@@ -1503,45 +1537,37 @@ class Stage3ReturnNavigator(Node):
             self._start_mission()
             return
 
-        # Build the terminal reference before navigation arbitration.  P and
-        # lidar are only trusted while acquiring the reference; neither sensor
-        # can take control after the short-run commit.
-        self._update_p_inference_gate()
-        self._update_terminal_corner_lock()
-        self._update_p_detection()
-        self._try_start_terminal_corner_approach()
-        if self._terminal_corner_committed:
-            self._run_terminal_corner_approach()
-            return
-        if self._terminal_precommitting:
-            self._run_terminal_precommit()
-            return
-
-        # The final walls are expected returns, not obstacles.  Once inside
-        # the acquisition zone, no lidar-driven reverse or lateral detour may
-        # erase a partially acquired terminal reference.
-        terminal_zone = self._in_terminal_acquisition_zone()
-        if terminal_zone:
-            self._cancel_avoidance_for_terminal_zone()
-        else:
-            # 1. Before the terminal zone, emergency and four-state lidar
-            # avoidance retain their normal authority.
-            if self._check_emergency_stop():
-                return
-            if self.avoid_state == 'forward' and self.latest_scan is not None:
-                self._check_obstacle()
-
-        if self.avoid_state != 'forward':
-            self._run_avoidance()
-            return
-
-        # 3. 大航向差先按目标方位摆正，避免直接单点追踪走出大弧。
+        # First align the vehicle sufficiently for both map navigation and
+        # visual takeover. The P detector then owns the terminal approach.
         if self._initial_align_required:
             self._run_initial_align()
             return
 
-        # 4. P never steers the production vehicle.  Map navigation reaches
-        # the staging point; P and the wall corner only authorize final commit.
+        self._update_p_inference_gate()
+        self._update_p_detection()
+        if self._p_final_run_start_odom is not None:
+            self._run_p_final_odometry()
+            return
+        if self._p_approaching and self._try_arm_p_final_odometry():
+            self._run_p_final_odometry()
+            return
+
+        # Both normal and emergency lidar avoidance are permitted only before
+        # the depth-gated final run. The terminal wall is expected structure.
+        if self._check_emergency_stop():
+            return
+        if self.avoid_state == 'forward' and self.latest_scan is not None:
+            self._check_obstacle()
+        if self.avoid_state != 'forward':
+            self._run_avoidance()
+            return
+
+        if self._p_approaching:
+            self._run_p_approach()
+            return
+
+        # P is absent or was deliberately recovered from. Use the anchored
+        # map route to return to the visual search point and try again.
         if self.current_position is None:
             self.stop_robot()
             self._publish_state('waiting_for_map_tf')
@@ -2200,10 +2226,7 @@ class Stage3ReturnNavigator(Node):
             and detected
             and conf >= self.p_approach_conf
         )
-        # P is a semantic terminal witness, not a steering target.  Ignore
-        # valid long-range detections until map navigation reaches the same
-        # local zone in which the physical corner is acquired.
-        if not confirmed or not self._in_terminal_acquisition_zone():
+        if not confirmed:
             self._p_consecutive_hits = 0
             self._p_last_confirmed_stamp = None
             return
@@ -2212,20 +2235,37 @@ class Stage3ReturnNavigator(Node):
             self._p_last_confirmed_stamp = stamp
         if self._p_consecutive_hits < self.p_approach_hits_required:
             return
-        if self._terminal_p_confirmed:
+        if self._p_approaching:
             return
-        self._terminal_p_confirmed = True
+        self._p_approaching = True
+        self._p_offset_filtered = float(offset)
+        self._p_target_yaw = self._visual_target_yaw(offset)
+        self._p_heading_lock_offset = self._p_offset_filtered
+        self._p_last_heading_reacquire_at = self._now_sec()
+        self.desired_heading = self._p_target_yaw
+        self._p_lost_since = None
+        self._p_lost_reverse_started_at = None
+        self._p_last_angular = 0.0
+        self._p_final_approach_latched = False
+        self._p_final_run_start_odom = None
+        self._p_final_run_target_yaw = None
+        self._p_final_run_depth_m = None
+        self._p_visible_yaw_history.clear()
+        self._p_recovery_target_yaw = None
+        self._publish_state('p_approach')
         map_pos = self.current_position
         map_text = (
             f'map=({map_pos[0]:.2f},{map_pos[1]:.2f})'
             if map_pos is not None else 'map=unavailable'
         )
         self.log.segment(
-            f'terminal P confirmed conf={conf:.2f} offset={offset:+.3f} '
-            f'hits={self._p_consecutive_hits} {map_text}; '
-            'waiting for stable wall-corner anchor'
+            f'P acquired conf={conf:.2f} offset={offset:+.3f} '
+            f'hits={self._p_consecutive_hits}; '
+            f'heading_lock={math.degrees(self._p_target_yaw):.1f}deg '
+            f'visual approach v={self.p_approach_linear:.2f} {map_text} '
+            f'{self._position_source_text()} {self._p_depth_text(bbox)}'
         )
-        self._publish_feedback('terminal P confirmed; acquiring physical anchor')
+        self._publish_feedback('P acquired, visual final approach started')
 
     def _run_p_approach(self):
         detected, conf, bbox, _stamp, offset, fill = self._p_detection()
@@ -2254,7 +2294,7 @@ class Stage3ReturnNavigator(Node):
                 if target_yaw is not None and self.current_yaw is not None else 0.0
             )
             heading_restored = abs(heading_error) <= self.p_loss_heading_tolerance
-            if reverse_elapsed < self.p_loss_reverse_duration and not heading_restored:
+            if reverse_elapsed < self.p_loss_reverse_duration:
                 reverse_angular = self._clamp(
                     self.p_loss_heading_kp * heading_error,
                     self.p_loss_reverse_max_angular,
@@ -2313,19 +2353,8 @@ class Stage3ReturnNavigator(Node):
             and depth_m <= self.p_approach_disable_avoidance_distance
         ):
             self._p_final_approach_latched = True
-        # The corner-calibrated route owns the physical stop point.  A depth
-        # reading around 0.5m is useful telemetry there, but must not complete
-        # before the corner correction can drive to the configured P point.
-        if (
-            not self.terminal_corner_enabled
-            and depth_m is not None
-            and depth_m < self.p_depth_stop_distance
-        ):
-            self.log.segment(
-                f'P depth stop: depth={depth_m:.3f}m < '
-                f'{self.p_depth_stop_distance:.3f}m samples={samples} ({depth_status})'
-            )
-            self._finish_mission('return complete, P depth stop threshold reached')
+        if self._try_arm_p_final_odometry(depth_m, samples, depth_status):
+            self._run_p_final_odometry()
             return
         self._publish_state('p_approach')
         self.log.telemetry(
@@ -2336,6 +2365,101 @@ class Stage3ReturnNavigator(Node):
             f'{self._p_depth_text(bbox)}',
         )
         self.cmd_pub.publish(self._twist(linear, angular))
+
+    def _try_arm_p_final_odometry(self, depth_m=None, samples=None, depth_status=None):
+        """Start the final run before any lidar avoidance can arbitrate a command."""
+        if self._p_final_run_start_odom is not None:
+            return True
+        if depth_m is None:
+            detected, conf, bbox, _stamp, _offset, _fill = self._p_detection()
+            if not detected or conf < self.p_approach_conf:
+                return False
+            depth_m, samples, depth_status = self._p_depth_measurement(bbox)
+        if depth_m is None or depth_m > self.p_depth_stop_distance:
+            return False
+        if self._last_raw_odom_xy is None or self._p_target_yaw is None:
+            self.stop_robot()
+            self._publish_state('p_final_waiting_for_odom')
+            return True
+
+        self._p_final_approach_latched = True
+        self._p_final_run_start_odom = self._last_raw_odom_xy
+        self._p_final_run_target_yaw = self._p_target_yaw
+        self._p_final_run_depth_m = depth_m
+        self.desired_heading = self._p_final_run_target_yaw
+        self.avoid_state = 'forward'
+        self.avoid_started_time = None
+        self.avoid_clear_since = None
+        self.avoid_entry_yaw = None
+        self.counter_steer_deadline = None
+        self.recovery_deadline = None
+        self.emergency_reverse_deadline = None
+        self.recovery_uses_heading = False
+        self.log.segment(
+            f'P final odometry run armed: depth={depth_m:.3f}m <= '
+            f'{self.p_depth_stop_distance:.3f}m samples={samples} ({depth_status}) '
+            f'runout={self.p_final_odom_travel:.3f}m '
+            f'v={self.p_approach_slow_linear:.2f}; lidar avoidance disabled'
+        )
+        self._publish_feedback('P is within 0.5m: final low-speed odometry run started')
+        return True
+
+    def _run_p_final_odometry(self):
+        """Complete the calibrated final 0.5m after P depth enters its close zone."""
+        if (
+            self._p_final_run_start_odom is None
+            or self._p_final_run_target_yaw is None
+            or self._last_raw_odom_xy is None
+            or self.current_yaw is None
+        ):
+            self.stop_robot()
+            self._publish_state('p_final_waiting_for_odom')
+            return
+        travelled = math.hypot(
+            self._last_raw_odom_xy[0] - self._p_final_run_start_odom[0],
+            self._last_raw_odom_xy[1] - self._p_final_run_start_odom[1],
+        )
+        final_speed = self.p_approach_slow_linear
+        brake_distance = (
+            final_speed * self.p_final_brake_response
+            + final_speed * final_speed / (2.0 * self.p_final_brake_decel)
+            + self.p_final_brake_margin
+        )
+        completion_floor = max(
+            0.0,
+            self.p_final_odom_travel - max(
+                brake_distance, self.p_final_completion_tolerance,
+            ),
+        )
+        if travelled >= completion_floor:
+            self.stop_robot()
+            self.log.segment(
+                f'P final brake: travelled={travelled:.3f}m '
+                f'target={self.p_final_odom_travel:.3f}m '
+                f'completion_floor={completion_floor:.3f}m '
+                f'brake_distance={brake_distance:.3f}m '
+                f'depth_start={self._p_final_run_depth_m:.3f}m'
+            )
+            self._finish_mission('return complete, P visual final braking window reached')
+            return
+        heading_error = self._angle_error(self._p_final_run_target_yaw, self.current_yaw)
+        angular = self._clamp(
+            self.p_heading_kp * heading_error,
+            self.p_heading_max_angular,
+        )
+        if abs(heading_error) <= self.p_heading_tolerance:
+            angular = 0.0
+        self._publish_state('p_final_odometry')
+        self.log.telemetry(
+            'P_FINAL_ODOMETRY',
+            f'travelled={travelled:.3f}/{self.p_final_odom_travel:.3f}m '
+            f'remain={self.p_final_odom_travel - travelled:.3f}m '
+            f'brake_at={completion_floor:.3f}m brake_distance={brake_distance:.3f}m '
+            f'depth_start={self._p_final_run_depth_m:.3f}m '
+            f'heading_err={math.degrees(heading_error):+.1f}deg '
+            f'v={final_speed:.2f} w={angular:.2f}',
+        )
+        self.cmd_pub.publish(self._twist(final_speed, angular))
 
     def _resume_map_search_after_p_loss(self, reverse_elapsed, heading_restored, heading_error):
         """Return to the calibrated search goal when an obstacle hides P."""
@@ -2354,6 +2478,9 @@ class Stage3ReturnNavigator(Node):
         self._p_recovery_target_yaw = None
         self._p_avoidance_recovery_yaw = None
         self._p_final_approach_latched = False
+        self._p_final_run_start_odom = None
+        self._p_final_run_target_yaw = None
+        self._p_final_run_depth_m = None
         self._p_visible_yaw_history.clear()
         self.desired_heading = None
         self._filtered_heading_err = 0.0
@@ -2500,9 +2627,8 @@ class Stage3ReturnNavigator(Node):
         if self.use_global_planner and self._run_planner_forbidden_reverse():
             return
 
-        # Coarse navigation ends at the calibrated terminal staging point.
-        # It must not chase P beyond this point: the final run is authorized
-        # only by the local P/corner anchor and is explicitly bounded.
+        # The anchored map route is only a repeatable visual search route. It
+        # never declares success; P detection takes over whenever it appears.
         target_x, target_y = self._goal_center()
         gate_dist = math.hypot(
             target_x - self.current_position[0], target_y - self.current_position[1]
@@ -2514,10 +2640,9 @@ class Stage3ReturnNavigator(Node):
                 self.log.mission(
                     f'visual search gate reached map=({self.current_position[0]:.2f},'
                     f'{self.current_position[1]:.2f}) target=({target_x:.2f},'
-                    f'{target_y:.2f}) dist={gate_dist:.2f}m; waiting for terminal P '
-                    'confirmation and wall-corner anchor'
+                    f'{target_y:.2f}) dist={gate_dist:.2f}m; waiting for P vision'
                 )
-            self._publish_state('terminal_acquire')
+            self._publish_state('visual_search_wait')
             self.stop_robot()
             return
 

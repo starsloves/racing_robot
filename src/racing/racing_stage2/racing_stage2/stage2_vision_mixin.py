@@ -2073,11 +2073,6 @@ class Stage2VisionMixin:
         self._vision_search_sign = self._vision_entry_turn_sign()
         self._vision_pure_target_distance = target_distance
 
-        # 重置避障控制器
-        if hasattr(self, '_avoider') and self._avoider is not None:
-            self._avoider.reset()
-            self.get_logger().info('[MISSION] 避障控制器已重置')
-
         if hasattr(self, '_set_vision_inference_active'):
             self._set_vision_inference_active(True)
         elif getattr(self, '_vision_node', None) is not None:
@@ -2197,50 +2192,6 @@ class Stage2VisionMixin:
                 self._log_session('PURE_SEG_DONE', f'path_fallback={path_m:.2f}/{target:.2f}')
             self.finish_mission()
             return
-
-        # ═══ 激光雷达避障检测 ═══
-        # 检查避障控制器是否激活
-        if hasattr(self, '_avoider') and self._avoider is not None:
-            # 构造 NavState 用于避障判断
-            from racing_stage2.avoid_controller import NavState
-            nav = NavState(
-                position=self.current_position if self.current_position is not None else (0.0, 0.0),
-                yaw=self.navigation_yaw() if hasattr(self, 'navigation_yaw') and self.navigation_yaw() is not None else (self.current_yaw if self.current_yaw is not None else 0.0),
-                segment_heading=getattr(self, 'segment_heading', None) or getattr(self, 'segment_start_yaw', None) or (self.current_yaw if self.current_yaw is not None else 0.0),
-                segment_start_pose=getattr(self, 'segment_start_pose', None) or self.current_position or (0.0, 0.0),
-                current_segment={'type': 'move', 'allow_detour': True, 'description': 'pure_seg_follow'},
-                projected_distance=progress,
-            )
-
-            # 检查避障是否已激活
-            was_avoiding = bool(getattr(self._avoider, 'is_active', False))
-
-            # 调用避障控制器的 step 方法
-            # 如果避障激活，step() 会返回 True 并直接发布避障指令
-            if self._avoider.step(nav):
-                # 避障正在进行，直接返回
-                if not was_avoiding:
-                    # 刚进入避障状态
-                    if hasattr(self, '_log_session'):
-                        front_dist = getattr(self, 'front_obstacle_distance', float('inf'))
-                        left_dist = getattr(self, 'left_clearance_distance', float('inf'))
-                        right_dist = getattr(self, 'right_clearance_distance', float('inf'))
-                        self._log_session(
-                            'PURE_SEG_AVOID_START',
-                            f'激光避障启动 | front={self.format_distance(front_dist)}m '
-                            f'left={self.format_distance(left_dist)}m '
-                            f'right={self.format_distance(right_dist)}m | '
-                            f'path={path_m:.2f}m'
-                        )
-                return
-
-            # 避障刚完成
-            if was_avoiding:
-                if hasattr(self, '_log_session'):
-                    self._log_session(
-                        'PURE_SEG_AVOID_DONE',
-                        f'激光避障完成，恢复视觉跟线 | path={path_m:.2f}m'
-                    )
 
         # ═══ 视觉跟线控制 ═══
         linear, angular, mode, line = self._compute_pure_vision_command()
@@ -2537,30 +2488,6 @@ class Stage2VisionMixin:
             )
         return float(angular_fused)
 
-    def _get_vision_angular_for_avoider(self):
-        """
-        供 avoider 调用的视觉修正回调（用于 leg2 段）。
-        
-        返回：
-            float: 角速度 (rad/s)，或 None（无有效检测/时长用尽）
-        """
-        if not self._vision_enabled or self._vision_node is None:
-            return None
-        offset, timestamp, valid = self._vision_node.get_latest_offset()
-        if not valid:
-            self._vision_offset_time_allows(False)
-            return None
-        angular = self._vision_offset_to_angular(offset)
-        vision_active = abs(angular) > 1e-6
-        if not self._vision_offset_time_allows(vision_active):
-            return None
-        self._log_session(
-            'LEG2_VIS',
-            f'leg2 视觉修正 offset={offset:+.3f} ω={angular:+.3f} rad/s '
-            f't={self._vision_corr_elapsed:.2f}/{self._vision_offset_max_sec:.2f}s',
-        )
-        return angular
-
     def _reset_vision_length_state(self) -> None:
         """新 move 段开始时重置纵向视觉状态。"""
         self._vision_length_hit_count = 0
@@ -2666,4 +2593,3 @@ class Stage2VisionMixin:
         return False, target, remaining_m, free_ratio, (
             f'tracking hits={self._vision_length_hit_count}/{need_frames}'
         )
-

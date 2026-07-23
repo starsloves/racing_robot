@@ -77,15 +77,6 @@ class Stage2InertialBase(Node):
         self.declare_parameter('loop_long_length_m', 3.5)
         self.declare_parameter('loop_short_length_m', 1.15)
         self.declare_parameter('exit_distance_m', 1.0)
-        self.declare_parameter('detour_enabled', True)
-        self.declare_parameter('detour_obstacle_distance', 0.48)
-        self.declare_parameter('detour_front_angle_deg', 18.0)
-        self.declare_parameter('detour_side_center_deg', 65.0)
-        self.declare_parameter('detour_side_window_deg', 30.0)
-        self.declare_parameter('detour_min_side_clearance', 0.55)
-        self.declare_parameter('detour_lateral_distance_m', 0.32)
-        self.declare_parameter('detour_forward_distance_m', 0.75)
-        self.declare_parameter('detour_cooldown_sec', 2.0)
 
         self.phase_topic = self.get_parameter('phase_topic').value
         self.task_topic = self.get_parameter('task_topic').value
@@ -176,15 +167,6 @@ class Stage2InertialBase(Node):
         self.loop_long_length_m = float(self.get_parameter('loop_long_length_m').value)
         self.loop_short_length_m = float(self.get_parameter('loop_short_length_m').value)
         self.exit_distance_m = float(self.get_parameter('exit_distance_m').value)
-        self.detour_enabled = bool(self.get_parameter('detour_enabled').value)
-        self.detour_obstacle_distance = float(self.get_parameter('detour_obstacle_distance').value)
-        self.detour_front_angle_deg = float(self.get_parameter('detour_front_angle_deg').value)
-        self.detour_side_center_deg = float(self.get_parameter('detour_side_center_deg').value)
-        self.detour_side_window_deg = float(self.get_parameter('detour_side_window_deg').value)
-        self.detour_min_side_clearance = float(self.get_parameter('detour_min_side_clearance').value)
-        self.detour_lateral_distance_m = float(self.get_parameter('detour_lateral_distance_m').value)
-        self.detour_forward_distance_m = float(self.get_parameter('detour_forward_distance_m').value)
-        self.detour_cooldown_sec = float(self.get_parameter('detour_cooldown_sec').value)
 
         self.phase = 1
         self.task_raw = ''
@@ -217,10 +199,6 @@ class Stage2InertialBase(Node):
         self.mission_active = False
         self.mission_finished = False
         self.reported_start = False
-        self.front_obstacle_distance = float('inf')
-        self.left_clearance_distance = float('inf')
-        self.right_clearance_distance = float('inf')
-        self.detour_cooldown_until = 0.0
         self.pending_segment_start_pose = None
         self.pending_segment_start_yaw = None
         self.odom_frame_id = 'odom'
@@ -832,38 +810,6 @@ class Stage2InertialBase(Node):
     def scan_callback(self, msg):
         self.latest_scan = msg
         self.scan_frame_id = msg.header.frame_id
-        self.front_obstacle_distance = self.sector_min_distance(
-            msg,
-            -self.detour_front_angle_deg,
-            self.detour_front_angle_deg,
-        )
-        half_window = self.detour_side_window_deg / 2.0
-        self.left_clearance_distance = self.sector_min_distance(
-            msg,
-            self.detour_side_center_deg - half_window,
-            self.detour_side_center_deg + half_window,
-        )
-        self.right_clearance_distance = self.sector_min_distance(
-            msg,
-            -self.detour_side_center_deg - half_window,
-            -self.detour_side_center_deg + half_window,
-        )
-
-    def sector_min_distance(self, scan_msg, min_angle_deg, max_angle_deg):
-        min_distance = float('inf')
-        for index, distance in enumerate(scan_msg.ranges):
-            if math.isinf(distance) or math.isnan(distance) or distance <= 0.0:
-                continue
-
-            angle_deg = math.degrees(scan_msg.angle_min + index * scan_msg.angle_increment)
-            angle_deg = (angle_deg + 180.0) % 360.0 - 180.0
-            if angle_deg < min_angle_deg or angle_deg > max_angle_deg:
-                continue
-
-            if distance < min_distance:
-                min_distance = distance
-
-        return min_distance
 
     def phase_callback(self, msg):
         previous_phase = self.phase
@@ -1001,7 +947,6 @@ class Stage2InertialBase(Node):
                     'distance_m': max(0.0, float(raw_segment.get('distance_m', 0.0))),
                     'speed': float(raw_segment.get('speed', self.corridor_linear_speed)),
                     'description': raw_segment.get('description', 'pre_move'),
-                    'allow_detour': bool(raw_segment.get('allow_detour', True)),
                 })
             elif segment_type == 'pause':
                 sanitized_segments.append({
@@ -1018,116 +963,19 @@ class Stage2InertialBase(Node):
 
         return [
             {'type': 'turn', 'angle_deg': initial_turn, 'description': 'loop_enter'},
-            {'type': 'move', 'distance_m': half_long, 'speed': self.ring_linear_speed, 'description': 'loop_bottom_half_1', 'allow_detour': True},
+            {'type': 'move', 'distance_m': half_long, 'speed': self.ring_linear_speed, 'description': 'loop_bottom_half_1'},
             {'type': 'turn', 'angle_deg': corner_turn, 'description': 'corner_1'},
-            {'type': 'move', 'distance_m': self.loop_short_length_m, 'speed': self.ring_linear_speed, 'description': 'loop_short_1', 'allow_detour': True},
+            {'type': 'move', 'distance_m': self.loop_short_length_m, 'speed': self.ring_linear_speed, 'description': 'loop_short_1'},
             {'type': 'turn', 'angle_deg': corner_turn, 'description': 'corner_2'},
-            {'type': 'move', 'distance_m': self.loop_long_length_m, 'speed': self.ring_linear_speed, 'description': 'loop_long_top', 'allow_detour': True},
+            {'type': 'move', 'distance_m': self.loop_long_length_m, 'speed': self.ring_linear_speed, 'description': 'loop_long_top'},
             {'type': 'turn', 'angle_deg': corner_turn, 'description': 'corner_3'},
-            {'type': 'move', 'distance_m': self.loop_short_length_m, 'speed': self.ring_linear_speed, 'description': 'loop_short_2', 'allow_detour': True},
+            {'type': 'move', 'distance_m': self.loop_short_length_m, 'speed': self.ring_linear_speed, 'description': 'loop_short_2'},
             {'type': 'turn', 'angle_deg': corner_turn, 'description': 'corner_4'},
-            {'type': 'move', 'distance_m': half_long, 'speed': self.ring_linear_speed, 'description': 'loop_bottom_half_2', 'allow_detour': True},
+            {'type': 'move', 'distance_m': half_long, 'speed': self.ring_linear_speed, 'description': 'loop_bottom_half_2'},
             {'type': 'turn', 'angle_deg': initial_turn, 'description': 'loop_exit_align'},
-            {'type': 'move', 'distance_m': self.exit_distance_m, 'speed': self.corridor_linear_speed, 'description': 'corridor_exit', 'allow_detour': True},
+            {'type': 'move', 'distance_m': self.exit_distance_m, 'speed': self.corridor_linear_speed, 'description': 'corridor_exit'},
         ]
 
-    def current_segment_allows_detour(self):
-        if not self.detour_enabled or self.current_segment is None:
-            return False
-        if self.current_segment.get('type') != 'move':
-            return False
-        if not bool(self.current_segment.get('allow_detour', True)):
-            return False
-        if bool(self.current_segment.get('is_detour', False)):
-            return False
-        current_time = self.get_clock().now().nanoseconds / 1e9
-        return current_time >= self.detour_cooldown_until
-
-    def select_detour_side(self):
-        left_clear = self.left_clearance_distance
-        right_clear = self.right_clearance_distance
-        left_ok = math.isfinite(left_clear) and left_clear >= self.detour_min_side_clearance
-        right_ok = math.isfinite(right_clear) and right_clear >= self.detour_min_side_clearance
-
-        if left_ok and right_ok:
-            return 'left' if left_clear >= right_clear else 'right'
-        if left_ok:
-            return 'left'
-        if right_ok:
-            return 'right'
-        return None
-
-    def build_detour_segments(self, side, forward_distance, resume_distance):
-        side_sign = 1.0 if side == 'left' else -1.0
-        turn_angle = 90.0 * side_sign
-        segments = [
-            {'type': 'turn', 'angle_deg': turn_angle, 'description': f'detour_{side}_shift_out_turn'},
-            {
-                'type': 'move',
-                'distance_m': self.detour_lateral_distance_m,
-                'speed': self.corridor_linear_speed,
-                'description': f'detour_{side}_shift_out_move',
-                'allow_detour': False,
-                'is_detour': True,
-            },
-            {'type': 'turn', 'angle_deg': -turn_angle, 'description': f'detour_{side}_forward_align'},
-            {
-                'type': 'move',
-                'distance_m': forward_distance,
-                'speed': self.corridor_linear_speed,
-                'description': f'detour_{side}_pass_obstacle',
-                'allow_detour': False,
-                'is_detour': True,
-            },
-            {'type': 'turn', 'angle_deg': -turn_angle, 'description': f'detour_{side}_return_turn'},
-            {
-                'type': 'move',
-                'distance_m': self.detour_lateral_distance_m,
-                'speed': self.corridor_linear_speed,
-                'description': f'detour_{side}_return_move',
-                'allow_detour': False,
-                'is_detour': True,
-            },
-            {'type': 'turn', 'angle_deg': turn_angle, 'description': f'detour_{side}_resume_align'},
-        ]
-        if resume_distance > self.distance_tolerance:
-            segments.append({
-                'type': 'move',
-                'distance_m': resume_distance,
-                'speed': float(self.current_segment.get('speed', self.corridor_linear_speed)),
-                'description': f'{self.current_segment.get("description", "segment")}_resume',
-                'allow_detour': False,
-            })
-        return segments
-
-    def maybe_inject_detour(self):
-        if not self.current_segment_allows_detour():
-            return False
-        if not math.isfinite(self.front_obstacle_distance) or self.front_obstacle_distance > self.detour_obstacle_distance:
-            return False
-
-        side = self.select_detour_side()
-        if side is None:
-            self.publish_state('detour_waiting')
-            self.cmd_pub.publish(Twist())
-            return True
-
-        progress = self.projected_distance()
-        target_distance = float(self.current_segment['distance_m'])
-        remaining_distance = max(0.0, target_distance - progress)
-        if remaining_distance <= self.distance_tolerance:
-            return False
-
-        forward_distance = min(self.detour_forward_distance_m, remaining_distance)
-        resume_distance = max(0.0, remaining_distance - forward_distance)
-        detour_segments = self.build_detour_segments(side, forward_distance, resume_distance)
-        self.plan = self.plan[:self.plan_index] + detour_segments + self.plan[self.plan_index + 1:]
-        self.detour_cooldown_until = self.get_clock().now().nanoseconds / 1e9 + self.detour_cooldown_sec
-        self.publish_feedback(
-            f'检测到通道障碍，向{"左" if side == "left" else "右"}侧绿色区域短暂绕行'
-        )
-        self.start_segment(self.plan_index)
-        return True
 
     def try_start_mission(self):
         if self.mission_active or self.mission_finished:
@@ -1273,7 +1121,6 @@ class Stage2InertialBase(Node):
         self.mission_active = False
         self.mission_finished = False
         self.reported_start = False
-        self.detour_cooldown_until = 0.0
         self.pending_segment_start_pose = None
         self.pending_segment_start_yaw = None
         self.reset_corridor_path_state()
@@ -1430,9 +1277,6 @@ class Stage2InertialBase(Node):
     def run_move_segment(self):
         if self.current_position is None or self.segment_heading is None:
             self.cmd_pub.publish(Twist())
-            return
-
-        if self.maybe_inject_detour():
             return
 
         progress = self.projected_distance()

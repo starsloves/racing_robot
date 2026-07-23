@@ -58,7 +58,7 @@ stage2_inertial_navigator:
     # 开启时：不触发图生文，入第二个 180 度弯 5 秒后直接播报对应方向的手填文字。
     stage2_ai_preset_enabled: false
     stage2_ai_preset_delay_after_turn_sec: 5.0
-    stage2_ai_preset_clockwise_text: "顺时针生图"
+    stage2_ai_preset_clockwise_text: "顺时针生图语音测试"
     stage2_ai_preset_counterclockwise_text: "逆时针生图"
     stage2_ai_result_topic: ai_description
 
@@ -121,9 +121,9 @@ stage2_inertial_navigator:
     # entry_arc：入口 90°
     track_entry_arc_exit_lead_deg: 30.0
     # left_side_arc：第一个 180°
-    track_left_side_arc_exit_lead_deg: 30.0
+    track_left_side_arc_exit_lead_deg: 45.0
     # right_side_arc：第二个 180°
-    track_right_side_arc_exit_lead_deg: 30.0
+    track_right_side_arc_exit_lead_deg: 45.0
     # exit_turn_90：出口 90°，进入 Stage3 交接直线前的最后一弯
     track_exit_turn_90_exit_lead_deg: 38.0
 
@@ -157,7 +157,7 @@ stage2_inertial_navigator:
     # 顺时针：entry_medium x<=min，top_long x>=max；逆时针顺序相反。
     track_turn_force_map_x_enabled: true
     track_turn_force_min_map_x: 1.65
-    track_turn_force_max_map_x: 3.45
+    track_turn_force_max_map_x: 3.65
     # S2 局部 map X 原点：交接瞬间强制重置为 2.50m，随后只累计实时 TF 的相对变化。
     track_map_x_reset_m: 2.50
 
@@ -218,106 +218,37 @@ stage2_inertial_navigator:
     track_odom_combined_step_max_m: 0.40
 
     # ────────────────────────────────────────────────────────────────────────
-    # 雷达安全停车 / 避障
+    # S1 同构前向聚类避障
     # ────────────────────────────────────────────────────────────────────────
-    # 生产轨迹中关闭 front_obstacle 硬停车，避免圆弧扫边误触发 SAFE_STOP。
-    # 0.0 表示关闭；圆弧按 IMU/里程连续执行。
-    turn_obstacle_stop_m: 0.0
-
-    # 直线段避障触发阈值
-    detour_enabled: true
-    detour_obstacle_distance: 0.52
-    detour_front_angle_deg: 15.0
-    detour_side_center_deg: 65.0
-    detour_side_window_deg: 30.0
-    detour_min_side_clearance: 0.18
-
-    # 避障动作参数
-    avoid_turn_away_deg: 30.0
-    avoid_turn_back_deg: 40.0
-    avoid_recover_deg: 40.0
-    avoid_leg1_distance_m: 0.22
-    avoid_leg2_distance_m: 0.22
-    avoid_leg_linear_speed: 0.10
-    avoid_turn_linear_speed: 0.08
-    avoid_turn_angular_speed: 0.40
-    avoid_leg_distance_tol_m: 0.04
-    side_detour_threshold_m: 0.18
-    avoider_heading_tolerance_deg: 1.5
-
-    # 生产直线避障：在左右围栏约束内提前完成小横移，整个过程保持直线速度。
-    # 无法从扫描中得到两侧围栏，或障碍两侧均不足车体包络时，不创建绕行计划。
-    stage2_straight_avoid_enabled: true
-    # 0.66m/s 下须覆盖扫描确认、控制执行和制动距离；小于此距离才开始
-    # 局部规划会让 S 形候选在几何上来不及完成。
-    stage2_straight_avoid_trigger_m: 2.20
-    stage2_straight_avoid_window_min_x: 0.18
-    stage2_straight_avoid_window_half_width_m: 0.22
-    # 只接受车头正前方 +/-15 度的障碍；赛道两侧围栏不触发绕行。
-    stage2_straight_avoid_front_angle_deg: 15.0
-    stage2_straight_avoid_cluster_gap_m: 0.12
-    stage2_straight_avoid_min_cluster_points: 3
-    stage2_straight_avoid_min_cluster_width_m: 0.06
-    stage2_straight_avoid_max_cluster_width_m: 0.55
-    stage2_straight_avoid_min_valid_range_m: 0.15
-    # 聚类先通过横向尺寸过滤，再需连续关联 3 帧才允许启动横移。
-    # association_* 是相邻扫描中同一目标允许的位置/尺寸变化。
-    stage2_straight_avoid_min_lateral_span_m: 0.05
-    stage2_straight_avoid_confirm_frames: 3
-    stage2_straight_avoid_association_x_m: 0.25
-    stage2_straight_avoid_association_y_m: 0.12
-    stage2_straight_avoid_association_span_m: 0.20
-    # 一次 S 形横移完成后短暂忽略旧回波，避免围栏或同一物体立即二次触发。
-    stage2_straight_avoid_cooldown_sec: 1.00
-    # 当前直线速度保持不变；speed_limit=0.0 表示不限速。
-    stage2_straight_avoid_speed_limit_mps: 0.0
-    stage2_straight_avoid_angular_speed: 0.80
-    # 根据扫描可行横移反算的最大偏航；不是固定打角。
-    stage2_straight_avoid_yaw_offset_deg: 30.0
-    stage2_straight_avoid_yaw_tolerance_deg: 1.0
-    # 仅在车头已贴近直线基准时触发；每个子转向超过此角度立即退出避障。
-    stage2_straight_avoid_start_heading_tolerance_deg: 15.0
-    stage2_straight_avoid_max_turn_travel_deg: 35.0
-    # 围栏内缘估计窗口，以及车辆/障碍的保守安全包络。
-    stage2_straight_avoid_corridor_min_x_m: 0.20
-    stage2_straight_avoid_corridor_min_lateral_m: 0.28
-    stage2_straight_avoid_vehicle_half_width_m: 0.15
-    stage2_straight_avoid_clearance_m: 0.07
-    # 最小有效横移；完整换线必须在障碍前额外保留的纵向余量。
-    stage2_straight_avoid_min_shift_m: 0.06
-    stage2_straight_avoid_forward_margin_m: 0.25
-
-    # 受控停车距离 = v * response + v^2 / (2 * brake_decel) + margin。
-    # response 与 brake_decel 必须按实车日志/制动测试重新标定，不能用 odom yaw。
-    stage2_safety_response_sec: 0.30
-    stage2_safety_brake_decel_mps2: 0.70
-    stage2_safety_margin_m: 0.25
-
-    # 只有 top_long 中段使用滚动 MPPI；短直道尽头横墙不能送入通用避障器。
-    # 所有候选必须留在雷达估计的左右围栏内并避开障碍+车体安全包络；
-    # 已确认障碍但没有可行候选时，控制器发布零速而不是继续直行。
-    stage2_top_long_mppi_enabled: true
-    stage2_top_long_mppi_linear_speed_mps: 0.42
-    stage2_top_long_mppi_max_angular_speed_rps: 0.80
-    # 4s 预测时域在 0.42m/s 下覆盖 1.68m，包含触发后完整绕行或停车决策。
-    stage2_top_long_mppi_horizon_steps: 80
-    stage2_top_long_mppi_step_sec: 0.05
-    stage2_top_long_mppi_batch_size: 128
-    stage2_top_long_mppi_temperature: 12.0
-    stage2_top_long_mppi_angular_noise_rps: 0.45
-    stage2_top_long_mppi_recovery_lateral_tolerance_m: 0.04
-    stage2_top_long_mppi_recovery_heading_tolerance_deg: 4.0
-    # 末端会看到下一弯的已知横墙；该距离内不再创建通用障碍候选。
-    stage2_top_long_avoid_turn_guard_m: 0.60
-
-    # 两个 180° 弯前探测目前只写诊断日志。横墙是既有赛道边界，不能用
-    # 通用前方簇直接停车；转角避障须等待专用的边界簇/独立障碍分类器。
-    stage2_turn_precheck_enabled: true
-    stage2_turn_precheck_lead_m: 0.60
-    stage2_turn_precheck_front_m: 0.50
-    stage2_turn_precheck_side_m: 0.60
-    stage2_turn_precheck_side_min_x_m: 0.0
-    stage2_turn_precheck_side_min_y_m: 0.18
+    # 只在 top_long 直线段接管：前方有效聚类触发后依次绕开、反舵、
+    # 以 IMU 回正至该段航向。没有 MPPI、围栏推断、连续帧门控或弯道预检。
+    stage2_s1_avoid_enabled: true
+    stage2_s1_avoid_window_min_x: 0.18
+    stage2_s1_avoid_window_max_x: 0.60
+    stage2_s1_avoid_window_half_width_m: 0.22
+    stage2_s1_avoid_cluster_gap_m: 0.12
+    stage2_s1_avoid_min_cluster_points: 3
+    stage2_s1_avoid_min_cluster_width_m: 0.06
+    stage2_s1_avoid_max_cluster_width_m: 0.55
+    stage2_s1_avoid_min_valid_range_m: 0.15
+    stage2_s1_avoid_linear_speed_mps: 0.30
+    stage2_s1_avoid_angular_speed_rps: 0.80
+    stage2_s1_avoid_min_duration_sec: 0.50
+    stage2_s1_avoid_clear_hold_sec: 0.25
+    stage2_s1_avoid_min_turn_deg: 30.0
+    stage2_s1_counter_linear_speed_mps: 0.30
+    stage2_s1_counter_angular_speed_rps: 1.0
+    stage2_s1_counter_duration_scale: 0.60
+    stage2_s1_counter_min_duration_sec: 0.30
+    stage2_s1_counter_max_duration_sec: 1.00
+    stage2_s1_recovery_linear_speed_mps: 0.35
+    stage2_s1_recovery_turn_linear_speed_mps: 0.20
+    stage2_s1_recovery_heading_kp: 1.5
+    stage2_s1_recovery_max_angular_speed_rps: 0.60
+    stage2_s1_recovery_min_angular_speed_rps: 0.30
+    stage2_s1_recovery_turn_threshold_deg: 8.0
+    stage2_s1_recovery_heading_tolerance_deg: 6.0
+    stage2_s1_recovery_timeout_sec: 2.5
 
     # ────────────────────────────────────────────────────────────────────────
     # 视觉模型 / 日志

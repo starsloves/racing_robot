@@ -14,18 +14,6 @@ from std_msgs.msg import Empty, String
 from tf2_ros import TransformException
 
 from racing_stage2.stage2_inertial_base import Stage2InertialBase
-from racing_stage2.avoid_controller import AvoidConfig, AvoidController, NavState
-from racing_stage2.avoid_geometry import cross_segment_m
-from racing_stage2.mppi_straight_avoidance import (
-    MppiStraightAvoidanceConfig,
-    MppiStraightAvoidanceController,
-)
-from racing_stage2.scan_processor import ScanProcessor
-from racing_stage2.straight_avoidance import StraightAvoidanceController
-from racing_stage2.straight_obstacle_gate import (
-    StraightObstacleGate,
-    StraightObstacleGateConfig,
-)
 from racing_stage2.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 from racing_stage2.stage2_vision_mixin import Stage2VisionMixin
@@ -124,74 +112,34 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('stage2_ai_preset_clockwise_text', '')
         self.declare_parameter('stage2_ai_preset_counterclockwise_text', '')
         self.declare_parameter('stage2_ai_result_topic', 'ai_description')
-        # 避障参数（yaml 配置，直行避障使用）
-        self.declare_parameter('avoid_turn_away_deg', 30.0)
-        self.declare_parameter('avoid_turn_back_deg', 40.0)
-        self.declare_parameter('avoid_recover_deg', 40.0)
-        self.declare_parameter('avoid_leg1_distance_m', 0.30)
-        self.declare_parameter('avoid_leg2_distance_m', 0.60)
-        self.declare_parameter('avoid_leg_linear_speed', 0.10)
-        self.declare_parameter('avoid_turn_linear_speed', 0.08)
-        self.declare_parameter('avoid_leg_distance_tol_m', 0.04)
-        self.declare_parameter('avoid_turn_angular_speed', 0.40)
-        self.declare_parameter('side_detour_threshold_m', 0.18)
-        self.declare_parameter('avoider_heading_tolerance_deg', 1.5)
-        self.declare_parameter('stage2_straight_avoid_enabled', True)
-        self.declare_parameter('stage2_straight_avoid_trigger_m', 0.60)
-        self.declare_parameter('stage2_straight_avoid_window_min_x', 0.18)
-        self.declare_parameter('stage2_straight_avoid_window_half_width_m', 0.22)
-        self.declare_parameter('stage2_straight_avoid_front_angle_deg', 15.0)
-        self.declare_parameter('stage2_straight_avoid_cluster_gap_m', 0.12)
-        self.declare_parameter('stage2_straight_avoid_min_cluster_points', 3)
-        self.declare_parameter('stage2_straight_avoid_min_cluster_width_m', 0.06)
-        self.declare_parameter('stage2_straight_avoid_max_cluster_width_m', 0.55)
-        self.declare_parameter('stage2_straight_avoid_min_valid_range_m', 0.15)
-        self.declare_parameter('stage2_straight_avoid_min_lateral_span_m', 0.05)
-        self.declare_parameter('stage2_straight_avoid_confirm_frames', 3)
-        self.declare_parameter('stage2_straight_avoid_association_x_m', 0.25)
-        self.declare_parameter('stage2_straight_avoid_association_y_m', 0.12)
-        self.declare_parameter('stage2_straight_avoid_association_span_m', 0.20)
-        self.declare_parameter('stage2_straight_avoid_cooldown_sec', 1.0)
-        self.declare_parameter('stage2_straight_avoid_angular_speed', 0.80)
-        self.declare_parameter('stage2_top_long_mppi_enabled', True)
-        self.declare_parameter('stage2_top_long_mppi_linear_speed_mps', 0.42)
-        self.declare_parameter('stage2_top_long_mppi_max_angular_speed_rps', 0.80)
-        self.declare_parameter('stage2_top_long_mppi_horizon_steps', 50)
-        self.declare_parameter('stage2_top_long_mppi_step_sec', 0.05)
-        self.declare_parameter('stage2_top_long_mppi_batch_size', 128)
-        self.declare_parameter('stage2_top_long_mppi_temperature', 12.0)
-        self.declare_parameter('stage2_top_long_mppi_angular_noise_rps', 0.45)
-        self.declare_parameter('stage2_top_long_mppi_recovery_lateral_tolerance_m', 0.04)
-        self.declare_parameter('stage2_top_long_mppi_recovery_heading_tolerance_deg', 4.0)
-        self.declare_parameter('stage2_top_long_avoid_turn_guard_m', 0.60)
-        self.declare_parameter('stage2_straight_avoid_yaw_offset_deg', 10.0)
-        self.declare_parameter('stage2_straight_avoid_yaw_tolerance_deg', 1.0)
-        self.declare_parameter('stage2_straight_avoid_start_heading_tolerance_deg', 15.0)
-        self.declare_parameter('stage2_straight_avoid_max_turn_travel_deg', 35.0)
-        self.declare_parameter('stage2_straight_avoid_speed_limit_mps', 0.0)
-        self.declare_parameter('stage2_straight_avoid_corridor_min_x_m', 0.20)
-        self.declare_parameter('stage2_straight_avoid_corridor_min_lateral_m', 0.28)
-        self.declare_parameter('stage2_straight_avoid_vehicle_half_width_m', 0.15)
-        self.declare_parameter('stage2_straight_avoid_clearance_m', 0.07)
-        self.declare_parameter('stage2_straight_avoid_min_shift_m', 0.06)
-        self.declare_parameter('stage2_straight_avoid_forward_margin_m', 0.25)
-        # Safety envelope: scan confirmation/control latency + measured braking
-        # distance + fixed vehicle margin.  These are deliberately independent
-        # from the local planner so an infeasible plan can never fall through to
-        # normal cruise.
-        self.declare_parameter('stage2_safety_response_sec', 0.30)
-        self.declare_parameter('stage2_safety_brake_decel_mps2', 0.70)
-        self.declare_parameter('stage2_safety_margin_m', 0.25)
-        self.declare_parameter('stage2_turn_precheck_enabled', True)
-        self.declare_parameter('stage2_turn_precheck_lead_m', 0.60)
-        self.declare_parameter('stage2_turn_precheck_front_m', 0.50)
-        self.declare_parameter('stage2_turn_precheck_side_m', 0.60)
-        self.declare_parameter('stage2_turn_precheck_side_min_x_m', 0.0)
-        self.declare_parameter('stage2_turn_precheck_side_min_y_m', 0.18)
-        # 转弯障碍检测参数
-        self.declare_parameter('turn_obstacle_stop_m', 0.25)
-        self.declare_parameter('corner_approach_m', 0.15)
-        self.declare_parameter('turn_obstacle_creep_speed', 0.02)
+        # S1 同构的简单前向聚类避障。只在 top_long 直线段接管。
+        self.declare_parameter('stage2_s1_avoid_enabled', True)
+        self.declare_parameter('stage2_s1_avoid_window_min_x', 0.18)
+        self.declare_parameter('stage2_s1_avoid_window_max_x', 0.60)
+        self.declare_parameter('stage2_s1_avoid_window_half_width_m', 0.22)
+        self.declare_parameter('stage2_s1_avoid_cluster_gap_m', 0.12)
+        self.declare_parameter('stage2_s1_avoid_min_cluster_points', 3)
+        self.declare_parameter('stage2_s1_avoid_min_cluster_width_m', 0.06)
+        self.declare_parameter('stage2_s1_avoid_max_cluster_width_m', 0.55)
+        self.declare_parameter('stage2_s1_avoid_min_valid_range_m', 0.15)
+        self.declare_parameter('stage2_s1_avoid_linear_speed_mps', 0.30)
+        self.declare_parameter('stage2_s1_avoid_angular_speed_rps', 0.80)
+        self.declare_parameter('stage2_s1_avoid_min_duration_sec', 0.50)
+        self.declare_parameter('stage2_s1_avoid_clear_hold_sec', 0.25)
+        self.declare_parameter('stage2_s1_avoid_min_turn_deg', 30.0)
+        self.declare_parameter('stage2_s1_counter_linear_speed_mps', 0.30)
+        self.declare_parameter('stage2_s1_counter_angular_speed_rps', 1.0)
+        self.declare_parameter('stage2_s1_counter_duration_scale', 0.60)
+        self.declare_parameter('stage2_s1_counter_min_duration_sec', 0.30)
+        self.declare_parameter('stage2_s1_counter_max_duration_sec', 1.00)
+        self.declare_parameter('stage2_s1_recovery_linear_speed_mps', 0.35)
+        self.declare_parameter('stage2_s1_recovery_turn_linear_speed_mps', 0.20)
+        self.declare_parameter('stage2_s1_recovery_heading_kp', 1.5)
+        self.declare_parameter('stage2_s1_recovery_max_angular_speed_rps', 0.60)
+        self.declare_parameter('stage2_s1_recovery_min_angular_speed_rps', 0.30)
+        self.declare_parameter('stage2_s1_recovery_turn_threshold_deg', 8.0)
+        self.declare_parameter('stage2_s1_recovery_heading_tolerance_deg', 6.0)
+        self.declare_parameter('stage2_s1_recovery_timeout_sec', 2.5)
         # 转弯减速参数
         self.declare_parameter('turn_slowdown_threshold_deg', 15.0)
         self.declare_parameter('turn_min_speed_ratio', 0.4)
@@ -223,121 +171,31 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.last_progress_bucket = -1
         self.active_turn_heading_tolerance = self.heading_tolerance
 
-        # 独立模块：雷达处理 + 避障
-        self._scan_processor = ScanProcessor(
-            front_angle_deg=self.detour_front_angle_deg,
-            side_window_deg=self.detour_side_window_deg,
-            side_center_deg=self.detour_side_center_deg,
-        )
+        # S1 风格避障状态：没有规划器、围栏拟合或跨帧关联。
         self.front_obstacle_distance = float('inf')
         self.front_obstacle_angle_deg = 0.0
-        self.left_clearance_distance = float('inf')
-        self.right_clearance_distance = float('inf')
-        self._straight_avoid_obstacle = None
-        self._straight_avoid_corridor = None
-        self._straight_avoid_plan_reject_reason = ''
-        self._straight_avoid_gate_last_state = 'clear'
-        self._turn_precheck_front_obstacle = None
-        self._turn_precheck_left_obstacle = None
-        self._turn_precheck_right_obstacle = None
-        self._turn_precheck_last_key = None
+        self._s1_avoid_state = 'forward'
+        self._s1_avoid_turn_direction = 0.0
+        self._s1_avoid_started_at = None
+        self._s1_avoid_clear_since = None
+        self._s1_avoid_entry_yaw = None
+        self._s1_avoid_reference_yaw = None
+        self._s1_counter_until = None
+        self._s1_recovery_until = None
+        self._s1_last_duration = 0.0
+        self._s1_avoid_obstacle = None
 
-        # 视觉模块初始化（必须在 avoider 之前，因为 avoider 需要视觉回调）
         # 默认关闭推理：Stage1 期间不跑视觉，等 phase=2 再启用
         self._setup_vision_centering()
         if getattr(self, '_vision_node', None) is not None:
             self._vision_node.set_inference_active(False)
         
-        _avoid_cfg = AvoidConfig(
-            detour_obstacle_distance=self.detour_obstacle_distance,
-            avoid_turn_away_deg=float(self.get_parameter('avoid_turn_away_deg').value),
-            avoid_turn_back_deg=float(self.get_parameter('avoid_turn_back_deg').value),
-            avoid_recover_deg=float(self.get_parameter('avoid_recover_deg').value),
-            avoid_leg1_distance_m=max(0.05, float(self.get_parameter('avoid_leg1_distance_m').value)),
-            avoid_leg2_distance_m=max(0.05, float(self.get_parameter('avoid_leg2_distance_m').value)),
-            avoid_leg_linear_speed=max(0.02, float(self.get_parameter('avoid_leg_linear_speed').value)),
-            avoid_turn_linear_speed=max(0.02, float(self.get_parameter('avoid_turn_linear_speed').value)),
-            avoid_leg_distance_tol_m=max(0.0, float(self.get_parameter('avoid_leg_distance_tol_m').value)),
-            avoid_turn_angular_speed=max(0.1, float(self.get_parameter('avoid_turn_angular_speed').value)),
-            distance_tolerance=self.distance_tolerance,
-            heading_kp=self.heading_kp,
-            side_detour_threshold_m=float(self.get_parameter('side_detour_threshold_m').value),
-            avoider_heading_tolerance_deg=float(self.get_parameter('avoider_heading_tolerance_deg').value),
-        )
-        self._avoider = AvoidController(
-            self.cmd_pub, 
-            self.get_logger(), 
-            self.get_clock(), 
-            _avoid_cfg,
-            vision_callback=self._get_vision_angular_for_avoider  # 传递视觉回调
-        )
-        self._straight_avoider = StraightAvoidanceController(
-            enabled=bool(self.get_parameter('stage2_straight_avoid_enabled').value),
-            angular_speed=float(self.get_parameter('stage2_straight_avoid_angular_speed').value),
-            yaw_offset_deg=float(self.get_parameter('stage2_straight_avoid_yaw_offset_deg').value),
-            yaw_tolerance_deg=float(self.get_parameter('stage2_straight_avoid_yaw_tolerance_deg').value),
-            start_heading_tolerance_deg=float(
-                self.get_parameter('stage2_straight_avoid_start_heading_tolerance_deg').value
-            ),
-            max_turn_travel_deg=float(
-                self.get_parameter('stage2_straight_avoid_max_turn_travel_deg').value
-            ),
-            speed_limit_mps=float(
-                self.get_parameter('stage2_straight_avoid_speed_limit_mps').value
-            ),
-        )
-        self._top_long_mppi_avoider = MppiStraightAvoidanceController(
-            MppiStraightAvoidanceConfig(
-                enabled=bool(self.get_parameter('stage2_top_long_mppi_enabled').value),
-                linear_speed_mps=float(self.get_parameter(
-                    'stage2_top_long_mppi_linear_speed_mps').value),
-                max_angular_speed_rps=float(self.get_parameter(
-                    'stage2_top_long_mppi_max_angular_speed_rps').value),
-                horizon_steps=int(self.get_parameter(
-                    'stage2_top_long_mppi_horizon_steps').value),
-                step_sec=float(self.get_parameter('stage2_top_long_mppi_step_sec').value),
-                batch_size=int(self.get_parameter('stage2_top_long_mppi_batch_size').value),
-                temperature=float(self.get_parameter('stage2_top_long_mppi_temperature').value),
-                angular_noise_rps=float(self.get_parameter(
-                    'stage2_top_long_mppi_angular_noise_rps').value),
-                vehicle_half_width_m=float(self.get_parameter(
-                    'stage2_straight_avoid_vehicle_half_width_m').value),
-                clearance_m=float(self.get_parameter(
-                    'stage2_straight_avoid_clearance_m').value),
-                recovery_lateral_tolerance_m=float(self.get_parameter(
-                    'stage2_top_long_mppi_recovery_lateral_tolerance_m').value),
-                recovery_heading_tolerance_deg=float(self.get_parameter(
-                    'stage2_top_long_mppi_recovery_heading_tolerance_deg').value),
-            )
-        )
-        self._straight_obstacle_gate = StraightObstacleGate(
-            StraightObstacleGateConfig(
-                confirm_frames=int(self.get_parameter(
-                    'stage2_straight_avoid_confirm_frames').value),
-                association_x_m=float(self.get_parameter(
-                    'stage2_straight_avoid_association_x_m').value),
-                association_y_m=float(self.get_parameter(
-                    'stage2_straight_avoid_association_y_m').value),
-                association_span_m=float(self.get_parameter(
-                    'stage2_straight_avoid_association_span_m').value),
-                cooldown_sec=float(self.get_parameter(
-                    'stage2_straight_avoid_cooldown_sec').value),
-            )
-        )
-        self._safety_hold_reason = ''
-
         # 障碍物可视化（rviz2 调试用）
         # 使用 laser 帧，和 LaserScan 点云保持一致，依赖 TF 自动转换
         self.obstacle_markers = ObstacleMarkerPublisher(
             self, topic='/stage2_obstacle_markers', frame_id='laser', radius=0.13
         )
-        self.all_clusters = []  # 缓存当前帧的所有聚类
-        self._cluster_window_config = {
-            'min_x': 0.30,
-            'max_x': 2.50,
-            'half_y': 0.50,
-            'gap_tolerance': 0.12
-        }
+        self.all_clusters = []
         self._setup_wheel_odom_position()
         self._setup_session_log()
         self._track_controller = Stage2TrackController(
@@ -563,8 +421,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             max_step_m=float(self.get_parameter('track_odom_combined_step_max_m').value)
         )
         self._track_distance_m = 0.0
-        self._pure_linear_after_avoid = False  # 避障完成后纯线速度直行
-        
         # 加速渐变状态（转弯后平滑过渡）
         self._just_finished_turn = False
         self._turn_finish_time = 0.0
@@ -592,14 +448,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 
         self.get_logger().info(
             f'{self.test_feedback_prefix}导航节点已就绪，方向={self.direction_text()}，'
-            f'模式={self.start_mode_text()}，'
-            f'track_config={self._track_config_name}，'
-            f'避障=边转边避 away={_avoid_cfg.avoid_turn_away_deg:.0f}deg back={_avoid_cfg.avoid_turn_back_deg:.0f}deg recover={_avoid_cfg.avoid_recover_deg:.0f}deg×'
-            f'{_avoid_cfg.avoid_leg1_distance_m:.2f}m/{_avoid_cfg.avoid_leg2_distance_m:.2f}m '
-            f'侧边阈值={_avoid_cfg.side_detour_threshold_m:.2f}m '
-            f'闭环转弯 tol={_avoid_cfg.avoider_heading_tolerance_deg:.1f}deg，'
-            f'可视化窗口=[{self._cluster_window_config["min_x"]:.2f}-{self._cluster_window_config["max_x"]:.2f}m, '
-            f'±{self._cluster_window_config["half_y"]:.2f}m]'
+            f'模式={self.start_mode_text()}，track_config={self._track_config_name}，'
+            '避障=S1四状态聚类避障（仅 top_long）'
         )
         self.get_logger().info(
             f'[AI_CAPTURE] mode={"preset" if self._stage2_ai_preset_enabled else "vision_race"} '
@@ -611,15 +461,13 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             'CONFIG',
             f'方向={self.direction_text()} 模式={self.start_mode_text()} '
             f'track_config={self._track_config_name} '
-            f'避障 away={_avoid_cfg.avoid_turn_away_deg:.0f}deg back={_avoid_cfg.avoid_turn_back_deg:.0f}deg recover={_avoid_cfg.avoid_recover_deg:.0f}deg '
-            f'L1={_avoid_cfg.avoid_leg1_distance_m:.2f}m L2={_avoid_cfg.avoid_leg2_distance_m:.2f}m '
+            'avoid=s1_four_state top_long_only '
             f'pose_source={self._navigation_pose_source} '
             f'wheel={self._wheel_odom_topic} ekf={self.odom_topic} '
             f'ring_v={self.ring_linear_speed:.2f} turn_v={self.turn_linear_speed:.2f} '
             f'turn_w={self.turn_angular_speed:.2f} head_kp={self.heading_kp:.2f} '
             f'dist_tol={self.distance_tolerance:.3f} '
             f'head_tol={math.degrees(self.heading_tolerance):.1f}deg '
-            f'detour_d={self.detour_obstacle_distance:.2f}m '
             f'segment_timeout={self.segment_timeout:.1f}s',
         )
         self._log_session(
@@ -840,15 +688,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         nav_pos = self._nav_position()
         if nav_pos is None:
             return 0.0
-        # 用轮速航向（与 odom 位置同坐标系），fallback 到 IMU heading
-        heading_for_cross = self._segment_start_wheel_yaw if self._segment_start_wheel_yaw is not None else self.segment_heading
-        if heading_for_cross is None:
+        if self.segment_heading is None:
             return 0.0
-        return cross_segment_m(
-            self.segment_start_pose,
-            heading_for_cross,
-            nav_pos,
-        )
+        dx = nav_pos[0] - self.segment_start_pose[0]
+        dy = nav_pos[1] - self.segment_start_pose[1]
+        return -math.sin(self.segment_heading) * dx + math.cos(self.segment_heading) * dy
 
     def _odom_to_map(self, odom_xy):
         """将 odom 帧坐标转换为 map 帧坐标。
@@ -970,13 +814,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 f'dist_tol={self._fmt_num(self.distance_tolerance)}'
             ),
             (
-                f'avoid={self._avoider.state_str} '
+                f'avoid={self._s1_avoid_state} '
             ),
             (
                 f'front={self.format_distance(self.front_obstacle_distance)}m '
                 f'@ {self._fmt_num(self.front_obstacle_angle_deg, prec=1)}deg '
-                f'left={self.format_distance(self.left_clearance_distance)}m '
-                f'right={self.format_distance(self.right_clearance_distance)}m '
             ),
             (
                 f'wheel_n={self._wheel_odom_msg_count} wheel_ready={int(self._wheel_odom_ready)} '
@@ -1339,6 +1181,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._track_controller.start(self.direction, self._track_pose,
                                      self.current_yaw, now,
                                      distance_m=self._track_distance_m)
+        self._reset_s1_avoidance()
         self._stage2_ai_capture_sent = False
         self._stage2_ai_capture_due_at = None
         self._stage2_ai_preset_sent = False
@@ -1457,91 +1300,17 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self._log_control_timing(now, 'track_missing_pose')
             self.cmd_pub.publish(stop_cmd)
             return
-        if self.front_obstacle_distance < float(
-                self.get_parameter('turn_obstacle_stop_m').value):
-            command = self._track_controller.safe_stop('front_obstacle')
+        self._maybe_trigger_stage2_ai_capture(now)
+        visual = self._get_vision_line_status() if getattr(
+            self, '_vision_node', None) is not None else None
+        active_segment = self._track_controller.active_segment_name
+        avoid_command = self._s1_avoid_command(active_segment)
+        if avoid_command is not None:
+            self._track_controller.hold_active_progress(self._track_distance_m)
+            self.cmd_pub.publish(avoid_command)
+            self._log_control_timing(now, f's1_avoid:{self._s1_avoid_state}')
+            return
         else:
-            self._maybe_trigger_stage2_ai_capture(now)
-            visual = self._get_vision_line_status() if getattr(
-                self, '_vision_node', None) is not None else None
-            self._log_turn_precheck()
-            active_segment = self._track_controller.active_segment_name
-            safety_reason = self._safety_hold_reason_for_active_segment(active_segment)
-            if safety_reason:
-                self._publish_safety_hold(now, safety_reason)
-                return
-            if self._safety_hold_reason:
-                self._log_session(
-                    'SAFETY_HOLD_RELEASED',
-                    f'reason={self._safety_hold_reason} segment={active_segment}',
-                )
-                self._safety_hold_reason = ''
-            top_long_mppi_enabled = bool(self.get_parameter(
-                'stage2_top_long_mppi_enabled').value)
-            was_mppi_avoiding = self._top_long_mppi_avoider.is_active
-            if active_segment == 'top_long' and top_long_mppi_enabled:
-                mppi_command = self._top_long_mppi_avoider.step(
-                    now_sec=time.monotonic(),
-                    yaw=self.current_yaw,
-                    line_heading=self._track_controller.active_segment_heading,
-                    line_speed=float(self.get_parameter('track_max_speed').value),
-                    obstacle=self._straight_avoid_obstacle,
-                    corridor=self._straight_avoid_corridor,
-                    position=self._last_ekf_position,
-                )
-                if mppi_command is not None:
-                    self._track_controller.hold_active_progress(self._track_distance_m)
-                    self.cmd_pub.publish(self.create_twist(
-                        mppi_command.linear, mppi_command.angular
-                    ))
-                    self._log_control_timing(now, f'top_long_mppi:{mppi_command.state}')
-                    self._log_session(
-                        'TOP_LONG_MPPI',
-                        f'state={mppi_command.state} v={mppi_command.linear:.3f} '
-                        f'w={mppi_command.angular:.3f} cost={mppi_command.cost:.2f} '
-                        f'clearance={mppi_command.min_clearance_m:.3f} '
-                        f'obstacle={self._straight_avoid_obstacle}',
-                    )
-                    return
-                if was_mppi_avoiding:
-                    self._straight_obstacle_gate.start_cooldown(time.monotonic())
-                    self._log_session('TOP_LONG_MPPI_DONE', 'rejoined straight reference')
-            elif active_segment != 'top_long':
-                self._top_long_mppi_avoider.reset()
-
-            avoid_command = None
-            was_straight_avoiding = self._straight_avoider.is_active
-            if active_segment == 'top_long' and not top_long_mppi_enabled:
-                avoid_command = self._straight_avoider.step(
-                    yaw=self.current_yaw,
-                    line_heading=self._track_controller.active_segment_heading,
-                    line_speed=float(self.get_parameter('track_max_speed').value),
-                    plan=self._straight_avoidance_plan(),
-                )
-            else:
-                self._straight_avoider.reset()
-            if avoid_command is not None:
-                self._track_controller.hold_active_progress(self._track_distance_m)
-                command = None
-                cmd_msg = self.create_twist(avoid_command.linear, avoid_command.angular)
-                self._log_control_timing(now, f'straight_avoid:{avoid_command.state}')
-                self.cmd_pub.publish(cmd_msg)
-                self._log_session(
-                    'STRAIGHT_AVOID',
-                    f'state={avoid_command.state} v={avoid_command.linear:.3f} '
-                    f'w={avoid_command.angular:.3f} '
-                    f'heading={math.degrees(self._track_controller.active_segment_heading):.1f} '
-                    f'yaw={math.degrees(self.current_yaw):.1f} '
-                    f'plan={self._straight_avoider.plan} '
-                    f'obstacle={self._straight_avoid_obstacle}',
-                )
-                return
-            if was_straight_avoiding and not self._straight_avoider.is_active:
-                self._straight_obstacle_gate.start_cooldown(time.monotonic())
-                self._log_session(
-                    'STRAIGHT_AVOID_DONE',
-                    f'cooldown={float(self.get_parameter("stage2_straight_avoid_cooldown_sec").value):.2f}s',
-                )
             track_map_xy = self._track_map_position()
             track_map_x = self._track_rebased_map_x(track_map_xy)
             previous_segment = self._track_controller.active_segment_name
@@ -1784,8 +1553,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         super().start_segment(index)
         self.last_progress_bucket = -1
         self.active_turn_heading_tolerance = self.heading_tolerance
-        self._pure_linear_after_avoid = False  # 新段恢复惯导全控制
-        self._avoider.reset()
+        self._reset_s1_avoidance()
         if hasattr(self, '_reset_vision_length_state'):
             self._reset_vision_length_state()
 
@@ -1847,45 +1615,23 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         callback_started_at = time.monotonic()
         self.latest_scan = msg
         self.scan_frame_id = msg.header.frame_id
-        data = self._scan_processor.process(msg)
-        self.front_obstacle_distance = data.front_distance
-        self.front_obstacle_angle_deg = data.front_angle_deg
-        self.left_clearance_distance = data.left_clearance
-        self.right_clearance_distance = data.right_clearance
-        self._avoider.on_scan(
-            data.front_distance, data.front_angle_deg,
-            data.left_clearance, data.left_angle_deg,
-            data.right_clearance, data.right_angle_deg,
-        )
-        self._cache_production_avoidance_obstacles(msg)
-
-        # 新增：聚类可视化（前方 0.3-2.5m，左右 ±0.5m 窗口）
+        self.all_clusters = self._s1_clusters_in_window(msg)
+        self._s1_avoid_obstacle = self._s1_find_nearest_obstacle(self.all_clusters)
+        if self._s1_avoid_obstacle is None:
+            self.front_obstacle_distance = float('inf')
+            self.front_obstacle_angle_deg = 0.0
+        else:
+            self.front_obstacle_distance = self._s1_avoid_obstacle['distance']
+            self.front_obstacle_angle_deg = self._s1_avoid_obstacle['danger_angle_deg']
         try:
-            self.all_clusters = self._scan_processor.cluster_obstacles_in_window(
-                msg,
-                min_x=self._cluster_window_config['min_x'],
-                max_x=self._cluster_window_config['max_x'],
-                half_y=self._cluster_window_config['half_y'],
-                gap_tolerance=self._cluster_window_config['gap_tolerance']
-            )
-            n_clusters = len(self.all_clusters)
-            total_points = sum(len(c) for c in self.all_clusters) if self.all_clusters else 0
-            
-            # # 打印到日志文件（用 _log_session 才能写入 RacingLogger 的文件）
-            # self._log_session('CLUSTER_VIZ',
-            #     f'clusters={n_clusters} points={total_points} '
-            #     f'window=[{self._cluster_window_config["min_x"]:.2f},{self._cluster_window_config["max_x"]:.2f}]×±{self._cluster_window_config["half_y"]:.2f}m')
-            
-            # 每次扫描都发布，无聚类时自动清理旧 marker
             self.obstacle_markers.frame_id = msg.header.frame_id
-            self.obstacle_markers.publish_from_clusters(
-                self.all_clusters or [], color='red'
+            self.obstacle_markers.publish_from_clusters(self.all_clusters, color='red')
+        except Exception as error:
+            self._log_session('CLUSTER_VIZ', f'ERROR: {error}')
+            self.get_logger().warn(
+                f'Obstacle visualization error: {error}',
+                throttle_duration_sec=5.0,
             )
-            # self._log_session('MARKER_VIZ',
-            #     f'markers={n_clusters} frame={msg.header.frame_id}')
-        except Exception as e:
-            self._log_session('CLUSTER_VIZ', f'ERROR: {e}')
-            self.get_logger().warn(f'Obstacle visualization error: {e}', throttle_duration_sec=5.0)
         finally:
             elapsed = time.monotonic() - callback_started_at
             self._last_scan_callback_elapsed_sec = elapsed
@@ -1894,272 +1640,246 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 self._log_session(
                     'SCAN_CALLBACK_SLOW',
                     f'elapsed={elapsed:.3f}s ranges={len(msg.ranges)} '
-                    f'clusters={len(getattr(self, "all_clusters", []) or [])}',
+                    f'clusters={len(self.all_clusters)}',
                 )
 
-    def _nearest_stage1_style_cluster(self, msg, min_x, max_x, min_y, max_y):
-        return self._scan_processor.nearest_filtered_cluster(
-            msg,
-            min_x=min_x,
-            max_x=max_x,
-            min_y=min_y,
-            max_y=max_y,
-            gap_tolerance=float(
-                self.get_parameter('stage2_straight_avoid_cluster_gap_m').value
-            ),
-            min_points=int(
-                self.get_parameter('stage2_straight_avoid_min_cluster_points').value
-            ),
-            min_width=float(
-                self.get_parameter('stage2_straight_avoid_min_cluster_width_m').value
-            ),
-            max_width=float(
-                self.get_parameter('stage2_straight_avoid_max_cluster_width_m').value
-            ),
-            min_valid_range=float(
-                self.get_parameter('stage2_straight_avoid_min_valid_range_m').value
-            ),
+    def _s1_clusters_in_window(self, scan_msg):
+        min_x = float(self.get_parameter('stage2_s1_avoid_window_min_x').value)
+        max_x = float(self.get_parameter('stage2_s1_avoid_window_max_x').value)
+        half_width = float(
+            self.get_parameter('stage2_s1_avoid_window_half_width_m').value
         )
-
-    def _cache_production_avoidance_obstacles(self, msg):
-        avoid_min_x = float(
-            self.get_parameter('stage2_straight_avoid_window_min_x').value
+        min_range = float(
+            self.get_parameter('stage2_s1_avoid_min_valid_range_m').value
         )
-        avoid_max_x = self._top_long_avoid_detection_max_x()
-        avoid_half_y = float(
-            self.get_parameter('stage2_straight_avoid_window_half_width_m').value
-        )
-        active_segment = getattr(self._track_controller, 'active_segment_name', None)
-        observation_allowed = (
-            active_segment == 'top_long'
-            and avoid_max_x > avoid_min_x
-            and not self._straight_avoider.is_active
-        )
-        straight_obstacle = self._nearest_stage1_style_cluster(
-            msg, avoid_min_x, avoid_max_x, -avoid_half_y, avoid_half_y
-        ) if observation_allowed else None
-        raw_straight_obstacle = self._straight_avoidance_start_obstacle(straight_obstacle)
-        self._straight_avoid_obstacle = self._straight_obstacle_gate.update(
-            raw_straight_obstacle, time.monotonic()
-        )
-        gate_state = self._straight_obstacle_gate.state
-        if gate_state != self._straight_avoid_gate_last_state:
-            self._straight_avoid_gate_last_state = gate_state
-            obstacle_text = 'none' if raw_straight_obstacle is None else (
-                f'x={raw_straight_obstacle["center_x"]:.2f} '
-                f'y={raw_straight_obstacle["center_y"]:.2f} '
-                f'lat_span={raw_straight_obstacle.get("lateral_span", 0.0):.2f}'
-            )
-            self._log_session(
-                'STRAIGHT_AVOID_GATE',
-                f'state={gate_state} hits={self._straight_obstacle_gate.hit_count}/'
-                f'{int(self.get_parameter("stage2_straight_avoid_confirm_frames").value)} '
-                f'candidate={obstacle_text}',
-            )
-        self._straight_avoid_corridor = self._straight_avoidance_corridor(msg, avoid_max_x)
-
-        front_max_x = float(self.get_parameter('stage2_turn_precheck_front_m').value)
-        side_max_y = float(self.get_parameter('stage2_turn_precheck_side_m').value)
-        side_min_x = float(
-            self.get_parameter('stage2_turn_precheck_side_min_x_m').value
-        )
-        side_min_y = float(
-            self.get_parameter('stage2_turn_precheck_side_min_y_m').value
-        )
-        self._turn_precheck_front_obstacle = self._nearest_stage1_style_cluster(
-            msg, avoid_min_x, front_max_x, -avoid_half_y, avoid_half_y
-        )
-        self._turn_precheck_left_obstacle = self._nearest_stage1_style_cluster(
-            msg, side_min_x, front_max_x, side_min_y, side_max_y
-        )
-        self._turn_precheck_right_obstacle = self._nearest_stage1_style_cluster(
-            msg, side_min_x, front_max_x, -side_max_y, -side_min_y
-        )
-
-    def _top_long_avoid_detection_max_x(self) -> float:
-        """Keep the known turn boundary out of the long-straight obstacle window."""
-        if self._track_controller.active_segment_name != 'top_long':
-            return 0.0
-        remaining = max(
-            0.0,
-            self._track_controller.active_segment_target_m
-            - self._track_controller.active_segment_progress_m,
-        )
-        turn_guard = max(0.0, float(self.get_parameter(
-            'stage2_top_long_avoid_turn_guard_m').value
-        ))
-        return min(
-            float(self.get_parameter('stage2_straight_avoid_trigger_m').value),
-            max(0.0, remaining - turn_guard),
-        )
-
-    def _straight_avoidance_corridor(self, msg, max_x):
-        """Return the inward left/right fence edges in the current scan frame."""
-        min_x = float(self.get_parameter('stage2_straight_avoid_corridor_min_x_m').value)
-        if max_x <= min_x:
-            return None
-        min_lateral = float(
-            self.get_parameter('stage2_straight_avoid_corridor_min_lateral_m').value
-        )
-        left_edges = []
-        right_edges = []
-        for index, distance in enumerate(msg.ranges):
-            if not math.isfinite(distance) or distance <= 0.0:
+        gap = float(self.get_parameter('stage2_s1_avoid_cluster_gap_m').value)
+        clusters = []
+        current = []
+        previous = None
+        for index, distance in enumerate(scan_msg.ranges):
+            if not math.isfinite(distance) or distance < min_range:
+                if current:
+                    clusters.append(current)
+                current = []
+                previous = None
                 continue
-            angle = msg.angle_min + index * msg.angle_increment
-            x = distance * math.cos(angle)
-            y = distance * math.sin(angle)
-            if x < min_x or x > max_x:
+            angle = scan_msg.angle_min + index * scan_msg.angle_increment
+            point = (distance * math.cos(angle), distance * math.sin(angle), distance)
+            if point[0] < min_x or point[0] > max_x or abs(point[1]) > half_width:
+                if current:
+                    clusters.append(current)
+                current = []
+                previous = None
                 continue
-            if y >= min_lateral:
-                left_edges.append(y)
-            elif y <= -min_lateral:
-                right_edges.append(y)
-        if not left_edges or not right_edges:
-            return None
-        return {'left': min(left_edges), 'right': max(right_edges)}
+            if previous is None or math.hypot(
+                    point[0] - previous[0], point[1] - previous[1]) <= gap:
+                current.append(point)
+            else:
+                if current:
+                    clusters.append(current)
+                current = [point]
+            previous = point
+        if current:
+            clusters.append(current)
+        return clusters
 
-    def _straight_avoidance_start_obstacle(self, obstacle):
-        """Reject side-edge returns before temporal confirmation and planning."""
-        if obstacle is None or self._straight_avoider.is_active:
-            return obstacle
-
-        front_limit_deg = float(
-            self.get_parameter('stage2_straight_avoid_front_angle_deg').value
+    def _s1_find_nearest_obstacle(self, clusters):
+        min_points = int(
+            self.get_parameter('stage2_s1_avoid_min_cluster_points').value
         )
-        obstacle_angle_deg = float(obstacle['danger_angle_deg'])
-        if abs(obstacle_angle_deg) > front_limit_deg:
-            return None
-
-        min_lateral_span = float(self.get_parameter(
-            'stage2_straight_avoid_min_lateral_span_m').value)
-        if float(obstacle.get('lateral_span', 0.0)) < min_lateral_span:
-            return None
-
-        return obstacle
-
-    def _straight_avoidance_plan(self):
-        """Choose a scan-feasible lateral offset without changing line speed."""
-        if self._straight_avoider.is_active:
-            return None
-        obstacle = self._straight_avoid_obstacle
-        corridor = self._straight_avoid_corridor
-        if obstacle is None or corridor is None:
-            return None
-
-        body_edge = float(self.get_parameter('stage2_straight_avoid_vehicle_half_width_m').value)
-        clearance = float(self.get_parameter('stage2_straight_avoid_clearance_m').value)
-        min_shift = float(self.get_parameter('stage2_straight_avoid_min_shift_m').value)
-        protected_half_width = 0.5 * float(obstacle['span']) + body_edge + clearance
-        left_target = max(min_shift, float(obstacle['center_y']) + protected_half_width)
-        right_target = min(-min_shift, float(obstacle['center_y']) - protected_half_width)
-        left_limit = float(corridor['left']) - body_edge - clearance
-        right_limit = float(corridor['right']) + body_edge + clearance
-        candidates = []
-        if left_target <= left_limit:
-            candidates.append(left_target)
-        if right_target >= right_limit:
-            candidates.append(right_target)
-        if not candidates:
-            self._straight_avoid_plan_reject_reason = 'no_corridor_gap'
-            return None
-
-        lateral_shift = min(candidates, key=abs)
-        plan = StraightAvoidanceController.plan_for_offset(
-            lateral_shift_m=lateral_shift,
-            obstacle_distance_m=float(obstacle['distance']),
-            linear_speed=float(self.get_parameter('track_max_speed').value),
-            angular_speed=float(
-                self.get_parameter('stage2_straight_avoid_angular_speed').value
-            ),
-            max_yaw_offset_rad=math.radians(float(
-                self.get_parameter('stage2_straight_avoid_yaw_offset_deg').value
-            )),
-            forward_margin_m=float(
-                self.get_parameter('stage2_straight_avoid_forward_margin_m').value
-            ),
+        min_width = float(
+            self.get_parameter('stage2_s1_avoid_min_cluster_width_m').value
         )
-        self._straight_avoid_plan_reject_reason = '' if plan else 'insufficient_forward_distance'
-        return plan
-
-    def _safety_stop_distance_m(self, linear_speed: float) -> float:
-        """Conservative distance required to react and stop from line speed."""
-        speed = max(0.0, float(linear_speed))
-        response = max(0.0, float(
-            self.get_parameter('stage2_safety_response_sec').value
-        ))
-        brake_decel = max(0.05, float(
-            self.get_parameter('stage2_safety_brake_decel_mps2').value
-        ))
-        margin = max(0.0, float(self.get_parameter('stage2_safety_margin_m').value))
-        return speed * response + speed * speed / (2.0 * brake_decel) + margin
-
-    def _safety_hold_reason_for_active_segment(self, active_segment: str) -> str:
-        """Return a recoverable hold reason before a collision becomes inevitable."""
-        obstacle = self._straight_avoid_obstacle
-        if active_segment != 'top_long' or obstacle is None:
-            return ''
-        line_speed = float(self.get_parameter('track_max_speed').value)
-        if float(obstacle['distance']) <= self._safety_stop_distance_m(line_speed):
-            return 'straight_brake_distance'
-        return ''
-
-    def _publish_safety_hold(self, now: float, reason: str) -> None:
-        """Stop without latching the track state; motion resumes after a clear scan."""
-        self._track_controller.hold_active_progress(self._track_distance_m)
-        self.cmd_pub.publish(self.create_twist())
-        self._log_control_timing(now, f'safety_hold:{reason}')
-        if reason != self._safety_hold_reason:
-            self._safety_hold_reason = reason
-            self._log_session(
-                'SAFETY_HOLD',
-                f'reason={reason} segment={self._track_controller.active_segment_name} '
-                f'obstacle={self._straight_avoid_obstacle} '
-                f'long_straight_guard={self._top_long_avoid_detection_max_x():.2f}m',
+        max_width = float(
+            self.get_parameter('stage2_s1_avoid_max_cluster_width_m').value
+        )
+        nearest = None
+        for cluster in clusters:
+            if len(cluster) < min_points:
+                continue
+            span = math.hypot(
+                cluster[-1][0] - cluster[0][0],
+                cluster[-1][1] - cluster[0][1],
             )
-        return
+            if span < min_width or span > max_width:
+                continue
+            center_x = sum(point[0] for point in cluster) / len(cluster)
+            center_y = sum(point[1] for point in cluster) / len(cluster)
+            obstacle = {
+                'distance': min(point[2] for point in cluster),
+                'span': span,
+                'point_count': len(cluster),
+                'danger_angle_deg': math.degrees(
+                    math.atan2(center_y, max(center_x, 1e-6))
+                ),
+            }
+            if nearest is None or obstacle['distance'] < nearest['distance']:
+                nearest = obstacle
+        return nearest
 
-    def _turn_precheck_active(self):
-        if not bool(self.get_parameter('stage2_turn_precheck_enabled').value):
-            return False
-        segment = self._track_controller.active_segment_name
-        if segment not in ('entry_medium', 'top_long'):
-            return False
-        target = self._track_controller.active_segment_target_m
-        if not math.isfinite(target):
-            return False
-        remaining = max(0.0, target - self._track_controller.active_segment_progress_m)
-        return remaining <= float(self.get_parameter('stage2_turn_precheck_lead_m').value)
+    def _reset_s1_avoidance(self):
+        self._s1_avoid_state = 'forward'
+        self._s1_avoid_turn_direction = 0.0
+        self._s1_avoid_started_at = None
+        self._s1_avoid_clear_since = None
+        self._s1_avoid_entry_yaw = None
+        self._s1_avoid_reference_yaw = None
+        self._s1_counter_until = None
+        self._s1_recovery_until = None
+        self._s1_last_duration = 0.0
 
-    def _log_turn_precheck(self):
-        if not self._turn_precheck_active():
-            self._turn_precheck_last_key = None
-            return
-        segment = self._track_controller.active_segment_name
-        side_name = 'right' if self.direction == 'clockwise' else 'left'
-        side_obstacle = (
-            self._turn_precheck_right_obstacle if side_name == 'right'
-            else self._turn_precheck_left_obstacle
+    def _begin_s1_avoidance(self, obstacle):
+        self._s1_avoid_state = 'avoiding'
+        self._s1_avoid_turn_direction = (
+            -1.0 if obstacle['danger_angle_deg'] > 0.0 else 1.0
         )
-        front = self._turn_precheck_front_obstacle
-        key = (segment, bool(front), bool(side_obstacle))
-        if key == self._turn_precheck_last_key:
-            return
-        self._turn_precheck_last_key = key
-        front_limit = float(self.get_parameter('stage2_turn_precheck_front_m').value)
-        side_limit = float(self.get_parameter('stage2_turn_precheck_side_m').value)
-        front_text = 'none' if front is None else f'{front["distance"]:.2f}m'
-        side_text = 'none' if side_obstacle is None else f'{side_obstacle["distance"]:.2f}m'
+        self._s1_avoid_started_at = time.monotonic()
+        self._s1_avoid_clear_since = None
+        self._s1_avoid_entry_yaw = self.current_yaw
+        self._s1_avoid_reference_yaw = self._track_controller.active_segment_heading
+        self._s1_counter_until = None
+        self._s1_recovery_until = None
+        turn_name = 'LEFT' if self._s1_avoid_turn_direction > 0.0 else 'RIGHT'
         self._log_session(
-            'TURN_PRECHECK',
-            f'segment={segment} direction={self.direction} inside={side_name} '
-            f'front_{front_limit:.2f}m={front_text} side_{side_limit:.2f}m={side_text} '
-            f'action=diagnostic_only',
+            'S1_AVOID_START',
+            f'turn={turn_name} distance={obstacle["distance"]:.2f}m '
+            f'angle={obstacle["danger_angle_deg"]:.1f}deg span={obstacle["span"]:.2f}m '
+            f'points={obstacle["point_count"]}',
         )
-        self.get_logger().info(
-            f'[TURN_PRECHECK] {segment} inside={side_name} '
-            f'front={front_text} side={side_text} diagnostic_only'
+
+    def _begin_s1_countersteer(self, now):
+        duration = max(
+            float(self.get_parameter('stage2_s1_counter_min_duration_sec').value),
+            self._s1_last_duration * float(
+                self.get_parameter('stage2_s1_counter_duration_scale').value
+            ),
         )
+        duration = min(
+            duration,
+            float(self.get_parameter('stage2_s1_counter_max_duration_sec').value),
+        )
+        self._s1_avoid_state = 'countersteering'
+        self._s1_counter_until = now + duration
+        self._s1_avoid_clear_since = None
+        self._log_session('S1_AVOID_COUNTERSTEER', f'duration={duration:.2f}s')
+
+    def _begin_s1_recovery(self, now):
+        self._s1_avoid_state = 'recovering'
+        reference = self._s1_avoid_reference_yaw
+        if reference is None or self.current_yaw is None:
+            duration = self._s1_last_duration
+        else:
+            error = abs(self.angle_error(reference, self.current_yaw))
+            max_angular = float(
+                self.get_parameter('stage2_s1_recovery_max_angular_speed_rps').value
+            )
+            duration = max(0.6, error / max(max_angular, 0.1) * 1.6)
+        duration = min(
+            duration,
+            float(self.get_parameter('stage2_s1_recovery_timeout_sec').value),
+        )
+        self._s1_recovery_until = now + duration
+        self._log_session('S1_AVOID_RECOVERY', f'timeout={duration:.2f}s')
+
+    def _s1_avoid_command(self, active_segment):
+        if active_segment != 'top_long':
+            if self._s1_avoid_state != 'forward':
+                self._log_session('S1_AVOID_CANCEL', f'segment={active_segment}')
+                self._reset_s1_avoidance()
+            return None
+        if not bool(self.get_parameter('stage2_s1_avoid_enabled').value):
+            self._reset_s1_avoidance()
+            return None
+
+        now = time.monotonic()
+        obstacle = self._s1_avoid_obstacle
+        if self._s1_avoid_state == 'forward':
+            if obstacle is None:
+                return None
+            self._begin_s1_avoidance(obstacle)
+
+        if self._s1_avoid_state == 'avoiding':
+            if obstacle is None:
+                if self._s1_avoid_clear_since is None:
+                    self._s1_avoid_clear_since = now
+            else:
+                self._s1_avoid_clear_since = None
+            elapsed = now - self._s1_avoid_started_at
+            self._s1_last_duration = elapsed
+            turned = (
+                self.current_yaw is None
+                or self._s1_avoid_entry_yaw is None
+                or abs(self.angle_error(self.current_yaw, self._s1_avoid_entry_yaw))
+                >= math.radians(float(
+                    self.get_parameter('stage2_s1_avoid_min_turn_deg').value
+                ))
+            )
+            clear_elapsed = (
+                0.0 if self._s1_avoid_clear_since is None
+                else now - self._s1_avoid_clear_since
+            )
+            if (
+                elapsed >= float(
+                    self.get_parameter('stage2_s1_avoid_min_duration_sec').value
+                )
+                and clear_elapsed >= float(
+                    self.get_parameter('stage2_s1_avoid_clear_hold_sec').value
+                )
+                and turned
+            ):
+                self._begin_s1_countersteer(now)
+            else:
+                return self.create_twist(
+                    float(self.get_parameter('stage2_s1_avoid_linear_speed_mps').value),
+                    self._s1_avoid_turn_direction * float(
+                        self.get_parameter('stage2_s1_avoid_angular_speed_rps').value
+                    ),
+                )
+
+        if self._s1_avoid_state == 'countersteering':
+            if now < self._s1_counter_until:
+                return self.create_twist(
+                    float(self.get_parameter('stage2_s1_counter_linear_speed_mps').value),
+                    -self._s1_avoid_turn_direction * float(
+                        self.get_parameter('stage2_s1_counter_angular_speed_rps').value
+                    ),
+                )
+            self._begin_s1_recovery(now)
+
+        if self._s1_avoid_state == 'recovering':
+            reference = self._s1_avoid_reference_yaw
+            if reference is None or self.current_yaw is None:
+                complete = now >= self._s1_recovery_until
+                error = 0.0
+            else:
+                error = self.angle_error(reference, self.current_yaw)
+                complete = (
+                    abs(error) <= math.radians(float(self.get_parameter(
+                        'stage2_s1_recovery_heading_tolerance_deg').value))
+                    or now >= self._s1_recovery_until
+                )
+            if complete:
+                self._log_session('S1_AVOID_DONE', 'rejoined IMU line heading')
+                self._reset_s1_avoidance()
+                return None
+            angular = self.clamp(
+                float(self.get_parameter('stage2_s1_recovery_heading_kp').value) * error,
+                float(self.get_parameter(
+                    'stage2_s1_recovery_max_angular_speed_rps').value),
+            )
+            min_angular = float(self.get_parameter(
+                'stage2_s1_recovery_min_angular_speed_rps').value)
+            if abs(angular) < min_angular:
+                angular = math.copysign(min_angular, error)
+            linear = float(self.get_parameter(
+                'stage2_s1_recovery_turn_linear_speed_mps').value)
+            if abs(error) <= math.radians(float(self.get_parameter(
+                    'stage2_s1_recovery_turn_threshold_deg').value)):
+                linear = float(self.get_parameter(
+                    'stage2_s1_recovery_linear_speed_mps').value)
+            return self.create_twist(linear, angular)
+
+        return None
 
     def _compute_move_lateral_angular(self) -> float:
         """计算直行段横向角速度（覆盖父类，使用视觉优先逻辑）"""
@@ -2224,18 +1944,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                     vis_rem, free_ratio, finish_reason = None, 0.0, 'odom_only'
 
                 if should_finish:
-                    # 避障进行中 → 延迟切段，等避障完成
-                    if self._avoider.is_active:
-                        nav = NavState(
-                            position=self.current_position,
-                            yaw=self.navigation_yaw(),
-                            segment_heading=self.segment_heading,
-                            segment_start_pose=self.segment_start_pose,
-                            current_segment=self.current_segment,
-                            projected_distance=self.projected_distance(),
-                        )
-                        self._avoider.step(nav)
-                        return
                     if self.last_progress_bucket < 4:
                         self.last_progress_bucket = 4
                         self.publish_feedback(
@@ -2268,54 +1976,10 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                     self.start_segment(self.plan_index + 1)
                     return
 
-        # ── 接近拐角检测：段末尾切换转弯障碍检测 ──
-        if self.current_position is not None and self.segment_heading is not None and self.current_segment is not None:
-            nominal_target = max(1e-6, float(self.current_segment.get('distance_m', 0.0)))
-            progress = self.projected_distance()
-            if hasattr(self, '_vision_adjusted_move_target'):
-                target_distance, _, _, _, _ = self._vision_adjusted_move_target(
-                    nominal_target, progress
-                )
-            else:
-                target_distance = nominal_target
-            remaining = target_distance - progress
-            corner_approach = float(self.get_parameter('corner_approach_m').value)
-            if remaining <= corner_approach:
-                # 接近拐角：用 turn_obstacle_stop_m，避免雷达扫边误触发
-                if math.isfinite(self.front_obstacle_distance) and self.front_obstacle_distance < float(self.get_parameter('turn_obstacle_stop_m').value):
-                    angular = self._compute_move_lateral_angular()
-                    self.cmd_pub.publish(self.create_twist(float(self.get_parameter('turn_obstacle_creep_speed').value), angular))
-                    self._maybe_log_telemetry('corner_approach')
-                    return
-                # 前方空间够，不进避障，正常完成段
-            else:
-                # 正常避障：每帧 step 以支持触发；仅 active→idle 记一次完成
-                was_avoiding = bool(self._avoider.is_active)
-                nav = NavState(
-                    position=self.current_position,
-                    yaw=self.navigation_yaw(),
-                    segment_heading=self.segment_heading,
-                    segment_start_pose=self.segment_start_pose,
-                    current_segment=self.current_segment,
-                    projected_distance=self.projected_distance(),
-                )
-                if self._avoider.step(nav):
-                    return
-                if was_avoiding and not self._avoider.is_active:
-                    self._pure_linear_after_avoid = True
-                    self._log_session(
-                        'AVOID',
-                        f'避障完成，恢复段控制 | {self._pose_diagnostic()}'
-                    )
-
         if self.current_position is None or self.segment_heading is None:
             self.cmd_pub.publish(self.create_twist())
             self._maybe_log_telemetry('move_no_pose')
             return
-
-        # 避障完成后继续混合纠偏（IMU 主 + 视觉辅），不再锁死纯直线
-        if self._pure_linear_after_avoid:
-            self._pure_linear_after_avoid = False
 
         angular = self._compute_move_lateral_angular()
         linear = float(self.current_segment.get('speed', self.corridor_linear_speed))
@@ -2426,12 +2090,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             (self.current_segment or {}).get('turn_linear_speed', self.turn_linear_speed)
         )
 
-        # 转角障碍检测：前方过近 → 蠕行转弯
-        # 用 turn_obstacle_stop_m(0.25m) 替代 detour_obstacle_distance(0.48m)
-        # 避免雷达扫到赛道边角误触发，同时防止电机停转
-        if math.isfinite(self.front_obstacle_distance) and self.front_obstacle_distance < float(self.get_parameter('turn_obstacle_stop_m').value):
-            linear_speed = float(self.get_parameter('turn_obstacle_creep_speed').value)
-
         nav_yaw = self.navigation_yaw()
         if nav_yaw is None or self.segment_target_yaw is None:
             self.cmd_pub.publish(self.create_twist())
@@ -2538,8 +2196,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 
         now_sec = self.get_clock().now().nanoseconds / 1e9
         if (
-            not self._avoider.is_active
-            and self.segment_started_at is not None
+            self.segment_started_at is not None
             and now_sec - self.segment_started_at > self.segment_timeout
         ):
             desc = self.current_segment.get('description', 'unknown')
@@ -2550,7 +2207,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self.publish_feedback(
                 f'{self.test_feedback_prefix}段超时: {desc}'
             )
-            self._avoider.reset()
+            self._reset_s1_avoidance()
             self.start_segment(self.plan_index + 1)
             return
 

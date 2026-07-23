@@ -3,10 +3,11 @@
 
 vision_models:
   ark:
-    enabled: false
+    enabled: true
     provider: ark
     base_url: "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
     api_key: ""
+    api_key_env: "ark-api-key"
     model_id: "doubao-seed-2-0-mini-260428"
     thinking_enabled: false
     prompt: "仅简要描述画面中展示牌上的图案和关键信息，忽略背景、赛道和其他物体，只需要描述在做什么。用20-30个汉字输出适合语音播报的中文短句"
@@ -14,10 +15,11 @@ vision_models:
     max_tokens: 48
 
   qwen:
-    enabled: false
+    enabled: true
     provider: dashscope
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     api_key: ""
+    api_key_env: "qwen-api-key"
     model_id: "qwen3.7-plus"
     thinking_enabled: false
     prompt: "仅简要描述画面中展示牌上的图案和关键信息，忽略背景、赛道和其他物体，只需要描述在做什么。用20-30个汉字输出适合语音播报的中文短句"
@@ -44,6 +46,17 @@ vision_models:
     threads: 4
     context_size: 2048
     warmup_timeout_sec: 25
+    # 节点启动即加载模型；二维码任务到达时再做一次小图视觉预填充，
+    # 避免在展示牌抓拍时才首次加载模型或视觉编码器。
+    server_prewarm_on_startup: true
+    image_warmup_on_task: true
+    image_warmup_enabled: true
+    image_warmup_max_edge_px: 96
+    image_warmup_frame_wait_sec: 8.0
+    # Cortex-A55 的首次视觉 prefill 约需 20 秒，必须等它真正完成；
+    # 否则服务端仍在处理该请求，正式抓拍反而会被排队。
+    image_warmup_request_timeout_sec: 45.0
+    image_warmup_max_tokens: 1
     log_path: "/home/sunrise/dev_ws/log/local-smolvlm.log"
 
 response:
@@ -52,6 +65,8 @@ response:
 image:
   jpeg_quality: 85
   max_edge_px: 448
+  # 只裁掉画面顶部的小部分，完整保留左右和下方赛道/展示牌区域。
+  crop_top_ratio: 0.10
 
 capture:
   save_path: "/home/sunrise/dev_ws/log/competition_stage2/ai_capture.jpg"

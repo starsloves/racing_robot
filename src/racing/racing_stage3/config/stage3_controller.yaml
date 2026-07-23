@@ -150,7 +150,7 @@ stage3_return_navigator:
     # P 检测结果的最大有效年龄 (s)
     p_detection_timeout_sec: 0.35
 
-    # P 框内 Aurora 对齐深度。有效 P 帧深度小于终停阈值时立即完成。
+    # P 框内 Aurora 对齐深度。进入阈值后切换为低速最终里程段。
     # Aurora /aurora/depth/image_raw 为 16UC1 毫米值，故比例为 0.001 m/unit。
     p_depth_logging_enabled: true
     p_depth_topic: /aurora/depth/image_raw
@@ -160,13 +160,20 @@ stage3_return_navigator:
     p_depth_max_m: 4.00
     # 仅取 P bbox 中心区域，降低边缘背景、空洞和 P 边框的影响。
     p_depth_roi_fraction: 0.50
-    # 关闭 terminal_corner_enabled 时，P 框内有效深度中位数 < 此值将终停；
-    # 墙角终端模式开启时该值仅作日志，终停由墙角校正后的 P 坐标决定。
+    # P 框内有效深度中位数不大于此值时，锁定当时 IMU 航向并开始
+    # 最终低速里程段；不要求 P 在该段内持续可见。
     p_depth_stop_distance_m: 0.50
+    p_approach_slow_linear_speed: 0.12
+    p_final_odom_travel_m: 0.50
+    # 最终段按当前下发速度预留制动距离：v*响应时间 + v^2/(2*减速度) + 余量。
+    # 进入制动窗立即发零速，完成允许落在该受控窗内，避免指令滞后越过 P 点。
+    p_final_brake_response_sec: 0.12
+    p_final_brake_decel_mps2: 0.80
+    p_final_brake_margin_m: 0.015
+    p_final_completion_tolerance_m: 0.040
 
-    # 旧版 P 视觉接管的深度禁避障阈值。生产终端改由墙角锚点提交，
-    # 深度仅记录，必须保持 0，不能再决定避障权限。
-    p_approach_disable_avoidance_distance_m: 0.0
+    # 进入最终里程段时取消普通和紧急雷达避障，避免 P/终点墙抢占控制。
+    p_approach_disable_avoidance_distance_m: 0.50
 
     # P 偏移滤波用于视觉航向重捕获，而不是逐帧直接打舵。
     p_approach_offset_filter_alpha: 0.55
@@ -180,8 +187,7 @@ stage3_return_navigator:
     p_heading_reacquire_offset: 0.18
     p_heading_reacquire_interval_sec: 0.60
 
-    # 保留旧版视觉直线接近参数以兼容调试；生产状态机不再由 P 控制航向，
-    # P 丢失也不会倒车或回到地图搜索。
+    # P 丢失时短暂倒退并恢复到地图搜索点，重获 P 后再次由视觉接管。
     p_loss_reverse_speed: 0.10
     p_loss_reverse_duration_sec: 2.00
     p_loss_reverse_max_angular: 0.35
@@ -191,11 +197,11 @@ stage3_return_navigator:
     p_loss_heading_kp: 1.2
 
     # ────────────────────────────────────────────────────────────────────────
-    # P 墙角终端校正：在可靠采集区锁定，最终视觉/雷达丢失是预期行为。
+    # 保留墙角终端校正参数供离线调试；生产控制不使用墙角作为完成前置条件。
     # ────────────────────────────────────────────────────────────────────────
     # 赛场固定墙角为 map 原点；P 的车体原点终点为 (0.25, 0.10)。
     # 现场坐标若实测不同，仅调整这四个坐标，不能改用里程计角度。
-    terminal_corner_enabled: true
+    terminal_corner_enabled: false
     terminal_corner_map_x: 0.00
     terminal_corner_map_y: 0.00
     terminal_target_map_x: 0.25

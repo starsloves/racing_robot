@@ -225,6 +225,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_reacquire_reverse_speed', -0.12)
         self.declare_parameter('corridor_reacquire_max_reentry_heading_deg', 45.0)
         self.declare_parameter('corridor_reacquire_terminal_margin_m', 0.20)
+        self.declare_parameter('corridor_reacquire_y_rise_guard_m', 0.04)
         self.declare_parameter('corridor_terminal_entry_x_tolerance_m', 0.12)
         self.declare_parameter('corridor_entry_yaw_tolerance_deg', 30.0)
         self.declare_parameter('corridor_require_yaw_for_release', False)
@@ -276,7 +277,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         # Keep it only as a steering reference for this bounded interval;
         # release/commit still require a fresh lock or a qualified latch.
         self.declare_parameter('corridor_terminal_wall_control_hold_sec', 0.75)
-        self.declare_parameter('corridor_terminal_wall_latch_max_age_sec', 4.0)
         self.declare_parameter('corridor_terminal_wall_center_offset_m', 0.0)
         self.declare_parameter('corridor_terminal_wall_release_center_tolerance_m', 0.035)
         self.declare_parameter('corridor_terminal_wall_release_heading_deg', 2.5)
@@ -647,6 +647,10 @@ class CompetitionController(Stage1VisionMixin, Node):
             0.0,
             float(self.get_parameter('corridor_reacquire_terminal_margin_m').value),
         )
+        self.corridor_reacquire_y_rise_guard = max(
+            0.0,
+            float(self.get_parameter('corridor_reacquire_y_rise_guard_m').value),
+        )
         self.corridor_entry_yaw_tolerance = math.radians(
             float(self.get_parameter('corridor_entry_yaw_tolerance_deg').value)
         )
@@ -799,10 +803,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_terminal_wall_control_hold = max(
             self.corridor_terminal_wall_max_age,
             float(self.get_parameter('corridor_terminal_wall_control_hold_sec').value),
-        )
-        self.corridor_terminal_wall_latch_max_age = max(
-            self.corridor_terminal_wall_max_age,
-            float(self.get_parameter('corridor_terminal_wall_latch_max_age_sec').value),
         )
         self.corridor_terminal_wall_center_offset = float(
             self.get_parameter('corridor_terminal_wall_center_offset_m').value
@@ -1051,6 +1051,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_reacquire_active = False
         self.corridor_reacquire_target_y = None
         self.corridor_reacquire_rejoin_y = None
+        self.corridor_reacquire_start_y = None
         self.corridor_capture_active = False
         self.corridor_align_active = False
         self._node_start_time = self.get_clock().now()
@@ -1455,6 +1456,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_reacquire_active = False
         self.corridor_reacquire_target_y = None
         self.corridor_reacquire_rejoin_y = None
+        self.corridor_reacquire_start_y = None
         self.corridor_capture_active = False
         self.corridor_align_active = False
         self.corridor_entry_reorient_active = False
@@ -1815,6 +1817,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_reacquire_active = True
         self.corridor_reacquire_target_y = staging_y
         self.corridor_reacquire_rejoin_y = rejoin_y
+        self.corridor_reacquire_start_y = float(pose_xy[1])
         self.corridor_terminal_active = False
         self.corridor_terminal_reverse_align_active = False
         self.corridor_terminal_offset_handoff_active = False
@@ -2236,10 +2239,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         return lock
 
     def _terminal_wall_latch_fresh(self, now_ts):
-        latch = self._terminal_wall_geometry_latch
-        if latch is None or now_ts - latch['stamp'] > self.corridor_terminal_wall_latch_max_age:
-            return None
-        return latch
+        """Return this attempt's fixed qualified dual-wall geometry."""
+        return self._terminal_wall_geometry_latch
 
     def _fit_terminal_wall_line(self, points):
         """Fit one continuous wall cluster as y=m*x+b."""
@@ -2535,6 +2536,9 @@ class CompetitionController(Stage1VisionMixin, Node):
         if (
             abs(raw_center_error) <= self.corridor_terminal_wall_release_center_tolerance
             and wall_axis_error <= self.corridor_terminal_wall_axis_tolerance
+            # Entering terminal freezes the last qualified dual-wall geometry.
+            # Subsequent scan variation must not replace the handoff reference.
+            and not self.corridor_terminal_active
         ):
             self._terminal_wall_geometry_latch = {
                 'stamp': now_ts,
@@ -2566,17 +2570,16 @@ class CompetitionController(Stage1VisionMixin, Node):
                 and single_wall is not None
                 and now_ts - single_wall['stamp'] <= self.corridor_terminal_wall_max_age
             ):
-                # One wall determines only its tangent.  Its absolute range
-                # is not a centerline measurement and must never pull the
-                # vehicle toward a guessed field-center distance.
-                relative_target_error = single_wall['heading_error']
-                desired_yaw = self.normalize_angle(yaw + relative_target_error)
+                # A wall can establish only detection quality. Absolute
+                # travel heading stays on the fixed IMU corridor axis.
+                desired_yaw = self.corridor_goal_yaw
+                heading_error = self.angle_error(desired_yaw, yaw)
                 angular = self.clamp(
-                    self.corridor_wall_follow_heading_kp * relative_target_error,
+                    self.corridor_wall_follow_heading_kp * heading_error,
                     self.corridor_wall_follow_max_angular_speed,
                 )
                 angular = self._limit_terminal_angular_command(angular, now_ts)
-                self.corridor_nav_mode = 'corridor_single_wall_follow'
+                self.corridor_nav_mode = 'corridor_single_wall_heading_hold'
                 self.corridor_desired_heading = desired_yaw
                 self.cmd_pub.publish(self.create_twist(
                     self.corridor_wall_follow_single_wall_speed, angular
@@ -2639,14 +2642,27 @@ class CompetitionController(Stage1VisionMixin, Node):
                 )
             return self.corridor_wall_follow_require_lock
 
-        relative_target_error = wall_lock['heading_error'] + math.atan(
-            self.corridor_wall_follow_lateral_gain * wall_lock['center_error']
+        terminal_prealign_active = (
+            self.corridor_on_final_waypoint()
+            and self.corridor_terminal_enabled
+            and pose_xy[1] >= (
+                self.corridor_release_min_y - self.corridor_terminal_prealign_y_margin
+            )
         )
-        desired_yaw = self.normalize_angle(yaw + relative_target_error)
-        angular = self.clamp(
-            self.corridor_wall_follow_heading_kp * relative_target_error,
-            self.corridor_wall_follow_max_angular_speed,
-        )
+        # Wall fitting qualifies the corridor and may lower speed for a large
+        # center error. It never changes the fixed IMU travel heading.
+        desired_yaw = self.corridor_goal_yaw
+        heading_error = self.angle_error(desired_yaw, yaw)
+        if terminal_prealign_active:
+            angular = self.clamp(
+                self.corridor_terminal_prealign_heading_kp * heading_error,
+                self.corridor_terminal_prealign_max_angular_speed,
+            )
+        else:
+            angular = self.clamp(
+                self.corridor_wall_follow_heading_kp * heading_error,
+                self.corridor_wall_follow_max_angular_speed,
+            )
         angular = self._limit_terminal_angular_command(angular, now_ts)
         center_abs = abs(wall_lock['center_error'])
         linear = (
@@ -2654,7 +2670,11 @@ class CompetitionController(Stage1VisionMixin, Node):
             if center_abs > self.corridor_wall_follow_slow_center_error
             else self.corridor_wall_follow_linear_speed
         )
-        self.corridor_nav_mode = 'corridor_wall_follow'
+        if terminal_prealign_active:
+            linear = min(linear, self.corridor_terminal_linear_speed)
+            self.corridor_nav_mode = 'corridor_wall_prealign'
+        else:
+            self.corridor_nav_mode = 'corridor_wall_follow'
         self.corridor_desired_heading = desired_yaw
         self.cmd_pub.publish(self.create_twist(linear, angular))
 
@@ -2666,6 +2686,8 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f'parallel={math.degrees(wall_lock["heading_error"]):.1f}deg '
                 f'width={wall_lock["width"]:.2f}m '
                 f'cluster_span=L{wall_lock["left_span"]:.2f}/R{wall_lock["right_span"]:.2f}m '
+                f'prealign={terminal_prealign_active} '
+                f'desired={math.degrees(desired_yaw):.1f}deg '
                 f'v={linear:.2f} w={angular:.2f}'
             )
         return True
@@ -2674,17 +2696,11 @@ class CompetitionController(Stage1VisionMixin, Node):
         rho = math.hypot(goal_xy[0] - pose_xy[0], goal_xy[1] - pose_xy[1])
         yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
         radius_ok = rho <= self.corridor_entry_region_radius
-        # Before terminal commit, an upper Y bound prevents a failed approach
-        # from handing over beyond the entry.  Once a qualified wall-center
-        # latch has committed the final straight segment, map-Y drift must not
-        # force a full reverse/retry cycle.
+        # The handoff window is a hard physical boundary.  A qualified wall
+        # latch validates centering but never authorizes a high-Y handoff.
         y_gate_ok = (
             self.corridor_release_min_y <= pose_xy[1]
-            and (
-                pose_xy[1] <= self.corridor_release_max_y
-                or self.corridor_terminal_commit_active
-                or self.corridor_terminal_offset_handoff_active
-            )
+            and pose_xy[1] <= self.corridor_release_max_y
         )
         x_error = goal_xy[0] - pose_xy[0]
         x_ok = abs(x_error) <= self.corridor_terminal_x_tolerance
@@ -2703,6 +2719,14 @@ class CompetitionController(Stage1VisionMixin, Node):
         if self.corridor_terminal_offset_handoff_active:
             pass
         elif use_commit_latch:
+            wall_ok = (
+                abs(wall_latch['center_error'])
+                <= self.corridor_terminal_wall_release_center_tolerance
+                and wall_latch['axis_error'] <= self.corridor_terminal_wall_axis_tolerance
+            )
+        elif wall_latch is not None:
+            # Terminal entry freezes this qualified two-wall geometry.  Fresh
+            # scan fits are diagnostics only and cannot move the handoff gate.
             wall_ok = (
                 abs(wall_latch['center_error'])
                 <= self.corridor_terminal_wall_release_center_tolerance
@@ -2868,7 +2892,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         if (
             final_waypoint
             and pose_xy[1] > self.corridor_release_max_y
-            and not self.corridor_terminal_commit_active
         ):
             if not self.corridor_reacquire_active:
                 self._start_corridor_reacquire(
@@ -2880,6 +2903,36 @@ class CompetitionController(Stage1VisionMixin, Node):
             staging_y = self.corridor_reacquire_target_y
             if staging_y is None:
                 staging_y = self.corridor_reacquire_y
+            start_y = (
+                self.corridor_reacquire_start_y
+                if self.corridor_reacquire_start_y is not None
+                else pose_xy[1]
+            )
+            if pose_xy[1] > start_y + self.corridor_reacquire_y_rise_guard:
+                # A tight reverse turn was increasing Y and drawing a loop.
+                # Keep retreating, but cap curvature to the proven wall-return
+                # value so the vehicle can recover its IMU exit heading without
+                # abandoning the race at the overrun point.
+                reverse_yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
+                angular = self.clamp(
+                    self.terminal_reverse_align_heading_kp * reverse_yaw_error,
+                    self.corridor_reverse_avoid_angular_speed,
+                )
+                self.corridor_nav_mode = 'handoff_y_reacquire_stabilize'
+                self.corridor_desired_heading = self.corridor_goal_yaw
+                self.cmd_pub.publish(self.create_twist(
+                    self.corridor_reverse_avoid_linear_speed, angular
+                ))
+                if now_ts - self._corridor_last_log_time >= self.corridor_log_period_sec:
+                    self._corridor_last_log_time = now_ts
+                    self.log.warn(
+                        'CORRIDOR',
+                        f'handoff_y_reacquire_stabilize map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                        f'start_y={start_y:.2f} rise_guard={self.corridor_reacquire_y_rise_guard:.2f}m '
+                        f'yaw={math.degrees(yaw):.1f}deg '
+                        f'v={self.corridor_reverse_avoid_linear_speed:.2f} w={angular:.2f}'
+                    )
+                return
             if pose_xy[1] <= staging_y:
                 self.corridor_reacquire_active = False
                 self.corridor_nav_mode = 'path_follow'
@@ -2896,6 +2949,7 @@ class CompetitionController(Stage1VisionMixin, Node):
                 )
                 self.corridor_reacquire_target_y = None
                 self.corridor_reacquire_rejoin_y = None
+                self.corridor_reacquire_start_y = None
                 return
 
             reverse_yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
@@ -2924,10 +2978,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         x_error = goal_xy[0] - pose_xy[0]
         yaw_to_goal_error = self.angle_error(self.corridor_goal_yaw, yaw)
         wall_capture_lock = self._terminal_wall_lock_fresh(now_ts)
+        wall_capture_latch = self._terminal_wall_latch_fresh(now_ts)
+        wall_capture_geometry = wall_capture_lock or wall_capture_latch
         wall_capture_ok = (
             self.corridor_wall_follow_enabled
-            and wall_capture_lock is not None
-            and abs(wall_capture_lock['center_error'])
+            and wall_capture_geometry is not None
+            and abs(wall_capture_geometry['center_error'])
             <= self.corridor_terminal_capture_max_center_error
         )
         terminal_geometry_ready = (
@@ -2947,11 +3003,20 @@ class CompetitionController(Stage1VisionMixin, Node):
                 or wall_capture_ok
             )
         )
-        terminal_entry_ok = (
-            terminal_geometry_ready
-            and abs(yaw_to_goal_error) <= self.corridor_terminal_yaw_tolerance
-        )
+        # Capture while there is distance left to remove IMU yaw error. Waiting
+        # for the entry tolerance here leaves wall following in charge until
+        # the release window is already exhausted.
+        terminal_entry_ok = terminal_geometry_ready
         if terminal_entry_ok and not self.corridor_terminal_active:
+            if self._terminal_wall_geometry_latch is None and wall_capture_lock is not None:
+                self._terminal_wall_geometry_latch = {
+                    'stamp': now_ts,
+                    'center_error': wall_capture_lock['center_error'],
+                    'axis_error': self._terminal_wall_heading_axis_error(
+                        wall_capture_lock['heading_error'], yaw
+                    ),
+                    'width': wall_capture_lock['width'],
+                }
             self.corridor_terminal_active = True
             self.corridor_terminal_reverse_align_active = False
             self.corridor_nav_mode = 'terminal_approach'
@@ -2961,20 +3026,6 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f'yaw_err={math.degrees(yaw_to_goal_error):.1f}deg '
                 f'release_y={self.corridor_release_min_y:.2f}'
             )
-        elif (
-            terminal_geometry_ready
-            and pose_xy[1] >= self.corridor_release_min_y
-            and not self.corridor_terminal_active
-        ):
-            if not self.corridor_terminal_reverse_align_active:
-                self.corridor_terminal_reverse_align_active = True
-                self.corridor_nav_mode = 'terminal_reverse_align'
-                self.log.mission(
-                    f'terminal reverse align enter map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                    f'xerr={x_error:.3f}m yaw={math.degrees(yaw):.1f}deg '
-                    f'err={math.degrees(yaw_to_goal_error):.1f}deg '
-                    f'target={math.degrees(self.corridor_goal_yaw):.1f}deg'
-                )
         elif (
             self.corridor_terminal_active
             and pose_xy[1] < self.corridor_release_min_y
@@ -3017,6 +3068,30 @@ class CompetitionController(Stage1VisionMixin, Node):
             )
             self.log.mission(reason)
             self.begin_phase_transition(2, reason)
+            return
+
+        if self._terminal_release_ready_since is not None:
+            # Do not consume the remaining Y window while validating the
+            # release.  Ackermann steering can keep the IMU heading settled
+            # with zero linear command during this bounded hold.
+            hold_elapsed = now_ts - self._terminal_release_ready_since
+            heading_error = self.angle_error(self.corridor_goal_yaw, yaw)
+            angular = self.clamp(
+                self.corridor_terminal_heading_kp * heading_error,
+                self.corridor_terminal_max_angular_speed,
+            )
+            angular = self._limit_terminal_angular_command(angular, now_ts)
+            self.corridor_nav_mode = 'terminal_release_hold'
+            self.corridor_desired_heading = self.corridor_goal_yaw
+            self.cmd_pub.publish(self.create_twist(0.0, angular))
+            if now_ts - self._corridor_last_log_time >= self.corridor_log_period_sec:
+                self._corridor_last_log_time = now_ts
+                self.log.segment(
+                    f'terminal_release_hold map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                    f'hold={hold_elapsed:.2f}/{self.corridor_terminal_release_hold_sec:.2f}s '
+                    f'yaw={math.degrees(yaw):.1f}deg '
+                    f'err={math.degrees(heading_error):.1f}deg v=0.00 w={angular:.2f}'
+                )
             return
 
         # After backing, side-wall geometry owns all normal corridor steering.
@@ -3109,19 +3184,17 @@ class CompetitionController(Stage1VisionMixin, Node):
 
         if self.corridor_terminal_active:
             wall_lock = self._terminal_wall_lock_fresh(now_ts)
-            wall_control_lock = self._terminal_wall_lock_for_control(now_ts)
             wall_latch = self._terminal_wall_latch_fresh(now_ts)
-            wall_available = wall_lock is not None or wall_latch is not None
-            wall_control_available = wall_control_lock is not None or wall_latch is not None
+            wall_reference = wall_latch if wall_latch is not None else wall_lock
+            wall_available = wall_reference is not None
             wall_center_error = (
-                wall_control_lock['center_error'] if wall_control_lock is not None
-                else wall_latch['center_error'] if wall_latch is not None
+                wall_reference['center_error'] if wall_reference is not None
                 else 0.0
             )
             wall_axis_error = (
-                self._terminal_wall_heading_axis_error(wall_lock['heading_error'], yaw)
+                wall_latch['axis_error'] if wall_latch is not None
+                else self._terminal_wall_heading_axis_error(wall_lock['heading_error'], yaw)
                 if wall_lock is not None
-                else wall_latch['axis_error'] if wall_latch is not None
                 else float('inf')
             )
             if self.corridor_terminal_offset_handoff_active:
@@ -3151,19 +3224,13 @@ class CompetitionController(Stage1VisionMixin, Node):
                 angular_limit = self.corridor_terminal_max_angular_speed
                 linear = self.corridor_terminal_commit_speed
                 lateral_error = wall_center_error if wall_available else 0.0
-            elif wall_control_available:
-                # Before commit, steer toward the physical wall centerline.
-                # At yaw=90deg, a positive body-Y center error is to the
-                # vehicle's left, hence it requires a positive yaw offset.
-                # Once centered, terminal commit below locks the fixed IMU
-                # exit yaw and keeps the final segment straight.
+            elif wall_available:
+                # The qualified dual-wall geometry is a fixed physical
+                # handoff reference.  It gates center/axis quality only;
+                # absolute heading remains exclusively IMU 90 degrees.
                 lateral_error = wall_center_error
-                desired_yaw = self.normalize_angle(
-                    self.corridor_goal_yaw + math.atan(
-                        self.corridor_terminal_lateral_gain * lateral_error
-                    )
-                )
-                self.corridor_nav_mode = 'terminal_wall_center_correct'
+                desired_yaw = self.corridor_goal_yaw
+                self.corridor_nav_mode = 'terminal_wall_geometry_hold'
                 angular_limit = self.corridor_terminal_max_angular_speed
                 linear = self.corridor_terminal_linear_speed
             else:
@@ -3248,9 +3315,9 @@ class CompetitionController(Stage1VisionMixin, Node):
                     f'{self.corridor_nav_mode} map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
                     f'xerr={x_error:.3f}m lateral={lateral_error:.3f}m '
                     f'wall={wall_available} '
-                    f'wall_heading={math.degrees(wall_control_lock["heading_error"]) if wall_control_lock is not None else 0.0:.1f}deg '
+                    f'wall_heading={math.degrees(wall_lock["heading_error"]) if wall_lock is not None else 0.0:.1f}deg '
                     f'wall_axis={math.degrees(wall_axis_error) if wall_available else 0.0:.1f}deg '
-                    f'wall_latched={wall_control_lock is None and wall_latch is not None} '
+                    f'wall_latched={wall_latch is not None} '
                     f'commit={self.corridor_terminal_commit_active} y_gate={y_gate_ok} '
                     f'commit_checks=y:{commit_y_ok} wall:{commit_wall_ok} '
                     f'map:{commit_map_ok} imu:{commit_imu_ok} '

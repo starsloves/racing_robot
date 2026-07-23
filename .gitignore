@@ -34,3 +34,5 @@ video/
 
 AGENTS.md
 AGENTS_en_bak.md
+
+/src/racing/racing_vision_ai/config/.env
