@@ -58,6 +58,27 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('blind_qr_slowdown_start_x_m', 1.5)
         self.declare_parameter('blind_qr_slowdown_linear_speed', 0.4)
         self.declare_parameter('blind_angular_speed', 0.0)
+        self.declare_parameter('blind_scan_centerline_json', '[]')
+        self.declare_parameter('blind_scan_corridor_half_width_m', 0.35)
+        self.declare_parameter('blind_scan_capture_start_odom_x_m', 1.0)
+        self.declare_parameter('blind_scan_guidance_start_odom_x_m', 3.0)
+        self.declare_parameter('blind_scan_guidance_ramp_m', 0.80)
+        self.declare_parameter('blind_scan_lateral_kp', 1.0)
+        self.declare_parameter('blind_scan_max_heading_offset_deg', 20.0)
+        self.declare_parameter('blind_scan_heading_kp', 1.4)
+        self.declare_parameter('blind_scan_max_angular_speed', 0.35)
+        self.declare_parameter('blind_scan_guidance_max_angular_speed', 0.18)
+        self.declare_parameter('blind_scan_avoid_prediction_sec', 1.80)
+        self.declare_parameter('blind_scan_avoid_prediction_step_sec', 0.05)
+        self.declare_parameter('blind_scan_avoid_min_clearance_m', 0.28)
+        self.declare_parameter('blind_scan_avoid_detection_max_x_m', 1.00)
+        self.declare_parameter('blind_scan_escape_reverse_linear_speed_mps', -0.16)
+        self.declare_parameter('blind_scan_escape_reverse_angular_speed', 0.55)
+        self.declare_parameter('blind_scan_escape_reverse_duration_sec', 0.80)
+        self.declare_parameter('blind_scan_escape_corridor_extra_m', 0.12)
+        self.declare_parameter('blind_scan_escape_rear_min_x_m', -0.45)
+        self.declare_parameter('blind_scan_escape_rear_max_x_m', -0.08)
+        self.declare_parameter('blind_scan_escape_rear_half_width_m', 0.22)
         self.declare_parameter('avoid_linear_speed', 0.1)
         self.declare_parameter('avoid_angular_speed', 0.8)
         self.declare_parameter('avoid_min_duration_sec', 0.7)
@@ -66,6 +87,15 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('avoid_right_turn_left_obstacle_angle_deg', 15.0)
         self.declare_parameter('corridor_avoid_goal_bias_enabled', True)
         self.declare_parameter('corridor_avoid_obstacle_side_penalty', 3.5)
+        self.declare_parameter('corridor_obstacle_min_width_m', 0.12)
+        # Corridor obstacles are handled by a short reverse steer, never by
+        # the general forward detour that can leave the wall-defined field.
+        self.declare_parameter('corridor_reverse_avoid_enabled', True)
+        self.declare_parameter('corridor_reverse_avoid_linear_speed_mps', -0.14)
+        self.declare_parameter('corridor_reverse_avoid_angular_speed', 0.18)
+        self.declare_parameter('corridor_reverse_avoid_min_duration_sec', 0.65)
+        self.declare_parameter('corridor_reverse_avoid_clear_hold_sec', 0.25)
+        self.declare_parameter('corridor_reverse_avoid_entry_tolerance_m', 0.25)
         self.declare_parameter('safe_distance', 0.5)
         self.declare_parameter('clear_distance', 0.65)
         self.declare_parameter('scan_angle_deg', 45.0)
@@ -185,6 +215,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_release_max_y_m', float('inf'))
         self.declare_parameter('corridor_reacquire_y_m', float('-inf'))
         self.declare_parameter('corridor_reacquire_reverse_speed', -0.12)
+        self.declare_parameter('corridor_reacquire_max_reentry_heading_deg', 45.0)
+        self.declare_parameter('corridor_reacquire_terminal_margin_m', 0.20)
         self.declare_parameter('corridor_terminal_entry_x_tolerance_m', 0.12)
         self.declare_parameter('corridor_entry_yaw_tolerance_deg', 30.0)
         self.declare_parameter('corridor_require_yaw_for_release', False)
@@ -209,6 +241,55 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('terminal_reverse_align_linear_speed', -0.06)
         self.declare_parameter('terminal_reverse_align_heading_kp', 1.0)
         self.declare_parameter('terminal_reverse_align_max_angular_speed', 0.35)
+        # 末端以两侧围墙建立局部通道坐标。激光只提供相对中心/平行误差，
+        # 绝对航向仍严格使用 IMU，里程计角度绝不参与控制。
+        self.declare_parameter('corridor_terminal_wall_lock_enabled', True)
+        self.declare_parameter('corridor_terminal_wall_min_forward_m', 0.10)
+        self.declare_parameter('corridor_terminal_wall_max_forward_m', 1.40)
+        self.declare_parameter('corridor_terminal_wall_min_lateral_m', 0.16)
+        self.declare_parameter('corridor_terminal_wall_max_lateral_m', 1.20)
+        self.declare_parameter('corridor_terminal_wall_min_points', 8)
+        self.declare_parameter('corridor_terminal_wall_min_span_m', 0.28)
+        self.declare_parameter('corridor_terminal_wall_fit_residual_m', 0.035)
+        self.declare_parameter('corridor_terminal_wall_axis_tolerance_deg', 25.0)
+        # A wall is one spatially continuous scan cluster.  Sparse obstacle
+        # returns are deliberately never merged into a candidate wall.
+        self.declare_parameter('corridor_terminal_wall_cluster_gap_m', 0.30)
+        self.declare_parameter('corridor_terminal_wall_cluster_min_span_m', 0.75)
+        self.declare_parameter('corridor_terminal_wall_source_hold_sec', 0.60)
+        self.declare_parameter('corridor_terminal_wall_source_heading_jump_deg', 12.0)
+        self.declare_parameter('corridor_terminal_wall_source_distance_jump_m', 0.35)
+        self.declare_parameter('corridor_terminal_wall_parallel_tolerance_deg', 5.0)
+        self.declare_parameter('corridor_terminal_wall_width_min_m', 0.35)
+        self.declare_parameter('corridor_terminal_wall_width_max_m', 1.60)
+        self.declare_parameter('corridor_terminal_wall_filter_tau_sec', 0.18)
+        self.declare_parameter('corridor_terminal_wall_max_age_sec', 0.25)
+        self.declare_parameter('corridor_terminal_wall_latch_max_age_sec', 4.0)
+        self.declare_parameter('corridor_terminal_wall_center_offset_m', 0.0)
+        self.declare_parameter('corridor_terminal_wall_release_center_tolerance_m', 0.035)
+        self.declare_parameter('corridor_terminal_wall_release_heading_deg', 2.5)
+        self.declare_parameter('corridor_terminal_commit_y_margin_m', 0.35)
+        self.declare_parameter('corridor_terminal_commit_speed_mps', 0.28)
+        self.declare_parameter('corridor_terminal_commit_center_tolerance_m', 0.030)
+        self.declare_parameter('corridor_terminal_commit_heading_deg', 2.0)
+        self.declare_parameter('corridor_terminal_commit_abort_center_m', 0.060)
+        self.declare_parameter('corridor_terminal_commit_abort_heading_deg', 4.0)
+        self.declare_parameter('corridor_terminal_release_hold_sec', 0.20)
+        # 二维码倒退结束后，通道全段直接由两侧围墙中线接管方向；
+        # map 仅保留沿程交权门线与越界保护，不再参与转向。
+        self.declare_parameter('corridor_wall_follow_enabled', True)
+        self.declare_parameter('corridor_wall_follow_require_lock', True)
+        self.declare_parameter('corridor_wall_follow_linear_speed_mps', 0.32)
+        self.declare_parameter('corridor_wall_follow_lateral_gain', 0.80)
+        self.declare_parameter('corridor_wall_follow_heading_kp', 1.0)
+        self.declare_parameter('corridor_wall_follow_max_angular_speed', 0.24)
+        self.declare_parameter('corridor_wall_follow_no_lock_log_sec', 1.0)
+        self.declare_parameter('corridor_wall_acquire_speed_mps', 0.10)
+        self.declare_parameter('corridor_wall_acquire_heading_kp', 0.8)
+        self.declare_parameter('corridor_wall_acquire_max_angular_speed', 0.18)
+        self.declare_parameter('corridor_wall_follow_require_map_x_handoff', False)
+        self.declare_parameter('corridor_wall_follow_single_wall_enabled', True)
+        self.declare_parameter('corridor_wall_follow_single_wall_speed_mps', 0.20)
         self.declare_parameter('corridor_path_follow_mode', 'pure_pursuit')  # pure_pursuit | stanley
         self.declare_parameter('corridor_force_reorient_enabled', False)
         self.declare_parameter('corridor_pp_min_lookahead_m', 0.25)
@@ -246,6 +327,75 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.get_parameter('blind_qr_slowdown_linear_speed').value
         )
         self.blind_angular_speed = float(self.get_parameter('blind_angular_speed').value)
+        self.blind_scan_centerline = self._parse_corridor_waypoints(
+            str(self.get_parameter('blind_scan_centerline_json').value)
+        )
+        self.blind_scan_corridor_half_width = max(
+            0.05, float(self.get_parameter('blind_scan_corridor_half_width_m').value)
+        )
+        self.blind_scan_capture_start_odom_x = float(
+            self.get_parameter('blind_scan_capture_start_odom_x_m').value
+        )
+        self.blind_scan_guidance_start_odom_x = max(
+            self.blind_scan_capture_start_odom_x,
+            float(self.get_parameter('blind_scan_guidance_start_odom_x_m').value),
+        )
+        self.blind_scan_guidance_ramp = max(
+            0.05, float(self.get_parameter('blind_scan_guidance_ramp_m').value)
+        )
+        self.blind_scan_lateral_kp = max(
+            0.0, float(self.get_parameter('blind_scan_lateral_kp').value)
+        )
+        self.blind_scan_max_heading_offset = math.radians(
+            float(self.get_parameter('blind_scan_max_heading_offset_deg').value)
+        )
+        self.blind_scan_heading_kp = max(
+            0.0, float(self.get_parameter('blind_scan_heading_kp').value)
+        )
+        self.blind_scan_max_angular_speed = max(
+            0.0, float(self.get_parameter('blind_scan_max_angular_speed').value)
+        )
+        self.blind_scan_guidance_max_angular_speed = min(
+            self.blind_scan_max_angular_speed,
+            max(
+                0.0,
+                float(self.get_parameter('blind_scan_guidance_max_angular_speed').value),
+            ),
+        )
+        self.blind_scan_avoid_prediction_sec = max(
+            0.10, float(self.get_parameter('blind_scan_avoid_prediction_sec').value)
+        )
+        self.blind_scan_avoid_prediction_step_sec = max(
+            0.01, float(self.get_parameter('blind_scan_avoid_prediction_step_sec').value)
+        )
+        self.blind_scan_avoid_min_clearance = max(
+            0.05, float(self.get_parameter('blind_scan_avoid_min_clearance_m').value)
+        )
+        self.blind_scan_avoid_detection_max_x = max(
+            0.18,
+            float(self.get_parameter('blind_scan_avoid_detection_max_x_m').value),
+        )
+        self.blind_scan_escape_reverse_linear_speed = min(
+            -0.05, float(self.get_parameter('blind_scan_escape_reverse_linear_speed_mps').value)
+        )
+        self.blind_scan_escape_reverse_angular_speed = max(
+            0.05, float(self.get_parameter('blind_scan_escape_reverse_angular_speed').value)
+        )
+        self.blind_scan_escape_reverse_duration = max(
+            0.10, float(self.get_parameter('blind_scan_escape_reverse_duration_sec').value)
+        )
+        self.blind_scan_escape_corridor_extra = max(
+            0.0, float(self.get_parameter('blind_scan_escape_corridor_extra_m').value)
+        )
+        self.blind_scan_escape_rear_min_x = float(
+            self.get_parameter('blind_scan_escape_rear_min_x_m').value
+        )
+        self.blind_scan_escape_rear_max_x = float(
+            self.get_parameter('blind_scan_escape_rear_max_x_m').value
+        )
+        self.blind_scan_escape_rear_half_width = max(
+            0.05, float(self.get_parameter('blind_scan_escape_rear_half_width_m').value)
+        )
         self.avoid_linear_speed = float(self.get_parameter('avoid_linear_speed').value)
         self.avoid_angular_speed = float(self.get_parameter('avoid_angular_speed').value)
         self.avoid_min_duration_sec = float(self.get_parameter('avoid_min_duration_sec').value)
@@ -262,11 +412,36 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_avoid_obstacle_side_penalty = float(
             self.get_parameter('corridor_avoid_obstacle_side_penalty').value
         )
+        self.corridor_obstacle_min_width = max(
+            0.01,
+            float(self.get_parameter('corridor_obstacle_min_width_m').value),
+        )
+        self.corridor_reverse_avoid_enabled = bool(
+            self.get_parameter('corridor_reverse_avoid_enabled').value
+        )
+        self.corridor_reverse_avoid_linear_speed = min(
+            -0.01, float(self.get_parameter('corridor_reverse_avoid_linear_speed_mps').value)
+        )
+        self.corridor_reverse_avoid_angular_speed = max(
+            0.0, float(self.get_parameter('corridor_reverse_avoid_angular_speed').value)
+        )
+        self.corridor_reverse_avoid_min_duration = max(
+            0.05, float(self.get_parameter('corridor_reverse_avoid_min_duration_sec').value)
+        )
+        self.corridor_reverse_avoid_clear_hold = max(
+            0.0, float(self.get_parameter('corridor_reverse_avoid_clear_hold_sec').value)
+        )
+        self.corridor_reverse_avoid_entry_tolerance = max(
+            0.05, float(self.get_parameter('corridor_reverse_avoid_entry_tolerance_m').value)
+        )
         self.safe_distance = float(self.get_parameter('safe_distance').value)
         self.clear_distance = float(self.get_parameter('clear_distance').value)
         self.scan_angle_deg = float(self.get_parameter('scan_angle_deg').value)
         self.phase1_window_min_x = float(self.get_parameter('phase1_window_min_x').value)
         self.phase1_window_max_x = float(self.get_parameter('phase1_window_max_x').value)
+        self.blind_scan_avoid_detection_max_x = max(
+            self.phase1_window_max_x, self.blind_scan_avoid_detection_max_x
+        )
         self.phase1_window_half_width = float(self.get_parameter('phase1_window_half_width').value)
         self.phase1_cluster_gap_tolerance = float(self.get_parameter('phase1_cluster_gap_tolerance').value)
         self.phase1_min_cluster_points = int(self.get_parameter('phase1_min_cluster_points').value)
@@ -418,6 +593,16 @@ class CompetitionController(Stage1VisionMixin, Node):
             -0.01,
             float(self.get_parameter('corridor_reacquire_reverse_speed').value),
         )
+        self.corridor_reacquire_max_reentry_heading = math.radians(max(
+            5.0,
+            min(80.0, float(self.get_parameter(
+                'corridor_reacquire_max_reentry_heading_deg'
+            ).value)),
+        ))
+        self.corridor_reacquire_terminal_margin = max(
+            0.0,
+            float(self.get_parameter('corridor_reacquire_terminal_margin_m').value),
+        )
         self.corridor_entry_yaw_tolerance = math.radians(
             float(self.get_parameter('corridor_entry_yaw_tolerance_deg').value)
         )
@@ -504,6 +689,149 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.terminal_reverse_align_max_angular_speed = max(
             0.0, float(self.get_parameter('terminal_reverse_align_max_angular_speed').value)
         )
+        self.corridor_terminal_wall_lock_enabled = bool(
+            self.get_parameter('corridor_terminal_wall_lock_enabled').value
+        )
+        self.corridor_terminal_wall_min_forward = max(
+            0.0, float(self.get_parameter('corridor_terminal_wall_min_forward_m').value)
+        )
+        self.corridor_terminal_wall_max_forward = max(
+            self.corridor_terminal_wall_min_forward + 0.05,
+            float(self.get_parameter('corridor_terminal_wall_max_forward_m').value),
+        )
+        self.corridor_terminal_wall_min_lateral = max(
+            0.0, float(self.get_parameter('corridor_terminal_wall_min_lateral_m').value)
+        )
+        self.corridor_terminal_wall_max_lateral = max(
+            self.corridor_terminal_wall_min_lateral + 0.05,
+            float(self.get_parameter('corridor_terminal_wall_max_lateral_m').value),
+        )
+        self.corridor_terminal_wall_min_points = max(
+            3, int(self.get_parameter('corridor_terminal_wall_min_points').value)
+        )
+        self.corridor_terminal_wall_min_span = max(
+            0.05, float(self.get_parameter('corridor_terminal_wall_min_span_m').value)
+        )
+        self.corridor_terminal_wall_fit_residual = max(
+            0.005, float(self.get_parameter('corridor_terminal_wall_fit_residual_m').value)
+        )
+        self.corridor_terminal_wall_axis_tolerance = math.radians(float(
+            self.get_parameter('corridor_terminal_wall_axis_tolerance_deg').value
+        ))
+        self.corridor_terminal_wall_cluster_gap = max(
+            0.05, float(self.get_parameter('corridor_terminal_wall_cluster_gap_m').value)
+        )
+        self.corridor_terminal_wall_cluster_min_span = max(
+            self.corridor_terminal_wall_min_span,
+            float(self.get_parameter('corridor_terminal_wall_cluster_min_span_m').value),
+        )
+        self.corridor_terminal_wall_source_hold = max(
+            0.0, float(self.get_parameter('corridor_terminal_wall_source_hold_sec').value)
+        )
+        self.corridor_terminal_wall_source_heading_jump = math.radians(float(
+            self.get_parameter('corridor_terminal_wall_source_heading_jump_deg').value
+        ))
+        self.corridor_terminal_wall_source_distance_jump = max(
+            0.02, float(
+                self.get_parameter('corridor_terminal_wall_source_distance_jump_m').value
+            ),
+        )
+        self.corridor_terminal_wall_parallel_tolerance = math.radians(float(
+            self.get_parameter('corridor_terminal_wall_parallel_tolerance_deg').value
+        ))
+        self.corridor_terminal_wall_width_min = max(
+            0.05, float(self.get_parameter('corridor_terminal_wall_width_min_m').value)
+        )
+        self.corridor_terminal_wall_width_max = max(
+            self.corridor_terminal_wall_width_min,
+            float(self.get_parameter('corridor_terminal_wall_width_max_m').value),
+        )
+        self.corridor_terminal_wall_filter_tau = max(
+            0.0, float(self.get_parameter('corridor_terminal_wall_filter_tau_sec').value)
+        )
+        self.corridor_terminal_wall_max_age = max(
+            0.05, float(self.get_parameter('corridor_terminal_wall_max_age_sec').value)
+        )
+        self.corridor_terminal_wall_latch_max_age = max(
+            self.corridor_terminal_wall_max_age,
+            float(self.get_parameter('corridor_terminal_wall_latch_max_age_sec').value),
+        )
+        self.corridor_terminal_wall_center_offset = float(
+            self.get_parameter('corridor_terminal_wall_center_offset_m').value
+        )
+        self.corridor_terminal_wall_release_center_tolerance = max(
+            0.0, float(
+                self.get_parameter('corridor_terminal_wall_release_center_tolerance_m').value
+            ),
+        )
+        self.corridor_terminal_wall_release_heading_tolerance = math.radians(float(
+            self.get_parameter('corridor_terminal_wall_release_heading_deg').value
+        ))
+        self.corridor_terminal_commit_y_margin = max(
+            0.0, float(self.get_parameter('corridor_terminal_commit_y_margin_m').value)
+        )
+        self.corridor_terminal_commit_speed = max(
+            0.01, float(self.get_parameter('corridor_terminal_commit_speed_mps').value)
+        )
+        self.corridor_terminal_commit_center_tolerance = max(
+            0.0, float(
+                self.get_parameter('corridor_terminal_commit_center_tolerance_m').value
+            ),
+        )
+        self.corridor_terminal_commit_heading_tolerance = math.radians(float(
+            self.get_parameter('corridor_terminal_commit_heading_deg').value
+        ))
+        self.corridor_terminal_commit_abort_center = max(
+            self.corridor_terminal_commit_center_tolerance,
+            float(self.get_parameter('corridor_terminal_commit_abort_center_m').value),
+        )
+        self.corridor_terminal_commit_abort_heading = math.radians(float(
+            self.get_parameter('corridor_terminal_commit_abort_heading_deg').value
+        ))
+        self.corridor_terminal_release_hold_sec = max(
+            0.0, float(self.get_parameter('corridor_terminal_release_hold_sec').value)
+        )
+        self.corridor_wall_follow_enabled = bool(
+            self.get_parameter('corridor_wall_follow_enabled').value
+        )
+        self.corridor_wall_follow_require_lock = bool(
+            self.get_parameter('corridor_wall_follow_require_lock').value
+        )
+        self.corridor_wall_follow_linear_speed = max(
+            0.01, float(self.get_parameter('corridor_wall_follow_linear_speed_mps').value)
+        )
+        self.corridor_wall_follow_lateral_gain = max(
+            0.0, float(self.get_parameter('corridor_wall_follow_lateral_gain').value)
+        )
+        self.corridor_wall_follow_heading_kp = max(
+            0.0, float(self.get_parameter('corridor_wall_follow_heading_kp').value)
+        )
+        self.corridor_wall_follow_max_angular_speed = max(
+            0.0, float(self.get_parameter('corridor_wall_follow_max_angular_speed').value)
+        )
+        self.corridor_wall_follow_no_lock_log_sec = max(
+            0.1, float(self.get_parameter('corridor_wall_follow_no_lock_log_sec').value)
+        )
+        self.corridor_wall_acquire_speed = max(
+            0.01, float(self.get_parameter('corridor_wall_acquire_speed_mps').value)
+        )
+        self.corridor_wall_acquire_heading_kp = max(
+            0.0, float(self.get_parameter('corridor_wall_acquire_heading_kp').value)
+        )
+        self.corridor_wall_acquire_max_angular_speed = max(
+            0.0, float(
+                self.get_parameter('corridor_wall_acquire_max_angular_speed').value
+            ),
+        )
+        self.corridor_wall_follow_require_map_x_handoff = bool(
+            self.get_parameter('corridor_wall_follow_require_map_x_handoff').value
+        )
+        self.corridor_wall_follow_single_wall_enabled = bool(
+            self.get_parameter('corridor_wall_follow_single_wall_enabled').value
+        )
+        self.corridor_wall_follow_single_wall_speed = max(
+            0.01, float(self.get_parameter('corridor_wall_follow_single_wall_speed_mps').value)
+        )
         self.corridor_path_follow_mode = str(
             self.get_parameter('corridor_path_follow_mode').value
         ).strip().lower()
@@ -573,6 +901,15 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.avoid_started_time = None
         self.avoid_clear_since = None
         self.avoid_entry_yaw = None
+        self.blind_scan_escape_attempted = False
+        self.blind_scan_escape_pending = False
+        self.blind_scan_escape_deadline = None
+        self.blind_scan_escape_direction = 0.0
+        self.corridor_reverse_started_time = None
+        self.corridor_reverse_clear_since = None
+        self.corridor_reverse_direction = 0.0
+        self.corridor_reverse_last_obstacle = None
+        self.corridor_reverse_return_logged = False
         self.last_avoid_duration = 0.0
         self.counter_steer_deadline = None
         self.recovery_deadline = None
@@ -608,17 +945,30 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_nav_mode = 'idle'  # path_follow | left_recover | idle
         self.corridor_terminal_active = False
         self.corridor_terminal_reverse_align_active = False
+        self.corridor_terminal_commit_active = False
         self._terminal_filtered_x_error = None
         self._terminal_x_filter_time = None
         self._terminal_lateral_direction = 0
         self._terminal_last_angular_z = 0.0
         self._terminal_last_angular_time = None
+        self._terminal_wall_lock = None
+        self._terminal_wall_geometry_latch = None
+        self._terminal_wall_filter_time = None
+        self._terminal_wall_last_quality = None
+        self._corridor_single_wall_lock = None
+        self._corridor_single_wall_reference = None
+        self._terminal_wall_sources = {'left': None, 'right': None}
+        self._corridor_wall_wait_log_time = 0.0
+        self._terminal_release_ready_since = None
         self.corridor_reacquire_active = False
+        self.corridor_reacquire_target_y = None
+        self.corridor_reacquire_rejoin_y = None
         self.corridor_capture_active = False
         self.corridor_align_active = False
         self._node_start_time = self.get_clock().now()
         self.corridor_index = 0
         self.corridor_started_at = None
+        self.corridor_entry_pose = None
         self.corridor_path_points = []
         self.corridor_path_updated_at = 0.0
         self.corridor_resume_after_avoidance = False
@@ -987,14 +1337,22 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_terminal_reverse_align_active = False
         self._reset_terminal_lateral_control()
         self.corridor_reacquire_active = False
+        self.corridor_reacquire_target_y = None
+        self.corridor_reacquire_rejoin_y = None
         self.corridor_capture_active = False
         self.corridor_align_active = False
         self.corridor_entry_reorient_active = False
         self.corridor_entry_reorient_started_at = None
         self._corridor_timeout_logged = False
-        # 后退结束后必须先追踪 YAML 中的第一个约定点，不能直接跳到终点。
-        self.corridor_index = 0
+        # 围墙直跟时，方向不再依赖中继点；直接锁定最终交权门线。
+        # 关闭该模式时保留原有中继点路径跟踪。
+        self.corridor_index = (
+            len(self.corridor_waypoints) - 1
+            if self.corridor_wall_follow_enabled
+            else 0
+        )
         self.corridor_started_at = self.get_clock().now().nanoseconds / 1e9
+        self.corridor_entry_pose = self.get_map_position()
         self.corridor_path_points = []
         self.corridor_planned_path = []
         self.corridor_path_cursor = 0
@@ -1012,7 +1370,12 @@ class CompetitionController(Stage1VisionMixin, Node):
                 self._enable_vision_corridor(True)
             except Exception as e:
                 self.log.warn('VISION', f'启用 Stage1 YOLO 视觉推理失败，继续地图导航: {e}')
-        self.log.mission(f'后退完成，地图导航到通道口 + YOLO 视觉辅助，随后切 Stage2 惯导+视觉修正: {reason}')
+        mode_text = (
+            '两侧围墙中心线直接接管方向，map 仅作交权门线'
+            if self.corridor_wall_follow_enabled
+            else '地图中心线路径跟踪'
+        )
+        self.log.mission(f'后退完成，{mode_text}: {reason}')
 
         self.stop_robot()
         map_xy = self.get_map_position()
@@ -1226,7 +1589,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         if not path or len(path) < 2:
             return 0.0
         best = float('inf')
-        idx = max(0, min(self.corridor_path_cursor, len(path) - 2))
+        idx = max(0, min(self.corridor_path_cursor - 1, len(path) - 2))
         # only check local segment neighborhood for speed
         for i in range(max(0, idx - 1), min(len(path) - 1, idx + 8)):
             x1, y1 = path[i]
@@ -1269,24 +1632,101 @@ class CompetitionController(Stage1VisionMixin, Node):
             return True, f'stale_{age:.1f}s'
         return False, f'hold age={age:.1f}s prog={progress:.2f}m off={offpath:.2f}m'
 
-    def refresh_corridor_planned_path(self, start_xy, goal_xy, reason='periodic'):
+    def _reference_centerline_point_at_y(self, target_y):
+        """Interpolate the surveyed centerline at a requested forward Y."""
+        if not self.corridor_reference_path:
+            return None
+        points = [
+            (float(point['x']), float(point['y']))
+            for point in self.corridor_reference_path
+        ]
+        if target_y <= points[0][1]:
+            return points[0]
+        for first, second in zip(points, points[1:]):
+            x1, y1 = first
+            x2, y2 = second
+            if y1 <= target_y <= y2:
+                if abs(y2 - y1) < 1e-6:
+                    return second
+                ratio = (target_y - y1) / (y2 - y1)
+                return (x1 + ratio * (x2 - x1), float(target_y))
+        return points[-1]
+
+    def _select_corridor_reacquire_plan(self, pose_xy):
+        """Choose a staging line that leaves room to re-enter the centerline."""
+        base_y = min(float(pose_xy[1]), self.corridor_reacquire_y)
+        if not self.corridor_reference_path_enabled or not self.corridor_reference_path:
+            return base_y, None
+
+        max_rejoin_y = self.corridor_release_min_y - self.corridor_reacquire_terminal_margin
+        tangent = math.tan(self.corridor_reacquire_max_reentry_heading)
+        candidates = {base_y}
+        candidates.update(float(point['y']) for point in self.corridor_reference_path)
+        feasible = []
+        for candidate_y in candidates:
+            if candidate_y > base_y + 1e-6:
+                continue
+            rejoin_y = candidate_y
+            lateral_error = 0.0
+            # The centerline bends before the terminal. Iterate so the final
+            # target, rather than only the staging point, obeys the angle cap.
+            for _ in range(3):
+                center_xy = self._reference_centerline_point_at_y(rejoin_y)
+                if center_xy is None:
+                    break
+                lateral_error = abs(float(pose_xy[0]) - center_xy[0])
+                rejoin_y = candidate_y + lateral_error / max(tangent, 1e-3)
+            if rejoin_y <= max_rejoin_y + 1e-6:
+                feasible.append((candidate_y, rejoin_y, lateral_error))
+
+        if feasible:
+            staging_y, rejoin_y, _ = max(feasible, key=lambda item: item[0])
+            return staging_y, rejoin_y
+
+        # The earliest surveyed point is the only remaining safe reference.
+        earliest_y = min(float(point['y']) for point in self.corridor_reference_path)
+        rejoin_y = earliest_y
+        for _ in range(3):
+            center_xy = self._reference_centerline_point_at_y(rejoin_y)
+            lateral_error = abs(float(pose_xy[0]) - center_xy[0])
+            rejoin_y = earliest_y + lateral_error / max(tangent, 1e-3)
+        rejoin_y = min(max_rejoin_y, rejoin_y)
+        return min(base_y, earliest_y), rejoin_y
+
+    def _start_corridor_reacquire(self, pose_xy, reason):
+        """Reset terminal capture and reverse to a centerline re-entry staging line."""
+        staging_y, rejoin_y = self._select_corridor_reacquire_plan(pose_xy)
+        self.corridor_reacquire_active = True
+        self.corridor_reacquire_target_y = staging_y
+        self.corridor_reacquire_rejoin_y = rejoin_y
+        self.corridor_terminal_active = False
+        self.corridor_terminal_reverse_align_active = False
+        self._reset_terminal_lateral_control()
+        rejoin_text = f'{rejoin_y:.2f}' if rejoin_y is not None else 'n/a'
+        self.log.mission(
+            f'{reason} map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}); reverse to '
+            f'staging_y={staging_y:.2f}, rejoin_y={rejoin_text}'
+        )
+
+    def refresh_corridor_planned_path(self, start_xy, goal_xy, reason='periodic', rejoin_y=None):
         """Use the fast surveyed centerline when enabled, otherwise plan free space."""
         now_ts = self.get_clock().now().nanoseconds / 1e9
         planned = None
         plan_mode = 'fallback_line'
         if self.corridor_reference_path_enabled and self.corridor_reference_path:
-            # Keep the nearest centerline point even when it is a few
-            # centimeters behind the pose. A strict "ahead by 4 cm" filter
-            # can discard the first entry point when backing ends at Y=0.69
-            # and the surveyed point is Y=0.72.
             planned = [(float(start_xy[0]), float(start_xy[1]))]
+            if rejoin_y is not None:
+                rejoin_xy = self._reference_centerline_point_at_y(rejoin_y)
+                if rejoin_xy is not None:
+                    planned.append(rejoin_xy)
             for point in self.corridor_reference_path:
                 point_xy = (float(point['x']), float(point['y']))
-                if point_xy[1] >= start_xy[1] - 0.05 and point_xy[1] <= goal_xy[1] + 0.04:
+                min_y = rejoin_y if rejoin_y is not None else start_xy[1] - 0.05
+                if point_xy[1] > min_y + 0.02 and point_xy[1] <= goal_xy[1] + 0.04:
                     planned.append(point_xy)
             if math.hypot(planned[-1][0] - goal_xy[0], planned[-1][1] - goal_xy[1]) > 0.02:
                 planned.append((float(goal_xy[0]), float(goal_xy[1])))
-            plan_mode = 'reference_centerline'
+            plan_mode = 'reference_reentry' if rejoin_y is not None else 'reference_centerline'
         elif self.use_corridor_planner:
             planned = self.plan_corridor_path(start_xy, goal_xy)
             if planned and len(planned) >= 2:
@@ -1321,18 +1761,38 @@ class CompetitionController(Stage1VisionMixin, Node):
         )
         return planned
 
+    def _forward_path_projection(self, path, pose_xy):
+        """Return the nearest projection without allowing progress to move backward."""
+        if len(path) < 2:
+            return None
+        start_segment = max(0, min(self.corridor_path_cursor - 1, len(path) - 2))
+        best = None
+        for index in range(start_segment, len(path) - 1):
+            x1, y1 = path[index]
+            x2, y2 = path[index + 1]
+            dx = x2 - x1
+            dy = y2 - y1
+            segment_length = math.hypot(dx, dy)
+            if segment_length < 1e-9:
+                continue
+            ratio = ((pose_xy[0] - x1) * dx + (pose_xy[1] - y1) * dy) / (segment_length * segment_length)
+            ratio = max(0.0, min(1.0, ratio))
+            projection = (x1 + ratio * dx, y1 + ratio * dy)
+            distance = math.hypot(pose_xy[0] - projection[0], pose_xy[1] - projection[1])
+            if best is None or distance < best[0]:
+                best = (distance, index, ratio, projection, segment_length)
+        return best
+
     def _advance_path_cursor(self, path, pose_xy):
         if not path:
             return 0
-        idx = max(0, min(self.corridor_path_cursor, len(path) - 1))
-        # 推进到最近前方点，避免 lookahead 回退
-        while idx < len(path) - 1:
-            d = math.hypot(path[idx][0] - pose_xy[0], path[idx][1] - pose_xy[1])
-            if d > max(0.12, self.corridor_pp_min_lookahead * 0.5):
-                break
-            idx += 1
-        self.corridor_path_cursor = idx
-        return idx
+        projection = self._forward_path_projection(path, pose_xy)
+        if projection is None:
+            return len(path) - 1
+        _, segment_index, ratio, _, _ = projection
+        if ratio > 1e-6:
+            self.corridor_path_cursor = max(self.corridor_path_cursor, segment_index + 1)
+        return self.corridor_path_cursor
 
     def _corridor_lookahead(self, path, current_xy):
         if not path:
@@ -1340,15 +1800,28 @@ class CompetitionController(Stage1VisionMixin, Node):
             return None
         if current_xy is None:
             return path[-1]
-        idx = self._advance_path_cursor(path, current_xy)
+        self._advance_path_cursor(path, current_xy)
+        projection = self._forward_path_projection(path, current_xy)
+        if projection is None:
+            return path[-1]
+        _, segment_index, ratio, _, segment_length = projection
         lookahead = max(self.pure_pursuit_lookahead, self.corridor_pp_min_lookahead)
-        traveled = 0.0
-        previous = current_xy
-        for point in path[idx:]:
-            traveled += math.hypot(point[0] - previous[0], point[1] - previous[1])
-            if traveled >= lookahead:
-                return point
-            previous = point
+        remaining = lookahead
+        index = segment_index
+        segment_ratio = ratio
+        while index < len(path) - 1:
+            x1, y1 = path[index]
+            x2, y2 = path[index + 1]
+            dx = x2 - x1
+            dy = y2 - y1
+            length = math.hypot(dx, dy)
+            available = max(0.0, (1.0 - segment_ratio) * length)
+            if remaining <= available and length > 1e-9:
+                target_ratio = segment_ratio + remaining / length
+                return (x1 + target_ratio * dx, y1 + target_ratio * dy)
+            remaining -= available
+            index += 1
+            segment_ratio = 0.0
         return path[-1]
 
     def maybe_advance_corridor_waypoint(self, pose_xy):
@@ -1415,7 +1888,628 @@ class CompetitionController(Stage1VisionMixin, Node):
             -abs(self.blind_right_turn_angular),
         )
 
-    def _corridor_region_release_ready(self, pose_xy, goal_xy, yaw):
+    def blind_scan_is_active(self):
+        """二维码尚未锁存时，判断扫码带约束是否已武装。"""
+        if (
+            self.phase != 1
+            or self.qr_processed
+            or self.phase1_motion_state in ('backing', 'corridor')
+            or len(self.blind_scan_centerline) < 2
+            or self.current_odom is None
+        ):
+            return False
+        return (
+            float(self.current_odom.pose.pose.position.x)
+            >= self.blind_scan_capture_start_odom_x
+        )
+
+    def blind_scan_guidance_is_active(self):
+        """仅在接近二维码观察位时允许中心线开始引导转向。"""
+        return (
+            self.blind_scan_is_active()
+            and float(self.current_odom.pose.pose.position.x)
+            >= self.blind_scan_guidance_start_odom_x
+        )
+
+    def blind_scan_guidance_scale(self):
+        """在导向切入窗口内平滑增加转向，避免瞬时拉向二维码横带。"""
+        if self.current_odom is None:
+            return 0.0
+        progress = (
+            float(self.current_odom.pose.pose.position.x)
+            - self.blind_scan_guidance_start_odom_x
+        ) / self.blind_scan_guidance_ramp
+        progress = self.clamp(progress, 1.0)
+        return progress * progress * (3.0 - 2.0 * progress)
+
+    def project_to_blind_scan_centerline(self, point_xy):
+        """返回折线投影的有符号横向误差、切线航向和前瞻基点。"""
+        if len(self.blind_scan_centerline) < 2:
+            return None
+
+        px, py = float(point_xy[0]), float(point_xy[1])
+        best = None
+        accumulated = 0.0
+        for index in range(len(self.blind_scan_centerline) - 1):
+            start = self.blind_scan_centerline[index]
+            end = self.blind_scan_centerline[index + 1]
+            sx, sy = float(start['x']), float(start['y'])
+            ex, ey = float(end['x']), float(end['y'])
+            dx, dy = ex - sx, ey - sy
+            length = math.hypot(dx, dy)
+            if length <= 1e-6:
+                continue
+            tangent_x, tangent_y = dx / length, dy / length
+            ratio = max(0.0, min(1.0, ((px - sx) * dx + (py - sy) * dy) / (length * length)))
+            proj_x, proj_y = sx + ratio * dx, sy + ratio * dy
+            lateral = tangent_x * (py - proj_y) - tangent_y * (px - proj_x)
+            distance_sq = (px - proj_x) ** 2 + (py - proj_y) ** 2
+            candidate = {
+                'distance_sq': distance_sq,
+                'lateral': lateral,
+                'heading': math.atan2(tangent_y, tangent_x),
+                'segment': index,
+                'ratio': ratio,
+                'progress': accumulated + ratio * length,
+            }
+            if best is None or candidate['distance_sq'] < best['distance_sq']:
+                best = candidate
+            accumulated += length
+        return best
+
+    def blind_scan_heading(self, pose_xy):
+        """将中心线横向误差换算为 IMU 航向目标，正误差向右收敛。"""
+        projection = self.project_to_blind_scan_centerline(pose_xy)
+        if projection is None:
+            return None, None
+        offset = math.atan(self.blind_scan_lateral_kp * projection['lateral'])
+        offset = self.clamp(offset, self.blind_scan_max_heading_offset)
+        return self.normalize_angle(projection['heading'] - offset), projection
+
+    def blind_scan_guidance_cmd(self):
+        """接近二维码观察位后，平滑并入扫码中心线。"""
+        if not self.blind_scan_guidance_is_active() or self.current_yaw is None:
+            return None
+        pose_xy = self.get_map_position()
+        if pose_xy is None:
+            return None
+        target_heading, projection = self.blind_scan_heading(pose_xy)
+        if target_heading is None:
+            return None
+        self.desired_heading = target_heading
+        angular = self.clamp(
+            self.blind_scan_heading_kp * self.angle_error(target_heading, self.current_yaw),
+            self.blind_scan_guidance_max_angular_speed,
+        )
+        return self.create_twist(
+            self.blind_forward_speed(),
+            self.blind_scan_guidance_scale() * angular,
+        )
+
+    def predict_blind_scan_avoidance(self, direction, obstacle, corridor_extra=0.0):
+        """积分预测左/右避障和反舵，检查障碍净距及扫描带横向范围。"""
+        pose_xy = self.get_map_position()
+        if pose_xy is None or self.current_yaw is None:
+            return None
+        initial_projection = self.project_to_blind_scan_centerline(pose_xy)
+        if initial_projection is None:
+            return None
+
+        obstacle_x = float(obstacle.get('center_x', 0.0))
+        obstacle_y = float(obstacle.get('center_y', 0.0))
+        cos_yaw, sin_yaw = math.cos(self.current_yaw), math.sin(self.current_yaw)
+        obstacle_map_xy = (
+            pose_xy[0] + cos_yaw * obstacle_x - sin_yaw * obstacle_y,
+            pose_xy[1] + sin_yaw * obstacle_x + cos_yaw * obstacle_y,
+        )
+        minimum_turn_duration = self.avoid_min_turn_angle_rad / max(
+            self.avoid_angular_speed, 1e-3
+        )
+        avoid_duration = max(self.avoid_min_duration_sec, minimum_turn_duration)
+        counter_duration = min(
+            self.counter_steer_max_duration_sec,
+            max(
+                self.counter_steer_min_duration_sec,
+                avoid_duration * self.counter_steer_duration_scale,
+            ),
+        )
+        phases = (
+            (avoid_duration, self.avoid_linear_speed, direction * self.avoid_angular_speed),
+            (
+                counter_duration,
+                self.counter_steer_linear_speed,
+                -direction * self.counter_steer_angular_speed,
+            ),
+        )
+        x, y, yaw = float(pose_xy[0]), float(pose_xy[1]), float(self.current_yaw)
+        elapsed = 0.0
+        max_lateral = abs(initial_projection['lateral'])
+        min_obstacle_distance = math.hypot(x - obstacle_map_xy[0], y - obstacle_map_xy[1])
+        for duration, linear, angular in phases:
+            phase_elapsed = 0.0
+            while phase_elapsed < duration:
+                dt = min(self.blind_scan_avoid_prediction_step_sec, duration - phase_elapsed)
+                x += linear * math.cos(yaw) * dt
+                y += linear * math.sin(yaw) * dt
+                yaw = self.normalize_angle(yaw + angular * dt)
+                phase_elapsed += dt
+                elapsed += dt
+                projection = self.project_to_blind_scan_centerline((x, y))
+                if projection is not None:
+                    max_lateral = max(max_lateral, abs(projection['lateral']))
+                min_obstacle_distance = min(
+                    min_obstacle_distance, math.hypot(x - obstacle_map_xy[0], y - obstacle_map_xy[1])
+                )
+
+        # 对反舵后的剩余预测时间，按中心线恢复航向继续积分。
+        while elapsed < self.blind_scan_avoid_prediction_sec:
+            dt = min(self.blind_scan_avoid_prediction_step_sec, self.blind_scan_avoid_prediction_sec - elapsed)
+            target_heading, projection = self.blind_scan_heading((x, y))
+            if target_heading is None:
+                break
+            angular = self.clamp(
+                self.recovery_heading_kp * self.angle_error(target_heading, yaw),
+                self.recovery_max_angular_speed,
+            )
+            linear = self.recovery_turn_linear_speed
+            x += linear * math.cos(yaw) * dt
+            y += linear * math.sin(yaw) * dt
+            yaw = self.normalize_angle(yaw + angular * dt)
+            elapsed += dt
+            max_lateral = max(max_lateral, abs(projection['lateral']))
+            min_obstacle_distance = min(
+                min_obstacle_distance, math.hypot(x - obstacle_map_xy[0], y - obstacle_map_xy[1])
+            )
+
+        final_projection = self.project_to_blind_scan_centerline((x, y))
+        final_lateral = final_projection['lateral'] if final_projection is not None else float('inf')
+        # 若车已经偏出扫描带，只接受不继续扩大偏差的候选，避免高位继续左绕。
+        lateral_limit = (
+            max(self.blind_scan_corridor_half_width, abs(initial_projection['lateral']))
+            + max(0.0, corridor_extra)
+        )
+        corridor_ok = max_lateral <= lateral_limit + 1e-3
+        obstacle_ok = min_obstacle_distance >= self.blind_scan_avoid_min_clearance
+        score = abs(final_lateral) + 0.5 * max_lateral
+        return {
+            'direction': direction,
+            'corridor_ok': corridor_ok,
+            'obstacle_ok': obstacle_ok,
+            'score': score,
+            'max_lateral': max_lateral,
+            'final_lateral': final_lateral,
+            'min_obstacle_distance': min_obstacle_distance,
+        }
+
+    def _terminal_wall_lock_fresh(self, now_ts):
+        lock = self._terminal_wall_lock
+        if lock is None or now_ts - lock['stamp'] > self.corridor_terminal_wall_max_age:
+            return None
+        return lock
+
+    def _terminal_wall_latch_fresh(self, now_ts):
+        latch = self._terminal_wall_geometry_latch
+        if latch is None or now_ts - latch['stamp'] > self.corridor_terminal_wall_latch_max_age:
+            return None
+        return latch
+
+    def _fit_terminal_wall_line(self, points):
+        """Fit one continuous wall cluster as y=m*x+b."""
+        if len(points) < self.corridor_terminal_wall_min_points:
+            return None
+        values = np.asarray(points, dtype=float)
+        x_values = values[:, 0]
+        y_values = values[:, 1]
+        if float(np.max(x_values) - np.min(x_values)) < self.corridor_terminal_wall_min_span:
+            return None
+
+        design = np.column_stack((x_values, np.ones_like(x_values)))
+        slope, intercept = np.linalg.lstsq(design, y_values, rcond=None)[0]
+        residuals = np.abs(y_values - (slope * x_values + intercept))
+        inliers = residuals <= self.corridor_terminal_wall_fit_residual
+        if int(np.count_nonzero(inliers)) < self.corridor_terminal_wall_min_points:
+            return None
+
+        x_values = x_values[inliers]
+        y_values = y_values[inliers]
+        if float(np.max(x_values) - np.min(x_values)) < self.corridor_terminal_wall_min_span:
+            return None
+        design = np.column_stack((x_values, np.ones_like(x_values)))
+        slope, intercept = np.linalg.lstsq(design, y_values, rcond=None)[0]
+        rms = float(np.sqrt(np.mean((y_values - (slope * x_values + intercept)) ** 2)))
+        if rms > self.corridor_terminal_wall_fit_residual:
+            return None
+        span = float(np.max(x_values) - np.min(x_values))
+        if span < self.corridor_terminal_wall_cluster_min_span:
+            return None
+        return float(slope), float(intercept), int(x_values.size), rms, span
+
+    def _cluster_terminal_wall_points(self, scan_msg):
+        """Split side-wall returns when adjacent Cartesian points have a gap."""
+        clusters = {'left': [], 'right': []}
+        active_side = None
+        active_points = []
+        previous_point = None
+        max_forward = self.corridor_terminal_wall_max_forward
+        if scan_msg.range_max > 0.0:
+            max_forward = min(max_forward, float(scan_msg.range_max))
+
+        def finish_active():
+            nonlocal active_side, active_points, previous_point
+            if active_side is not None and active_points:
+                clusters[active_side].append(active_points)
+            active_side = None
+            active_points = []
+            previous_point = None
+
+        for index, distance in enumerate(scan_msg.ranges):
+            if math.isinf(distance) or math.isnan(distance) or distance < self.min_valid_range:
+                finish_active()
+                continue
+            angle = scan_msg.angle_min + index * scan_msg.angle_increment
+            point = (distance * math.cos(angle), distance * math.sin(angle))
+            point_x, point_y = point
+            if not self.corridor_terminal_wall_min_forward <= point_x <= max_forward:
+                finish_active()
+                continue
+            if self.corridor_terminal_wall_min_lateral <= point_y <= self.corridor_terminal_wall_max_lateral:
+                side = 'left'
+            elif -self.corridor_terminal_wall_max_lateral <= point_y <= -self.corridor_terminal_wall_min_lateral:
+                side = 'right'
+            else:
+                finish_active()
+                continue
+
+            separated = (
+                side != active_side
+                or previous_point is None
+                or math.hypot(point_x - previous_point[0], point_y - previous_point[1])
+                > self.corridor_terminal_wall_cluster_gap
+            )
+            if separated:
+                finish_active()
+                active_side = side
+            active_points.append(point)
+            previous_point = point
+        finish_active()
+        return clusters
+
+    @staticmethod
+    def _wall_cluster_rank(line):
+        """Prefer a full long wall over a short local return."""
+        return (line[4], line[2], -line[3])
+
+    def _terminal_wall_axis_error(self, line):
+        """Return the undirected wall-axis error against the corridor axis."""
+        if self.current_yaw is None:
+            return float('inf')
+        return self._terminal_wall_heading_axis_error(math.atan(line[0]), self.current_yaw)
+
+    def _terminal_wall_heading_axis_error(self, relative_heading, yaw):
+        """Compare a local wall tangent with the fixed IMU exit axis."""
+        wall_heading = self.normalize_angle(yaw + relative_heading)
+        difference = abs(self.angle_error(self.corridor_goal_yaw, wall_heading))
+        return min(difference, abs(math.pi - difference))
+
+    def _select_terminal_wall_cluster(self, side, candidates, now_ts):
+        """Keep a side attached to one compatible physical wall source."""
+        if not candidates:
+            return None
+        candidates = sorted(candidates, key=self._wall_cluster_rank, reverse=True)
+        source = self._terminal_wall_sources.get(side)
+        source_was_fresh = (
+            source is not None
+            and now_ts - source['stamp'] <= self.corridor_terminal_wall_source_hold
+        )
+        if source is not None and now_ts - source['stamp'] <= self.corridor_terminal_wall_source_hold:
+            compatible = [
+                line for line in candidates
+                if abs(math.atan(line[0]) - source['heading_error'])
+                <= self.corridor_terminal_wall_source_heading_jump
+                and abs(abs(line[1]) - source['distance'])
+                <= self.corridor_terminal_wall_source_distance_jump
+            ]
+            if not compatible:
+                return None
+            selected = max(compatible, key=self._wall_cluster_rank)
+        else:
+            selected = candidates[0]
+        self._terminal_wall_sources[side] = {
+            'stamp': now_ts,
+            'heading_error': math.atan(selected[0]),
+            'distance': abs(selected[1]),
+            'span': selected[4],
+        }
+        if not source_was_fresh:
+            self.log.segment(
+                f'wall_cluster_source_lock side={side} pts={selected[2]} '
+                f'span={selected[4]:.2f}m rms={selected[3]:.3f}m '
+                f'dist={abs(selected[1]):.2f}m '
+                f'tangent={math.degrees(math.atan(selected[0])):.1f}deg '
+                f'gap<={self.corridor_terminal_wall_cluster_gap:.2f}m'
+            )
+        return selected
+
+    def _update_corridor_single_wall_lock(self, side, line, now_ts):
+        """Keep a usable single side wall as a bootstrap direction source."""
+        slope, intercept, point_count, rms, span = line
+        heading_error = math.atan(slope)
+        distance = abs(intercept)
+        previous = self._corridor_single_wall_lock
+        if previous is not None and previous['side'] == side:
+            elapsed = max(0.0, min(0.25, now_ts - previous['stamp']))
+            if self.corridor_terminal_wall_filter_tau > 1e-6:
+                alpha = elapsed / (self.corridor_terminal_wall_filter_tau + elapsed)
+                heading_error = previous['heading_error'] + alpha * (
+                    heading_error - previous['heading_error']
+                )
+                distance = previous['distance'] + alpha * (distance - previous['distance'])
+        self._corridor_single_wall_lock = {
+            'stamp': now_ts,
+            'side': side,
+            'heading_error': heading_error,
+            'distance': distance,
+            'point_count': point_count,
+            'rms': rms,
+            'span': span,
+        }
+
+    def _update_terminal_wall_lock(self, scan_msg):
+        """Build a local corridor frame from the two side walls ahead of the car."""
+        if (
+            not self.corridor_terminal_wall_lock_enabled
+            or self.phase != 1
+            or self.phase1_motion_state not in ('corridor', 'corridor_reverse_avoid')
+        ):
+            return
+
+        now_ts = self.get_clock().now().nanoseconds / 1e9
+        point_clusters = self._cluster_terminal_wall_points(scan_msg)
+        left_points = sum(len(cluster) for cluster in point_clusters['left'])
+        right_points = sum(len(cluster) for cluster in point_clusters['right'])
+        left_geometry_candidates = [
+            line for cluster in point_clusters['left']
+            if (line := self._fit_terminal_wall_line(cluster)) is not None
+        ]
+        right_geometry_candidates = [
+            line for cluster in point_clusters['right']
+            if (line := self._fit_terminal_wall_line(cluster)) is not None
+        ]
+        left_candidates = [
+            line for line in left_geometry_candidates
+            if self._terminal_wall_axis_error(line) <= self.corridor_terminal_wall_axis_tolerance
+        ]
+        right_candidates = [
+            line for line in right_geometry_candidates
+            if self._terminal_wall_axis_error(line) <= self.corridor_terminal_wall_axis_tolerance
+        ]
+        left_line = self._select_terminal_wall_cluster('left', left_candidates, now_ts)
+        right_line = self._select_terminal_wall_cluster('right', right_candidates, now_ts)
+        if left_line is None or right_line is None:
+            usable_side = None
+            usable_line = None
+            current_single = self._corridor_single_wall_lock
+            if current_single is not None and now_ts - current_single['stamp'] <= self.corridor_terminal_wall_source_hold:
+                selected = left_line if current_single['side'] == 'left' else right_line
+                if selected is not None:
+                    usable_side, usable_line = current_single['side'], selected
+            if usable_line is None:
+                available = [
+                    (side, line) for side, line in (('left', left_line), ('right', right_line))
+                    if line is not None
+                ]
+                if available:
+                    usable_side, usable_line = max(available, key=lambda item: self._wall_cluster_rank(item[1]))
+            if usable_line is not None and self.corridor_wall_follow_single_wall_enabled:
+                self._update_corridor_single_wall_lock(usable_side, usable_line, now_ts)
+            self._terminal_wall_last_quality = {
+                'stamp': now_ts,
+                'reason': (
+                    'left_source' if left_candidates
+                    else ('left_axis' if left_geometry_candidates else 'left_fit')
+                ) if left_line is None else (
+                    'right_source' if right_candidates
+                    else ('right_axis' if right_geometry_candidates else 'right_fit')
+                ),
+                'left_candidates': left_points,
+                'right_candidates': right_points,
+                'left_clusters': len(point_clusters['left']),
+                'right_clusters': len(point_clusters['right']),
+                'left_wall_clusters': len(left_candidates),
+                'right_wall_clusters': len(right_candidates),
+                'left_geometry_clusters': len(left_geometry_candidates),
+                'right_geometry_clusters': len(right_geometry_candidates),
+            }
+            return
+        left_slope, left_intercept, left_count, left_rms, left_span = left_line
+        right_slope, right_intercept, right_count, right_rms, right_span = right_line
+        parallel_error = abs(math.atan(left_slope) - math.atan(right_slope))
+        width = left_intercept - right_intercept
+        if (
+            parallel_error > self.corridor_terminal_wall_parallel_tolerance
+            or not self.corridor_terminal_wall_width_min <= width <= self.corridor_terminal_wall_width_max
+        ):
+            if self.corridor_wall_follow_single_wall_enabled:
+                current_single = self._corridor_single_wall_lock
+                if current_single is not None and current_single['side'] == 'left':
+                    self._update_corridor_single_wall_lock('left', left_line, now_ts)
+                elif current_single is not None and current_single['side'] == 'right':
+                    self._update_corridor_single_wall_lock('right', right_line, now_ts)
+                elif left_rms <= right_rms:
+                    self._update_corridor_single_wall_lock('left', left_line, now_ts)
+                else:
+                    self._update_corridor_single_wall_lock('right', right_line, now_ts)
+            self._terminal_wall_last_quality = {
+                'stamp': now_ts,
+                'reason': 'parallel' if parallel_error > self.corridor_terminal_wall_parallel_tolerance else 'width',
+                'left_candidates': left_points,
+                'right_candidates': right_points,
+                'left_clusters': len(point_clusters['left']),
+                'right_clusters': len(point_clusters['right']),
+                'left_wall_clusters': len(left_candidates),
+                'right_wall_clusters': len(right_candidates),
+                'width': width,
+                'parallel_error': parallel_error,
+            }
+            return
+
+        raw_center_error = 0.5 * (left_intercept + right_intercept)
+        raw_center_error -= self.corridor_terminal_wall_center_offset
+        raw_heading_error = math.atan(0.5 * (left_slope + right_slope))
+        previous = self._terminal_wall_lock
+        if previous is not None and self._terminal_wall_filter_time is not None:
+            elapsed = max(0.0, min(0.25, now_ts - self._terminal_wall_filter_time))
+            if self.corridor_terminal_wall_filter_tau > 1e-6:
+                alpha = elapsed / (self.corridor_terminal_wall_filter_tau + elapsed)
+                raw_center_error = previous['center_error'] + alpha * (
+                    raw_center_error - previous['center_error']
+                )
+                raw_heading_error = previous['heading_error'] + alpha * (
+                    raw_heading_error - previous['heading_error']
+                )
+        self._terminal_wall_lock = {
+            'stamp': now_ts,
+            'center_error': raw_center_error,
+            'heading_error': raw_heading_error,
+            'width': width,
+            'left_count': left_count,
+            'right_count': right_count,
+            'left_span': left_span,
+            'right_span': right_span,
+            'rms': max(left_rms, right_rms),
+        }
+        self._terminal_wall_filter_time = now_ts
+        wall_axis_error = float('inf')
+        if self.current_yaw is not None:
+            wall_axis_error = self._terminal_wall_heading_axis_error(
+                raw_heading_error, self.current_yaw
+            )
+        if (
+            abs(raw_center_error) <= self.corridor_terminal_wall_release_center_tolerance
+            and wall_axis_error <= self.corridor_terminal_wall_axis_tolerance
+        ):
+            self._terminal_wall_geometry_latch = {
+                'stamp': now_ts,
+                'center_error': raw_center_error,
+                'axis_error': wall_axis_error,
+                'width': width,
+            }
+        self._corridor_single_wall_lock = None
+        self._terminal_wall_last_quality = {
+            'stamp': now_ts,
+            'reason': 'ok',
+            'left_candidates': left_points,
+            'right_candidates': right_points,
+            'left_clusters': len(point_clusters['left']),
+            'right_clusters': len(point_clusters['right']),
+            'left_wall_clusters': len(left_candidates),
+            'right_wall_clusters': len(right_candidates),
+            'width': width,
+            'parallel_error': parallel_error,
+        }
+
+    def _follow_corridor_walls(self, pose_xy, yaw, now_ts):
+        """Direct corridor steering from the two side walls after QR backing."""
+        wall_lock = self._terminal_wall_lock_fresh(now_ts)
+        if wall_lock is None:
+            single_wall = self._corridor_single_wall_lock
+            if (
+                self.corridor_wall_follow_single_wall_enabled
+                and single_wall is not None
+                and now_ts - single_wall['stamp'] <= self.corridor_terminal_wall_max_age
+            ):
+                # One wall determines only its tangent.  Its absolute range
+                # is not a centerline measurement and must never pull the
+                # vehicle toward a guessed field-center distance.
+                relative_target_error = single_wall['heading_error']
+                desired_yaw = self.normalize_angle(yaw + relative_target_error)
+                angular = self.clamp(
+                    self.corridor_wall_follow_heading_kp * relative_target_error,
+                    self.corridor_wall_follow_max_angular_speed,
+                )
+                angular = self._limit_terminal_angular_command(angular, now_ts)
+                self.corridor_nav_mode = 'corridor_single_wall_follow'
+                self.corridor_desired_heading = desired_yaw
+                self.cmd_pub.publish(self.create_twist(
+                    self.corridor_wall_follow_single_wall_speed, angular
+                ))
+                if now_ts - self._corridor_last_log_time >= self.corridor_log_period_sec:
+                    self._corridor_last_log_time = now_ts
+                    self.log.segment(
+                        f'corridor_single_wall_follow side={single_wall["side"]} '
+                        f'map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                        f'dist={single_wall["distance"]:.2f}m '
+                        f'cluster_pts={single_wall["point_count"]} '
+                        f'cluster_span={single_wall["span"]:.2f}m '
+                        f'rms={single_wall["rms"]:.3f}m '
+                        f'parallel={math.degrees(single_wall["heading_error"]):.1f}deg '
+                        f'v={self.corridor_wall_follow_single_wall_speed:.2f} w={angular:.2f}'
+                    )
+                return True
+
+            heading_error = self.angle_error(self.corridor_goal_yaw, yaw)
+            angular = self.clamp(
+                self.corridor_wall_acquire_heading_kp * heading_error,
+                self.corridor_wall_acquire_max_angular_speed,
+            )
+            self.corridor_nav_mode = 'wall_acquire_align'
+            self.corridor_desired_heading = self.corridor_goal_yaw
+            self.cmd_pub.publish(self.create_twist(self.corridor_wall_acquire_speed, angular))
+            if now_ts - self._corridor_wall_wait_log_time >= self.corridor_wall_follow_no_lock_log_sec:
+                self._corridor_wall_wait_log_time = now_ts
+                quality = self._terminal_wall_last_quality
+                if quality is None:
+                    detail = 'no /scan wall sample received'
+                else:
+                    detail = (
+                        f'reject={quality["reason"]} left_pts={quality["left_candidates"]} '
+                        f'right_pts={quality["right_candidates"]}'
+                    )
+                    if 'width' in quality:
+                        detail += f' width={quality["width"]:.2f}m'
+                    detail += (
+                        f' clusters=L{quality.get("left_clusters", 0)}'
+                        f'/R{quality.get("right_clusters", 0)}'
+                        f' geometry=L{quality.get("left_geometry_clusters", 0)}'
+                        f'/R{quality.get("right_geometry_clusters", 0)}'
+                        f' wall_clusters=L{quality.get("left_wall_clusters", 0)}'
+                        f'/R{quality.get("right_wall_clusters", 0)}'
+                    )
+                self.log.warn(
+                    'CORRIDOR',
+                    f'wall_acquire_align map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                    f'{detail} desired={math.degrees(self.corridor_goal_yaw):.1f}deg '
+                    f'err={math.degrees(heading_error):.1f}deg '
+                    f'v={self.corridor_wall_acquire_speed:.2f} w={angular:.2f}'
+                )
+            return self.corridor_wall_follow_require_lock
+
+        relative_target_error = wall_lock['heading_error'] + math.atan(
+            self.corridor_wall_follow_lateral_gain * wall_lock['center_error']
+        )
+        desired_yaw = self.normalize_angle(yaw + relative_target_error)
+        angular = self.clamp(
+            self.corridor_wall_follow_heading_kp * relative_target_error,
+            self.corridor_wall_follow_max_angular_speed,
+        )
+        angular = self._limit_terminal_angular_command(angular, now_ts)
+        self.corridor_nav_mode = 'corridor_wall_follow'
+        self.corridor_desired_heading = desired_yaw
+        self.cmd_pub.publish(self.create_twist(self.corridor_wall_follow_linear_speed, angular))
+
+        if now_ts - self._corridor_last_log_time >= self.corridor_log_period_sec:
+            self._corridor_last_log_time = now_ts
+            self.log.segment(
+                f'corridor_wall_follow map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                f'center={wall_lock["center_error"]:.3f}m '
+                f'parallel={math.degrees(wall_lock["heading_error"]):.1f}deg '
+                f'width={wall_lock["width"]:.2f}m '
+                f'cluster_span=L{wall_lock["left_span"]:.2f}/R{wall_lock["right_span"]:.2f}m '
+                f'v={self.corridor_wall_follow_linear_speed:.2f} w={angular:.2f}'
+            )
+        return True
+
+    def _corridor_region_release_ready(self, pose_xy, goal_xy, yaw, now_ts):
         rho = math.hypot(goal_xy[0] - pose_xy[0], goal_xy[1] - pose_xy[1])
         yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
         radius_ok = rho <= self.corridor_entry_region_radius
@@ -1424,15 +2518,54 @@ class CompetitionController(Stage1VisionMixin, Node):
         )
         x_error = goal_xy[0] - pose_xy[0]
         x_ok = abs(x_error) <= self.corridor_terminal_x_tolerance
+        map_x_required = (
+            not self.corridor_wall_follow_enabled
+            or self.corridor_wall_follow_require_map_x_handoff
+        )
+        position_x_ok = x_ok or not map_x_required
+        wall_lock = self._terminal_wall_lock_fresh(now_ts)
+        wall_latch = self._terminal_wall_latch_fresh(now_ts)
+        wall_ok = not self.corridor_terminal_wall_lock_enabled
+        if wall_lock is not None:
+            wall_ok = (
+                abs(wall_lock['center_error'])
+                <= self.corridor_terminal_wall_release_center_tolerance
+                and self._terminal_wall_heading_axis_error(
+                    wall_lock['heading_error'], yaw
+                ) <= self.corridor_terminal_wall_axis_tolerance
+            )
+        elif wall_latch is not None:
+            wall_ok = (
+                abs(wall_latch['center_error'])
+                <= self.corridor_terminal_wall_release_center_tolerance
+                and wall_latch['axis_error'] <= self.corridor_terminal_wall_axis_tolerance
+            )
         if self.corridor_terminal_enabled:
-            pos_ok = x_ok and y_gate_ok
+            pos_ok = position_x_ok and y_gate_ok
             yaw_ok = abs(yaw_error) <= self.corridor_terminal_release_yaw_tolerance
-            ready = self.corridor_terminal_active and pos_ok and yaw_ok
+            candidate = (
+                self.corridor_terminal_active
+                and self.corridor_terminal_commit_active
+                and pos_ok
+                and yaw_ok
+                and wall_ok
+            )
         else:
-            pos_ok = radius_ok and y_gate_ok
+            pos_ok = (radius_ok or not map_x_required) and y_gate_ok
             yaw_ok = abs(yaw_error) <= self.corridor_entry_yaw_tolerance
-            ready = pos_ok and (yaw_ok if self.corridor_require_yaw_for_release else True)
-        return ready, rho, yaw_error, pos_ok, yaw_ok, radius_ok, y_gate_ok, x_error, x_ok
+            candidate = pos_ok and (yaw_ok if self.corridor_require_yaw_for_release else True)
+
+        if candidate:
+            if self._terminal_release_ready_since is None:
+                self._terminal_release_ready_since = now_ts
+            ready = now_ts - self._terminal_release_ready_since >= self.corridor_terminal_release_hold_sec
+        else:
+            self._terminal_release_ready_since = None
+            ready = False
+        return (
+            ready, rho, yaw_error, pos_ok, yaw_ok, radius_ok, y_gate_ok,
+            x_error, x_ok, wall_ok, wall_lock,
+        )
 
     def _reset_terminal_lateral_control(self):
         self._terminal_filtered_x_error = None
@@ -1440,6 +2573,14 @@ class CompetitionController(Stage1VisionMixin, Node):
         self._terminal_lateral_direction = 0
         self._terminal_last_angular_z = 0.0
         self._terminal_last_angular_time = None
+        self.corridor_terminal_commit_active = False
+        self._terminal_release_ready_since = None
+        self._terminal_wall_lock = None
+        self._terminal_wall_geometry_latch = None
+        self._terminal_wall_filter_time = None
+        self._terminal_wall_last_quality = None
+        self._terminal_wall_sources = {'left': None, 'right': None}
+        self._corridor_single_wall_lock = None
 
     def _terminal_lateral_error_for_control(self, raw_x_error, now_ts):
         """Filter terminal X feedback and reject small direction reversals."""
@@ -1541,32 +2682,35 @@ class CompetitionController(Stage1VisionMixin, Node):
         final_waypoint = self.corridor_on_final_waypoint()
 
         # A post-avoidance detour can carry the vehicle past the handoff gate.
-        # Never hand off from that high-Y position: reverse to a known staging
-        # line, then rebuild the remaining reference path from the live pose.
+        # Never hand off from that high-Y position: reverse to a centerline
+        # staging line that leaves enough distance for a bounded-angle re-entry.
         if final_waypoint and pose_xy[1] > self.corridor_release_max_y:
             if not self.corridor_reacquire_active:
-                self.corridor_reacquire_active = True
-                self.corridor_terminal_active = False
-                self.corridor_terminal_reverse_align_active = False
-                self.log.warn(
-                    'CORRIDOR',
-                    f'handoff Y overrun map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                    f'max_y={self.corridor_release_max_y:.2f}; reverse to '
-                    f'staging_y={self.corridor_reacquire_y:.2f}',
+                self._start_corridor_reacquire(
+                    pose_xy,
+                    f'handoff Y overrun max_y={self.corridor_release_max_y:.2f}',
                 )
 
         if self.corridor_reacquire_active:
-            if pose_xy[1] <= self.corridor_reacquire_y:
+            staging_y = self.corridor_reacquire_target_y
+            if staging_y is None:
+                staging_y = self.corridor_reacquire_y
+            if pose_xy[1] <= staging_y:
                 self.corridor_reacquire_active = False
                 self.corridor_nav_mode = 'path_follow'
                 self.refresh_corridor_planned_path(
-                    pose_xy, goal_xy, reason='handoff_y_reacquire'
+                    pose_xy,
+                    goal_xy,
+                    reason='handoff_y_reacquire',
+                    rejoin_y=self.corridor_reacquire_rejoin_y,
                 )
                 self.publish_corridor_path(pose_xy)
                 self.log.mission(
                     f'handoff Y reacquire complete map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}); '
-                    'resume reference centerline'
+                    f'rejoin_y={self.corridor_reacquire_rejoin_y if self.corridor_reacquire_rejoin_y is not None else float("nan"):.2f}'
                 )
+                self.corridor_reacquire_target_y = None
+                self.corridor_reacquire_rejoin_y = None
                 return
 
             reverse_yaw_error = self.angle_error(self.corridor_goal_yaw, yaw)
@@ -1584,7 +2728,8 @@ class CompetitionController(Stage1VisionMixin, Node):
                 self.log.segment(
                     f'handoff_y_reacquire map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
                     f'max_y={self.corridor_release_max_y:.2f} '
-                    f'staging_y={self.corridor_reacquire_y:.2f} '
+                    f'staging_y={staging_y:.2f} '
+                    f'rejoin_y={self.corridor_reacquire_rejoin_y if self.corridor_reacquire_rejoin_y is not None else float("nan"):.2f} '
                     f'yaw={math.degrees(yaw):.1f}deg '
                     f'v={self.corridor_reacquire_reverse_speed:.2f} w={angular:.2f}'
                 )
@@ -1593,13 +2738,29 @@ class CompetitionController(Stage1VisionMixin, Node):
         # 末端位置已经到位但航向未对齐时，才允许后退回正。通道中段始终正向跟踪。
         x_error = goal_xy[0] - pose_xy[0]
         yaw_to_goal_error = self.angle_error(self.corridor_goal_yaw, yaw)
+        wall_capture_ok = (
+            self.corridor_wall_follow_enabled
+            and (
+                self._terminal_wall_lock_fresh(now_ts) is not None
+                or self._terminal_wall_latch_fresh(now_ts) is not None
+            )
+        )
         terminal_geometry_ready = (
             final_waypoint
             and self.corridor_terminal_enabled
-            and self.corridor_release_min_y <= pose_xy[1] <= self.corridor_release_max_y
+            # Start the wall-based capture before the release gate so the
+            # vehicle has real distance to converge rather than correcting at
+            # the gate itself.
+            and (
+                self.corridor_release_min_y - self.corridor_terminal_commit_y_margin
+                <= pose_xy[1] <= self.corridor_release_max_y
+            )
             # Capture from the wider band; terminal control then converges to
             # the strict release band instead of leaving micro-correction dead.
-            and abs(x_error) <= self.corridor_terminal_entry_x_tolerance
+            and (
+                abs(x_error) <= self.corridor_terminal_entry_x_tolerance
+                or wall_capture_ok
+            )
         )
         terminal_entry_ok = (
             terminal_geometry_ready
@@ -1615,7 +2776,11 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f'yaw_err={math.degrees(yaw_to_goal_error):.1f}deg '
                 f'release_y={self.corridor_release_min_y:.2f}'
             )
-        elif terminal_geometry_ready and not self.corridor_terminal_active:
+        elif (
+            terminal_geometry_ready
+            and pose_xy[1] >= self.corridor_release_min_y
+            and not self.corridor_terminal_active
+        ):
             if not self.corridor_terminal_reverse_align_active:
                 self.corridor_terminal_reverse_align_active = True
                 self.corridor_nav_mode = 'terminal_reverse_align'
@@ -1628,9 +2793,11 @@ class CompetitionController(Stage1VisionMixin, Node):
         elif (
             self.corridor_terminal_active
             and pose_xy[1] < self.corridor_release_min_y
+            and not self.corridor_wall_follow_enabled
             and abs(x_error) > self.corridor_terminal_x_exit_tolerance
         ):
             self.corridor_terminal_active = False
+            self._reset_terminal_lateral_control()
             self.corridor_nav_mode = 'path_follow'
             self.log.warn(
                 'CORRIDOR',
@@ -1638,8 +2805,11 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f'exit tolerance {self.corridor_terminal_x_exit_tolerance:.3f}m'
             )
 
-        ready, rho, yaw_error, pos_ok, yaw_ok, radius_ok, y_gate_ok, x_error, x_ok = self._corridor_region_release_ready(
-            pose_xy, goal_xy, yaw
+        (
+            ready, rho, yaw_error, pos_ok, yaw_ok, radius_ok, y_gate_ok,
+            x_error, x_ok, wall_ok, wall_lock,
+        ) = self._corridor_region_release_ready(
+            pose_xy, goal_xy, yaw, now_ts
         )
         if ready:
             self.corridor_active = False
@@ -1656,12 +2826,23 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f'yaw={math.degrees(yaw):.1f}deg err={math.degrees(yaw_error):.1f}deg '
                 f'pos_ok={pos_ok} radius_ok={radius_ok} y_gate_ok={y_gate_ok} '
                 f'xerr={x_error:.3f}m x_ok={x_ok} min_y={self.corridor_release_min_y:.2f} yaw_ok={yaw_ok} '
+                f'wall_ok={wall_ok} commit={self.corridor_terminal_commit_active} '
                 f'require_yaw={self.corridor_require_yaw_for_release} '
                 f'plans={getattr(self, "_corridor_plan_count", 0)} last_plan={self.corridor_last_plan_reason or "none"}'
             )
             self.log.mission(reason)
             self.begin_phase_transition(2, reason)
             return
+
+        # After backing, side-wall geometry owns all normal corridor steering.
+        # Do not let map Pure Pursuit or map-X recovery compete with it.
+        if (
+            self.corridor_wall_follow_enabled
+            and not self.corridor_terminal_active
+            and not self.corridor_terminal_reverse_align_active
+        ):
+            if self._follow_corridor_walls(pose_xy, yaw, now_ts):
+                return
 
         # 条件重规划：进度/偏航/过期才重算，避免每 0.5s 阻塞 1.7s
         need_replan, replan_why = self._should_refresh_corridor_path(
@@ -1742,24 +2923,108 @@ class CompetitionController(Stage1VisionMixin, Node):
             return
 
         if self.corridor_terminal_active:
-            lateral_x_error = self._terminal_lateral_error_for_control(x_error, now_ts)
-            micro_start_y = self.corridor_release_min_y - self.corridor_terminal_micro_start_y_margin
-            micro_correct_x = (
-                pose_xy[1] >= micro_start_y
-                and abs(x_error) > self.corridor_terminal_x_tolerance
+            wall_lock = self._terminal_wall_lock_fresh(now_ts)
+            wall_latch = self._terminal_wall_latch_fresh(now_ts)
+            wall_available = wall_lock is not None or wall_latch is not None
+            wall_center_error = (
+                wall_lock['center_error'] if wall_lock is not None
+                else wall_latch['center_error'] if wall_latch is not None
+                else 0.0
             )
-            if micro_correct_x:
-                self.corridor_nav_mode = 'terminal_micro_correct'
-                desired_yaw = self.normalize_angle(
-                    self.corridor_goal_yaw - math.atan(
-                        self.corridor_terminal_lateral_gain * lateral_x_error
+            wall_axis_error = (
+                self._terminal_wall_heading_axis_error(wall_lock['heading_error'], yaw)
+                if wall_lock is not None
+                else wall_latch['axis_error'] if wall_latch is not None
+                else float('inf')
+            )
+            if self.corridor_terminal_commit_active:
+                commit_failed = (
+                    (self.corridor_terminal_wall_lock_enabled and not wall_available)
+                    or (
+                        wall_available
+                        and (
+                            abs(wall_center_error) > self.corridor_terminal_commit_abort_center
+                            or wall_axis_error > self.corridor_terminal_wall_axis_tolerance
+                        )
                     )
+                    or abs(self.angle_error(self.corridor_goal_yaw, yaw))
+                    > self.corridor_terminal_commit_abort_heading
                 )
-                angular_limit = self.corridor_terminal_micro_max_angular_speed
-            else:
-                self.corridor_nav_mode = 'terminal_heading_settle'
+                if commit_failed:
+                    self._start_corridor_reacquire(pose_xy, 'terminal commit rejected')
+                    self.corridor_nav_mode = 'terminal_commit_retry'
+                    return
+                # The final segment is intentionally straight. Once committed,
+                # no fresh lateral estimate may reverse the steering direction.
+                self.corridor_nav_mode = 'terminal_commit_straight'
                 desired_yaw = self.corridor_goal_yaw
                 angular_limit = self.corridor_terminal_max_angular_speed
+                linear = self.corridor_terminal_commit_speed
+                lateral_error = wall_center_error if wall_available else 0.0
+            elif wall_available:
+                # Walls decide whether the vehicle is physically centered. The
+                # final chassis heading is always the fixed IMU exit yaw; a
+                # local wall tangent must never drag it away from Stage2's
+                # 90-degree entry contract.
+                lateral_error = wall_center_error
+                desired_yaw = self.corridor_goal_yaw
+                self.corridor_nav_mode = 'terminal_wall_center_yaw_lock'
+                angular_limit = self.corridor_terminal_max_angular_speed
+                linear = self.corridor_terminal_linear_speed
+            else:
+                lateral_error = self._terminal_lateral_error_for_control(x_error, now_ts)
+                micro_start_y = (
+                    self.corridor_release_min_y - self.corridor_terminal_micro_start_y_margin
+                )
+                micro_correct_x = (
+                    pose_xy[1] >= micro_start_y
+                    and abs(x_error) > self.corridor_terminal_x_tolerance
+                )
+                if micro_correct_x:
+                    self.corridor_nav_mode = 'terminal_micro_correct_fallback'
+                    desired_yaw = self.normalize_angle(
+                        self.corridor_goal_yaw - math.atan(
+                            self.corridor_terminal_lateral_gain * lateral_error
+                        )
+                    )
+                    angular_limit = self.corridor_terminal_micro_max_angular_speed
+                else:
+                    self.corridor_nav_mode = 'terminal_heading_settle_fallback'
+                    desired_yaw = self.corridor_goal_yaw
+                    angular_limit = self.corridor_terminal_max_angular_speed
+                linear = self.corridor_terminal_linear_speed
+
+            if (
+                not self.corridor_terminal_commit_active
+                and pose_xy[1] >= (
+                    self.corridor_release_min_y - self.corridor_terminal_commit_y_margin
+                )
+            ):
+                wall_commit_ok = not self.corridor_terminal_wall_lock_enabled
+                if wall_available:
+                    wall_commit_ok = (
+                        abs(wall_center_error)
+                        <= self.corridor_terminal_commit_center_tolerance
+                        and wall_axis_error <= self.corridor_terminal_wall_axis_tolerance
+                    )
+                map_commit_ok = (
+                    abs(x_error) <= self.corridor_terminal_x_tolerance
+                    or not self.corridor_wall_follow_enabled
+                    or not self.corridor_wall_follow_require_map_x_handoff
+                )
+                imu_commit_ok = (
+                    abs(self.angle_error(self.corridor_goal_yaw, yaw))
+                    <= self.corridor_terminal_commit_heading_tolerance
+                )
+                if wall_commit_ok and map_commit_ok and imu_commit_ok:
+                    self.corridor_terminal_commit_active = True
+                    self._terminal_release_ready_since = None
+                    self.log.mission(
+                        f'terminal commit locked map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                        f'wall_center={wall_center_error if wall_available else 0.0:.3f}m '
+                        f'wall_axis={math.degrees(wall_axis_error) if wall_available else 0.0:.1f}deg '
+                        f'yaw={math.degrees(yaw):.1f}deg'
+                    )
             terminal_yaw_error = self.angle_error(desired_yaw, yaw)
             if abs(terminal_yaw_error) <= self.corridor_terminal_yaw_deadband:
                 angular = 0.0
@@ -1769,7 +3034,6 @@ class CompetitionController(Stage1VisionMixin, Node):
                     angular_limit,
                 )
             angular = self._limit_terminal_angular_command(angular, now_ts)
-            linear = self.corridor_terminal_linear_speed
             self.corridor_desired_heading = desired_yaw
             self.cmd_pub.publish(self.create_twist(linear, angular))
 
@@ -1778,8 +3042,12 @@ class CompetitionController(Stage1VisionMixin, Node):
                 elapsed = now_ts - self.corridor_started_at if self.corridor_started_at else 0.0
                 self.log.segment(
                     f'{self.corridor_nav_mode} map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                    f'xerr={x_error:.3f}m xctrl={lateral_x_error:.3f}m '
-                    f'y_gate={y_gate_ok} micro_start_y={micro_start_y:.2f} '
+                    f'xerr={x_error:.3f}m lateral={lateral_error:.3f}m '
+                    f'wall={wall_available} '
+                    f'wall_heading={math.degrees(wall_lock["heading_error"]) if wall_lock is not None else 0.0:.1f}deg '
+                    f'wall_axis={math.degrees(wall_axis_error) if wall_available else 0.0:.1f}deg '
+                    f'wall_latched={wall_lock is None and wall_latch is not None} '
+                    f'commit={self.corridor_terminal_commit_active} y_gate={y_gate_ok} '
                     f'yaw={math.degrees(yaw):.1f}deg desired={math.degrees(desired_yaw):.1f}deg '
                     f'err={math.degrees(terminal_yaw_error):.1f}deg '
                     f'v={linear:.2f} w={angular:.2f} t={elapsed:.1f}s'
@@ -1900,13 +3168,48 @@ class CompetitionController(Stage1VisionMixin, Node):
             )
             self.publish_corridor_path(pose_xy)
 
-    def choose_avoid_turn_direction(self, danger_angle):
+    def choose_avoid_turn_direction(self, danger_angle, obstacle=None):
         """在通道导航中结合当前约定路点选绕行侧；局部障碍侧始终优先。"""
         fallback = (
             -1.0
             if math.radians(danger_angle) >= self.avoid_right_turn_left_obstacle_angle_rad
             else 1.0
         )
+        if self.blind_scan_is_active() and obstacle is not None:
+            corridor_extra = (
+                self.blind_scan_escape_corridor_extra
+                if self.blind_scan_escape_pending else 0.0
+            )
+            candidates = [
+                self.predict_blind_scan_avoidance(direction, obstacle, corridor_extra)
+                for direction in (-1.0, 1.0)
+            ]
+            candidates = [candidate for candidate in candidates if candidate is not None]
+            feasible = [
+                candidate for candidate in candidates
+                if candidate['corridor_ok'] and candidate['obstacle_ok']
+            ]
+            if feasible:
+                selected = min(feasible, key=lambda candidate: candidate['score'])
+                detail = 'scan_prediction ' + ' '.join(
+                    f"{'L' if candidate['direction'] > 0.0 else 'R'}="
+                    f"safe={candidate['obstacle_ok']} lane={candidate['corridor_ok']} "
+                    f"dmax={candidate['max_lateral']:.2f} "
+                    f"dend={candidate['final_lateral']:.2f} "
+                    f"clear={candidate['min_obstacle_distance']:.2f}"
+                    for candidate in candidates
+                )
+                return selected['direction'], detail
+
+            detail = 'scan_prediction_blocked ' + ' '.join(
+                f"{'L' if candidate['direction'] > 0.0 else 'R'}="
+                f"safe={candidate['obstacle_ok']} lane={candidate['corridor_ok']} "
+                f"dmax={candidate['max_lateral']:.2f} "
+                f"clear={candidate['min_obstacle_distance']:.2f}"
+                for candidate in candidates
+            )
+            return 0.0, detail
+
         if (
             not self.corridor_avoid_goal_bias_enabled
             or not self.corridor_active
@@ -1946,14 +3249,34 @@ class CompetitionController(Stage1VisionMixin, Node):
         )
         return direction, detail
 
-    def begin_avoidance(self, danger_angle):
+    def begin_avoidance(self, danger_angle, obstacle=None):
         if self.phase1_motion_state == 'corridor' or self.corridor_active:
             self.corridor_resume_after_avoidance = True
-        self.phase1_motion_state = 'avoiding'
+            if self.corridor_reverse_avoid_enabled:
+                self.begin_corridor_reverse_avoidance(danger_angle, obstacle)
+                return
         # ROS base frame: +Y / +angle is left, angular.z < 0 is right.
         self.avoid_turn_direction, selection_detail = self.choose_avoid_turn_direction(
-            danger_angle
+            danger_angle, obstacle=obstacle
         )
+        if self.avoid_turn_direction == 0.0:
+            if (
+                self.blind_scan_is_active()
+                and obstacle is not None
+                and not self.blind_scan_escape_attempted
+            ):
+                self.begin_blind_scan_escape(danger_angle, obstacle, selection_detail)
+                return
+            self.phase1_motion_state = 'scan_blocked'
+            self.avoid_cmd = Twist()
+            self.log.mission(
+                f'AVOID BLOCKED: danger_angle={danger_angle:.0f}° {selection_detail}'
+            )
+            return
+
+        self.blind_scan_escape_pending = False
+
+        self.phase1_motion_state = 'avoiding'
         self.avoid_started_time = self.get_clock().now()
         self.avoid_clear_since = None
         self.avoid_entry_yaw = self.current_yaw
@@ -1964,6 +3287,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         if self.corridor_active or self.corridor_resume_after_avoidance:
             # 通道避障后 recovery 必须回到通道航向，而不是 phase1 盲开锁向
             self.update_corridor_desired_heading()
+        elif self.blind_scan_guidance_is_active():
+            pose_xy = self.get_map_position()
+            if pose_xy is not None:
+                target_heading, _ = self.blind_scan_heading(pose_xy)
+                if target_heading is not None:
+                    self.desired_heading = target_heading
         elif self.desired_heading is None and self.current_yaw is not None:
             self.desired_heading = self.current_yaw
 
@@ -1974,6 +3303,109 @@ class CompetitionController(Stage1VisionMixin, Node):
             f'{selection_detail} '
             f'desired_yaw={(math.degrees(self.desired_heading) if self.desired_heading is not None else float("nan")):.1f}°'
         )
+
+    def begin_blind_scan_escape(self, danger_angle, obstacle, selection_detail):
+        """Create space before retrying a scan-lane-constrained forward detour."""
+        # With negative linear velocity, a yaw command toward the obstacle's
+        # side moves the vehicle laterally away from that obstacle.
+        self.blind_scan_escape_direction = 1.0 if danger_angle >= 0.0 else -1.0
+        now = self.get_clock().now()
+        self.phase1_motion_state = 'scan_escape_reversing'
+        self.blind_scan_escape_attempted = True
+        self.blind_scan_escape_pending = True
+        self.blind_scan_escape_deadline = now + Duration(
+            seconds=self.blind_scan_escape_reverse_duration
+        )
+        self.avoid_cmd = self.create_twist(
+            self.blind_scan_escape_reverse_linear_speed,
+            self.blind_scan_escape_direction * self.blind_scan_escape_reverse_angular_speed,
+        )
+        turn_name = 'LEFT' if self.blind_scan_escape_direction > 0.0 else 'RIGHT'
+        self.log.mission(
+            f'SCAN_ESCAPE_REVERSE start obstacle=d={obstacle["distance"]:.2f}m '
+            f'angle={danger_angle:.1f}deg reverse={self.blind_scan_escape_reverse_linear_speed:.2f}mps '
+            f'turn={turn_name} duration={self.blind_scan_escape_reverse_duration:.2f}s '
+            f'extra_lane={self.blind_scan_escape_corridor_extra:.2f}m {selection_detail}'
+        )
+
+    def begin_corridor_reverse_avoidance(self, danger_angle, obstacle):
+        """Back away from a corridor obstacle without sacrificing wall lock."""
+        # The front of the vehicle swings away from the obstacle: obstacle on
+        # the right means a left yaw command, and vice versa.
+        self.corridor_reverse_direction = 1.0 if danger_angle <= 0.0 else -1.0
+        self.phase1_motion_state = 'corridor_reverse_avoid'
+        self.corridor_reverse_started_time = self.get_clock().now()
+        self.corridor_reverse_clear_since = None
+        self.corridor_reverse_last_obstacle = obstacle
+        self.corridor_reverse_return_logged = False
+        self.avoid_cmd = self.create_twist(
+            self.corridor_reverse_avoid_linear_speed,
+            self.corridor_reverse_direction * self.corridor_reverse_avoid_angular_speed,
+        )
+        wall_lock = self._terminal_wall_lock_fresh(
+            self.corridor_reverse_started_time.nanoseconds / 1e9
+        )
+        wall_detail = (
+            f'wall_width={wall_lock["width"]:.2f}m '
+            f'wall_center={wall_lock["center_error"]:.2f}m'
+            if wall_lock is not None else 'wall=single_or_wait'
+        )
+        turn_name = 'LEFT' if self.corridor_reverse_direction > 0.0 else 'RIGHT'
+        self.log.mission(
+            f'CORRIDOR_REVERSE_AVOID start obstacle='
+            f'd={obstacle["distance"]:.2f}m span={obstacle["span"]:.2f}m '
+            f'pts={obstacle["point_count"]} angle={danger_angle:.1f}deg '
+            f'reverse={self.corridor_reverse_avoid_linear_speed:.2f}mps '
+            f'turn={turn_name} w={self.corridor_reverse_direction * self.corridor_reverse_avoid_angular_speed:.2f} '
+            f'{wall_detail}'
+        )
+
+    def _corridor_reverse_entry_reached(self):
+        if self.corridor_entry_pose is None:
+            return True
+        pose_xy = self.get_map_position()
+        if pose_xy is None:
+            return True
+        return math.hypot(
+            pose_xy[0] - self.corridor_entry_pose[0],
+            pose_xy[1] - self.corridor_entry_pose[1],
+        ) <= self.corridor_reverse_avoid_entry_tolerance
+
+    def _corridor_reverse_return_cmd(self, now_ts):
+        """Reverse along the observed boundary back toward the corridor mouth."""
+        wall_lock = self._terminal_wall_lock_fresh(now_ts)
+        if wall_lock is not None:
+            # Reverse motion inverts the lateral effect of steering.  The
+            # heading term remains unchanged, while the center correction is
+            # the opposite of forward wall following.
+            relative_target_error = wall_lock['heading_error'] - math.atan(
+                self.corridor_wall_follow_lateral_gain * wall_lock['center_error']
+            )
+        else:
+            single_wall = self._corridor_single_wall_lock
+            if (
+                single_wall is not None
+                and now_ts - single_wall['stamp'] <= self.corridor_terminal_wall_max_age
+            ):
+                relative_target_error = single_wall['heading_error']
+            else:
+                relative_target_error = 0.0
+        angular = self.clamp(
+            self.corridor_wall_follow_heading_kp * relative_target_error,
+            self.corridor_reverse_avoid_angular_speed,
+        )
+        return self.create_twist(self.corridor_reverse_avoid_linear_speed, angular)
+
+    def finish_corridor_reverse_avoidance(self, reason):
+        self.phase1_motion_state = 'corridor'
+        self.corridor_resume_after_avoidance = False
+        self.corridor_reverse_started_time = None
+        self.corridor_reverse_clear_since = None
+        self.corridor_reverse_direction = 0.0
+        self.corridor_reverse_last_obstacle = None
+        self.corridor_reverse_return_logged = False
+        self.avoid_cmd = Twist()
+        self.log.feedback(f'CORRIDOR_REVERSE_AVOID complete: {reason}; resume wall follow')
 
     def begin_counter_steer(self):
         if self.phase1_motion_state != 'avoiding':
@@ -2013,6 +3445,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.counter_steer_deadline = None
         if self.corridor_active or self.corridor_resume_after_avoidance:
             self.update_corridor_desired_heading()
+        elif self.blind_scan_guidance_is_active():
+            pose_xy = self.get_map_position()
+            if pose_xy is not None:
+                target_heading, _ = self.blind_scan_heading(pose_xy)
+                if target_heading is not None:
+                    self.desired_heading = target_heading
         self.recovery_uses_heading = self.current_yaw is not None and self.desired_heading is not None
         if self.recovery_uses_heading:
             heading_error = abs(self.angle_error(self.desired_heading, self.current_yaw))
@@ -2063,14 +3501,8 @@ class CompetitionController(Stage1VisionMixin, Node):
                     self.corridor_on_final_waypoint()
                     and map_xy[1] >= self.corridor_reacquire_y
                 ):
-                    self.corridor_reacquire_active = True
-                    self.corridor_terminal_active = False
-                    self.corridor_terminal_reverse_align_active = False
+                    self._start_corridor_reacquire(map_xy, 'post-avoid terminal reset')
                     self.corridor_nav_mode = 'post_avoid_y_reacquire'
-                    self.log.mission(
-                        f'post-avoid terminal reset map=({map_xy[0]:.2f},{map_xy[1]:.2f}); '
-                        f'reverse to staging_y={self.corridor_reacquire_y:.2f}'
-                    )
                     self.log.feedback('recovery complete, return to terminal staging')
                     self.avoid_started_time = None
                     self.avoid_clear_since = None
@@ -2170,14 +3602,22 @@ class CompetitionController(Stage1VisionMixin, Node):
         return {
             'distance': nearest_distance,
             'span': span,
+            'point_count': len(cluster),
             'danger_angle_deg': danger_angle_deg,
+            'center_x': center_x,
+            'center_y': center_y,
         }
 
-    def find_phase1_forward_obstacle(self, scan_msg):
+    def find_phase1_forward_obstacle(self, scan_msg, min_cluster_width=None):
+        max_x = (
+            self.blind_scan_avoid_detection_max_x
+            if self.blind_scan_is_active()
+            else self.phase1_window_max_x
+        )
         clusters = self.collect_points_in_window(
             scan_msg,
             self.phase1_window_min_x,
-            self.phase1_window_max_x,
+            max_x,
             self.phase1_window_half_width,
         )
 
@@ -2189,13 +3629,17 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.obstacle_markers.clear()
             self._phase1_last_clusters = []
 
+        min_width = (
+            self.phase1_min_cluster_width
+            if min_cluster_width is None else max(0.0, float(min_cluster_width))
+        )
         nearest_obstacle = None
         for cluster in clusters:
             if len(cluster) < self.phase1_min_cluster_points:
                 continue
 
             obstacle = self.describe_cluster(cluster)
-            if obstacle['span'] < self.phase1_min_cluster_width:
+            if obstacle['span'] < min_width:
                 continue
             if obstacle['span'] > self.phase1_max_cluster_width:
                 continue
@@ -2224,9 +3668,42 @@ class CompetitionController(Stage1VisionMixin, Node):
 
         return nearest_obstacle
 
+    def find_blind_scan_escape_rear_obstacle(self, scan_msg):
+        clusters = self.collect_points_in_window(
+            scan_msg,
+            self.blind_scan_escape_rear_min_x,
+            self.blind_scan_escape_rear_max_x,
+            self.blind_scan_escape_rear_half_width,
+        )
+        for cluster in clusters:
+            if len(cluster) >= self.phase1_emergency_min_points:
+                return self.describe_cluster(cluster)
+        return None
+
     def handle_phase1_lidar(self, scan_msg):
         # 后退阶段完全不处理激光避障，由后退逻辑全权控制
         if self.phase1_motion_state == 'backing':
+            return
+
+        if self.phase1_motion_state == 'scan_escape_reversing':
+            rear_obstacle = self.find_blind_scan_escape_rear_obstacle(scan_msg)
+            if rear_obstacle is not None:
+                self.phase1_motion_state = 'scan_blocked'
+                self.avoid_cmd = Twist()
+                self.log.mission(
+                    f'SCAN_ESCAPE_REVERSE BLOCKED rear=d={rear_obstacle["distance"]:.2f}m '
+                    f'angle={rear_obstacle["danger_angle_deg"]:.1f}deg'
+                )
+                return
+
+            if (
+                self.blind_scan_escape_deadline is not None
+                and self.get_clock().now() >= self.blind_scan_escape_deadline
+            ):
+                self.phase1_motion_state = 'forward'
+                self.blind_scan_escape_deadline = None
+                self.avoid_cmd = Twist()
+                self.log.feedback('SCAN_ESCAPE_REVERSE complete; retry forward avoidance')
             return
 
         # 通道入口大角度重定向时默认不避障，避免被侧墙二次打断并反向拉航向
@@ -2251,19 +3728,69 @@ class CompetitionController(Stage1VisionMixin, Node):
                 return
 
         # 避障优先级不变：通道中也会被障碍打断，恢复后继续 corridor
+        if self.phase1_motion_state == 'corridor_reverse_avoid':
+            obstacle = self.find_phase1_forward_obstacle(
+                scan_msg, self.corridor_obstacle_min_width
+            )
+            now = self.get_clock().now()
+            if obstacle is not None:
+                self.obstacle_found = True
+                self.closest_obstacle_distance = obstacle['distance']
+                self.corridor_reverse_last_obstacle = obstacle
+                self.corridor_reverse_clear_since = None
+                self.corridor_reverse_return_logged = False
+                return
+
+            self.obstacle_found = False
+            self.closest_obstacle_distance = float('inf')
+            if self.corridor_reverse_clear_since is None:
+                self.corridor_reverse_clear_since = now
+            clear_elapsed = (now - self.corridor_reverse_clear_since).nanoseconds / 1e9
+            reverse_elapsed = 0.0
+            if self.corridor_reverse_started_time is not None:
+                reverse_elapsed = (now - self.corridor_reverse_started_time).nanoseconds / 1e9
+            now_ts = now.nanoseconds / 1e9
+            entry_reached = self._corridor_reverse_entry_reached()
+            if not entry_reached:
+                self.avoid_cmd = self._corridor_reverse_return_cmd(now_ts)
+                if not self.corridor_reverse_return_logged:
+                    pose_xy = self.get_map_position()
+                    self.corridor_reverse_return_logged = True
+                    self.log.mission(
+                        f'CORRIDOR_REVERSE_AVOID obstacle clear; return corridor entry '
+                        f'entry=({self.corridor_entry_pose[0]:.2f},{self.corridor_entry_pose[1]:.2f}) '
+                        f'current=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                        f'tol={self.corridor_reverse_avoid_entry_tolerance:.2f}m'
+                    )
+                return
+            if reverse_elapsed >= self.corridor_reverse_avoid_min_duration and clear_elapsed >= self.corridor_reverse_avoid_clear_hold:
+                self.finish_corridor_reverse_avoidance(
+                    f'return_entry reverse={reverse_elapsed:.2f}s clear={clear_elapsed:.2f}s'
+                )
+            return
+
         if self.phase1_motion_state == 'avoiding':
             obstacle = self.find_phase1_emergency_obstacle(scan_msg)
         else:
-            obstacle = self.find_phase1_forward_obstacle(scan_msg)
+            obstacle = self.find_phase1_forward_obstacle(
+                scan_msg,
+                self.corridor_obstacle_min_width
+                if self.corridor_active or self.phase1_motion_state == 'corridor'
+                else None,
+            )
 
         if obstacle is not None:
             self.obstacle_found = True
             self.closest_obstacle_distance = obstacle['distance']
 
             if self.phase1_motion_state != 'avoiding':
-                self.begin_avoidance(obstacle['danger_angle_deg'])
+                self.begin_avoidance(obstacle['danger_angle_deg'], obstacle=obstacle)
             else:
                 self.avoid_clear_since = None
+
+            if self.phase1_motion_state == 'scan_blocked':
+                self.avoid_cmd = Twist()
+                return
 
             if self.phase1_motion_state == 'avoiding':
                 turn_direction = self.avoid_turn_direction
@@ -2278,6 +3805,17 @@ class CompetitionController(Stage1VisionMixin, Node):
 
         self.obstacle_found = False
         self.closest_obstacle_distance = float('inf')
+
+        if not self.blind_scan_escape_pending:
+            self.blind_scan_escape_attempted = False
+
+        if self.phase1_motion_state == 'scan_blocked':
+            self.phase1_motion_state = 'forward'
+            self.blind_scan_escape_attempted = False
+            self.blind_scan_escape_pending = False
+            self.avoid_cmd = Twist()
+            self.log.feedback('scan avoidance obstruction cleared, resume centerline')
+            return
         
         # 注：无障碍时清空 markers 已在 find_phase1_forward_obstacle() 中处理（line 388）
         # 这里不需要额外清空逻辑
@@ -2305,6 +3843,10 @@ class CompetitionController(Stage1VisionMixin, Node):
 
     def lidar_callback(self, msg):
         if self.phase == 1:
+            # Side-wall fitting is independent from the forward obstacle detector.
+            # It never commands the chassis directly; the 20Hz terminal loop
+            # consumes only fresh, quality-checked geometry.
+            self._update_terminal_wall_lock(msg)
             was_corridor = self.phase1_motion_state == 'corridor'
             self.handle_phase1_lidar(msg)
             if was_corridor and self.phase1_motion_state == 'avoiding':
@@ -2386,7 +3928,9 @@ class CompetitionController(Stage1VisionMixin, Node):
             return
 
         # 允许在前进、避障等状态下接收二维码(避免因临时避障错过扫码)
-        if self.phase1_motion_state not in ('forward', 'avoiding', 'countersteering', 'recovering', 'corridor'):
+        if self.phase1_motion_state not in (
+            'forward', 'avoiding', 'scan_escape_reversing', 'countersteering', 'recovering', 'corridor'
+        ):
             return
 
         task = msg.data.strip()
@@ -2500,6 +4044,18 @@ class CompetitionController(Stage1VisionMixin, Node):
                 self.cmd_pub.publish(self.avoid_cmd)
                 return
 
+            if self.phase1_motion_state == 'scan_escape_reversing':
+                self.cmd_pub.publish(self.avoid_cmd)
+                return
+
+            if self.phase1_motion_state == 'corridor_reverse_avoid':
+                self.cmd_pub.publish(self.avoid_cmd)
+                return
+
+            if self.phase1_motion_state == 'scan_blocked':
+                self.stop_robot()
+                return
+
             if self.phase1_motion_state == 'countersteering':
                 if self.counter_steer_deadline is not None and self.get_clock().now() >= self.counter_steer_deadline:
                     self.begin_recovery()
@@ -2516,8 +4072,11 @@ class CompetitionController(Stage1VisionMixin, Node):
             if self.phase1_motion_state == 'recovering':
                 if self.recovery_complete():
                     self.finish_recovery()
+                    scan_cmd = self.blind_scan_guidance_cmd()
                     self.cmd_pub.publish(
-                        self.create_twist(self.blind_forward_speed(), self.blind_angular_speed)
+                        scan_cmd
+                        if scan_cmd is not None
+                        else self.create_twist(self.blind_forward_speed(), self.blind_angular_speed)
                     )
                     return
 
@@ -2571,7 +4130,12 @@ class CompetitionController(Stage1VisionMixin, Node):
                 self.handle_corridor_navigation()
                 return
 
-            # 盲开末段先处理指定区域的右转，再执行常规左侧恢复。
+            scan_cmd = self.blind_scan_guidance_cmd()
+            if scan_cmd is not None:
+                self.cmd_pub.publish(scan_cmd)
+                return
+
+            # 未配置扫描中心线时，保留旧版盲开区域转向作为兼容回退。
             right_cmd = self.maybe_blind_right_turn_cmd()
             if right_cmd is not None:
                 self.cmd_pub.publish(right_cmd)

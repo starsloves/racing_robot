@@ -113,6 +113,8 @@ class Stage3ReturnNavigator(Node):
         self._p_final_approach_latched = False
         self._p_visible_yaw_history = deque()
         self._p_recovery_target_yaw = None
+        # Preserve the visual heading while lidar temporarily takes control.
+        self._p_avoidance_recovery_yaw = None
 
         # P 终段深度当前仅用于实车标定日志，不参与控制或完成判定。
         self._depth_bridge = CvBridge()
@@ -1080,6 +1082,7 @@ class Stage3ReturnNavigator(Node):
         self._p_final_approach_latched = False
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
+        self._p_avoidance_recovery_yaw = None
         self._set_p_inference_active(True)
         # Phase3 直接进入返程；P YOLO 从本阶段开始即可确认并接管。
         self._set_channel_inference_active(False)
@@ -1125,6 +1128,7 @@ class Stage3ReturnNavigator(Node):
         self._p_final_approach_latched = False
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
+        self._p_avoidance_recovery_yaw = None
         self._pre_return_state = 'idle'
         self._channel_hits = 0
         self._channel_offset_filtered = 0.0
@@ -1465,6 +1469,8 @@ class Stage3ReturnNavigator(Node):
             self._p_visible_yaw_history.popleft()
 
     def _p_heading_before_loss(self, now):
+        if self._p_avoidance_recovery_yaw is not None:
+            return self._p_avoidance_recovery_yaw
         desired_time = now - self.p_loss_heading_lookback
         for stamp, yaw in reversed(self._p_visible_yaw_history):
             if stamp <= desired_time:
@@ -1557,6 +1563,7 @@ class Stage3ReturnNavigator(Node):
         self._p_lost_since = None
         self._p_lost_reverse_started_at = None
         self._p_recovery_target_yaw = None
+        self._p_avoidance_recovery_yaw = None
         self._record_p_visible_yaw(self._now_sec())
         alpha = self.p_approach_offset_filter_alpha
         self._p_offset_filtered = alpha * float(offset) + (1.0 - alpha) * self._p_offset_filtered
@@ -1992,6 +1999,8 @@ class Stage3ReturnNavigator(Node):
         return False
 
     def _begin_avoidance(self, danger_deg):
+        if self._p_approaching and self._p_target_yaw is not None:
+            self._p_avoidance_recovery_yaw = self._p_target_yaw
         self.avoid_state = 'avoiding'
         self.avoid_turn_direction, selection_detail = self._choose_avoid_turn_direction(
             danger_deg
@@ -2017,7 +2026,10 @@ class Stage3ReturnNavigator(Node):
         self._publish_feedback(f'avoid start dir={self.avoid_turn_direction:.1f} danger={danger_deg:.1f}°')
 
     def _update_avoidance_desired_heading(self):
-        """Lock recovery onto the active map search goal when its pose is available."""
+        """Restore the P visual heading after a visual-approach lidar detour."""
+        if self._p_avoidance_recovery_yaw is not None:
+            self.desired_heading = self._p_avoidance_recovery_yaw
+            return
         if self.current_position is not None:
             goal_x, goal_y = self._goal_center()
             dx = goal_x - self.current_position[0]

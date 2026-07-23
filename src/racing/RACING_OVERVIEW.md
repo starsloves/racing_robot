@@ -76,26 +76,26 @@ Phase 3: Stage3 /stage3_cmd_vel ── Stage1 supervisor ────> /cmd_vel
 Phase 1 blind drive
   -> QR result
   -> recorded-path backing
-  -> map corridor navigation
+  -> side-wall corridor follow
   -> terminal handoff alignment
   -> Phase 2
 ```
 
-1. Stage1 初始盲驱使用 YAML `blind_linear_speed`（当前 0.50 m/s）和 `blind_angular_speed`；`/odom_combined` X 超过 `blind_qr_slowdown_start_x_m`（当前 1.5m）后，普通盲驱直行改用 `blind_qr_slowdown_linear_speed`（当前 0.4 m/s）以减少扫码运动模糊。
+1. Stage1 初始盲驱使用 YAML `blind_linear_speed`（当前 0.50 m/s）和 `blind_angular_speed`；`/odom_combined` X 超过 `blind_qr_slowdown_start_x_m`（当前 1.5m）后，普通盲驱直行改用 `blind_qr_slowdown_linear_speed`（当前 0.4 m/s）以减少扫码运动模糊。二维码解码从 `blind_scan_capture_start_odom_x_m`（当前 1.0m）武装，但不产生转向；未识别时仅到 `blind_scan_guidance_start_odom_x_m`（当前 3.0m）才开始向 `blind_scan_centerline_json` 的 map 折线平滑切入，切入角速度在 `blind_scan_guidance_ramp_m`（当前 0.8m）内逐步增加。扫描带两侧 `blind_scan_corridor_half_width_m` 始终用于限制避障候选。
 2. `qr_scanner` 使用 WeChat CV 发布 `qr_scan_result`；Stage1 解析并锁存方向后发布 `competition_qr_task`，进入记录路径倒退。
 3. 倒退使用 `/odom_combined` 的历史 xy 回放，负线速度追踪倒序路径；角速度以 IMU 和几何目标闭环，不能直接复用历史 yaw。
-4. 倒退完成后，Stage1 按生产 YAML 的 `corridor_reference_path_json` 快速中心线用 Pure Pursuit 导航；正常路径不反复运行 A*。雷达障碍触发既有四状态避障，恢复后从当前位置接回参考线的前方点，禁止跳过中继点直冲终点。关闭 `corridor_reference_path_enabled` 时才回退到原 A* + Pure Pursuit。
-5. 最后路点在进入 Y 门线前先以 IMU 航向预对正，同时以横向误差修正预对正目标航向；该末段控制优先于近距离 Pure Pursuit 几何转向。终端横向闭环对 map X 使用短时滤波、反向滞回和角速度变化率限制，抑制定位噪声导致的左右反打；严格的 X 交权判据仍使用实时原始位姿。交权只允许在 YAML 定义的最小/最大 Y 窗口内发生，且 X 必须先进入独立的终端捕获带；终端控制器只负责小误差收敛至严格的 Y、X 和 IMU yaw 交权判据。障碍发生在末端或回正导致 Y 超过窗口时，必须低速倒回 staging Y，重新经过最后一个中心线中继点后再捕获，禁止高位交权；通道超时会停车等待，不应绕过终端判据直接放行。
+4. 倒退完成后，Stage1 直接以 `/scan` 中两侧围墙的拟合中线跟随通道，不再让 `corridor_reference_path_json`、A*、Pure Pursuit 或 map X 强制恢复参与方向控制。每侧激光点先按扫描顺序聚类，只有相邻点距离不超过 `0.30m` 的连续簇才会单独拟合；墙簇还必须满足点数、前向跨度和直线残差，零散障碍物不得并入墙线。每条候选墙还必须以 IMU 映射到全局，并与通道出口轴 `corridor_goal_yaw=90°` 平行（正反方向等价）；这会拒绝入口下方的横墙，避免将其误认作侧墙。只有两侧都通过轴向、平行度和宽度检验，才形成完整赛道边界并接管中线控制。已锁定的同侧墙簇在短暂遮挡时不切换到不相干结构；日志会记录 `wall_cluster_source_lock` 的点数、跨度、残差、距离和切线角，可直接验证是否形成完整赛道边界。5m 场地中央的外墙可距车约 2.5m，生产筛选范围覆盖至 4.0m、可接受墙距至 5.6m。单侧墙不再决定前进方向；双墙未形成时，车辆仅低速以 IMU 对准通道轴、继续观察雷达，禁止单墙横向结构把车带偏。双墙仍是最终交权的唯一横向依据。雷达障碍检测仍只使用车前窄窗口的独立短小聚类，通道障碍必须达到独立的最小宽度，侧墙点不会触发避障；避障四状态完成后重新进入同一围墙中心线控制。
+5. 围墙直跟仍只用激光相对几何；绝对 yaw 唯一来自 IMU，里程计角度绝不参与。最后 Y 门线前，双墙中心和墙轴质量只作为物理位置/边界判据；终端控制的目标航向始终固定为 `corridor_goal_yaw=90°`，禁止将局部墙切线或 map X 横向误差叠加到最终 IMU yaw。若入口边缘导致双墙拟合短暂丢失，终端可在 YAML 时限内复用最近一次合格的双墙中心/轴质量，不能因单帧失锁退出提交流程。双墙中心、IMU yaw、Y 门线满足门限时锁存 `terminal_commit_straight`，以固定出口 IMU 航向直行，禁止根据新横向误差反向打舵。交权要求 Y 门线、IMU yaw、两墙局部几何持续满足 YAML 的 hold 时间；围墙中心是物理横向依据，map X 仅记录诊断，默认不再阻塞交权。终端避障或提交失败导致 Y 超过窗口时，必须低速倒回 staging 后重新捕获，禁止高位交权；通道超时会停车等待，不应绕过终端判据直接放行。
 
 ### 2.2 Stage1 避障
 
-四状态为：
+扫码阶段保留原有四状态：
 
 ```
 forward -> avoiding -> countersteering -> recovering -> forward
 ```
 
-雷达在 `phase1_window` 中聚类，过滤点数、宽度和距离异常。默认左绕；明显左前障碍才右绕。通道状态还会结合当前 YAML 路点选择不朝近障碍切入且更接近目标的一侧，避障期间方向锁定。恢复阶段以 IMU yaw 回到锁存航向。
+雷达在 `phase1_window` 中聚类，过滤点数、宽度和距离异常；扫码解码武装后，前向预检范围扩至生产 YAML 的 `blind_scan_avoid_detection_max_x_m`，为横移留出距离。扫码中心线激活后，控制器对左绕、右绕各自积分预测避障、反舵和回归段：候选必须同时满足障碍净距和二维码扫描走廊约束，优先选择最终横向误差更小的一侧。两侧都不可行时先检查车后近区；车后无障碍才低速后退并朝远离前障的一侧转向一次，随后允许有限的临时扫描带横移余量并重新预测。后方受阻或重试后仍无安全候选才停车等待，禁止以硬编码左右转越出识别范围。通道状态不再使用这套正向绕行。前方有效障碍簇触发 `corridor_reverse_avoid`：右前障碍倒车左摆、左前障碍倒车右摆；即使前方暂时清障，车辆仍以反向围墙平行/居中控制持续退回本次通道起点，进入 `corridor_reverse_avoid_entry_tolerance_m` 后才恢复正向已锁墙簇。没有倒车时长上限，也没有通道避障停车分支。日志记录障碍的距离、宽度、点数、倒车转向、起点和当时墙宽/中心误差。扫码避障恢复以扫描中心线航向为目标，通道恢复以当前通道航向为目标。
 
 ### 2.3 Phase2/3 指令转发
 
@@ -165,7 +165,7 @@ Phase 3
 
 ### 4.2 避障与丢失恢复
 
-Stage3 粗导航复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前 P 视觉搜索目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。紧急近障不再由 Stage1 仲裁器硬停车：S3 以紧急前方聚类触发 `emergency_reversing`，在 YAML 限定的时间内低速倒车并向安全侧反向侧转，完成后回到 `forward` 重新判定常规避障。恢复阶段重新对准当前搜索目标航向。P 视觉接管后若转弯导致丢失，按约一秒前仍见 P 的 IMU yaw 低速倒车闭环回转；超时仍未重获则停车等待，禁止回退到粗导航盲走。
+Stage3 粗导航复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前 P 视觉搜索目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。紧急近障不再由 Stage1 仲裁器硬停车：S3 以紧急前方聚类触发 `emergency_reversing`，在 YAML 限定的时间内低速倒车并向安全侧反向侧转，完成后回到 `forward` 重新判定常规避障。P 视觉接管后，普通避障开始时锁存当前 P 视觉航向；反舵和恢复阶段必须回到该锁定 IMU 航向，不能改用地图搜索点方向。若此后 P 丢失，低速倒车回正也复用同一锁定航向；P 重新识别后才按新框偏差更新航向。超时仍未重获则停车等待，禁止回退到粗导航盲走。
 
 ---
 

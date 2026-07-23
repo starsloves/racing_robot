@@ -100,6 +100,47 @@ competition_controller:
     blind_angular_speed: 0.0
 
     # ────────────────────────────────────────────────────────────────────────
+    # 二维码扫描中心线与受限避障 (QR Scan Centerline Avoidance)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # 二维码观察区的 map 中心线。当前赛道是直线；代码按折线处理，实车改线时
+    # 只需增加中继点。扫码解码和中心线导向使用不同门线，避免过早拐向横带。
+    blind_scan_centerline_json: '[{"x":0.25,"y":1.80},{"x":4.50,"y":1.80}]'
+    # 二维码解码从此处开始；该门线不产生转向命令。
+    blind_scan_capture_start_odom_x_m: 1.0
+    # 未识别二维码时，接近观察位才允许向中心线切入；切入角速度经 ramp 平滑增加。
+    blind_scan_guidance_start_odom_x_m: 3.0
+    blind_scan_guidance_ramp_m: 0.80
+
+    # 识别带允许偏离中心线的最大横向距离。左/右避障完整预测任一时刻超出该值
+    # 即淘汰；车辆已经在带外时，只允许令偏差不再增大的候选。
+    blind_scan_corridor_half_width_m: 0.35
+
+    # 进入 guidance 窗口后，才以中心线横向误差生成 IMU 目标航向。
+    blind_scan_lateral_kp: 1.0
+    blind_scan_max_heading_offset_deg: 20.0
+    blind_scan_heading_kp: 1.4
+    blind_scan_max_angular_speed: 0.35
+    blind_scan_guidance_max_angular_speed: 0.18
+
+    # 左/右候选按避障、反舵及回归中心线的完整动作积分预测；任一候选与障碍
+    # 中心的最小距离小于该净距，或越出扫描带，均不可采用。两侧不可行时停车。
+    blind_scan_avoid_prediction_sec: 1.80
+    blind_scan_avoid_prediction_step_sec: 0.05
+    blind_scan_avoid_min_clearance_m: 0.28
+    # 扫码阶段提前发现前方聚类，给完整 S 形绕行保留制动/横移距离。
+    blind_scan_avoid_detection_max_x_m: 1.00
+    # 两个前向候选均不可行时，只尝试一次后退转向脱困。车后近区有聚类则立刻停车。
+    blind_scan_escape_reverse_linear_speed_mps: -0.16
+    blind_scan_escape_reverse_angular_speed: 0.55
+    blind_scan_escape_reverse_duration_sec: 0.80
+    # 后退已创造前向净距时，允许一次有限的扫描带外横移，随后恢复中心线。
+    blind_scan_escape_corridor_extra_m: 0.12
+    blind_scan_escape_rear_min_x_m: -0.45
+    blind_scan_escape_rear_max_x_m: -0.08
+    blind_scan_escape_rear_half_width_m: 0.22
+
+    # ────────────────────────────────────────────────────────────────────────
     # 激光避障参数 (Lidar Obstacle Avoidance)
     # ────────────────────────────────────────────────────────────────────────
 
@@ -156,6 +197,19 @@ competition_controller:
     # 障碍物明确位于候选绕行侧时附加的安全代价（rad），必须大于 π，
     # 使路点方向不能驱动车辆朝该侧近障切入。
     corridor_avoid_obstacle_side_penalty: 3.5
+
+    # 通道内小于该宽度的短点簇不触发倒车，避免 7~8cm 边缘/噪声误判障碍。
+    corridor_obstacle_min_width_m: 0.12
+
+    # 通道已由雷达墙簇接管时，不做正向绕障：持续倒车并让车头摆离障碍，
+    # 直到前方障碍连续清除，再直接恢复墙簇跟随回到通道入口。
+    corridor_reverse_avoid_enabled: true
+    corridor_reverse_avoid_linear_speed_mps: -0.14
+    corridor_reverse_avoid_angular_speed: 0.14
+    corridor_reverse_avoid_min_duration_sec: 0.65
+    corridor_reverse_avoid_clear_hold_sec: 0.25
+    # 用本次倒退结束后的通道起点作为回退目标；不是倒车时长上限。
+    corridor_reverse_avoid_entry_tolerance_m: 0.25
 
     # 避障最小持续时间 (s) — 避障至少持续时长
     avoid_min_duration_sec: 0.5
@@ -319,10 +373,14 @@ competition_controller:
     # 交权只允许在门线后的有限窗口内发生；超过该 Y 说明避障或回正已越点，
     # 必须倒回 staging 区重新捕获，禁止高位直接进入 Stage2。
     corridor_release_max_y_m: 2.62
-    # 退回到最后一个中心线中继点之前，使 (2.50, 2.20) 重新成为前方目标，
-    # 给避障后的横向恢复预留足够距离。
+    # 终端重捕获的默认最高 staging Y。实际 staging 会根据当前横向偏差
+    # 回退到更早的参考中心线点，保证在门线前可按受限角度重新并线。
     corridor_reacquire_y_m: 2.05
     corridor_reacquire_reverse_speed: -0.12
+    # 重入参考中心线时允许的最大几何航向偏差；控制器据此选择最晚 staging 点。
+    corridor_reacquire_max_reentry_heading_deg: 45.0
+    # 重入点必须位于交权最小 Y 门线之前保留的距离，供末端捕获和围墙锁定使用。
+    corridor_reacquire_terminal_margin_m: 0.20
 
     # 旧版进入区域航向容差 (°) — 仅 terminal_enabled=false 时使用
     corridor_entry_yaw_tolerance_deg: 15.0
@@ -356,7 +414,8 @@ competition_controller:
     # 距离 Y 门线该距离以内，若仍未进入最终 X 容差才开启微小横向修正 (m)
     corridor_terminal_micro_start_y_margin_m: 0.18
 
-    # 最后一小段横向 X 误差映射到期望航向的增益 (1/m)
+    # 无双墙时，最后一小段 map X 兜底误差映射到期望航向的增益 (1/m)。
+    # 双墙有效时终端目标航向固定为 corridor_goal_yaw，不使用该项拉偏 IMU yaw。
     corridor_terminal_lateral_gain: 0.8
 
     # 期望航向误差到角速度的比例增益
@@ -391,6 +450,70 @@ competition_controller:
     terminal_reverse_align_linear_speed: -0.12
     terminal_reverse_align_heading_kp: 1.0
     terminal_reverse_align_max_angular_speed: 0.35
+
+    # --- 两侧围墙终端锁定 (Side-Wall Terminal Lock) ---
+    # 通道没有额外标记；使用车前左右两侧围墙分别拟合直线，中线即物理通道中心。
+    # 激光仅提供物理中心及墙轴质量；终端绝对 yaw 固定唯一来自 IMU。
+    corridor_terminal_wall_lock_enabled: true
+    corridor_terminal_wall_min_forward_m: 0.10
+    # 5m 场地中央行驶时，外侧围墙距车可接近 2.5m；不能只取近墙。
+    corridor_terminal_wall_max_forward_m: 2.00
+    corridor_terminal_wall_min_lateral_m: 0.10
+    corridor_terminal_wall_max_lateral_m: 4.00
+    corridor_terminal_wall_min_points: 8
+    corridor_terminal_wall_min_span_m: 0.45
+    corridor_terminal_wall_fit_residual_m: 0.035
+    # 只有墙线轴向与出口 IMU 航向（90°，线可正反同向）一致才是通道侧墙。
+    corridor_terminal_wall_axis_tolerance_deg: 25.0
+    # 仅相邻激光点间距不超过 0.30m 的连续整段才可构成边墙；障碍物离散点不会并入。
+    corridor_terminal_wall_cluster_gap_m: 0.30
+    # 完整赛道边界在当前前视窗口内至少应有该前向跨度。
+    corridor_terminal_wall_cluster_min_span_m: 0.75
+    # 同侧已锁墙簇短暂消失时，不切换到另一段不相干结构。
+    corridor_terminal_wall_source_hold_sec: 0.60
+    corridor_terminal_wall_source_heading_jump_deg: 12.0
+    corridor_terminal_wall_source_distance_jump_m: 0.35
+    corridor_terminal_wall_parallel_tolerance_deg: 5.0
+    corridor_terminal_wall_width_min_m: 0.35
+    corridor_terminal_wall_width_max_m: 5.60
+    corridor_terminal_wall_filter_tau_sec: 0.18
+    corridor_terminal_wall_max_age_sec: 0.25
+    # 双墙短暂被入口边缘遮挡时，终端可复用最近一次合格物理中心；只用于交权段。
+    corridor_terminal_wall_latch_max_age_sec: 4.0
+    # 车体参考点不在物理通道中心时，在此填入中心线在车体系的 Y 偏置；默认 0。
+    corridor_terminal_wall_center_offset_m: 0.0
+
+    # 交权前必须同时满足 map X、IMU yaw、Y 门线与两侧围墙局部几何，并持续 hold 时间。
+    corridor_terminal_wall_release_center_tolerance_m: 0.060
+    corridor_terminal_wall_release_heading_deg: 2.5
+    corridor_terminal_release_hold_sec: 0.20
+
+    # 到 Y 门线前 0.35m 已居中平行则提交为直线段；提交后禁止再用横向误差反打。
+    # 若中心或平行误差超过 abort 门限，立即倒回 staging 重捕获。
+    corridor_terminal_commit_y_margin_m: 0.35
+    corridor_terminal_commit_speed_mps: 0.28
+    corridor_terminal_commit_center_tolerance_m: 0.060
+    corridor_terminal_commit_heading_deg: 2.0
+    corridor_terminal_commit_abort_center_m: 0.100
+    corridor_terminal_commit_abort_heading_deg: 4.0
+
+    # 二维码倒退结束即进入围墙直跟：只有成对且轴向正确的围墙可接管方向。
+    # 未形成双墙时低速 IMU 对正通道轴，禁止单墙横向结构把车带偏。
+    corridor_wall_follow_enabled: true
+    corridor_wall_follow_require_lock: true
+    corridor_wall_follow_linear_speed_mps: 0.32
+    corridor_wall_follow_lateral_gain: 0.80
+    corridor_wall_follow_heading_kp: 1.0
+    corridor_wall_follow_max_angular_speed: 0.24
+    corridor_wall_follow_no_lock_log_sec: 1.0
+    corridor_wall_acquire_speed_mps: 0.10
+    corridor_wall_acquire_heading_kp: 0.80
+    corridor_wall_acquire_max_angular_speed: 0.18
+    # 单墙不能区分底边/侧边，只保留诊断，不允许决定通道行进方向。
+    corridor_wall_follow_single_wall_enabled: false
+    corridor_wall_follow_single_wall_speed_mps: 0.20
+    # 围墙中心已是物理横向依据；map X 仅作诊断，交权不再以其阻塞。
+    corridor_wall_follow_require_map_x_handoff: false
 
     # 通道导航超时 (s) — 超时后强制切 Stage2
     corridor_timeout_sec: 45.0
