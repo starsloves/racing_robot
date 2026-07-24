@@ -211,6 +211,7 @@ class Stage2TrackController:
                  exit_turn_90_linear: Optional[float] = None,
                  exit_turn_90_angular: Optional[float] = None,
                  direction_arc_profiles: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
+                 direction_track_profiles: Optional[Dict[str, Dict[str, float]]] = None,
                  vision_lateral_scale_m: float = 0.30,
                  vision_lateral_weight: float = 0.35,
                  vision_correction_max_angular: float = 0.10,
@@ -310,6 +311,27 @@ class Stage2TrackController:
             )
         self.top_long_distance = max(0.20, top_long_distance_m)
         self.exit_medium_distance = max(0.05, exit_medium_distance_m)
+        self._base_turn_force_min_map_x = self.turn_force_min_map_x
+        self._base_turn_force_max_map_x = self.turn_force_max_map_x
+        self._base_exit_medium_distance = self.exit_medium_distance
+        self._direction_track_profiles = {}
+        for direction, overrides in (direction_track_profiles or {}).items():
+            min_x = self._base_turn_force_min_map_x
+            max_x = self._base_turn_force_max_map_x
+            exit_distance = self._base_exit_medium_distance
+            if overrides.get('turn_force_min_map_x') is not None:
+                min_x = float(overrides['turn_force_min_map_x'])
+            if overrides.get('turn_force_max_map_x') is not None:
+                max_x = float(overrides['turn_force_max_map_x'])
+            if min_x > max_x:
+                min_x, max_x = max_x, min_x
+            if overrides.get('exit_medium_distance_m') is not None:
+                exit_distance = max(0.05, float(overrides['exit_medium_distance_m']))
+            self._direction_track_profiles[str(direction).lower()] = {
+                'turn_force_min_map_x': min_x,
+                'turn_force_max_map_x': max_x,
+                'exit_medium_distance_m': exit_distance,
+            }
         # Each corner has only three trajectory inputs: its linear speed,
         # angular speed, and remaining-angle cutoff.  At the cutoff the
         # steering command goes directly to zero; residual chassis yaw carries
@@ -403,6 +425,17 @@ class Stage2TrackController:
         self._arc_cruise = dict(cruise)
         self._arc_cutoff_leads = dict(leads)
 
+    def _apply_direction_track_profile(self, direction: str) -> None:
+        profile = self._direction_track_profiles.get(str(direction).lower())
+        if profile is None:
+            self.turn_force_min_map_x = self._base_turn_force_min_map_x
+            self.turn_force_max_map_x = self._base_turn_force_max_map_x
+            self.exit_medium_distance = self._base_exit_medium_distance
+            return
+        self.turn_force_min_map_x = profile['turn_force_min_map_x']
+        self.turn_force_max_map_x = profile['turn_force_max_map_x']
+        self.exit_medium_distance = profile['exit_medium_distance_m']
+
     def arc_profile_summary(self, direction: str) -> str:
         profile = self._direction_arc_profiles.get(str(direction).lower())
         cruise, leads = profile if profile is not None else (
@@ -418,12 +451,30 @@ class Stage2TrackController:
             )
         return '; '.join(parts)
 
+    def track_profile_summary(self, direction: str) -> str:
+        profile = self._direction_track_profiles.get(str(direction).lower())
+        if profile is None:
+            min_x = self._base_turn_force_min_map_x
+            max_x = self._base_turn_force_max_map_x
+            exit_distance = self._base_exit_medium_distance
+        else:
+            min_x = profile['turn_force_min_map_x']
+            max_x = profile['turn_force_max_map_x']
+            exit_distance = profile['exit_medium_distance_m']
+        return (
+            f'turn_force_min_x={min_x:.3f},'
+            f'turn_force_max_x={max_x:.3f},'
+            f'exit_medium={exit_distance:.3f}m'
+        )
+
     def start(self, direction: str, position: Tuple[float, float], yaw: float,
               now: float, distance_m: float = 0.0) -> None:
         del now
         clockwise = str(direction).lower().startswith('clock')
         self._clockwise = clockwise
-        self._apply_direction_arc_profile('clockwise' if clockwise else 'counterclockwise')
+        normalized_direction = 'clockwise' if clockwise else 'counterclockwise'
+        self._apply_direction_arc_profile(normalized_direction)
+        self._apply_direction_track_profile(normalized_direction)
         entry_sign = 1.0 if clockwise else -1.0
         self._entry_heading = wrap_angle(yaw + entry_sign * math.pi / 2.0)
         self._specs = [_SegmentSpec('entry_arc', 'ARC', self._arc_target_m('entry_arc', math.pi / 2.0),

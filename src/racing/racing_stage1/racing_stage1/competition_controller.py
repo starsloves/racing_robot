@@ -282,6 +282,20 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_terminal_wall_center_offset_m', 0.0)
         self.declare_parameter('corridor_terminal_wall_release_center_tolerance_m', 0.035)
         self.declare_parameter('corridor_terminal_wall_release_heading_deg', 2.5)
+        self.declare_parameter('corridor_front_wall_handoff_enabled', True)
+        self.declare_parameter('corridor_front_wall_handoff_distance_m', 2.60)
+        self.declare_parameter('corridor_front_wall_min_forward_m', 0.80)
+        self.declare_parameter('corridor_front_wall_max_forward_m', 3.20)
+        self.declare_parameter('corridor_front_wall_max_lateral_m', 2.80)
+        self.declare_parameter('corridor_front_wall_min_points', 12)
+        self.declare_parameter('corridor_front_wall_min_lateral_span_m', 0.80)
+        self.declare_parameter('corridor_front_wall_fit_residual_m', 0.040)
+        self.declare_parameter('corridor_front_wall_axis_tolerance_deg', 15.0)
+        self.declare_parameter('corridor_front_wall_cluster_gap_m', 0.30)
+        self.declare_parameter('corridor_front_wall_source_heading_jump_deg', 10.0)
+        self.declare_parameter('corridor_front_wall_source_distance_jump_m', 0.45)
+        self.declare_parameter('corridor_front_wall_filter_tau_sec', 0.18)
+        self.declare_parameter('corridor_front_wall_max_age_sec', 0.30)
         self.declare_parameter('corridor_terminal_commit_y_margin_m', 0.35)
         self.declare_parameter('corridor_terminal_commit_speed_mps', 0.28)
         self.declare_parameter('corridor_terminal_commit_center_tolerance_m', 0.030)
@@ -830,6 +844,59 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.corridor_terminal_wall_release_heading_tolerance = math.radians(float(
             self.get_parameter('corridor_terminal_wall_release_heading_deg').value
         ))
+        self.corridor_front_wall_handoff_enabled = bool(
+            self.get_parameter('corridor_front_wall_handoff_enabled').value
+        )
+        self.corridor_front_wall_handoff_distance = max(
+            0.10,
+            float(self.get_parameter('corridor_front_wall_handoff_distance_m').value),
+        )
+        self.corridor_front_wall_min_forward = max(
+            0.05,
+            float(self.get_parameter('corridor_front_wall_min_forward_m').value),
+        )
+        self.corridor_front_wall_max_forward = max(
+            self.corridor_front_wall_min_forward + 0.10,
+            self.corridor_front_wall_handoff_distance + 0.30,
+            float(self.get_parameter('corridor_front_wall_max_forward_m').value),
+        )
+        self.corridor_front_wall_max_lateral = max(
+            0.20,
+            float(self.get_parameter('corridor_front_wall_max_lateral_m').value),
+        )
+        self.corridor_front_wall_min_points = max(
+            4, int(self.get_parameter('corridor_front_wall_min_points').value)
+        )
+        self.corridor_front_wall_min_lateral_span = max(
+            0.10,
+            float(self.get_parameter('corridor_front_wall_min_lateral_span_m').value),
+        )
+        self.corridor_front_wall_fit_residual = max(
+            0.005,
+            float(self.get_parameter('corridor_front_wall_fit_residual_m').value),
+        )
+        self.corridor_front_wall_axis_tolerance = math.radians(float(
+            self.get_parameter('corridor_front_wall_axis_tolerance_deg').value
+        ))
+        self.corridor_front_wall_cluster_gap = max(
+            0.05,
+            float(self.get_parameter('corridor_front_wall_cluster_gap_m').value),
+        )
+        self.corridor_front_wall_source_heading_jump = math.radians(float(
+            self.get_parameter('corridor_front_wall_source_heading_jump_deg').value
+        ))
+        self.corridor_front_wall_source_distance_jump = max(
+            0.05,
+            float(self.get_parameter('corridor_front_wall_source_distance_jump_m').value),
+        )
+        self.corridor_front_wall_filter_tau = max(
+            0.0,
+            float(self.get_parameter('corridor_front_wall_filter_tau_sec').value),
+        )
+        self.corridor_front_wall_max_age = max(
+            0.05,
+            float(self.get_parameter('corridor_front_wall_max_age_sec').value),
+        )
         self.corridor_terminal_commit_y_margin = max(
             0.0, float(self.get_parameter('corridor_terminal_commit_y_margin_m').value)
         )
@@ -1085,6 +1152,10 @@ class CompetitionController(Stage1VisionMixin, Node):
         self._terminal_wall_geometry_latch = None
         self._terminal_wall_filter_time = None
         self._terminal_wall_last_quality = None
+        self._corridor_front_wall_lock = None
+        self._corridor_front_wall_latch = None
+        self._corridor_front_wall_filter_time = None
+        self._corridor_front_wall_last_quality = None
         self._corridor_single_wall_lock = None
         self._corridor_single_wall_reference = None
         self._terminal_wall_sources = {'left': None, 'right': None}
@@ -1507,12 +1578,32 @@ class CompetitionController(Stage1VisionMixin, Node):
             )
         return map_xy
 
+    def reset_phase1_avoidance_runtime(self, clear_obstacle=True):
+        """Clear transient scan-avoidance state without changing the motion state."""
+        if clear_obstacle:
+            self.obstacle_found = False
+            self.closest_obstacle_distance = float('inf')
+        self.avoid_cmd = Twist()
+        self.avoid_turn_direction = 0.0
+        self.avoid_started_time = None
+        self.avoid_clear_since = None
+        self.avoid_entry_yaw = None
+        self.last_avoid_duration = 0.0
+        self.counter_steer_deadline = None
+        self.recovery_deadline = None
+        self.recovery_uses_heading = False
+        self.blind_scan_escape_attempted = False
+        self.blind_scan_escape_pending = False
+        self.blind_scan_escape_deadline = None
+        self.blind_scan_escape_direction = 0.0
+
     def begin_backing_align(self, reason):
         """Restore the fixed channel-entry yaw before wall centering takes over."""
         if self.current_yaw is None:
             self.log.warn('ALIGN', f'no IMU yaw for backing align, starting corridor directly: {reason}')
             self.start_corridor_navigation(reason)
             return
+        self.reset_phase1_avoidance_runtime()
         self.phase1_motion_state = 'backing_align'
         self.aligning_started_time = self.get_clock().now()
         self.backing_align_reason = reason
@@ -1530,6 +1621,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.phase1_motion_state = 'forward'
             self.begin_phase_transition(2, reason)
             return
+        self.reset_phase1_avoidance_runtime()
         self.corridor_active = True
         self.corridor_nav_mode = 'path_follow'
         self.corridor_terminal_active = False
@@ -1965,6 +2057,19 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.log.mission(reason)
         self.begin_phase_transition(2, reason)
 
+    def _finish_corridor_handoff(self, pose_xy, yaw, gate_status, reason):
+        self.corridor_active = False
+        self.corridor_nav_mode = 'idle'
+        self.corridor_capture_active = False
+        self.corridor_align_active = False
+        self.corridor_entry_reorient_active = False
+        self.corridor_entry_reorient_started_at = None
+        self.phase1_motion_state = 'forward'
+        self._publish_stage2_entry_pose(pose_xy, yaw, gate_status)
+        self.stop_robot()
+        self.log.mission(reason)
+        self.begin_phase_transition(2, reason)
+
     def refresh_corridor_planned_path(self, start_xy, goal_xy, reason='periodic', rejoin_y=None):
         """Use the fast surveyed centerline when enabled, otherwise plan free space."""
         now_ts = self.get_clock().now().nanoseconds / 1e9
@@ -2362,6 +2467,31 @@ class CompetitionController(Stage1VisionMixin, Node):
             return None
         return lock
 
+    def _corridor_front_wall_lock_fresh(self, now_ts):
+        lock = self._corridor_front_wall_lock
+        if lock is None or now_ts - lock['stamp'] > self.corridor_front_wall_max_age:
+            return None
+        return lock
+
+    def _corridor_front_wall_latch_fresh(self):
+        return self._corridor_front_wall_latch
+
+    def _corridor_front_wall_within(self, threshold_m, now_ts):
+        latch = self._corridor_front_wall_latch_fresh()
+        if latch is not None:
+            return True
+        lock = self._corridor_front_wall_lock_fresh(now_ts)
+        return lock is not None and lock['distance'] <= float(threshold_m)
+
+    def _corridor_front_wall_distance_text(self, now_ts):
+        latch = self._corridor_front_wall_latch_fresh()
+        if latch is not None:
+            return f'{latch["distance"]:.3f}m'
+        lock = self._corridor_front_wall_lock_fresh(now_ts)
+        if lock is None:
+            return 'n/a'
+        return f'{lock["distance"]:.3f}m'
+
     def _terminal_wall_lock_for_control(self, now_ts):
         """Return a recent dual-wall lock for continuous steering only."""
         lock = self._terminal_wall_lock
@@ -2375,6 +2505,196 @@ class CompetitionController(Stage1VisionMixin, Node):
     def _terminal_wall_latch_fresh(self, now_ts):
         """Return this attempt's fixed qualified dual-wall geometry."""
         return self._terminal_wall_geometry_latch
+
+    def _cluster_corridor_front_wall_points(self, scan_msg):
+        clusters = []
+        active_points = []
+        previous_point = None
+        max_forward = self.corridor_front_wall_max_forward
+        if scan_msg.range_max > 0.0:
+            max_forward = min(max_forward, float(scan_msg.range_max))
+
+        def finish_active():
+            nonlocal active_points, previous_point
+            if active_points:
+                clusters.append(active_points)
+            active_points = []
+            previous_point = None
+
+        for index, distance in enumerate(scan_msg.ranges):
+            if math.isinf(distance) or math.isnan(distance) or distance < self.min_valid_range:
+                finish_active()
+                continue
+            angle = scan_msg.angle_min + index * scan_msg.angle_increment
+            point = (distance * math.cos(angle), distance * math.sin(angle))
+            point_x, point_y = point
+            if (
+                point_x < self.corridor_front_wall_min_forward
+                or point_x > max_forward
+                or abs(point_y) > self.corridor_front_wall_max_lateral
+            ):
+                finish_active()
+                continue
+            separated = (
+                previous_point is not None
+                and math.hypot(point_x - previous_point[0], point_y - previous_point[1])
+                > self.corridor_front_wall_cluster_gap
+            )
+            if separated:
+                finish_active()
+            active_points.append(point)
+            previous_point = point
+        finish_active()
+        return clusters
+
+    def _fit_corridor_front_wall_line(self, points):
+        """Fit one front transverse wall cluster as x=m*y+b."""
+        if len(points) < self.corridor_front_wall_min_points:
+            return None
+        values = np.asarray(points, dtype=float)
+        x_values = values[:, 0]
+        y_values = values[:, 1]
+        lateral_span = float(np.max(y_values) - np.min(y_values))
+        if lateral_span < self.corridor_front_wall_min_lateral_span:
+            return None
+
+        design = np.column_stack((y_values, np.ones_like(y_values)))
+        slope, intercept = np.linalg.lstsq(design, x_values, rcond=None)[0]
+        residuals = np.abs(x_values - (slope * y_values + intercept))
+        inliers = residuals <= self.corridor_front_wall_fit_residual
+        if int(np.count_nonzero(inliers)) < self.corridor_front_wall_min_points:
+            return None
+
+        x_values = x_values[inliers]
+        y_values = y_values[inliers]
+        lateral_span = float(np.max(y_values) - np.min(y_values))
+        if lateral_span < self.corridor_front_wall_min_lateral_span:
+            return None
+        design = np.column_stack((y_values, np.ones_like(y_values)))
+        slope, intercept = np.linalg.lstsq(design, x_values, rcond=None)[0]
+        rms = float(np.sqrt(np.mean((x_values - (slope * y_values + intercept)) ** 2)))
+        if rms > self.corridor_front_wall_fit_residual:
+            return None
+        heading_error = math.atan(float(slope))
+        axis_error = abs(self.normalize_angle(heading_error))
+        if axis_error > self.corridor_front_wall_axis_tolerance:
+            return None
+        distance = float(intercept)
+        if distance <= 0.0:
+            return None
+        return {
+            'distance': distance,
+            'heading_error': heading_error,
+            'axis_error': axis_error,
+            'point_count': int(x_values.size),
+            'rms': rms,
+            'span': lateral_span,
+        }
+
+    def _update_corridor_front_wall_lock(self, scan_msg):
+        if (
+            not self.corridor_front_wall_handoff_enabled
+            or self.phase != 1
+            or self.phase1_motion_state not in ('corridor', 'corridor_reverse_avoid')
+        ):
+            return
+
+        now_ts = self.get_clock().now().nanoseconds / 1e9
+        clusters = self._cluster_corridor_front_wall_points(scan_msg)
+        candidates = [
+            line for cluster in clusters
+            if (line := self._fit_corridor_front_wall_line(cluster)) is not None
+        ]
+        if not candidates:
+            self._corridor_front_wall_last_quality = {
+                'stamp': now_ts,
+                'reason': 'fit',
+                'clusters': len(clusters),
+                'points': sum(len(cluster) for cluster in clusters),
+            }
+            return
+
+        previous = self._corridor_front_wall_lock
+        previous_fresh = (
+            previous is not None
+            and now_ts - previous.get('stamp', 0.0) <= self.corridor_front_wall_max_age
+        )
+        compatible = candidates
+        if previous_fresh:
+            compatible = [
+                item for item in candidates
+                if (
+                    abs(item['heading_error'] - previous['heading_error'])
+                    <= self.corridor_front_wall_source_heading_jump
+                    and abs(item['distance'] - previous['distance'])
+                    <= self.corridor_front_wall_source_distance_jump
+                )
+            ]
+            if not compatible:
+                self._corridor_front_wall_last_quality = {
+                    'stamp': now_ts,
+                    'reason': 'source',
+                    'clusters': len(clusters),
+                    'candidates': len(candidates),
+                    'prev_dist': previous['distance'],
+                }
+                return
+        selected = min(
+            compatible,
+            key=lambda item: (
+                abs(item['distance'] - previous['distance']) if previous_fresh else 0.0,
+                abs(item['distance'] - self.corridor_front_wall_handoff_distance),
+                item['rms'],
+                -item['span'],
+            ),
+        )
+        if previous is not None and self._corridor_front_wall_filter_time is not None:
+            elapsed = max(0.0, min(0.25, now_ts - self._corridor_front_wall_filter_time))
+            if self.corridor_front_wall_filter_tau > 1e-6:
+                alpha = elapsed / (self.corridor_front_wall_filter_tau + elapsed)
+                selected = dict(selected)
+                selected['distance'] = previous['distance'] + alpha * (
+                    selected['distance'] - previous['distance']
+                )
+                selected['heading_error'] = previous['heading_error'] + alpha * (
+                    selected['heading_error'] - previous['heading_error']
+                )
+                selected['axis_error'] = abs(self.normalize_angle(selected['heading_error']))
+        selected['stamp'] = now_ts
+        self._corridor_front_wall_lock = selected
+        self._corridor_front_wall_filter_time = now_ts
+        self._corridor_front_wall_last_quality = {
+            'stamp': now_ts,
+            'reason': 'ok',
+            'clusters': len(clusters),
+            'candidates': len(candidates),
+            'compatible': len(compatible),
+            'points': sum(len(cluster) for cluster in clusters),
+        }
+        if (
+            self._corridor_front_wall_latch is None
+            and selected['distance'] <= self.corridor_front_wall_handoff_distance
+        ):
+            self._corridor_front_wall_latch = dict(selected)
+            self.log.mission(
+                f'FRONT_WALL_HANDOFF_LATCH dist={selected["distance"]:.3f}m '
+                f'target={self.corridor_front_wall_handoff_distance:.2f}m '
+                f'pts={selected["point_count"]} span={selected["span"]:.2f}m '
+                f'rms={selected["rms"]:.3f}m '
+                f'axis={math.degrees(selected["axis_error"]):.1f}deg'
+            )
+        if (
+            previous is None
+            or now_ts - previous.get('stamp', 0.0) > self.corridor_front_wall_max_age
+        ):
+            self.log.segment(
+                f'front_wall_lock dist={selected["distance"]:.3f}m '
+                f'target={self.corridor_front_wall_handoff_distance:.2f}m '
+                f'pts={selected["point_count"]} span={selected["span"]:.2f}m '
+                f'rms={selected["rms"]:.3f}m '
+                f'axis={math.degrees(selected["axis_error"]):.1f}deg '
+                f'gap<={self.corridor_front_wall_cluster_gap:.2f}m'
+            )
 
     def _fit_terminal_wall_line(self, points):
         """Fit one continuous wall cluster as y=m*x+b."""
@@ -3096,6 +3416,10 @@ class CompetitionController(Stage1VisionMixin, Node):
         self._terminal_wall_geometry_latch = None
         self._terminal_wall_filter_time = None
         self._terminal_wall_last_quality = None
+        self._corridor_front_wall_lock = None
+        self._corridor_front_wall_latch = None
+        self._corridor_front_wall_filter_time = None
+        self._corridor_front_wall_last_quality = None
         self._terminal_wall_sources = {'left': None, 'right': None}
         self._corridor_single_wall_lock = None
 
@@ -3198,20 +3522,22 @@ class CompetitionController(Stage1VisionMixin, Node):
         goal_xy = (float(goal_xy[0]), float(goal_xy[1]))
         final_waypoint = self.corridor_on_final_waypoint()
 
-        if final_waypoint and pose_xy[1] >= self.corridor_release_max_y:
+        front_wall_trigger = (
+            final_waypoint
+            and self.corridor_front_wall_handoff_enabled
+            and self._corridor_front_wall_within(
+                self.corridor_front_wall_handoff_distance, now_ts
+            )
+        )
+        y_gate_trigger = final_waypoint and pose_xy[1] >= self.corridor_release_max_y
+        if final_waypoint and (front_wall_trigger or y_gate_trigger):
             gate_status = self._corridor_handoff_gate_status(pose_xy, yaw, now_ts)
             if gate_status['ready']:
-                self.corridor_active = False
-                self.corridor_nav_mode = 'idle'
-                self.corridor_capture_active = False
-                self.corridor_align_active = False
-                self.corridor_entry_reorient_active = False
-                self.corridor_entry_reorient_started_at = None
-                self.phase1_motion_state = 'forward'
-                self._publish_stage2_entry_pose(pose_xy, yaw, gate_status)
-                self.stop_robot()
+                trigger_name = 'front_wall' if front_wall_trigger else 'Y gate'
                 reason = (
-                    f'Y gate handoff map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                    f'{trigger_name} handoff map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
+                    f'front_wall={self._corridor_front_wall_distance_text(now_ts)} '
+                    f'front_target={self.corridor_front_wall_handoff_distance:.2f} '
                     f'gate_y={self.corridor_release_max_y:.2f} '
                     f'x_window=({self.corridor_wall_handoff_min_x:.2f},'
                     f'{self.corridor_wall_handoff_max_x:.2f}) '
@@ -3220,8 +3546,7 @@ class CompetitionController(Stage1VisionMixin, Node):
                     f'err={math.degrees(gate_status["yaw_error"]):.1f}deg '
                     f'yaw_ok={gate_status["yaw_ok"]} wall_ok={gate_status["wall_ok"]}'
                 )
-                self.log.mission(reason)
-                self.begin_phase_transition(2, reason)
+                self._finish_corridor_handoff(pose_xy, yaw, gate_status, reason)
                 return
 
             if self._corridor_force_handoff_due(now_ts):
@@ -3232,7 +3557,11 @@ class CompetitionController(Stage1VisionMixin, Node):
                 self._start_corridor_reacquire(
                     pose_xy,
                     (
-                        f'handoff gate rejected gate_y={self.corridor_release_max_y:.2f} '
+                        f'handoff gate rejected trigger='
+                        f'{"front_wall" if front_wall_trigger else "Y"} '
+                        f'front_wall={self._corridor_front_wall_distance_text(now_ts)} '
+                        f'front_target={self.corridor_front_wall_handoff_distance:.2f} '
+                        f'gate_y={self.corridor_release_max_y:.2f} '
                         f'x_window=({self.corridor_wall_handoff_min_x:.2f},'
                         f'{self.corridor_wall_handoff_max_x:.2f}) '
                         f'x_ok={gate_status["x_ok"]} '
@@ -4385,8 +4714,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         return None
 
     def handle_phase1_lidar(self, scan_msg):
-        # 后退阶段完全不处理激光避障，由后退逻辑全权控制
-        if self.phase1_motion_state == 'backing':
+        # 后退和通道入口滚动对正完全不使用扫码避障。入口对正期间
+        # 侧墙/入口障碍只允许后续通道墙控逻辑处理，不能回到盲扫恢复。
+        if self.phase1_motion_state in ('backing', 'backing_align'):
+            self.obstacle_found = False
+            self.closest_obstacle_distance = float('inf')
+            self.avoid_cmd = Twist()
             return
 
         if self.phase1_motion_state == 'scan_escape_reversing':
@@ -4531,8 +4864,17 @@ class CompetitionController(Stage1VisionMixin, Node):
             else:
                 self.avoid_clear_since = None
 
-            if self.phase1_motion_state == 'scan_blocked':
-                self.avoid_cmd = Twist()
+            if self.phase1_motion_state in (
+                'scan_blocked',
+                'scan_escape_reversing',
+                'corridor_reverse_avoid',
+                'terminal_offset_avoiding',
+            ):
+                # These modes prepare their own command in begin_avoidance().
+                # Do not overwrite a reverse/special corridor command with
+                # the generic forward detour command below.
+                if self.phase1_motion_state == 'scan_blocked':
+                    self.avoid_cmd = Twist()
                 return
 
             if self.phase1_motion_state == 'avoiding':
@@ -4590,6 +4932,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             # It never commands the chassis directly; the 20Hz terminal loop
             # consumes only fresh, quality-checked geometry.
             self._update_terminal_wall_lock(msg)
+            self._update_corridor_front_wall_lock(msg)
             was_corridor = self.phase1_motion_state == 'corridor'
             self.handle_phase1_lidar(msg)
             if was_corridor and self.phase1_motion_state == 'avoiding':

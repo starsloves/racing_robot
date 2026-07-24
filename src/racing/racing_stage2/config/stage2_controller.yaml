@@ -56,10 +56,10 @@ stage2_inertial_navigator:
     stage2_ai_trigger_topic: stage2_ai_capture
     # 关闭时：第二个 180 度弯后执行 Ark/Qwen/本地 VLM 三路并发图生文。
     # 开启时：不触发图生文，入第二个 180 度弯 5 秒后直接播报对应方向的手填文字。
-    stage2_ai_preset_enabled: false
+    stage2_ai_preset_enabled: true
     stage2_ai_preset_delay_after_turn_sec: 5.0
     stage2_ai_preset_clockwise_text: "顺时针生图语音测试"
-    stage2_ai_preset_counterclockwise_text: "逆时针生图"
+    stage2_ai_preset_counterclockwise_text: "展示牌中是一个病人在病房中挂吊水的场景"
     stage2_ai_result_topic: ai_description
 
     # ────────────────────────────────────────────────────────────────────────
@@ -158,6 +158,17 @@ stage2_inertial_navigator:
     track_clockwise_exit_turn_90_angular: 1.25
     track_clockwise_exit_turn_90_exit_lead_deg: 30.0
 
+    # 方向独立直线/触发参数。两边先填成当前同一套，后续只改对应方向即可。
+    # 两个 180° 触发 X：
+    #   顺时针 entry_medium x<=min，top_long x>=max；
+    #   逆时针 entry_medium x>=max，top_long x<=min。
+    track_counterclockwise_turn_force_min_map_x: 1.60
+    track_counterclockwise_turn_force_max_map_x: 3.65
+    track_counterclockwise_exit_medium_distance_m: 0.65
+    track_clockwise_turn_force_min_map_x: 1.70
+    track_clockwise_turn_force_max_map_x: 3.65
+    track_clockwise_exit_medium_distance_m: 0.60
+
     # 第一个 180° 的标定中心：entry_arc 后 entry_medium 的名义距离。
     # 视觉触发开启后，此值不再是常规切段点，而是下方保护窗口的中心。
     track_entry_medium_distance_m: 0.65
@@ -187,7 +198,7 @@ stage2_inertial_navigator:
 
     # 顺时针：entry_medium x<=min，top_long x>=max；逆时针顺序相反。
     track_turn_force_map_x_enabled: true
-    track_turn_force_min_map_x: 1.70
+    track_turn_force_min_map_x: 1.60
     track_turn_force_max_map_x: 3.65
     # S2 局部 map X 原点：交接瞬间强制重置为 2.50m，随后只累计实时 TF 的相对变化。
     track_map_x_reset_m: 2.50

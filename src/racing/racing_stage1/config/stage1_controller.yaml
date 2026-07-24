@@ -501,6 +501,24 @@ competition_controller:
     corridor_terminal_wall_release_center_tolerance_m: 0.120
     corridor_terminal_wall_release_heading_deg: 2.5
     corridor_terminal_release_hold_sec: 0.20
+
+    # 前方横墙触发交权：S1 最后一段优先用雷达横墙距离，不依赖 map_y/里程计。
+    # 先锁定同一面连续横墙源，距离进入阈值后冻结触发证据；Y 门线仅作兜底。
+    corridor_front_wall_handoff_enabled: true
+    corridor_front_wall_handoff_distance_m: 2.55
+    corridor_front_wall_min_forward_m: 0.80
+    corridor_front_wall_max_forward_m: 3.20
+    corridor_front_wall_max_lateral_m: 2.80
+    corridor_front_wall_min_points: 12
+    corridor_front_wall_min_lateral_span_m: 0.80
+    corridor_front_wall_fit_residual_m: 0.040
+    corridor_front_wall_axis_tolerance_deg: 15.0
+    corridor_front_wall_cluster_gap_m: 0.30
+    corridor_front_wall_source_heading_jump_deg: 10.0
+    corridor_front_wall_source_distance_jump_m: 0.45
+    corridor_front_wall_filter_tau_sec: 0.18
+    corridor_front_wall_max_age_sec: 0.30
+
     # 首次入墙时可能仍有约 15cm 横向偏差；在交权 Y 门线前 1.20m 开始居中，
     # 给低速横向收敛保留足够距离，避免到门线才被迫倒回重捕获。
     corridor_terminal_capture_y_margin_m: 1.20

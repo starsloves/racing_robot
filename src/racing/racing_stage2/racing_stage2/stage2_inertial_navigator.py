@@ -91,6 +91,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 self.declare_parameter(f'{direction_prefix}_{segment}_linear', math.nan)
                 self.declare_parameter(f'{direction_prefix}_{segment}_angular', math.nan)
                 self.declare_parameter(f'{direction_prefix}_{segment}_exit_lead_deg', math.nan)
+            self.declare_parameter(f'{direction_prefix}_turn_force_min_map_x', math.nan)
+            self.declare_parameter(f'{direction_prefix}_turn_force_max_map_x', math.nan)
+            self.declare_parameter(f'{direction_prefix}_exit_medium_distance_m', math.nan)
         self.declare_parameter('track_vision_lateral_scale_m', 0.30)
         self.declare_parameter('track_vision_lateral_weight', 0.35)
         self.declare_parameter('track_vision_correction_max_angular', 0.10)
@@ -327,6 +330,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 self.get_parameter('track_exit_turn_90_angular').value
             ),
             direction_arc_profiles=self._read_direction_arc_profiles(),
+            direction_track_profiles=self._read_direction_track_profiles(),
             vision_lateral_scale_m=float(self.get_parameter('track_vision_lateral_scale_m').value),
             vision_lateral_weight=float(self.get_parameter('track_vision_lateral_weight').value),
             vision_correction_max_angular=float(
@@ -1218,6 +1222,25 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             'counterclockwise': self._read_arc_profile('track_counterclockwise'),
         }
 
+    def _read_direction_track_profile(self, prefix):
+        profile = {}
+        min_x = self._finite_parameter_or_none(f'{prefix}_turn_force_min_map_x')
+        max_x = self._finite_parameter_or_none(f'{prefix}_turn_force_max_map_x')
+        exit_distance = self._finite_parameter_or_none(f'{prefix}_exit_medium_distance_m')
+        if min_x is not None:
+            profile['turn_force_min_map_x'] = min_x
+        if max_x is not None:
+            profile['turn_force_max_map_x'] = max_x
+        if exit_distance is not None:
+            profile['exit_medium_distance_m'] = exit_distance
+        return profile
+
+    def _read_direction_track_profiles(self):
+        return {
+            'clockwise': self._read_direction_track_profile('track_clockwise'),
+            'counterclockwise': self._read_direction_track_profile('track_counterclockwise'),
+        }
+
     def nav_succeeded_for_test_start(self):
         if self.test_start_mode in ('after_corridor', 'nav_succeeded', 'corridor', 'true'):
             return True
@@ -1307,6 +1330,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             'TRACK_ARC_PROFILE',
             f'direction={self.direction} '
             f'{self._track_controller.arc_profile_summary(self.direction)}',
+        )
+        self._log_session(
+            'TRACK_DIRECTION_PROFILE',
+            f'direction={self.direction} '
+            f'{self._track_controller.track_profile_summary(self.direction)}',
         )
         self._log_session(
             'TRACK_MAP_X_RESET',
