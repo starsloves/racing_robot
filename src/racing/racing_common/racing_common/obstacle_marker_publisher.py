@@ -56,7 +56,7 @@ class ObstacleMarkerPublisher:
         self._logger = node.get_logger()
         self._is_cleared = True  # 防抖标志：True=已清空，False=有 markers
         self._last_marker_count = 0  # 上次发布的 marker 数量
-        self._logger.info(
+        self._logger.debug(
             f'ObstacleMarkerPublisher initialized: topic={topic}, '
             f'frame={frame_id}, radius={radius:.3f}m'
         )

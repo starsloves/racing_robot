@@ -13,7 +13,7 @@
 #
 # 调参速查：
 #   两个 180° 前触发点：SEG 在名义窗口确认；map x 作为固定坐标强制兜底。
-#   S2 启动时将局部 map x 重置为 2.50m；IMU 保持航向与全部转角。
+#   S2 启动时优先使用 Stage1 交接墙修正 X 作为真实 track_x；IMU 保持航向与全部转角。
 #   直线速度：track_max_speed
 #   四弯速度：track_<segment>_linear / track_<segment>_angular
 #   四个弯均以 IMU 相对转角为准；达到各自 exit_lead 提前角后立即切下一直线。
@@ -56,10 +56,10 @@ stage2_inertial_navigator:
     stage2_ai_trigger_topic: stage2_ai_capture
     # 关闭时：第二个 180 度弯后执行 Ark/Qwen/本地 VLM 三路并发图生文。
     # 开启时：不触发图生文，入第二个 180 度弯 5 秒后直接播报对应方向的手填文字。
-    stage2_ai_preset_enabled: true
+    stage2_ai_preset_enabled: false
     stage2_ai_preset_delay_after_turn_sec: 5.0
-    stage2_ai_preset_clockwise_text: "顺时针生图语音测试"
-    stage2_ai_preset_counterclockwise_text: "展示牌中是一个病人在病房中挂吊水的场景"
+    stage2_ai_preset_clockwise_text: "病人躺在病床上吊水"
+    stage2_ai_preset_counterclockwise_text: "医生和护士站在病房门口"
     stage2_ai_result_topic: ai_description
 
     # ────────────────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ stage2_inertial_navigator:
     # ────────────────────────────────────────────────────────────────────────
     # 直线速度：entry_medium / top_long / exit_medium / stage3_handoff_line
     # 直线段最大线速度（m/s）
-    track_max_speed: 0.66
+    track_max_speed: 0.80
 
     # 全局角速度限幅
     # 全局最大角速度（rad/s）
@@ -122,7 +122,7 @@ stage2_inertial_navigator:
     # entry_arc：入口 90°
     track_entry_arc_exit_lead_deg: 45.0
     # left_side_arc：第一个 180°
-    track_left_side_arc_exit_lead_deg: 35.0
+    track_left_side_arc_exit_lead_deg: 32.0
     # right_side_arc：第二个 180°
     track_right_side_arc_exit_lead_deg: 35.0
     # exit_turn_90：出口 90°，进入 Stage3 交接直线前的最后一弯
@@ -135,10 +135,10 @@ stage2_inertial_navigator:
     track_counterclockwise_entry_arc_exit_lead_deg: 45.0
     track_counterclockwise_left_side_arc_linear: 0.70
     track_counterclockwise_left_side_arc_angular: 1.30
-    track_counterclockwise_left_side_arc_exit_lead_deg: 35.0
+    track_counterclockwise_left_side_arc_exit_lead_deg: 29.0
     track_counterclockwise_right_side_arc_linear: 0.70
-    track_counterclockwise_right_side_arc_angular: 1.30
-    track_counterclockwise_right_side_arc_exit_lead_deg: 35.0
+    track_counterclockwise_right_side_arc_angular: 1.43
+    track_counterclockwise_right_side_arc_exit_lead_deg: 30.5
     track_counterclockwise_exit_turn_90_linear: 0.50
     track_counterclockwise_exit_turn_90_angular: 1.25
     track_counterclockwise_exit_turn_90_exit_lead_deg: 45.0
@@ -150,7 +150,7 @@ stage2_inertial_navigator:
     track_clockwise_entry_arc_exit_lead_deg: 25.0
     track_clockwise_left_side_arc_linear: 0.70
     track_clockwise_left_side_arc_angular: 1.25
-    track_clockwise_left_side_arc_exit_lead_deg: 40.0
+    track_clockwise_left_side_arc_exit_lead_deg: 43.0
     track_clockwise_right_side_arc_linear: 0.70
     track_clockwise_right_side_arc_angular: 1.25
     track_clockwise_right_side_arc_exit_lead_deg: 30.0
@@ -162,12 +162,12 @@ stage2_inertial_navigator:
     # 两个 180° 触发 X：
     #   顺时针 entry_medium x<=min，top_long x>=max；
     #   逆时针 entry_medium x>=max，top_long x<=min。
-    track_counterclockwise_turn_force_min_map_x: 1.60
-    track_counterclockwise_turn_force_max_map_x: 3.65
-    track_counterclockwise_exit_medium_distance_m: 0.65
+    track_counterclockwise_turn_force_min_map_x: 1.85
+    track_counterclockwise_turn_force_max_map_x: 4.00
+    track_counterclockwise_exit_medium_distance_m: 0.67
     track_clockwise_turn_force_min_map_x: 1.70
-    track_clockwise_turn_force_max_map_x: 3.65
-    track_clockwise_exit_medium_distance_m: 0.60
+    track_clockwise_turn_force_max_map_x: 3.75
+    track_clockwise_exit_medium_distance_m: 0.52
 
     # 第一个 180° 的标定中心：entry_arc 后 entry_medium 的名义距离。
     # 视觉触发开启后，此值不再是常规切段点，而是下方保护窗口的中心。
@@ -200,9 +200,7 @@ stage2_inertial_navigator:
     track_turn_force_map_x_enabled: true
     track_turn_force_min_map_x: 1.60
     track_turn_force_max_map_x: 3.65
-    # S2 局部 map X 原点：交接瞬间强制重置为 2.50m，随后只累计实时 TF 的相对变化。
-    track_map_x_reset_m: 2.50
-    # Stage1 在 Y 门线发布墙修正入口位姿；S2 用其 X 作为局部 map-X 偏置来源。
+    # Stage1 在交接时发布墙修正入口位姿；S2 用其 X 修正实时 TF map-X，不再固定重置到 YAML 常量。
     stage2_entry_pose_topic: stage2_entry_pose
     stage2_entry_pose_max_age_sec: 2.0
 
@@ -308,3 +306,4 @@ stage2_inertial_navigator:
     session_log_subdir: competition_stage2
     session_log_filename: latest.log
     session_telemetry_interval_sec: 0.50
+    session_track_ctrl_interval_sec: 0.50

@@ -145,7 +145,7 @@ stage3_return_navigator:
     p_approach_consecutive_hits: 2
 
     # 接近线速度 (m/s) — P 已接近画面中心时的最高速度
-    p_approach_linear_speed: 0.48
+    p_approach_linear_speed: 0.60
 
     # P 检测结果的最大有效年龄 (s)
     p_detection_timeout_sec: 0.35
@@ -184,7 +184,7 @@ stage3_return_navigator:
     p_final_heading_max_angular_speed: 0.12
     p_final_progress_min_delta_m: 0.015
     p_final_progress_timeout_sec: 0.75
-    p_final_stall_completion_min_m: 0.30
+    p_final_stall_completion_min_m: 0.25
 
     # 进入最终里程段时取消普通和紧急雷达避障，避免 P/终点墙抢占控制。
     p_approach_disable_avoidance_distance_m: 0.50
@@ -209,6 +209,12 @@ stage3_return_navigator:
     p_loss_heading_lookback_sec: 1.0
     p_loss_heading_tolerance_deg: 6.0
     p_loss_heading_kp: 1.2
+    # P 视觉接近阶段仍必须避开真实障碍。若持续下发前进但 /odom_combined
+    # 没有有效 xy 推进，判定车体已顶住障碍，复用紧急倒车带转向脱困。
+    # 该保护只在最终 0.5m 里程段之前生效；最终段仍屏蔽雷达误触发。
+    p_approach_stall_reverse_enabled: true
+    p_approach_progress_min_delta_m: 0.015
+    p_approach_progress_timeout_sec: 0.75
 
     # ────────────────────────────────────────────────────────────────────────
     # 保留墙角终端校正参数供离线调试；生产控制不使用墙角作为完成前置条件。
@@ -305,9 +311,9 @@ stage3_return_navigator:
     avoid_clear_distance: 0.65
 
     # 紧急近障距离 (m) — 命中后限时倒车并带反向侧转，再重新进入常规避障。
-    emergency_stop_distance: 0.22
-    emergency_reverse_speed: 0.14
-    emergency_reverse_duration_sec: 0.80
+    emergency_stop_distance: 0.30
+    emergency_reverse_speed: 0.20
+    emergency_reverse_duration_sec: 1.20
     emergency_reverse_angular_speed: 0.35
 
     # --- 反舵阶段 (Counter Steering) ---

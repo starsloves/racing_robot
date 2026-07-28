@@ -192,8 +192,8 @@ class VisionLaneCentering:
 # 创建占位图像（避免首次连接 404）
         self._write_placeholder_image()
 
-        self._node.get_logger().info('[视觉] 模块初始化完成，BPU模型延迟到预热/Phase2加载...')
-        self._node.get_logger().info(f'[视觉] HTTP 服务将在 phase=2 时绑定端口 {self.http_port}')
+        self._node.get_logger().debug('[视觉] 模块初始化完成，BPU模型延迟到预热/Phase2加载...')
+        self._node.get_logger().debug(f'[视觉] HTTP 服务将在 phase=2 时绑定端口 {self.http_port}')
     
     # ═══════════════════════════════════════════════════════
     # 外部接口（供导航节点调用）
@@ -1273,7 +1273,7 @@ setInterval(health, 500); health();
             cv2.putText(placeholder, f'http://0.0.0.0:{self.http_port}', (50, 220),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
             cv2.imwrite(self._jpeg_output_path, placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            self._node.get_logger().info('[视觉] 占位图像已写入')
+            self._node.get_logger().debug('[视觉] 占位图像已写入')
         except Exception as e:
             self._node.get_logger().warn(f'[视觉] 写入占位图像失败: {e}')
 

@@ -75,6 +75,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('blind_scan_avoid_min_clearance_m', 0.28)
         self.declare_parameter('blind_scan_avoid_pass_margin_m', 0.10)
         self.declare_parameter('blind_scan_avoid_detection_max_x_m', 1.00)
+        self.declare_parameter('blind_scan_avoid_obstacle_side_min_angle_deg', 5.0)
+        self.declare_parameter('blind_scan_avoid_obstacle_side_lane_extra_m', 0.12)
         self.declare_parameter('blind_scan_escape_reverse_linear_speed_mps', -0.16)
         self.declare_parameter('blind_scan_escape_reverse_angular_speed', 0.55)
         self.declare_parameter('blind_scan_escape_reverse_duration_sec', 0.80)
@@ -262,7 +264,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_terminal_wall_min_points', 8)
         self.declare_parameter('corridor_terminal_wall_min_span_m', 0.28)
         self.declare_parameter('corridor_terminal_wall_fit_residual_m', 0.035)
-        self.declare_parameter('corridor_terminal_wall_axis_tolerance_deg', 45.0)
+        self.declare_parameter('corridor_terminal_wall_axis_tolerance_deg', 35.0)
         # A wall is one spatially continuous scan cluster.  Sparse obstacle
         # returns are deliberately never merged into a candidate wall.
         self.declare_parameter('corridor_terminal_wall_cluster_gap_m', 0.30)
@@ -334,6 +336,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_wall_handoff_max_x_m', 2.62)
         self.declare_parameter('corridor_wall_x_adjust_gain', 2.0)
         self.declare_parameter('corridor_wall_x_adjust_max_heading_deg', 6.0)
+        self.declare_parameter('corridor_wall_x_large_error_m', 0.05)
+        self.declare_parameter('corridor_wall_x_large_adjust_max_heading_deg', 32.0)
         self.declare_parameter('corridor_path_follow_mode', 'pure_pursuit')  # pure_pursuit | stanley
         self.declare_parameter('corridor_force_reorient_enabled', False)
         self.declare_parameter('corridor_pp_min_lookahead_m', 0.25)
@@ -425,6 +429,13 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.blind_scan_avoid_detection_max_x = max(
             0.18,
             float(self.get_parameter('blind_scan_avoid_detection_max_x_m').value),
+        )
+        self.blind_scan_avoid_obstacle_side_min_angle = math.radians(
+            float(self.get_parameter('blind_scan_avoid_obstacle_side_min_angle_deg').value)
+        )
+        self.blind_scan_avoid_obstacle_side_lane_extra = max(
+            0.0,
+            float(self.get_parameter('blind_scan_avoid_obstacle_side_lane_extra_m').value),
         )
         self.blind_scan_escape_reverse_linear_speed = min(
             -0.05, float(self.get_parameter('blind_scan_escape_reverse_linear_speed_mps').value)
@@ -1016,6 +1027,20 @@ class CompetitionController(Stage1VisionMixin, Node):
             0.0,
             float(self.get_parameter('corridor_wall_x_adjust_max_heading_deg').value),
         ))
+        self.corridor_wall_x_large_error = max(
+            0.0, float(self.get_parameter('corridor_wall_x_large_error_m').value)
+        )
+        self.corridor_wall_x_large_adjust_max_heading = max(
+            self.corridor_wall_x_adjust_max_heading,
+            math.radians(max(
+                0.0,
+                float(
+                    self.get_parameter(
+                        'corridor_wall_x_large_adjust_max_heading_deg'
+                    ).value
+                ),
+            )),
+        )
         self.corridor_path_follow_mode = str(
             self.get_parameter('corridor_path_follow_mode').value
         ).strip().lower()
@@ -2456,6 +2481,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             'score': score,
             'max_lateral': max_lateral,
             'final_lateral': final_lateral,
+            'lateral_limit': lateral_limit,
             'min_obstacle_distance': min_obstacle_distance,
             'max_forward_progress': max_forward_progress,
             'required_forward_progress': required_forward_progress,
@@ -2791,6 +2817,15 @@ class CompetitionController(Stage1VisionMixin, Node):
         """Return the undirected wall-axis error in the robot frame."""
         return self._corridor_wall_local_axis_error(math.atan(line[0]))
 
+    def _terminal_wall_axis_summary(self, lines):
+        if not lines:
+            return 'n/a'
+        angles = [
+            math.degrees(self._terminal_wall_axis_error(line))
+            for line in lines
+        ]
+        return '/'.join(f'{angle:.1f}' for angle in angles[:3])
+
     def _terminal_wall_heading_axis_error(self, relative_heading, yaw):
         """Compare local wall tangent with robot forward; yaw kept for call compatibility."""
         return self._corridor_wall_local_axis_error(relative_heading)
@@ -2920,19 +2955,33 @@ class CompetitionController(Stage1VisionMixin, Node):
             return base_yaw
         if map_x < self.corridor_wall_handoff_min_x:
             error = self.corridor_wall_handoff_min_x - map_x
+            max_heading = (
+                self.corridor_wall_x_large_adjust_max_heading
+                if error >= self.corridor_wall_x_large_error
+                else self.corridor_wall_x_adjust_max_heading
+            )
             offset = -min(
-                self.corridor_wall_x_adjust_max_heading,
+                max_heading,
                 math.atan(self.corridor_wall_x_adjust_gain * error),
             )
         elif map_x > self.corridor_wall_handoff_max_x:
             error = map_x - self.corridor_wall_handoff_max_x
+            max_heading = (
+                self.corridor_wall_x_large_adjust_max_heading
+                if error >= self.corridor_wall_x_large_error
+                else self.corridor_wall_x_adjust_max_heading
+            )
             offset = min(
-                self.corridor_wall_x_adjust_max_heading,
+                max_heading,
                 math.atan(self.corridor_wall_x_adjust_gain * error),
             )
         else:
             offset = 0.0
         return self.normalize_angle(base_yaw + offset)
+
+    def _corridor_wall_reverse_x_adjusted_yaw(self, base_yaw, map_x):
+        forward_yaw = self._corridor_wall_x_adjusted_yaw(base_yaw, map_x)
+        return self.normalize_angle(2.0 * base_yaw - forward_yaw)
 
     def _select_terminal_wall_cluster(self, side, candidates, now_ts):
         """Keep a side attached to one compatible physical wall source."""
@@ -3026,6 +3075,8 @@ class CompetitionController(Stage1VisionMixin, Node):
             line for line in right_geometry_candidates
             if self._terminal_wall_axis_error(line) <= self.corridor_terminal_wall_axis_tolerance
         ]
+        left_axis_text = self._terminal_wall_axis_summary(left_geometry_candidates)
+        right_axis_text = self._terminal_wall_axis_summary(right_geometry_candidates)
         left_line = self._select_terminal_wall_cluster('left', left_candidates, now_ts)
         right_line = self._select_terminal_wall_cluster('right', right_candidates, now_ts)
         if left_line is None or right_line is None:
@@ -3062,6 +3113,8 @@ class CompetitionController(Stage1VisionMixin, Node):
                 'right_wall_clusters': len(right_candidates),
                 'left_geometry_clusters': len(left_geometry_candidates),
                 'right_geometry_clusters': len(right_geometry_candidates),
+                'left_axis_text': left_axis_text,
+                'right_axis_text': right_axis_text,
             }
             return
         left_slope, left_intercept, left_count, left_rms, left_span = left_line
@@ -3222,6 +3275,9 @@ class CompetitionController(Stage1VisionMixin, Node):
                         f'/R{quality.get("right_geometry_clusters", 0)}'
                         f' wall_clusters=L{quality.get("left_wall_clusters", 0)}'
                         f'/R{quality.get("right_wall_clusters", 0)}'
+                        f' axis=L{quality.get("left_axis_text", "n/a")}'
+                        f'/R{quality.get("right_axis_text", "n/a")}'
+                        f' tol={math.degrees(self.corridor_terminal_wall_axis_tolerance):.1f}deg'
                     )
                 self.log.warn(
                     'CORRIDOR',
@@ -3241,37 +3297,11 @@ class CompetitionController(Stage1VisionMixin, Node):
             )
         )
         wall_axis_error = self._corridor_wall_local_axis_error(wall_lock['heading_error'])
-        if (
-            self.corridor_wall_yaw_rebase_enabled
-            and not self._corridor_wall_yaw_rebased
-            and wall_axis_error > self.corridor_wall_yaw_rebase_axis_tolerance
-        ):
-            # Use only the local wall angle until the chassis is parallel
-            # enough to define the IMU->map yaw offset.
-            angular = self.clamp(
-                self.corridor_wall_follow_heading_kp * wall_lock['heading_error'],
-                self.corridor_wall_follow_max_angular_speed,
-            )
-            angular = self._limit_terminal_angular_command(angular, now_ts)
-            linear = self.corridor_wall_follow_correction_speed
-            self.corridor_nav_mode = 'corridor_wall_axis_align'
-            self.corridor_desired_heading = yaw
-            self.cmd_pub.publish(self.create_twist(linear, angular))
-            if now_ts - self._corridor_last_log_time >= self.corridor_log_period_sec:
-                self._corridor_last_log_time = now_ts
-                self.log.segment(
-                    f'corridor_wall_axis_align map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
-                    f'center={wall_lock["center_error"]:.3f}m '
-                    f'local_axis={math.degrees(wall_lock["heading_error"]):+.1f}deg '
-                    f'axis_err={math.degrees(wall_axis_error):.1f}deg '
-                    f'rebase_tol={math.degrees(self.corridor_wall_yaw_rebase_axis_tolerance):.1f}deg '
-                    f'v={linear:.2f} w={angular:.2f}'
-                )
-            return True
 
         # Wall fitting qualifies the corridor and may lower speed for a large
-        # center error.  Once yaw is wall-rebased, heading hold uses the
-        # corrected map yaw and a small wall-derived X-window adjustment.
+        # center error.  The wall axis is never allowed to take over steering:
+        # it is only a quality/rebase signal, while travel stays around the
+        # fixed IMU corridor yaw plus the bounded map-X merge bias.
         desired_yaw = self._corridor_wall_x_adjusted_yaw(
             self.corridor_goal_yaw,
             pose_xy[0],
@@ -3308,6 +3338,8 @@ class CompetitionController(Stage1VisionMixin, Node):
                 f'corridor_wall_follow map=({pose_xy[0]:.2f},{pose_xy[1]:.2f}) '
                 f'center={wall_lock["center_error"]:.3f}m '
                 f'parallel={math.degrees(wall_lock["heading_error"]):.1f}deg '
+                f'axis_err={math.degrees(wall_axis_error):.1f}deg '
+                f'yaw_rebased={self._corridor_wall_yaw_rebased} '
                 f'width={wall_lock["width"]:.2f}m '
                 f'cluster_span=L{wall_lock["left_span"]:.2f}/R{wall_lock["right_span"]:.2f}m '
                 f'prealign={terminal_prealign_active} '
@@ -3598,7 +3630,7 @@ class CompetitionController(Stage1VisionMixin, Node):
                 # Keep retreating, but cap curvature to the proven wall-return
                 # value so the vehicle can recover its IMU exit heading without
                 # abandoning the race at the overrun point.
-                desired_yaw = self._corridor_wall_x_adjusted_yaw(
+                desired_yaw = self._corridor_wall_reverse_x_adjusted_yaw(
                     self.corridor_goal_yaw,
                     pose_xy[0],
                 )
@@ -3642,7 +3674,7 @@ class CompetitionController(Stage1VisionMixin, Node):
                 self.corridor_reacquire_start_y = None
                 return
 
-            desired_yaw = self._corridor_wall_x_adjusted_yaw(
+            desired_yaw = self._corridor_wall_reverse_x_adjusted_yaw(
                 self.corridor_goal_yaw,
                 pose_xy[0],
             )
@@ -4166,10 +4198,59 @@ class CompetitionController(Stage1VisionMixin, Node):
                 for direction in (-1.0, 1.0)
             ]
             candidates = [candidate for candidate in candidates if candidate is not None]
+            danger_angle_rad = math.radians(danger_angle)
+            preferred_direction = None
+            if danger_angle_rad >= self.blind_scan_avoid_obstacle_side_min_angle:
+                preferred_direction = -1.0
+            elif danger_angle_rad <= -self.blind_scan_avoid_obstacle_side_min_angle:
+                preferred_direction = 1.0
+
+            for candidate in candidates:
+                away_side = (
+                    preferred_direction is not None
+                    and candidate['direction'] == preferred_direction
+                )
+                candidate['away_side'] = away_side
+                candidate['lane_relaxed_ok'] = (
+                    candidate['corridor_ok']
+                    or (
+                        away_side
+                        and candidate['max_lateral']
+                        <= candidate['lateral_limit']
+                        + self.blind_scan_avoid_obstacle_side_lane_extra
+                        + 1e-3
+                    )
+                )
+            away_feasible = [
+                candidate for candidate in candidates
+                if candidate['away_side']
+                and candidate['obstacle_ok']
+                and candidate['lane_relaxed_ok']
+            ]
             feasible = [
                 candidate for candidate in candidates
                 if candidate['corridor_ok'] and candidate['obstacle_ok']
             ]
+            if away_feasible:
+                selected = min(
+                    away_feasible,
+                    key=lambda candidate: (not candidate['pass_ok'], candidate['score']),
+                )
+                detail = 'scan_prediction_away ' + ' '.join(
+                    f"{'L' if candidate['direction'] > 0.0 else 'R'}="
+                    f"safe={candidate['obstacle_ok']} lane={candidate['corridor_ok']} "
+                    f"relaxed={candidate['lane_relaxed_ok']} "
+                    f"away={candidate['away_side']} "
+                    f"dmax={candidate['max_lateral']:.2f} "
+                    f"dend={candidate['final_lateral']:.2f} "
+                    f"clear={candidate['min_obstacle_distance']:.2f} "
+                    f"pass={candidate['pass_ok']} "
+                    f"advance={candidate['max_forward_progress']:.2f}/"
+                    f"{candidate['required_forward_progress']:.2f}"
+                    for candidate in candidates
+                )
+                return selected['direction'], detail
+
             if feasible:
                 selected = min(
                     feasible,
@@ -4178,6 +4259,7 @@ class CompetitionController(Stage1VisionMixin, Node):
                 detail = 'scan_prediction ' + ' '.join(
                     f"{'L' if candidate['direction'] > 0.0 else 'R'}="
                     f"safe={candidate['obstacle_ok']} lane={candidate['corridor_ok']} "
+                    f"away={candidate['away_side']} "
                     f"dmax={candidate['max_lateral']:.2f} "
                     f"dend={candidate['final_lateral']:.2f} "
                     f"clear={candidate['min_obstacle_distance']:.2f} "
@@ -4191,6 +4273,8 @@ class CompetitionController(Stage1VisionMixin, Node):
             detail = 'scan_prediction_blocked ' + ' '.join(
                 f"{'L' if candidate['direction'] > 0.0 else 'R'}="
                 f"safe={candidate['obstacle_ok']} lane={candidate['corridor_ok']} "
+                f"relaxed={candidate.get('lane_relaxed_ok', False)} "
+                f"away={candidate.get('away_side', False)} "
                 f"dmax={candidate['max_lateral']:.2f} "
                 f"clear={candidate['min_obstacle_distance']:.2f} "
                 f"pass={candidate['pass_ok']} "

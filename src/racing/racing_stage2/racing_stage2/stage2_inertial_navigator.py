@@ -62,7 +62,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_turn_force_map_x_enabled', False)
         self.declare_parameter('track_turn_force_min_map_x', 0.50)
         self.declare_parameter('track_turn_force_max_map_x', 4.00)
-        self.declare_parameter('track_map_x_reset_m', 2.50)
         self.declare_parameter('stage2_entry_pose_topic', 'stage2_entry_pose')
         self.declare_parameter('stage2_entry_pose_max_age_sec', 2.0)
         self.declare_parameter('track_top_long_distance_m', 2.59)
@@ -425,8 +424,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._stage3_preplan_sent = False
         self._stage3_handoff_active = False
         self._stage3_handoff_deadline = None
-        self._track_map_x_reset_m = float(self.get_parameter('track_map_x_reset_m').value)
-        self._track_map_x_reset_origin = None
+        self._track_map_x_origin = None
         self._track_map_x_correction_offset = 0.0
         self._stage2_entry_pose = None
         self._stage2_entry_pose_max_age = max(
@@ -456,6 +454,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._turn_finish_time = 0.0
         self._accel_ramp_duration = float(self.get_parameter('move_accel_ramp_sec').value)
         self._last_ramp_pct = -1  # 记录上次日志的进度百分比
+        self._last_track_ctrl_log_sec = 0.0
+        self._last_track_ctrl_signature = None
         
         self.segment_end_pose = None  # 世界坐标系下的段终点（仅 world 模式使用）
         self._world_start_pose = None  # 世界坐标系下的起点信息
@@ -514,6 +514,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('session_log_subdir', 'direct_inertial_test')
         self.declare_parameter('session_log_filename', 'latest.log')
         self.declare_parameter('session_telemetry_interval_sec', 0.25)
+        self.declare_parameter('session_track_ctrl_interval_sec', 0.50)
         self.declare_parameter('control_gap_warn_sec', 0.35)
         self.declare_parameter('control_gap_stop_sec', 1.0)
         subdir = (
@@ -525,6 +526,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         )
         self._telemetry_interval_sec = max(
             0.05, float(self.get_parameter('session_telemetry_interval_sec').value)
+        )
+        self._track_ctrl_log_interval_sec = max(
+            0.0, float(self.get_parameter('session_track_ctrl_interval_sec').value)
         )
         self._session_log_subdir = subdir
         self._session_log_filename = filename
@@ -1295,11 +1299,13 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         entry_map_xy = self._track_map_position()
         entry_pose = self._fresh_stage2_entry_pose(now)
         self._track_map_x_correction_offset = 0.0
+        track_x_source = 'real_tf'
         if entry_pose is not None and entry_map_xy is not None:
             self._track_map_x_correction_offset = entry_pose['x'] - entry_map_xy[0]
-            self._track_map_x_reset_origin = entry_pose['x']
+            self._track_map_x_origin = entry_pose['x']
+            track_x_source = 'stage1_handoff'
         else:
-            self._track_map_x_reset_origin = None if entry_map_xy is None else entry_map_xy[0]
+            self._track_map_x_origin = None if entry_map_xy is None else entry_map_xy[0]
         self._track_pose_integrator.reset(self._last_ekf_position, self.current_yaw)
         self._track_pose = self._track_pose_integrator.pose
         self._track_distance_m = self._track_pose_integrator.total_distance_m
@@ -1338,11 +1344,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         )
         self._log_session(
             'TRACK_MAP_X_RESET',
-            f'reset_x={self._track_map_x_reset_m:.3f} '
-            f'origin_map_x={self._track_map_x_reset_origin if self._track_map_x_reset_origin is not None else "unavailable"} '
+            f'track_x={self._track_map_x_origin if self._track_map_x_origin is not None else "unavailable"} '
+            f'origin_map_x={self._track_map_x_origin if self._track_map_x_origin is not None else "unavailable"} '
             f'tf_entry_x={entry_map_xy[0] if entry_map_xy is not None else "unavailable"} '
             f'wall_offset={self._track_map_x_correction_offset:+.3f} '
-            f'entry_pose_age={now - entry_pose["stamp"] if entry_pose is not None else "unavailable"}',
+            f'entry_pose_age={now - entry_pose["stamp"] if entry_pose is not None else "unavailable"} '
+            f'source={track_x_source}',
         )
         self.publish_feedback(
             f'{self.test_feedback_prefix}圆角轨迹闭环启动，方向: {self.direction_text()}'
@@ -1519,36 +1526,47 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                           f'age={float(visual.get("age", 999.0) or 999.0):.2f}')
         else:
             vision_log = 'invalid'
-        self._log_session(
-            'TRACK_CTRL',
-            f'state={command.state} v={command.linear:.3f} w={command.angular:.3f} '
-            f'progress={command.progress_m:.3f} cross={command.cross_track_m:.3f} '
-            f'head={math.degrees(command.heading_error_rad):.1f} '
-            f'target_v={command.target_speed:.3f} '
-            f'segment={command.segment} '
-            f'seg_s={command.segment_progress_m:.3f}/{command.segment_target_m:.3f} '
-            f'turn={math.degrees(command.turn_progress_rad):.1f}/'
-            f'{math.degrees(command.turn_target_rad):.1f} '
-            f'arc_ref={math.degrees(command.arc_reference_yaw_rad):.1f} '
-            f'arc_final_err={math.degrees(command.arc_final_heading_error_rad):+.1f} '
-            f'arc_parts=(base={command.arc_base_angular:+.3f},'
-            f'damping={command.arc_damping_angular:+.3f},'
-            f'cutoff={str(command.arc_cutoff_active).lower()},'
-            f'done={command.arc_completion_reason or "pending"}) '
-            f'angular_parts=(head={command.line_heading_angular:+.3f},'
-            f'vision={command.vision_angular:+.3f},'
-            f'damping={command.yaw_rate_damping_angular:+.3f}) '
-            f'turn_boundary={command.entry_boundary_trigger or "none"} '
-            f'entry_guard={command.entry_boundary_window_min_m:.3f}/'
-            f'{command.entry_boundary_window_max_m:.3f} '
-            f'boundary_top_y={command.entry_boundary_top_y_ratio:.3f} '
-            f'boundary_angle={command.entry_boundary_angle_deg:.1f} '
-            f'boundary_confirm={command.entry_boundary_confirm_frames} '
-            f'imu_xy=({self._track_pose[0]:.3f},{self._track_pose[1]:.3f}) '
-            f'ekf_s={self._track_distance_m:.3f} '
-            f'imu_w={getattr(self, "current_imu_yaw_rate", 0.0):.3f} '
-            f'vision={vision_log}',
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        track_ctrl_signature = (
+            command.state, command.segment, bool(command.safe_stop), bool(command.complete)
         )
+        should_log_track_ctrl = (
+            track_ctrl_signature != self._last_track_ctrl_signature
+            or now_sec - self._last_track_ctrl_log_sec >= self._track_ctrl_log_interval_sec
+        )
+        if should_log_track_ctrl:
+            self._last_track_ctrl_log_sec = now_sec
+            self._last_track_ctrl_signature = track_ctrl_signature
+            self._log_session(
+                'TRACK_CTRL',
+                f'state={command.state} v={command.linear:.3f} w={command.angular:.3f} '
+                f'progress={command.progress_m:.3f} cross={command.cross_track_m:.3f} '
+                f'head={math.degrees(command.heading_error_rad):.1f} '
+                f'target_v={command.target_speed:.3f} '
+                f'segment={command.segment} '
+                f'seg_s={command.segment_progress_m:.3f}/{command.segment_target_m:.3f} '
+                f'turn={math.degrees(command.turn_progress_rad):.1f}/'
+                f'{math.degrees(command.turn_target_rad):.1f} '
+                f'arc_ref={math.degrees(command.arc_reference_yaw_rad):.1f} '
+                f'arc_final_err={math.degrees(command.arc_final_heading_error_rad):+.1f} '
+                f'arc_parts=(base={command.arc_base_angular:+.3f},'
+                f'damping={command.arc_damping_angular:+.3f},'
+                f'cutoff={str(command.arc_cutoff_active).lower()},'
+                f'done={command.arc_completion_reason or "pending"}) '
+                f'angular_parts=(head={command.line_heading_angular:+.3f},'
+                f'vision={command.vision_angular:+.3f},'
+                f'damping={command.yaw_rate_damping_angular:+.3f}) '
+                f'turn_boundary={command.entry_boundary_trigger or "none"} '
+                f'entry_guard={command.entry_boundary_window_min_m:.3f}/'
+                f'{command.entry_boundary_window_max_m:.3f} '
+                f'boundary_top_y={command.entry_boundary_top_y_ratio:.3f} '
+                f'boundary_angle={command.entry_boundary_angle_deg:.1f} '
+                f'boundary_confirm={command.entry_boundary_confirm_frames} '
+                f'imu_xy=({self._track_pose[0]:.3f},{self._track_pose[1]:.3f}) '
+                f'ekf_s={self._track_distance_m:.3f} '
+                f'imu_w={getattr(self, "current_imu_yaw_rate", 0.0):.3f} '
+                f'vision={vision_log}',
+            )
         if command.safe_stop:
             self._log_session('TRACK_SAFE_STOP', command.reason)
             self.publish_feedback(
@@ -1593,20 +1611,20 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             return None
 
     def _track_rebased_map_x(self, map_xy):
-        """Return map X in the S2 frame whose handoff origin is 2.5m."""
+        """Return real map X corrected by the Stage1 handoff wall offset."""
         if map_xy is None:
             return None
         corrected_map_x = float(map_xy[0]) + self._track_map_x_correction_offset
-        if self._track_map_x_reset_origin is None:
-            self._track_map_x_reset_origin = corrected_map_x
+        if self._track_map_x_origin is None:
+            self._track_map_x_origin = corrected_map_x
             self._log_session(
                 'TRACK_MAP_X_RESET',
-                f'reset_x={self._track_map_x_reset_m:.3f} '
-                f'origin_map_x={self._track_map_x_reset_origin:.3f} '
+                f'track_x={corrected_map_x:.3f} '
+                f'origin_map_x={self._track_map_x_origin:.3f} '
                 f'tf_entry_x={float(map_xy[0]):.3f} '
                 f'wall_offset={self._track_map_x_correction_offset:+.3f} source=first_tf',
             )
-        return self._track_map_x_reset_m + corrected_map_x - self._track_map_x_reset_origin
+        return corrected_map_x
 
     def _publish_stage3_entry_anchor(self):
         map_xy = self._track_map_position()

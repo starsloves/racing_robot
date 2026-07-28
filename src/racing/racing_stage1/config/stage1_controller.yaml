@@ -34,7 +34,7 @@ competition_controller:
     # 初始静止时的赛场 map 航向 (°)。首帧原始 IMU yaw 映射到该值，
     # 后续仅叠加 IMU 的相对转角，供 Stage1 全部状态使用。
     # Stage1 和总启动会由此派生 map_to_odom_yaw，二者必须一致。
-    imu_initial_map_yaw_deg: 10.0
+    imu_initial_map_yaw_deg: 20.0
     # 原始 IMU 的安装零偏 (°)。仅在已实测固定零偏时调整；默认不额外修正。
     imu_yaw_offset_deg: 0.0
     # 发布给 Stage2 的 latched IMU->map 航向零点映射；Stage2 必须继承此值。
@@ -94,7 +94,7 @@ competition_controller:
     # ────────────────────────────────────────────────────────────────────────
 
     # 盲开线速度 (m/s) — Phase1 初始前进速度
-    blind_linear_speed: 0.50
+    blind_linear_speed: 0.60
 
     # 二维码接近区减速起点（/odom_combined X，m）。超过该值时使用下方速度。
     blind_qr_slowdown_start_x_m: 1.5
@@ -109,9 +109,9 @@ competition_controller:
     # 二维码扫描中心线与受限避障 (QR Scan Centerline Avoidance)
     # ────────────────────────────────────────────────────────────────────────
 
-    # 二维码观察区的 map 中心线。当前赛道是直线；代码按折线处理，实车改线时
-    # 只需增加中继点。扫码解码和中心线导向使用不同门线，避免过早拐向横带。
-    blind_scan_centerline_json: '[{"x":0.25,"y":1.80},{"x":4.50,"y":1.80}]'
+    # 二维码观察区的 map 中心线。代码按折线处理；用多点折线近似现场弯曲路线。
+    # 扫码解码和中心线导向使用不同门线，避免过早拐向横带。
+    blind_scan_centerline_json: '[{"x":0.25,"y":0.20},{"x":0.64,"y":0.23},{"x":1.00,"y":0.28},{"x":1.750,"y":0.36},{"x":2.50,"y":0.56},{"x":3.20,"y":0.98},{"x":3.53,"y":1.13},{"x":3.80,"y":1.45}]'
     # 二维码解码从此处开始；该门线不产生转向命令。
     blind_scan_capture_start_odom_x_m: 1.0
     # 未识别二维码时，接近观察位才允许向中心线切入；切入角速度经 ramp 平滑增加。
@@ -139,10 +139,14 @@ competition_controller:
     blind_scan_avoid_pass_margin_m: 0.10
     # 扫码阶段提前发现前方聚类，给完整 S 形绕行保留制动/横移距离。
     blind_scan_avoid_detection_max_x_m: 1.00
+    # 障碍明显偏左/偏右时优先选择远离障碍的一侧；该侧可获得少量扫描带放宽，
+    # 但仍必须满足障碍净距，避免为了贴中心线朝障碍同侧绕行。
+    blind_scan_avoid_obstacle_side_min_angle_deg: 5.0
+    blind_scan_avoid_obstacle_side_lane_extra_m: 0.12
     # 两个前向候选均不可行时，只尝试一次后退转向脱困。车后近区有聚类则立刻停车。
-    blind_scan_escape_reverse_linear_speed_mps: -0.16
+    blind_scan_escape_reverse_linear_speed_mps: -0.22
     blind_scan_escape_reverse_angular_speed: 0.55
-    blind_scan_escape_reverse_duration_sec: 0.80
+    blind_scan_escape_reverse_duration_sec: 1.00
     # 后退已创造前向净距时，允许一次有限的扫描带外横移，随后恢复中心线。
     blind_scan_escape_corridor_extra_m: 0.12
     blind_scan_escape_rear_min_x_m: -0.45
@@ -304,7 +308,7 @@ competition_controller:
     enable_backing: true
 
     # 后退目标 X (m, map 坐标系) — 后退到 map_x ≤ 此值时停止
-    back_target_x: 2.0
+    back_target_x: 2.10
 
     # 后退线速度 (m/s) — 负值表示倒车；速度须低于 0.05m 轨迹采样的可跟踪范围
     back_linear_speed: -0.45
@@ -420,7 +424,7 @@ competition_controller:
     corridor_terminal_release_yaw_tolerance_deg: 10.0
 
     # 终端速度（m/s）：逼近与墙几何锁存后均使用此值；保持 IMU 固定 90°。
-    corridor_terminal_linear_speed: 0.28
+    corridor_terminal_linear_speed: 0.40
 
     # 距离 Y 门线该距离以内，若仍未进入最终 X 容差才开启微小横向修正 (m)
     corridor_terminal_micro_start_y_margin_m: 0.18
@@ -475,8 +479,9 @@ competition_controller:
     corridor_terminal_wall_min_points: 8
     corridor_terminal_wall_min_span_m: 0.45
     corridor_terminal_wall_fit_residual_m: 0.035
-    # 墙线轴向只和车体系前向比较；倒退后已先对正 90°，这里收紧以拒绝差 90° 的墙。
-    corridor_terminal_wall_axis_tolerance_deg: 20.0
+    # 墙线轴向只和车体系前向比较；候选锁墙放宽到 35°，让入口偏航时先锁墙再对齐。
+    # IMU 重标定仍由 corridor_wall_yaw_rebase_axis_tolerance_deg=10° 控制。
+    corridor_terminal_wall_axis_tolerance_deg: 35.0
     # 仅相邻激光点间距不超过 0.30m 的连续整段才可构成边墙；障碍物离散点不会并入。
     corridor_terminal_wall_cluster_gap_m: 0.30
     # 完整赛道边界在当前前视窗口内至少应有该前向跨度。
@@ -505,7 +510,7 @@ competition_controller:
     # 前方横墙触发交权：S1 最后一段优先用雷达横墙距离，不依赖 map_y/里程计。
     # 先锁定同一面连续横墙源，距离进入阈值后冻结触发证据；Y 门线仅作兜底。
     corridor_front_wall_handoff_enabled: true
-    corridor_front_wall_handoff_distance_m: 2.55
+    corridor_front_wall_handoff_distance_m: 2.48
     corridor_front_wall_min_forward_m: 0.80
     corridor_front_wall_max_forward_m: 3.20
     corridor_front_wall_max_lateral_m: 2.80
@@ -514,7 +519,7 @@ competition_controller:
     corridor_front_wall_fit_residual_m: 0.040
     corridor_front_wall_axis_tolerance_deg: 15.0
     corridor_front_wall_cluster_gap_m: 0.30
-    corridor_front_wall_source_heading_jump_deg: 10.0
+    corridor_front_wall_source_heading_jump_deg: 20.0
     corridor_front_wall_source_distance_jump_m: 0.45
     corridor_front_wall_filter_tau_sec: 0.18
     corridor_front_wall_max_age_sec: 0.30
@@ -542,7 +547,8 @@ competition_controller:
     corridor_wall_follow_enabled: true
     corridor_wall_follow_require_lock: true
     # 居中后以 0.48m/s 巡航；偏差超过 12cm 时减到 0.32m/s。
-    # 墙轴进入 10° 内时重标 IMU->map yaw；之后仍围绕 90°保持通道方向。
+    # 墙轴只作为质量和 IMU->map 重标定信号，绝不单独抢占转向。
+    # 墙轴进入 10° 内时重标 IMU->map yaw；行驶始终围绕 90°并叠加 X 并线修正。
     corridor_wall_follow_linear_speed_mps: 0.48
     corridor_wall_follow_correction_speed_mps: 0.32
     corridor_wall_follow_slow_center_error_m: 0.12
@@ -569,9 +575,12 @@ competition_controller:
     corridor_wall_map_center_x_m: 2.50
     corridor_wall_handoff_min_x_m: 2.35
     corridor_wall_handoff_max_x_m: 2.65
-    # 修正后的 X 未进窗口时，只给一个小航向偏置动态并线；进窗口后直行。
+    # 修正后的 X 未进窗口时动态并线；贴近窗口时仍是小角度，偏差超过 5cm 后
+    # 允许按 atan(gain*error) 平滑放大到 32°，避免在 Y 门线前只横移几厘米。
     corridor_wall_x_adjust_gain: 2.0
     corridor_wall_x_adjust_max_heading_deg: 6.0
+    corridor_wall_x_large_error_m: 0.05
+    corridor_wall_x_large_adjust_max_heading_deg: 32.0
 
     # 通道导航超时 (s) — 超时后强制切 Stage2
     corridor_timeout_sec: 45.0

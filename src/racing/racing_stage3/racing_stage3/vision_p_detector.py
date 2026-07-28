@@ -89,8 +89,8 @@ class VisionPDetector:
 
         # 创建占位图像
         self._write_placeholder_image()
-        self._node.get_logger().info('[P-DET] 模块初始化完成，BPU模型将在Phase3按需加载...')
-        self._node.get_logger().info(f'[P-DET] HTTP 服务将在 phase=3 时绑定端口 {self.http_port}')
+        self._node.get_logger().debug('[P-DET] 模块初始化完成，BPU模型将在Phase3按需加载...')
+        self._node.get_logger().debug(f'[P-DET] HTTP 服务将在 phase=3 时绑定端口 {self.http_port}')
 
     def get_p_detection(self):
         with self._lock:
@@ -196,7 +196,7 @@ class VisionPDetector:
             cv2.putText(placeholder, f'http://0.0.0.0:{self.http_port}', (50, 220),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
             cv2.imwrite(self._jpeg_output_path, placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            self._node.get_logger().info('[P-DET] 占位图像已写入')
+            self._node.get_logger().debug('[P-DET] 占位图像已写入')
         except Exception as e:
             self._node.get_logger().warn(f'[P-DET] 写入占位图像失败: {e}')
 

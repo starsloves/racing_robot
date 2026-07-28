@@ -17,6 +17,8 @@ Usage::
 Output format: ``[TAG] message`` — written to both ROS logger and file.
 """
 
+import time
+
 from .session_file_log import SessionFileLog
 
 
@@ -24,12 +26,15 @@ class RacingLogger:
     """Unified logger — writes [TAG] message to ROS logger + file."""
 
     def __init__(self, node, log_subdir='default', log_filename='latest.log',
-                 session_title='session', defer_file=False):
+                 session_title='session', defer_file=False,
+                 telemetry_period_sec=0.50):
         self._node = node
         self._log_subdir = log_subdir
         self._log_filename = log_filename
         self._session_title = session_title
         self._file_log = None
+        self._telemetry_period_sec = max(0.0, float(telemetry_period_sec))
+        self._last_telemetry_sec = {}
         if not defer_file:
             self.start_session()
 
@@ -95,6 +100,11 @@ class RacingLogger:
         self._write('FEEDBACK', message, 'info')
 
     def telemetry(self, reason, message):
+        now = time.monotonic()
+        last = self._last_telemetry_sec.get(reason, float('-inf'))
+        if now - last < self._telemetry_period_sec:
+            return
+        self._last_telemetry_sec[reason] = now
         self._write('TELEM', f'{reason} | {message}', 'info', file_only=True)
 
     def odom_wheel(self, message):

@@ -147,6 +147,8 @@ class Stage3ReturnNavigator(Node):
         self._p_recovery_target_yaw = None
         # Preserve the visual heading while lidar temporarily takes control.
         self._p_avoidance_recovery_yaw = None
+        self._p_approach_progress_odom = None
+        self._p_approach_progress_at = None
 
         # P 终段深度当前仅用于实车标定日志，不参与控制或完成判定。
         self._depth_bridge = CvBridge()
@@ -284,6 +286,9 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_loss_heading_lookback_sec', 1.0)
         self.declare_parameter('p_loss_heading_tolerance_deg', 6.0)
         self.declare_parameter('p_loss_heading_kp', 1.2)
+        self.declare_parameter('p_approach_stall_reverse_enabled', True)
+        self.declare_parameter('p_approach_progress_min_delta_m', 0.015)
+        self.declare_parameter('p_approach_progress_timeout_sec', 0.75)
         self.declare_parameter('p_web_port', 8083)
         self.declare_parameter('p_detection_timeout_sec', 0.35)
         self.declare_parameter('p_depth_logging_enabled', True)
@@ -521,6 +526,17 @@ class Stage3ReturnNavigator(Node):
             0.1, float(self.get_parameter('p_loss_heading_tolerance_deg').value)
         ))
         self.p_loss_heading_kp = float(self.get_parameter('p_loss_heading_kp').value)
+        self.p_approach_stall_reverse_enabled = bool(
+            self.get_parameter('p_approach_stall_reverse_enabled').value
+        )
+        self.p_approach_progress_min_delta = max(
+            0.001,
+            float(self.get_parameter('p_approach_progress_min_delta_m').value),
+        )
+        self.p_approach_progress_timeout = max(
+            0.1,
+            float(self.get_parameter('p_approach_progress_timeout_sec').value),
+        )
         self.p_web_port = int(self.get_parameter('p_web_port').value)
         self.p_detection_timeout = max(
             0.0, float(self.get_parameter('p_detection_timeout_sec').value)
@@ -1369,6 +1385,8 @@ class Stage3ReturnNavigator(Node):
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
         self._p_avoidance_recovery_yaw = None
+        self._p_approach_progress_odom = None
+        self._p_approach_progress_at = None
         self._set_p_inference_active(True)
         # Phase3 starts the return immediately; P is terminal semantic confirmation only.
         self._set_channel_inference_active(False)
@@ -1425,6 +1443,8 @@ class Stage3ReturnNavigator(Node):
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
         self._p_avoidance_recovery_yaw = None
+        self._p_approach_progress_odom = None
+        self._p_approach_progress_at = None
         self._pre_return_state = 'idle'
         self._channel_hits = 0
         self._channel_offset_filtered = 0.0
@@ -1735,6 +1755,8 @@ class Stage3ReturnNavigator(Node):
             return
         self.avoid_state = 'forward'
         self.emergency_reverse_deadline = None
+        if self._p_approaching:
+            self._reset_p_approach_progress_watchdog()
         self._publish_state('running')
         self.log.mission('emergency reverse complete; rechecking lidar avoidance')
 
@@ -2375,6 +2397,7 @@ class Stage3ReturnNavigator(Node):
         self._reset_p_final_visual_evidence()
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
+        self._reset_p_approach_progress_watchdog()
         self._publish_state('p_approach')
         map_pos = self.current_position
         map_text = (
@@ -2476,6 +2499,8 @@ class Stage3ReturnNavigator(Node):
             self._p_final_approach_latched = True
         if self._try_arm_p_final_odometry(depth_m, samples, depth_status, fill):
             self._run_p_final_odometry()
+            return
+        if self._check_p_approach_stall(linear):
             return
         self._publish_state('p_approach')
         self.log.telemetry(
@@ -2666,6 +2691,7 @@ class Stage3ReturnNavigator(Node):
         self._p_visible_yaw_history.clear()
         self.desired_heading = None
         self._filtered_heading_err = 0.0
+        self._reset_p_approach_progress_watchdog()
         recovery_reason = 'heading_restored' if heading_restored else 'reverse_timeout'
         self._publish_state('map_search_p')
         self.log.mission(
@@ -2680,6 +2706,84 @@ class Stage3ReturnNavigator(Node):
         if yaw_rad is None:
             return 'nan'
         return f'{math.degrees(yaw_rad):.1f}deg'
+
+    def _reset_p_approach_progress_watchdog(self):
+        self._p_approach_progress_odom = self._last_raw_odom_xy
+        self._p_approach_progress_at = self._now_sec()
+
+    def _check_p_approach_stall(self, commanded_linear):
+        if (
+            not self.p_approach_stall_reverse_enabled
+            or commanded_linear <= 0.0
+            or self._p_final_run_start_odom is not None
+            or self._p_final_approach_latched
+            or self._last_raw_odom_xy is None
+        ):
+            self._reset_p_approach_progress_watchdog()
+            return False
+        now = self._now_sec()
+        if self._p_approach_progress_odom is None:
+            self._reset_p_approach_progress_watchdog()
+            return False
+        progress_delta = math.hypot(
+            self._last_raw_odom_xy[0] - self._p_approach_progress_odom[0],
+            self._last_raw_odom_xy[1] - self._p_approach_progress_odom[1],
+        )
+        if progress_delta >= self.p_approach_progress_min_delta:
+            self._p_approach_progress_odom = self._last_raw_odom_xy
+            self._p_approach_progress_at = now
+            return False
+        if (
+            self._p_approach_progress_at is None
+            or now - self._p_approach_progress_at < self.p_approach_progress_timeout
+        ):
+            return False
+        self._begin_p_approach_stall_reverse(
+            now - self._p_approach_progress_at,
+            progress_delta,
+        )
+        self._run_emergency_reverse()
+        return True
+
+    def _begin_p_approach_stall_reverse(self, stalled_sec, progress_delta):
+        obstacle = None
+        if self.latest_scan is not None:
+            obstacle = self._find_nearest_obstacle(self.latest_scan, emergency=True)
+            if obstacle is None:
+                obstacle = self._find_nearest_obstacle(self.latest_scan, emergency=False)
+
+        if obstacle is not None:
+            self._begin_emergency_reverse(obstacle)
+            self.log.warn(
+                'P_APPROACH_STALL',
+                f'forward command stalled for {stalled_sec:.2f}s '
+                f'progress={progress_delta:.3f}m; use lidar obstacle '
+                f'dist={obstacle["dist"]:.2f}m danger={obstacle["danger_deg"]:.1f}deg',
+            )
+            return
+
+        if abs(self._p_offset_filtered) > 0.05:
+            self.avoid_turn_direction = -math.copysign(1.0, self._p_offset_filtered)
+            direction_source = f'p_offset={self._p_offset_filtered:+.3f}'
+        elif abs(self._p_last_angular) > 1e-3:
+            self.avoid_turn_direction = math.copysign(1.0, self._p_last_angular)
+            direction_source = f'last_angular={self._p_last_angular:+.2f}'
+        else:
+            self.avoid_turn_direction = 1.0
+            direction_source = 'fallback_left'
+        self.avoid_state = 'emergency_reversing'
+        self.emergency_reverse_deadline = self.get_clock().now() + Duration(
+            seconds=self.emergency_reverse_duration
+        )
+        self._publish_state('emergency_reversing')
+        self.log.warn(
+            'P_APPROACH_STALL',
+            f'forward command stalled for {stalled_sec:.2f}s '
+            f'progress={progress_delta:.3f}m; no lidar cluster in window, '
+            f'reverse for {self.emergency_reverse_duration:.2f}s '
+            f'dir={self.avoid_turn_direction:.0f} {direction_source}',
+        )
+        self._publish_feedback('P approach stalled: reverse and retry obstacle clearance')
 
     def _visual_target_yaw(self, offset):
         """Turn one P-frame offset into a heading that IMU can hold straight."""
@@ -3265,6 +3369,8 @@ class Stage3ReturnNavigator(Node):
         self.counter_steer_deadline = None
         self.recovery_deadline = None
         self.recovery_uses_heading = False
+        if self._p_approaching:
+            self._reset_p_approach_progress_watchdog()
         self._publish_state('running')
 
     def destroy_node(self):
