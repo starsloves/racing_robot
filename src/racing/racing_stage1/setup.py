@@ -25,7 +25,6 @@ setup(
     entry_points={
         'console_scripts': [
             'competition_controller = racing_stage1.competition_controller:main',
-            'stage_test_publisher = racing_stage1.stage_test_publisher:main',
             'stage_test_publisher_fixed = racing_stage1.stage_test_publisher_fixed:main',
         ],
     },

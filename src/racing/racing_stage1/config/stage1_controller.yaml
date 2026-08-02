@@ -94,7 +94,7 @@ competition_controller:
     # ────────────────────────────────────────────────────────────────────────
 
     # 盲开线速度 (m/s) — Phase1 初始前进速度
-    blind_linear_speed: 0.60
+    blind_linear_speed: 0.55
 
     # 二维码接近区减速起点（/odom_combined X，m）。超过该值时使用下方速度。
     blind_qr_slowdown_start_x_m: 1.5
@@ -308,17 +308,19 @@ competition_controller:
     enable_backing: true
 
     # 后退目标 X (m, map 坐标系) — 后退到 map_x ≤ 此值时停止
-    back_target_x: 2.10
+    back_target_x: 2.00
 
     # 后退线速度 (m/s) — 负值表示倒车；速度须低于 0.05m 轨迹采样的可跟踪范围
-    back_linear_speed: -0.45
+    # 倒退速度不能过快，否则角速度尚未建立就会横向漂离历史轨迹。
+    # 控制器会在航向误差大或接近目标时进一步自动降速。
+    back_linear_speed: -0.32
 
     # 后退航向修正增益 — 航向误差 → 角速度增益
     back_angular_kp: 0.9
 
     # 后退角速度绝对上限与每秒变化率，抑制高速倒退时的反复反打
-    back_max_angular_speed: 0.50
-    back_angular_slew_rate: 0.50
+    back_max_angular_speed: 0.70
+    back_angular_slew_rate: 1.80
 
     # 路点到达容差 (m) — 小于采样间隔的两倍，避免一次跳过多个路点
     back_position_tolerance: 0.04
@@ -327,7 +329,7 @@ competition_controller:
     back_path_sample_distance: 0.02
 
     # 倒序路径前瞻距离 (m) — 高速倒退需跨多个采样点以平滑目标航向
-    back_lookahead_m: 0.18
+    back_lookahead_m: 0.12
 
     # 后退超时 (s) — 后退超过此时长则跳过后退，直接通道导航
     back_timeout_sec: 20.0
@@ -379,11 +381,20 @@ competition_controller:
     # 旧版圆形进入判定半径 (m) — 仅 terminal_enabled=false 时使用
     corridor_entry_region_radius_m: 0.10
 
-    # Stage1 -> Stage2 使用固定 map Y 门线放行；到 2.40m 立即切 Phase2。
-    corridor_release_min_y_m: 2.40
+    # ── Stage1→Stage2 交权核心参数（只改这一组） ──
+    # 交权 Y 门线。前墙距离达到 handoff_front_distance_m 后，仍须在此
+    # 门线检查 X、双墙中心和 IMU 航向；Y 不再拆成 min/max 两个参数。
+    corridor_handoff_y_m: 3.00
+    # 物理通道中心及允许横向误差：实际 X 窗口为 2.50±0.15m。
+    corridor_handoff_x_center_m: 2.50
+    corridor_handoff_x_tolerance_m: 0.15
+    # 交权时 IMU 航向允许偏差（相对 corridor_goal_yaw_deg）。
+    corridor_handoff_yaw_tolerance_deg: 10.0
+    # 双墙中心误差允许值；这是交权硬门，不与终端捕获阈值混用。
+    corridor_handoff_wall_center_tolerance_m: 0.12
+    # 前方横墙实际测距低于此值才产生 front_wall 触发证据。
+    corridor_handoff_front_distance_m: 2.60
 
-    # Y 门线，达到或超过该值立即放行；不再因墙锁/yaw hold 反复重捕获。
-    corridor_release_max_y_m: 2.40
     # 终端重捕获的默认最高 staging Y。实际 staging 会根据当前横向偏差
     # 回退到更早的参考中心线点，保证在门线前可按受限角度重新并线。
     corridor_reacquire_y_m: 2.05
@@ -397,11 +408,7 @@ competition_controller:
     # 首次交接门被拒后，累计超过该时间仍未成功，则到 Y 门线直接强制放行。
     corridor_handoff_force_after_reject_sec: 10.0
 
-    # 旧版进入区域航向容差 (°) — 仅 terminal_enabled=false 时使用
-    corridor_entry_yaw_tolerance_deg: 15.0
-
-    # 旧版是否要求航向满足才放行 — 仅 terminal_enabled=false 时使用
-    corridor_require_yaw_for_release: false
+    # 旧版进入区域判定兼容参数（生产终端交权不使用）
 
     # --- 终端逼近 (Terminal Approach) ---
     # 近 Y 门线且 X 已进入捕获带时锁存；锁存后先回正航向再微调至最终 X 窗口
@@ -502,15 +509,15 @@ competition_controller:
     # 车体参考点不在物理通道中心时，在此填入中心线在车体系的 Y 偏置；默认 0。
     corridor_terminal_wall_center_offset_m: 0.0
 
-    # 交权以双墙物理中线为准：到达 Y 门线且双墙居中、X/yaw 均合格才交给 Stage2。
-    corridor_terminal_wall_release_center_tolerance_m: 0.120
+    # 交权以双墙物理中线为准；中心门限统一由 handoff_wall_center_tolerance_m 提供。
     corridor_terminal_wall_release_heading_deg: 2.5
     corridor_terminal_release_hold_sec: 0.20
 
     # 前方横墙触发交权：S1 最后一段优先用雷达横墙距离，不依赖 map_y/里程计。
     # 先锁定同一面连续横墙源，距离进入阈值后冻结触发证据；Y 门线仅作兜底。
     corridor_front_wall_handoff_enabled: true
-    corridor_front_wall_handoff_distance_m: 2.48
+    # 候选横墙选择的物理参考距离；实际测量值仍来自 /scan，不会被该值伪造。
+    corridor_front_wall_reference_distance_m: 2.70
     corridor_front_wall_min_forward_m: 0.80
     corridor_front_wall_max_forward_m: 3.20
     corridor_front_wall_max_lateral_m: 2.80
@@ -553,6 +560,7 @@ competition_controller:
     corridor_wall_follow_correction_speed_mps: 0.32
     corridor_wall_follow_slow_center_error_m: 0.12
     corridor_wall_follow_lateral_gain: 1.0
+    corridor_wall_follow_center_heading_max_deg: 12.0
     corridor_wall_follow_heading_kp: 1.4
     corridor_wall_follow_max_angular_speed: 0.45
     corridor_wall_follow_no_lock_log_sec: 1.0
@@ -566,15 +574,12 @@ competition_controller:
     # 单墙不能区分底边/侧边，只保留诊断，不允许决定通道行进方向。
     corridor_wall_follow_single_wall_enabled: false
     corridor_wall_follow_single_wall_speed_mps: 0.28
-    # Y=2.40 只触发交接检查；墙修正后的 X 必须进 2.38-2.62，yaw 必须 90±10。
+    # Y 门线只触发交接检查；X 窗口、yaw 和中心门限统一使用上面的核心参数。
     # 不满足时倒退到 staging 重新修正，不能把错误入口交给 Stage2。
     corridor_wall_follow_require_map_x_handoff: false
     corridor_wall_yaw_rebase_enabled: true
     corridor_wall_yaw_rebase_axis_tolerance_deg: 10.0
     corridor_wall_map_x_correction_enabled: true
-    corridor_wall_map_center_x_m: 2.50
-    corridor_wall_handoff_min_x_m: 2.35
-    corridor_wall_handoff_max_x_m: 2.65
     # 修正后的 X 未进窗口时动态并线；贴近窗口时仍是小角度，偏差超过 5cm 后
     # 允许按 atan(gain*error) 平滑放大到 32°，避免在 Y 门线前只横移几厘米。
     corridor_wall_x_adjust_gain: 2.0
@@ -786,4 +791,3 @@ competition_controller:
 
     # 生产流程由激光围墙跟随完成通道导航，不启用此实验分支。其余视觉通道
     # 参数采用代码默认值，避免同一套未参与生产的参数长期占用调参入口。
-    vision_corridor_enabled: false

@@ -25,7 +25,6 @@ setup(
     entry_points={
         'console_scripts': [
             'stage3_return_navigator = racing_stage3.stage3_return_navigator:main',
-            'enhanced_return_navigator = racing_stage3.enhanced_return_navigator:main',
             'phase3_test_trigger = racing_stage3.phase3_test_trigger:main',
             'stage3_test_simulator = racing_stage3.stage3_test_simulator:main',
             'twist_cmd_relay = racing_stage3.twist_cmd_relay:main',

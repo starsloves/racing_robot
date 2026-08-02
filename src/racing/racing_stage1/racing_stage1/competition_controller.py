@@ -32,10 +32,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 from racing_common.racing_logger import RacingLogger
-from racing_stage1.stage1_vision_mixin import Stage1VisionMixin
-
-
-class CompetitionController(Stage1VisionMixin, Node):
+class CompetitionController(Node):
     def __init__(self):
         super().__init__('competition_controller')
 
@@ -222,8 +219,13 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('planner_replan_period_sec', 2.5)
         # 区域进入：圆形区域命中后仍须越过最小 map Y 门线，防止入口前提前交权。
         self.declare_parameter('corridor_entry_region_radius_m', 0.35)
-        self.declare_parameter('corridor_release_min_y_m', float('-inf'))
-        self.declare_parameter('corridor_release_max_y_m', float('inf'))
+        # 交权核心参数：生产配置只维护这一组。
+        self.declare_parameter('corridor_handoff_y_m', 3.00)
+        self.declare_parameter('corridor_handoff_x_center_m', 2.50)
+        self.declare_parameter('corridor_handoff_x_tolerance_m', 0.15)
+        self.declare_parameter('corridor_handoff_yaw_tolerance_deg', 10.0)
+        self.declare_parameter('corridor_handoff_wall_center_tolerance_m', 0.12)
+        self.declare_parameter('corridor_handoff_front_distance_m', 2.60)
         self.declare_parameter('corridor_reacquire_y_m', float('-inf'))
         self.declare_parameter('corridor_reacquire_reverse_speed', -0.12)
         self.declare_parameter('corridor_reacquire_max_reentry_heading_deg', 45.0)
@@ -231,7 +233,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_reacquire_y_rise_guard_m', 0.04)
         self.declare_parameter('corridor_handoff_force_after_reject_sec', 10.0)
         self.declare_parameter('corridor_terminal_entry_x_tolerance_m', 0.12)
-        self.declare_parameter('corridor_entry_yaw_tolerance_deg', 30.0)
         self.declare_parameter('corridor_require_yaw_for_release', False)
         self.declare_parameter('corridor_terminal_enabled', True)
         self.declare_parameter('corridor_terminal_x_tolerance_m', 0.12)
@@ -282,10 +283,10 @@ class CompetitionController(Stage1VisionMixin, Node):
         # release/commit still require a fresh lock or a qualified latch.
         self.declare_parameter('corridor_terminal_wall_control_hold_sec', 0.75)
         self.declare_parameter('corridor_terminal_wall_center_offset_m', 0.0)
-        self.declare_parameter('corridor_terminal_wall_release_center_tolerance_m', 0.035)
         self.declare_parameter('corridor_terminal_wall_release_heading_deg', 2.5)
         self.declare_parameter('corridor_front_wall_handoff_enabled', True)
-        self.declare_parameter('corridor_front_wall_handoff_distance_m', 2.60)
+        self.declare_parameter('corridor_front_wall_reference_distance_m', 2.70)
+        self.declare_parameter('corridor_wall_follow_center_heading_max_deg', 12.0)
         self.declare_parameter('corridor_front_wall_min_forward_m', 0.80)
         self.declare_parameter('corridor_front_wall_max_forward_m', 3.20)
         self.declare_parameter('corridor_front_wall_max_lateral_m', 2.80)
@@ -331,9 +332,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.declare_parameter('corridor_wall_yaw_rebase_enabled', True)
         self.declare_parameter('corridor_wall_yaw_rebase_axis_tolerance_deg', 10.0)
         self.declare_parameter('corridor_wall_map_x_correction_enabled', True)
-        self.declare_parameter('corridor_wall_map_center_x_m', 2.50)
-        self.declare_parameter('corridor_wall_handoff_min_x_m', 2.38)
-        self.declare_parameter('corridor_wall_handoff_max_x_m', 2.62)
         self.declare_parameter('corridor_wall_x_adjust_gain', 2.0)
         self.declare_parameter('corridor_wall_x_adjust_max_heading_deg', 6.0)
         self.declare_parameter('corridor_wall_x_large_error_m', 0.05)
@@ -659,12 +657,9 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.get_parameter('corridor_entry_region_radius_m').value
         )
         self.corridor_release_min_y = float(
-            self.get_parameter('corridor_release_min_y_m').value
+            self.get_parameter('corridor_handoff_y_m').value
         )
-        self.corridor_release_max_y = max(
-            self.corridor_release_min_y,
-            float(self.get_parameter('corridor_release_max_y_m').value),
-        )
+        self.corridor_release_max_y = self.corridor_release_min_y
         self.corridor_reacquire_y = min(
             self.corridor_release_min_y,
             float(self.get_parameter('corridor_reacquire_y_m').value),
@@ -692,7 +687,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             float(self.get_parameter('corridor_handoff_force_after_reject_sec').value),
         )
         self.corridor_entry_yaw_tolerance = math.radians(
-            float(self.get_parameter('corridor_entry_yaw_tolerance_deg').value)
+            float(self.get_parameter('corridor_handoff_yaw_tolerance_deg').value)
         )
         self.corridor_require_yaw_for_release = bool(
             self.get_parameter('corridor_require_yaw_for_release').value
@@ -849,7 +844,7 @@ class CompetitionController(Stage1VisionMixin, Node):
         )
         self.corridor_terminal_wall_release_center_tolerance = max(
             0.0, float(
-                self.get_parameter('corridor_terminal_wall_release_center_tolerance_m').value
+                self.get_parameter('corridor_handoff_wall_center_tolerance_m').value
             ),
         )
         self.corridor_terminal_wall_release_heading_tolerance = math.radians(float(
@@ -860,8 +855,16 @@ class CompetitionController(Stage1VisionMixin, Node):
         )
         self.corridor_front_wall_handoff_distance = max(
             0.10,
-            float(self.get_parameter('corridor_front_wall_handoff_distance_m').value),
+            float(self.get_parameter('corridor_handoff_front_distance_m').value),
         )
+        self.corridor_front_wall_reference_distance = max(
+            self.corridor_front_wall_handoff_distance,
+            float(self.get_parameter('corridor_front_wall_reference_distance_m').value),
+        )
+        self.corridor_wall_follow_center_heading_max = math.radians(max(
+            0.0,
+            float(self.get_parameter('corridor_wall_follow_center_heading_max_deg').value),
+        ))
         self.corridor_front_wall_min_forward = max(
             0.05,
             float(self.get_parameter('corridor_front_wall_min_forward_m').value),
@@ -1014,10 +1017,14 @@ class CompetitionController(Stage1VisionMixin, Node):
             self.get_parameter('corridor_wall_map_x_correction_enabled').value
         )
         self.corridor_wall_map_center_x = float(
-            self.get_parameter('corridor_wall_map_center_x_m').value
+            self.get_parameter('corridor_handoff_x_center_m').value
         )
-        handoff_min_x = float(self.get_parameter('corridor_wall_handoff_min_x_m').value)
-        handoff_max_x = float(self.get_parameter('corridor_wall_handoff_max_x_m').value)
+        handoff_center_x = float(self.get_parameter('corridor_handoff_x_center_m').value)
+        handoff_tolerance_x = max(
+            0.0, float(self.get_parameter('corridor_handoff_x_tolerance_m').value)
+        )
+        handoff_min_x = handoff_center_x - handoff_tolerance_x
+        handoff_max_x = handoff_center_x + handoff_tolerance_x
         self.corridor_wall_handoff_min_x = min(handoff_min_x, handoff_max_x)
         self.corridor_wall_handoff_max_x = max(handoff_min_x, handoff_max_x)
         self.corridor_wall_x_adjust_gain = max(
@@ -1253,9 +1260,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         )
         self._phase1_last_clusters = []  # 缓存上一帧的聚类结果
 
-        # 视觉通道导航初始化
-        self._setup_vision_corridor()
-
         # 初始化时立即发布 phase=1，覆盖可能存在的旧 TRANSIENT_LOCAL 消息
         self.publish_phase()
         self.log.startup(f'✓ 初始 phase={self.phase} 已发布到 {self.phase_topic}')
@@ -1399,9 +1403,6 @@ class CompetitionController(Stage1VisionMixin, Node):
                     else self.corridor_goal_yaw
                 )
                 self._rebase_imu_map_yaw(handoff_yaw, 'phase1_to_phase2_handoff')
-
-        if target_phase != 1 and hasattr(self, '_shutdown_vision_corridor'):
-            self._shutdown_vision_corridor(f'phase_{target_phase}')
 
         self.phase = target_phase
         self.publish_phase()
@@ -1693,12 +1694,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self._corridor_handoff_first_reject_time = None
         self.phase1_motion_state = 'corridor'
 
-        # 导航阶段启用 YOLO 视觉推理，辅助通道识别
-        if hasattr(self, '_enable_vision_corridor'):
-            try:
-                self._enable_vision_corridor(True)
-            except Exception as e:
-                self.log.warn('VISION', f'启用 Stage1 YOLO 视觉推理失败，继续地图导航: {e}')
         mode_text = (
             '两侧围墙中心线直接接管方向，map 仅作交权门线'
             if self.corridor_wall_follow_enabled
@@ -2669,7 +2664,7 @@ class CompetitionController(Stage1VisionMixin, Node):
             compatible,
             key=lambda item: (
                 abs(item['distance'] - previous['distance']) if previous_fresh else 0.0,
-                abs(item['distance'] - self.corridor_front_wall_handoff_distance),
+                abs(item['distance'] - self.corridor_front_wall_reference_distance),
                 item['rms'],
                 -item['span'],
             ),
@@ -2704,7 +2699,8 @@ class CompetitionController(Stage1VisionMixin, Node):
             self._corridor_front_wall_latch = dict(selected)
             self.log.mission(
                 f'FRONT_WALL_HANDOFF_LATCH dist={selected["distance"]:.3f}m '
-                f'target={self.corridor_front_wall_handoff_distance:.2f}m '
+                f'trigger={self.corridor_front_wall_handoff_distance:.2f}m '
+                f'reference={self.corridor_front_wall_reference_distance:.2f}m '
                 f'pts={selected["point_count"]} span={selected["span"]:.2f}m '
                 f'rms={selected["rms"]:.3f}m '
                 f'axis={math.degrees(selected["axis_error"]):.1f}deg'
@@ -2715,7 +2711,8 @@ class CompetitionController(Stage1VisionMixin, Node):
         ):
             self.log.segment(
                 f'front_wall_lock dist={selected["distance"]:.3f}m '
-                f'target={self.corridor_front_wall_handoff_distance:.2f}m '
+                f'trigger={self.corridor_front_wall_handoff_distance:.2f}m '
+                f'reference={self.corridor_front_wall_reference_distance:.2f}m '
                 f'pts={selected["point_count"]} span={selected["span"]:.2f}m '
                 f'rms={selected["rms"]:.3f}m '
                 f'axis={math.degrees(selected["axis_error"]):.1f}deg '
@@ -2862,6 +2859,9 @@ class CompetitionController(Stage1VisionMixin, Node):
             return
         inferred_map_x = (
             self.corridor_wall_map_center_x
+            # The wall-derived pose is the physical map-X estimate: a
+            # positive center error (vehicle right of the centerline) means
+            # the corrected map X is correspondingly greater than center X.
             + math.sin(self.corridor_goal_yaw) * float(center_error)
         )
         requested_offset = inferred_map_x - float(raw_map_xy[0])
@@ -2978,6 +2978,23 @@ class CompetitionController(Stage1VisionMixin, Node):
         else:
             offset = 0.0
         return self.normalize_angle(base_yaw + offset)
+
+    def _corridor_wall_center_adjusted_yaw(self, base_yaw, map_x, center_error):
+        """Blend bounded map-X and dual-wall center feedback into the IMU target."""
+        x_yaw = self._corridor_wall_x_adjusted_yaw(base_yaw, map_x)
+        center_yaw = math.atan(
+            self.corridor_wall_follow_lateral_gain * float(center_error)
+        )
+        center_yaw = self.clamp(
+            center_yaw,
+            self.corridor_wall_follow_center_heading_max,
+        )
+        # Positive center error means the vehicle is right of the corridor
+        # center in the laser frame, so steer toward the left (increasing map
+        # yaw) to bring it back to the center.  The previous
+        # subtraction had the feedback sign reversed and made the entrance
+        # error grow on every forward capture attempt.
+        return self.normalize_angle(x_yaw + center_yaw)
 
     def _corridor_wall_reverse_x_adjusted_yaw(self, base_yaw, map_x):
         forward_yaw = self._corridor_wall_x_adjusted_yaw(base_yaw, map_x)
@@ -3299,12 +3316,12 @@ class CompetitionController(Stage1VisionMixin, Node):
         wall_axis_error = self._corridor_wall_local_axis_error(wall_lock['heading_error'])
 
         # Wall fitting qualifies the corridor and may lower speed for a large
-        # center error.  The wall axis is never allowed to take over steering:
-        # it is only a quality/rebase signal, while travel stays around the
-        # fixed IMU corridor yaw plus the bounded map-X merge bias.
-        desired_yaw = self._corridor_wall_x_adjusted_yaw(
+        # center error.  The wall axis remains a quality/rebase signal, while
+        # center error and bounded map-X feedback steer around the IMU axis.
+        desired_yaw = self._corridor_wall_center_adjusted_yaw(
             self.corridor_goal_yaw,
             pose_xy[0],
+            wall_lock['center_error'],
         )
         heading_error = self.angle_error(desired_yaw, yaw)
         if terminal_prealign_active:
@@ -3947,9 +3964,10 @@ class CompetitionController(Stage1VisionMixin, Node):
                 # Keep the final segment mostly straight, but preserve the
                 # bounded X-window bias so repeated gate rejects converge.
                 self.corridor_nav_mode = 'terminal_commit_straight'
-                desired_yaw = self._corridor_wall_x_adjusted_yaw(
+                desired_yaw = self._corridor_wall_center_adjusted_yaw(
                     self.corridor_goal_yaw,
                     pose_xy[0],
+                    wall_center_error,
                 )
                 angular_limit = self.corridor_terminal_max_angular_speed
                 linear = self.corridor_terminal_commit_speed
@@ -3959,9 +3977,10 @@ class CompetitionController(Stage1VisionMixin, Node):
                 # handoff reference.  Use the wall-corrected X window for a
                 # small approach bias, then hold the corrected 90 deg yaw.
                 lateral_error = wall_center_error
-                desired_yaw = self._corridor_wall_x_adjusted_yaw(
+                desired_yaw = self._corridor_wall_center_adjusted_yaw(
                     self.corridor_goal_yaw,
                     pose_xy[0],
+                    lateral_error,
                 )
                 self.corridor_nav_mode = 'terminal_wall_geometry_hold'
                 angular_limit = self.corridor_terminal_max_angular_speed
@@ -5114,12 +5133,6 @@ class CompetitionController(Stage1VisionMixin, Node):
 
         # 立即启动后退，不等待播报完成
         if self.enable_backing and len(self.path_record) > 0:
-            # 后退期间禁用 YOLO 推理，避免模型占用 BPU
-            if hasattr(self, '_enable_vision_corridor'):
-                try:
-                    self._enable_vision_corridor(False)
-                except Exception as e:
-                    self.log.warn('VISION', f'关闭 YOLO 推理失败: {e}')
             self.phase1_motion_state = 'backing'
             self.backing_started_time = self.get_clock().now()
             self.backing_last_angular_z = 0.0
@@ -5283,28 +5296,6 @@ class CompetitionController(Stage1VisionMixin, Node):
                 return
 
             if self.phase1_motion_state == 'corridor':
-                # 视觉导航优先，但必须确保模块已成功初始化
-                if (not self.corridor_reference_path_enabled and
-                    hasattr(self, '_vision_corridor_enabled') and
-                    self._vision_corridor_enabled and
-                    getattr(self, '_vision_corridor_active', False) and
-                    hasattr(self, '_vision_corridor') and
-                    self._vision_corridor is not None):
-                    try:
-                        cmd, vision_status = self._get_vision_corridor_control()
-                        if cmd is not None:
-                            self.cmd_pub.publish(cmd)
-                        else:
-                            self.stop_robot()
-                        if vision_status.get('reached_entry', False):
-                            self._enable_vision_corridor(False)
-                            self.begin_phase_transition(2, '视觉检测到达通道入口')
-                        return
-                    except Exception as e:
-                        self.log.error('VISION', f'视觉控制异常，降级到地图导航: {e}')
-                        # 降级到地图导航，不要停止程序
-
-                # 降级：使用原有地图 A* 导航
                 self.handle_corridor_navigation()
                 return
 
@@ -5369,13 +5360,6 @@ class CompetitionController(Stage1VisionMixin, Node):
 
     def handle_backing(self):
         """处理后退逻辑：沿记录路径反向跟踪"""
-        # 后退期间确保 YOLO 推理已禁用，释放 BPU 资源
-        if hasattr(self, '_enable_vision_corridor'):
-            try:
-                self._enable_vision_corridor(False)
-            except Exception:
-                pass
-
         if self.current_odom is None or self.current_yaw is None:
             self.stop_robot()
             return
@@ -5481,8 +5465,19 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.backing_last_angular_z = angular_z
         self.backing_last_command_time = now
 
-        # 倒车始终沿记录轨迹后退，航向误差仅通过角速度闭环修正。
-        linear_x = self.back_linear_speed
+        # 倒车始终沿记录轨迹后退。误差较大时先降低速度，给 IMU 航向闭环
+        # 留出建立角速度的距离；接近目标时同样减速，避免跨过停止门线。
+        speed_mag = abs(self.back_linear_speed)
+        heading_error_abs = abs(heading_error)
+        if heading_error_abs > math.radians(12.0):
+            speed_mag = min(speed_mag, 0.24)
+        if dist_to_target < 0.22:
+            speed_mag = min(speed_mag, 0.20)
+        if map_x is not None:
+            target_gap = max(0.0, map_x - self.back_target_x)
+            if target_gap < 0.20:
+                speed_mag = min(speed_mag, 0.16)
+        linear_x = -speed_mag
         self.cmd_pub.publish(self.create_twist(linear_x, angular_z))
         
         self.log.progress(
@@ -5609,8 +5604,6 @@ class CompetitionController(Stage1VisionMixin, Node):
         self.log.progress(f'QR播报已启动后台线程，车辆开始后退')
 
     def destroy_node(self):
-        if hasattr(self, '_shutdown_vision_corridor'):
-            self._shutdown_vision_corridor('node_shutdown')
         self.log.close()
         super().destroy_node()
 

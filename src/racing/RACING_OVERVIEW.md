@@ -2,7 +2,7 @@
 
 > 本文档描述当前 `competition_total.launch.py` 实际启动的生产流程。
 > 参数、状态和坐标的唯一事实来源仍是对应节点代码和生产 YAML；本文档随实现变更同步维护。
-> `racing_stage2_param_test`、`racing_stage3_param_test` 和 `bak/` 均不属于正式总启动流程。
+> 历史参数测试包和 `bak/` 内容已从源代码中删除，不属于正式总启动流程。
 
 ---
 
@@ -61,7 +61,7 @@ Phase 3: Stage3 /stage3_cmd_vel ── Stage1 supervisor ────> /cmd_vel
 - `/odom` 仅用于启动诊断和轮速预热，禁止用其 orientation/yaw 导航。
 - `/odom_combined` 只使用 xy。Stage2 对相邻 xy 累计欧氏距离；Stage3 从 S2 锚点起以 xy 增量更新 map 位置。
 - `/imu/data` 是所有常规航向、转角和激光角度基准的来源，禁止使用 `/odom` 或 `/odom_combined` 的 orientation。Stage1 在首帧将原始 IMU 映射到 `imu_initial_map_yaw_deg`，并以 transient-local `imu_map_yaw_offset` 发布该固定零点；二维码倒退完成后用 IMU 滚动对正到通道 90°，再进入通道。Stage2 不能把原始 IMU yaw 直接当作 map yaw。
-- Stage1 通道导航目标是 map 坐标，位置由 `map <- base_footprint` TF 获取；其 IMU 首帧映射到 `stage1_controller.yaml` 的 `imu_initial_map_yaw_deg`，以后仅累计原始 IMU 相对转角。Stage1 -> Stage2 交权优先使用雷达拟合的前方横墙距离：最终路点状态下锁定同一面连续横墙，距离进入 `corridor_front_wall_handoff_distance_m`（当前 2.60m）后冻结触发证据，且必须满足墙修正 X 窗口、侧墙居中/轴向和 IMU yaw 窗口才切 Phase2；固定 map Y 门线 `corridor_release_max_y_m` 仅作兜底触发和越界保护。任一硬门不满足则倒退到 staging 重新修正；首次交接门拒绝后累计超过 `corridor_handoff_force_after_reject_sec`（当前 10s）仍未成功时，在兜底 Y 门线强制发布 Stage2 入口位姿并切 Phase2。墙修正 X 未进交权窗口时，贴近窗口使用小航向偏置；偏差超过 `0.05m` 后按误差平滑放大，最大允许 `32°` 并线偏置，避免在剩余 Y 距离内横移量不足。交权失败倒车重捕获使用关于通道轴 `90°` 镜像后的 X 修正航向，保证倒车运动方向同时退回低 Y 并向 X 窗口靠近。
+- Stage1 通道导航目标是 map 坐标，位置由 `map <- base_footprint` TF 获取；其 IMU 首帧映射到 `stage1_controller.yaml` 的 `imu_initial_map_yaw_deg`，以后仅累计原始 IMU 相对转角。Stage1 -> Stage2 交权优先使用雷达拟合的前方横墙距离：最终路点状态下锁定同一面连续横墙，候选选择参考 `stage1_controller.yaml` 的 `corridor_front_wall_reference_distance_m`，距离进入 `corridor_front_wall_handoff_distance_m` 后冻结触发证据，且必须满足墙修正 X 窗口、侧墙居中/轴向和 IMU yaw 窗口才切 Phase2；固定 map Y 门线 `corridor_release_max_y_m` 仅作兜底触发和越界保护。强制放行计时使用 `corridor_handoff_force_after_reject_sec`，具体值以生产 YAML 为准。墙修正 X 与双墙中心航向修正均读取生产 YAML，交权失败倒车重捕获使用镜像后的 X+中心误差航向，保证倒车运动方向同时退回低 Y 并向 X 窗口靠近。
 - map 到 `odom_combined` 的静态变换由 Stage1 YAML 作为总启动默认值注入：平移读取 `map_to_odom_x/y`，yaw 从 `imu_initial_map_yaw_deg` 派生。两者必须同源，防止 IMU 航向闭环和 map 轨迹坐标系出现固定偏角。
 
 ---
@@ -85,7 +85,7 @@ Phase 1 blind drive
 2. `qr_scanner` 使用 WeChat CV 发布 `qr_scan_result`；Stage1 解析并锁存方向后发布 `competition_qr_task`，进入记录路径倒退。
 3. 倒退使用 `/odom_combined` 的历史 xy 回放，负线速度 `back_linear_speed`（当前 -0.45 m/s）追踪倒序路径；角速度以 IMU 和几何目标闭环，不能直接复用历史 yaw。
 4. 倒退完成后，Stage1 清空扫码避障残留状态，先用 IMU 以非零前进速度滚动对正到 `back_align_yaw_deg=90°`，再进入通道；阿克曼底盘禁止用 `v=0` 原地转向。`backing_align` 期间不响应普通扫码避障，避免入口侧墙或障碍把状态机拉回盲扫恢复。进入通道后从 `/scan` 拟合两侧围墙作居中、map-X 修正和入口 yaw 修正。取墙速度当前为 0.30 m/s（大角度滚动转向 0.22 m/s），双墙居中后以 0.48 m/s 跟随，偏差较大时降到 0.32 m/s，最终预对正速度为 0.28 m/s，提交直线为 0.42 m/s。每侧激光点按扫描顺序聚类，只有相邻点距离不超过 `0.30m` 的连续簇才会单独拟合；墙簇还必须满足点数、前向跨度、直线残差、车体系轴向、平行度和宽度检验，零散障碍物或入口横墙不得参与。候选锁墙轴向门槛为 `35°`，只用于入口偏航时先形成双墙质量参考；墙轴不再单独抢占转向，行驶航向固定围绕 IMU `90°` 并叠加墙修正 X 并线偏置。IMU->map 重标仍必须进入 `10°` 内。单墙仍不得决定前进方向。雷达障碍检测仍只使用车前窄窗口的独立短小聚类，侧墙点不会触发避障。
-5. 通道行驶以双墙中心和 IMU 90°为主；墙轴进入 `10°` 内时重标 IMU->map yaw，墙中心距离推断 Stage1 修正 map X。Stage1 -> Stage2 放行优先由前方横墙距离触发：前墙按连续点簇拟合为车体系横线，锁定同一物理墙源并持续更新距离，距离小于等于 `2.60m` 后冻结 `FRONT_WALL_HANDOFF_LATCH` 证据并检查交权硬门；墙修正 X 必须在 `2.35-2.65m`，yaw 必须在 `90°±10°`，且双墙居中/轴向合格。任一不满足则记录 `handoff gate rejected` 并倒退到 staging 重捕获。重捕获倒退、重新前进和最终提交直线段都保留基于 X 窗口的有界航向修正，避免重复沿同一直线失败。若前方横墙不可用，则 `corridor_release_max_y_m` 仍作为兜底触发；若首次拒绝后累计超过 `10s` 仍未合格，则在兜底 Y 门线强制发布 `stage2_entry_pose` 并切 Phase2，日志为 `forced Y gate handoff`。合格时 Stage1 发布 `stage2_entry_pose`，日志为 `STAGE2_ENTRY_POSE` 和 `front_wall handoff` 或 `Y gate handoff`。通道墙取点侧向窗口为 `4.00m`，适配 5m 场地宽度。
+5. 通道行驶以双墙中心和 IMU 轴向为主；墙轴重标、前墙距离、X 窗口、中心误差、yaw 门限和强制放行计时均读取 `stage1_controller.yaml`。前墙按连续点簇拟合为车体系横线，锁定同一物理墙源并持续更新距离，进入 YAML 的 `corridor_front_wall_handoff_distance_m` 后冻结 `FRONT_WALL_HANDOFF_LATCH` 证据并检查交权硬门。任一不满足则记录 `handoff gate rejected` 并倒退到 staging 重捕获；重捕获倒退、重新前进和最终提交直线段统一使用受限的 X+双墙中心航向闭环，避免重复沿同一直线失败。若前方横墙不可用，则 `corridor_release_max_y_m` 仍作为兜底触发。合格时 Stage1 发布 `stage2_entry_pose`，日志为 `STAGE2_ENTRY_POSE` 和对应 handoff 原因。
 
 ### 2.2 Stage1 避障
 

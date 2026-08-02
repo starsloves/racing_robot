@@ -453,7 +453,7 @@ def main():
     
     parser = argparse.ArgumentParser(description='一键启动：相机 + 推理 + Web')
     parser.add_argument('--model', type=str, 
-                       default=os.path.expanduser('~/dev_ws/src/racing/racing_stage2_param_test/models/bset.bin'))
+                       default=os.path.expanduser('~/dev_ws/src/racing/racing_stage2/models/bset.bin'))
     parser.add_argument('--conf', type=float, default=0.25)
     parser.add_argument('--iou', type=float, default=0.45)
     parser.add_argument('--crop', type=float, default=0.4)
