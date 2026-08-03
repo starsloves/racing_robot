@@ -1,5 +1,6 @@
 import os
 import math
+import logging
 
 import yaml
 
@@ -10,6 +11,10 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+import launch.logging as launch_logging
+from launch.actions import RegisterEventHandler
+from launch.event_handlers import OnProcessStart
+from racing_common.launch_status import startup_status
 
 
 def _stage1_map_to_odom_defaults(config_path):
@@ -24,6 +29,9 @@ def _stage1_map_to_odom_defaults(config_path):
 
 
 def generate_launch_description():
+    # Keep the terminal as an operator channel.  Child diagnostics are in
+    # ROS logs; normal SIGINT shutdown must not be printed as launch errors.
+    launch_logging.launch_config.level = logging.ERROR
     bringup_dir = get_package_share_directory('origincar_bringup')
     stage1_dir = get_package_share_directory('racing_stage1')
     stage2_dir = get_package_share_directory('racing_stage2')
@@ -49,6 +57,7 @@ def generate_launch_description():
     include_vision_ai_arg = DeclareLaunchArgument('include_vision_ai', default_value='true')
     include_voice_arg = DeclareLaunchArgument('include_voice', default_value='true')
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='true')
+    include_camera_arg = DeclareLaunchArgument('include_camera', default_value='true')
     include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
     include_obstacle_markers_arg = DeclareLaunchArgument('include_obstacle_markers', default_value='false')
     imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/imu/data')
@@ -67,6 +76,16 @@ def generate_launch_description():
     # launch/stop cycles on the RDKX5 can leave /dev/shm port locks behind.
     disable_fastdds_shm = SetEnvironmentVariable('RMW_FASTRTPS_USE_SHM', '0')
     force_fastdds_udp = SetEnvironmentVariable('RMW_FASTRTPS_TRANSPORT', 'UDPv4')
+    # Keep every node's ROS diagnostics on disk.  ``output=own_log`` below
+    # isolates stdout/stderr from the operator terminal; suppressing RCUTILS
+    # severity here would also discard the diagnostics needed after a failed
+    # startup.
+    runtime_ros_log_dir = SetEnvironmentVariable(
+        'ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_runtime'
+    )
+    isolate_process_output = SetEnvironmentVariable(
+        'OVERRIDE_LAUNCH_PROCESS_OUTPUT', 'own_log'
+    )
 
     map_overlay_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(map_overlay_launch_path),
@@ -84,6 +103,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(stage1_launch_path),
         launch_arguments={
             'include_depth': LaunchConfiguration('include_depth'),
+            'include_camera': LaunchConfiguration('include_camera'),
             'include_bno055': LaunchConfiguration('include_bno055'),
             'imu_topic': LaunchConfiguration('imu_topic'),
             'standalone_map_overlay': 'false',
@@ -134,7 +154,7 @@ def generate_launch_description():
         package='racing_vision_ai',
         executable='vision_ai_node',
         name='stage2_vision_ai',
-        output='screen',
+        output='log',
         parameters=[{
             'config_path': os.path.join(vision_ai_dir, 'config', 'vision_ai_config.yaml'),
             'trigger_topic': 'stage2_ai_capture',
@@ -156,6 +176,8 @@ def generate_launch_description():
     return LaunchDescription([
         disable_fastdds_shm,
         force_fastdds_udp,
+        runtime_ros_log_dir,
+        isolate_process_output,
         include_map_overlay_arg,
         include_stage1_arg,
         include_stage2_arg,
@@ -163,6 +185,7 @@ def generate_launch_description():
         include_vision_ai_arg,
         include_voice_arg,
         include_depth_arg,
+        include_camera_arg,
         include_bno055_arg,
         include_obstacle_markers_arg,
         imu_topic_arg,
@@ -176,5 +199,9 @@ def generate_launch_description():
         stage2_stack,
         stage3_stack,
         vision_ai_node,
+        RegisterEventHandler(OnProcessStart(
+            target_action=vision_ai_node,
+            on_start=[startup_status('视觉 AI', '/stage2_vision_ai')],
+        )),
         voice_stack,
     ])

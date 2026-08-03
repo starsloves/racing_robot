@@ -4,7 +4,9 @@ from launch import LaunchDescription
 from launch_ros.actions import LifecycleNode
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.event_handlers import OnProcessStart
+from racing_common.launch_status import startup_status
 
 import lifecycle_msgs.msg
 import os
@@ -24,5 +26,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         driver_node,
+        RegisterEventHandler(OnProcessStart(
+            target_action=driver_node,
+            on_start=[startup_status('雷达', '/lslidar_driver_node')],
+        )),
     ])
-

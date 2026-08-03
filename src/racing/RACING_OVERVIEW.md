@@ -37,7 +37,7 @@ Phase 3: Stage3 /stage3_cmd_vel ── Stage1 supervisor ────> /cmd_vel
 | Stage2 | 8082 | SEG 预览只在 Phase 2 提供；二维码任务到达后可预热模型。 |
 | Stage3 | 8083 | P 视觉只在 Phase 3 武装；离开阶段或完成后释放。 |
 
-`/vision_debug` 不受 HTTP 生命周期限制。`racing_vision_ai` 在节点启动时加载本地 SmolVLM 服务；Stage1 发布二维码任务后，立即缓存相机帧并用小图完成一次多模态视觉预填充，避免展示牌抓拍时才加载模型或首次执行视觉编码。Phase 2 只控制新抓拍是否接受；进入 Phase 3 后停止新触发，但绝不取消已提交的图生文，节点关闭时也会等待该请求写出结果。收到 `stage2_ai_capture` 后会将送入模型的同一帧覆盖保存为 `~/dev_ws/log/competition_stage2/ai_capture.jpg`，再由豆包 Ark 官方 SDK 的 Responses API、已配置的 Qwen 与就绪的本地 VLM 并发图生文。`vision_ai_config.yaml` 中 `response.streaming_enabled` 默认 `false`，即等待胜出模型生成完整描述后一次性发布到 `ai_description` 并播报；需要抢首句时改为 `true`，按首个有效流式输出短句发布并成为胜者。生产 YAML 对 Ark 和 Qwen 均显式关闭思考模式，Ark 流式调用也只发布最终文本事件。仅在该决胜时请求取消其余两个请求，绝不由阶段切换取消。本地服务在本地模型落败时随决胜释放；本地模型胜出时仅在 `stage3_state=complete` 且胜出播报结束后关闭。`latest.log` 的 `[LOCAL_TIMING]` 记录抓拍至本地请求、首个输出和完整生成的耗时。该过程不阻塞底盘控制。
+`/vision_debug` 不受 HTTP 生命周期限制。`racing_vision_ai` 在节点启动时加载本地 SmolVLM 服务；Stage1 发布二维码任务后，立即缓存相机帧并用小图完成一次多模态视觉预填充，避免展示牌抓拍时才加载模型或首次执行视觉编码。Phase 2 只控制新抓拍是否接受；进入 Phase 3 后停止新触发，但绝不取消已提交的图生文。操作员 Ctrl+C 时会取消等待并关闭本地 VLM，不能因无超时的本地推理阻塞整套 ROS 进程退出。收到 `stage2_ai_capture` 后会将送入模型的同一帧覆盖保存为 `~/dev_ws/log/competition_stage2/ai_capture.jpg`，再由豆包 Ark 官方 SDK 的 Responses API、已配置的 Qwen 与就绪的本地 VLM 并发图生文。`vision_ai_config.yaml` 中 `response.streaming_enabled` 默认 `false`，即等待胜出模型生成完整描述后一次性发布到 `ai_description` 并播报；需要抢首句时改为 `true`，按首个有效流式输出短句发布并成为胜者。生产 YAML 对 Ark 和 Qwen 均显式关闭思考模式，Ark 流式调用也只发布最终文本事件。仅在该决胜时请求取消其余两个请求，绝不由阶段切换取消。本地服务在本地模型落败时随决胜释放；本地模型胜出时仅在 `stage3_state=complete` 且胜出播报结束后关闭。`latest.log` 的 `[LOCAL_TIMING]` 记录抓拍至本地请求、首个输出和完整生成的耗时。该过程不阻塞底盘控制。
 
 ### 1.3 关键话题
 
@@ -119,7 +119,7 @@ entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
 
 - `entry_arc` 是入口 90 度弧；随后两个 `*_side_arc` 是 180 度弧。
 - 方向由 QR 决定：入口及出口 90 度和两次 180 度的转向符号按 `clockwise/counterclockwise` 镜像。
-- S2 启动时优先读取 Stage1 发布的 `stage2_entry_pose` 墙修正入口 X，并以 `wall_offset=entry_pose.x - TF_entry_x` 修正实时 TF；随后 `track_x=当前 TF map_x + wall_offset`，即交接瞬间的 `track_x` 等于 Stage1 交接修正 X。没有新鲜入口位姿或 TF 不可用时退回真实 TF X。该修正不改写 TF，也不影响 Stage3 的真实 map 锚点。
+- Stage1 在通道交权时以本次双墙实时测量的 `stage2_entry_pose` 换算为 `odom_combined` 位姿并调用 EKF `/set_pose`；只有重新读取的 `map -> base_footprint` TF 已进入该实测位姿容差才发布 Phase2。S2 的 `TRACK_MAP_X_RESET` 仅记录这个已重置的真实 TF，不再叠加私有 `wall_offset`。
 - `entry_medium -> left_side_arc` 与 `top_long -> right_side_arc` 在各自名义终点前的视觉窗口内由 SEG 横边确认；视觉未确认时，仍由重置后的 `track_x` 与当前方向 profile 的 `track_<direction>_turn_force_min/max_map_x` 阈值强制切段。直线仅由 IMU 航向、可信 SEG 中线小修正和 yaw-rate 阻尼控制；雷达避障仅在 `top_long` 直线段接管。
 - 直线完成距离用 `/odom_combined` xy 累计。四个弯道均由 IMU 相对转角驱动：入口和出口弯名义目标为 `90°`，两个侧弯名义目标为从入弯时锁存实际 IMU yaw 起累计 `180°`。每弯只使用当前方向 profile 的线速度、角速度和提前收角；`track_counterclockwise_*` 保持当前逆时针基准，`track_clockwise_*` 单独用于顺时针，不再强行共用同一提前角。一旦达到对应 `exit_lead_deg` 收角点，立即切入下一直线，由直线的 IMU 航向闭环和 yaw-rate 阻尼吸收余摆。绝不等待残余惯性补足名义角度、绝不反向打舵，也不把低 IMU yaw-rate 作为切段硬门槛，防止任一弯占用后续直线。
 - `exit_medium` 使用当前方向 profile 的 `track_<direction>_exit_medium_distance_m`，用于控制第二个 180° 后、出口 90° 前的短直线长度。进入 `stage3_handoff_line` 后，S2 以实时 map TF 发布预测起点；当 map Y 小于 `track_stage3_handoff_map_y` 时发布交接锚点和 `stage2_state=complete`。
@@ -151,7 +151,7 @@ Phase 3
   -> wait for fresh Stage2 anchor
   -> low-speed initial_align (only if heading error is large)
   -> anchored map navigation to P visual-search point (0.50, 0.10)
-  -> consecutive P detections take over heading and forward speed
+  -> consecutive P detections enter exclusive P visual servo
   -> P lost: short reverse + return to map visual-search route
   -> P depth <= 0.50m: low-speed IMU/odom final run for 0.50m
   -> complete
@@ -161,28 +161,63 @@ Phase 3
 - 交权瞬间把原始 IMU yaw 映射至 map -Y（`stage3_entry_map_yaw_deg=-90`），后续仅累计 IMU 相对转角。
 - 初始目标方位误差达到 `initial_align_trigger_deg` 才进入 `initial_align`；阿克曼底盘以非零低速摆弧对准，不能原地转向。
 - 粗导航只向 `return_waypoints_json` 的单一视觉搜索点 `(0.50, 0.10)` 行驶，当前 `pursuit_linear_speed=0.72m/s`；它只用于将车带回可看见 P 的区域，不能发布完成。连续 P 检测在任何返程位置均可接管控制，按 P 框偏差锁定 IMU 目标航向后保持 `p_approach_linear_speed=0.48m/s` 前进。
-- P 临时丢失时，车辆按最后锁定的视觉航向低速倒退 `p_loss_reverse_duration_sec`，随后恢复锚点地图导航并再次寻找 P；重获 P 后重新接管。正常雷达避障在视觉接近期间仍有效，直至 P 框深度进入最终阈值。
-- P 框内有效深度不大于 `p_depth_stop_distance_m=0.50m` 时，锁定该时刻 IMU 航向，改用 `p_approach_slow_linear_speed=0.16m/s` 低速前进。若 Aurora 近距离深度在 P 框放大后失效，则以 `p_final_visual_fill_trigger_ratio=0.45` 的 P 框占比和最近 `p_final_visual_depth_assist_m=0.75m` 内有效深度作为备用证据，同样切入最终里程段，避免把近处 P/终点墙当作雷达障碍倒退。最终段只以 `/odom_combined` xy 计算欧氏位移；根据当前最终段速度，以 `v * p_final_brake_response_sec + v^2 / (2 * p_final_brake_decel_mps2) + p_final_brake_margin_m` 预留制动距离，在距 `p_final_odom_travel_m=0.50m` 的预测制动点先发布零速并在受控容差内发布 `stage3_state=complete`，不能等到跨过 0.50m 才停车。若终段已行驶不小于 `p_final_stall_completion_min_m=0.30m` 后，前进命令下 `/odom_combined` 超过 `p_final_progress_timeout_sec=0.75s` 无有效 xy 增量，则判定已顶到终点墙，立即停车并发布 `complete`；终段航向修正使用独立小角速度上限和 `10°` 死区，避免顶墙后继续绕圈。P 在这段中自然丢失不影响完成。角度始终只使用 IMU，禁止使用 odom orientation。墙角 TLS 代码保留用于离线调试，生产 YAML 已关闭且不参与完成门槛。
+- P 临时丢失时，车辆先按 `p_loss_grace_period_sec` 短暂停车等待视觉恢复；持续丢失后才按最后锁定的视觉航向低速倒退 `p_loss_reverse_duration_sec`，随后恢复锚点地图导航并再次寻找 P；重获 P 后重新接管。P 框偏移触发航向重捕获时，单次目标航向变化受 `p_heading_reacquire_max_delta_deg` 限制，避免检测框跳变造成突然猛转。地图搜索阶段运行普通雷达避障；连续 P 确认后视觉伺服独占底盘命令，普通/紧急雷达倒车不得把终点板或终点墙误判后拉离。
+- P 框内有效深度不大于 `p_depth_stop_distance_m=0.50m` 时，锁定该时刻 IMU 航向，改用 `p_approach_slow_linear_speed=0.16m/s` 低速前进。若 Aurora 近距离深度在 P 框放大后失效，则以 `p_final_visual_fill_trigger_ratio=0.45` 的 P 框占比和最近 `p_final_visual_depth_assist_m=0.75m` 内有效深度作为备用证据；若整个 ROI 都无有效深度，持续满足 `p_final_visual_no_depth_fill_trigger_ratio=0.45` 的大 P 框也可提交同一终段。最终段只以 `/odom_combined` xy 计算欧氏位移；根据当前最终段速度，以 `v * p_final_brake_response_sec + v^2 / (2 * p_final_brake_decel_mps2) + p_final_brake_margin_m` 预留制动距离，在距 `p_final_odom_travel_m=0.50m` 的预测制动点先发布零速并在受控容差内发布 `stage3_state=complete`，不能等到跨过 0.50m 才停车。若终段已行驶不小于 `p_final_stall_completion_min_m=0.30m` 后，前进命令下 `/odom_combined` 超过 `p_final_progress_timeout_sec=0.75s` 无有效 xy 增量，则判定已顶到终点墙，立即停车并发布 `complete`；终段航向修正使用独立小角速度上限和 `10°` 死区，避免顶墙后继续绕圈。P 在这段中自然丢失不影响完成。角度始终只使用 IMU，禁止使用 odom orientation。墙角 TLS 代码保留用于离线调试，生产 YAML 已关闭且不参与完成门槛。
 
 ### 4.2 避障与丢失恢复
 
-Stage3 在地图搜索和 P 视觉接近期间复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前搜索目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。紧急近障触发 `emergency_reversing`，完成后回到 `forward` 重新判定常规避障。普通避障、反舵、恢复和紧急倒车线速度当前分别为 0.16、0.16、0.18 和 0.14 m/s。P 接管且深度或视觉填充备用证据进入最终段的同一控制周期就会取消已有避障状态，并跳过普通和紧急雷达避障；此后只以锁定 IMU 航向和受限 `0.50m` 里程完成终停。
+Stage3 仅在地图搜索阶段复用 Stage1 的 `forward -> avoiding -> countersteering -> recovering` 聚类避障。避障对左右候选转向分别评估最小转角后的航向与当前搜索目标的夹角，选择更接近目标的一侧；明确朝近障同侧转入有硬安全惩罚。紧急近障触发 `emergency_reversing`，完成后回到 `forward` 重新判定常规避障。普通避障、反舵、恢复和紧急倒车线速度当前分别为 0.16、0.16、0.18 和 0.14 m/s。
 
-P 视觉接近本身不等于关闭避障：在最终 `P final odometry run armed` 之前，雷达普通避障和紧急倒车仍优先于 `P_APPROACH` 前进命令。若 P 接近阶段持续下发前进速度但 `/odom_combined` xy 在 `p_approach_progress_timeout_sec` 内没有达到 `p_approach_progress_min_delta_m` 推进量，则判定车体已顶住真实障碍或卡滞，进入同一套 `emergency_reversing` 后退带转向脱困；倒车完成后重新检查雷达并恢复 P/地图导航。只有最终近距离里程段屏蔽雷达，避免终点墙或 P 本体误触发绕行。
+连续 P 确认后进入 `P_SERVO`，`P_APPROACH` 前进命令优先于通用雷达避障与紧急倒车，防止终点板/墙被误判而把车拉离。P 临时丢失仍按锁存视觉航向短退后恢复 `MAP_SEARCH`；P 接近持续下发前进但 `/odom_combined` xy 在 `p_approach_progress_timeout_sec` 内没有达到 `p_approach_progress_min_delta_m` 时，才进入显式的停滞恢复分支。进入 `P final odometry run armed` 的同一控制周期会清空已有避障状态，此后只以锁定 IMU 航向和受限 `0.50m` 里程完成终停。
 
 ---
 
 ## 5. 日志、辅助包与启动
 
-| 项目 | 位置/说明 |
-|---|---|
-| Stage1 日志 | `~/dev_ws/log/competition_stage1/latest.log` |
-| Stage2 日志 | `~/dev_ws/log/competition_stage2/latest.log`，仅在首次进入 Phase 2 时创建并覆盖；S2 主控与图生文节点均以同一文件锁写入，图生文追加抓拍、模型竞速、结果与失败诊断。 |
-| Stage3 日志 | `~/dev_ws/log/competition_stage3/latest.log`，仅在首次进入 Phase 3 时创建并覆盖 |
-| QR | `qr_scanner`，WeChat CV 解码 |
-| 图生文 | `racing_vision_ai`，接收 Stage2 一次性触发，豆包/Qwen/本地 VLM 并发竞速；默认完整结果一次发布，可用 `vision_ai_config.yaml` 的 `response.streaming_enabled: true` 打开流式短句发布 |
-| 语音 | `voice_driver`，异步顺序播报 `ai_description` 文本 |
-| 通用日志/Marker | `racing_common` |
+本节是日志路径的唯一说明。日志分为三层：阶段业务日志、节点/驱动原始运行日志、调试图片和模型专用文件。排查启动失败时，先看原始运行日志；排查比赛状态机和真实位置时，看对应阶段的 `latest.log`。
+
+### 5.1 阶段业务日志
+
+| 文件 | 实际写入者 | 覆盖时机 | 内容 |
+|---|---|---|---|
+| `~/dev_ws/log/competition_stage1/latest.log` | `competition_controller` | Stage1 主控构造并开始 Stage1 会话时，以 `w` 模式覆盖一次 | Stage1 配置、Phase 状态机、二维码任务后的倒车、通道、避障、交接、阶段完成和 `[POSE_REAL]`。这是 Stage1 主控日志。 |
+| `~/dev_ws/log/competition_stage1/qr_scanner.log` | `qr_scanner` | 二维码节点启动时清空并重新写入自己的诊断文件 | QR 后端初始化、相机帧统计、解码耗时、候选结果、二维码识别失败和扫描触发证据。二维码不再与 Stage1 主控共用 `latest.log`，避免主控启动覆盖 QR 的早期诊断。 |
+| `~/dev_ws/log/competition_stage2/latest.log` | `stage2_inertial_navigator`、`racing_vision_ai` | 首次收到 `competition_phase=2` 时，Stage2 主控以 `w` 模式覆盖一次；图生文随后只追加 | S2 配置、真实 map 位置、IMU/里程、赛段切换、弯道触发、避障、交接、图像抓拍、模型竞速、失败原因和 `[LOCAL_TIMING]`。S2 主控与图生文使用文件锁，避免并发写坏文件。 |
+| `~/dev_ws/log/competition_stage3/latest.log` | `stage3_return_navigator` | 首次从非 3 阶段切入 `phase=3` 时，以 `w` 模式覆盖一次 | S3 交接锚点、真实位置、IMU 航向、地图搜索、P 视觉接管、终段里程、避障、完成或失败原因。 |
+
+阶段日志严格按阶段覆盖：总启动一开始不会覆盖 Stage2 或 Stage3 的 `latest.log`；Stage2 节点虽然会随总启动创建进程，但只有真正进入 Phase 2 才创建 S2 会话；Stage3 同理。阶段结束后文件追加关闭标记，下一次该阶段真正启动时才覆盖旧会话。
+
+### 5.2 节点和驱动原始运行日志
+
+总启动和单阶段启动都设置 `OVERRIDE_LAUNCH_PROCESS_OUTPUT=own_log`。因此节点的 stdout/stderr 不进入终端，而是保存在 ROS 原始日志目录。代码不再设置 `RCUTILS_LOGGING_MIN_SEVERITY=50`，所以 ROS 的 INFO、WARN、ERROR 启动信息、硬件初始化信息和异常退出信息都会保留。
+
+| 启动方式 | 原始日志目录 | 文件命名 |
+|---|---|---|
+| `ros2 launch racing_bringup competition_total.launch.py` | `~/dev_ws/log/competition_runtime/`，以及各被包含阶段设置的 `competition_stage1/ros/`、`competition_stage2/ros/`、`competition_stage3/ros/` | ROS 节点按 `<executable>_<pid>_<timestamp>.log` 保存；不要按固定文件名查找，按时间和 PID 找最新文件。 |
+| `ros2 launch racing_stage1 competition_stage1.launch.py` | `~/dev_ws/log/competition_stage1/ros/` | 相机、二维码、雷达、IMU、EKF、底盘、地图和 Stage1 进程的原始 stdout/stderr 与 ROS 诊断。 |
+| `ros2 launch racing_stage2 competition_stage2.launch.py` | `~/dev_ws/log/competition_stage2/ros/` | Stage2 主控、支持栈、雷达、测试发布器、relay 和 Marker 节点的原始日志。 |
+| `ros2 launch racing_stage3 competition_stage3.launch.py` | `~/dev_ws/log/competition_stage3/ros/` | Stage3 主控和其支持栈的原始日志。 |
+| 语音节点 | 总启动时进入 `~/dev_ws/log/competition_runtime/`；单独语音启动也进入该目录 | `voice_broadcast_node_<pid>_<timestamp>.log`，包含 TTS provider、串口发送失败、播报异常和节点退出信息。 |
+
+原始运行日志是启动故障的第一现场。例如相机设备占用、雷达串口失败、DDS 初始化失败、视觉模型加载失败、TTS 初始化异常，都应该在这里查找，而不是到终端寻找。`log/build_*` 是 colcon 编译日志，不是比赛运行日志；`~/.ros/log` 只可能包含未使用本工作区启动文件的历史运行日志。
+
+### 5.3 图片和模型专用文件
+
+| 文件 | 写入者 | 用途 |
+|---|---|---|
+| `~/dev_ws/log/competition_stage1/qr_latest.jpg` | `qr_scanner` | 最近一次二维码诊断帧；与 `qr_scanner.log` 同目录。 |
+| `~/dev_ws/log/competition_stage2/ai_capture.jpg` | `racing_vision_ai` | 实际送入模型竞速的抓拍帧；覆盖保存，只保留最近一次。 |
+| `~/dev_ws/log/local-smolvlm.log` | 本地 SmolVLM 启动/服务过程 | 本地模型服务自身的启动、请求和退出诊断；它不属于阶段 `latest.log`。 |
+
+### 5.4 终端白名单与日志对应关系
+
+终端只保留以下三类操作员信息：
+
+- `[STARTUP]`：目标 ROS 节点已经出现在 ROS graph 后才打印；进程刚创建但尚未加载完成时不会打印“启动成功”。
+- `[TASK]`：阶段开始、阶段完成、比赛结束等任务事件。
+- `[POSE_REAL]`：小车通过实时 `map <- base_footprint/base_link` TF 测得的真实 map 位置。它不是导航器内部的 `track_x`、目标点、里程计坐标或规划坐标。
+
+所有配置、模型参数、内部控制坐标、里程、航向、诊断和错误详情只进上述日志文件，不再进入终端。
 
 ```bash
 source /opt/ros/humble/setup.bash

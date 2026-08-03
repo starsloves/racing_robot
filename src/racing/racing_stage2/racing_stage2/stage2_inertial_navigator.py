@@ -16,6 +16,7 @@ from tf2_ros import TransformException
 from racing_stage2.stage2_inertial_base import Stage2InertialBase
 from racing_stage2.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
+from racing_common.racing_logger import terminal_write
 from racing_stage2.stage2_vision_mixin import Stage2VisionMixin
 from racing_stage2.track_controller import ImuDistancePose, Stage2TrackController
 
@@ -511,7 +512,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         )
 
     def _setup_session_log(self) -> None:
-        self.declare_parameter('session_log_subdir', 'direct_inertial_test')
+        self.declare_parameter('session_log_subdir', 'competition_stage2')
         self.declare_parameter('session_log_filename', 'latest.log')
         self.declare_parameter('session_telemetry_interval_sec', 0.25)
         self.declare_parameter('session_track_ctrl_interval_sec', 0.50)
@@ -519,7 +520,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('control_gap_stop_sec', 1.0)
         subdir = (
             str(self.get_parameter('session_log_subdir').value).strip()
-            or 'direct_inertial_test'
+            or 'competition_stage2'
         )
         filename = (
             str(self.get_parameter('session_log_filename').value).strip() or 'latest.log'
@@ -533,6 +534,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._session_log_subdir = subdir
         self._session_log_filename = filename
         self._session_log = None
+        self._last_real_pose = None
         self._last_telemetry_sec = 0.0
         self._last_wait_log_sec = 0.0
         self._wheel_warmup_logged = False
@@ -1029,11 +1031,30 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.current_odom_yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
         self._update_track_pose_from_odom_combined()
+        self._report_real_pose()
         
         if not self._wheel_pose_source_active() or not self._wheel_odom_ready:
             self.current_position = self._last_ekf_position
         if self.waiting_for_phase2_start:
             self.try_start_mission()
+
+    def _report_real_pose(self, force=False):
+        """Report only the measured map TF pose; track coordinates stay in files."""
+        try:
+            real_map = self._lookup_map_xy_from_tf()
+        except Exception:
+            real_map = None
+        if real_map is None or self._session_log is None:
+            return
+        previous = self._last_real_pose
+        if not force and previous is not None and math.hypot(
+            real_map[0] - previous[0], real_map[1] - previous[1]
+        ) < 0.10:
+            return
+        self._last_real_pose = real_map
+        line = f'real_map=({real_map[0]:.3f},{real_map[1]:.3f}) source=map_tf'
+        self._log_session('POSE_REAL', line)
+        terminal_write(f'[POSE_REAL] {line}')
 
     def _update_track_pose_from_odom_combined(self):
         """Integrate EKF distance in the IMU heading frame for track control."""
@@ -1301,9 +1322,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._track_map_x_correction_offset = 0.0
         track_x_source = 'real_tf'
         if entry_pose is not None and entry_map_xy is not None:
-            self._track_map_x_correction_offset = entry_pose['x'] - entry_map_xy[0]
-            self._track_map_x_origin = entry_pose['x']
-            track_x_source = 'stage1_handoff'
+            # Stage1 has already committed the live wall measurement to EKF
+            # through /set_pose before publishing Phase2.  Do not apply the
+            # same wall correction a second time inside Stage2.
+            self._track_map_x_origin = entry_map_xy[0]
+            track_x_source = 'stage1_ekf_rebased'
         else:
             self._track_map_x_origin = None if entry_map_xy is None else entry_map_xy[0]
         self._track_pose_integrator.reset(self._last_ekf_position, self.current_yaw)
@@ -2323,6 +2346,10 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._stage3_handoff_active = True
         self._stage3_handoff_deadline = time.monotonic() + self._stage3_handoff_hold_timeout
         self._set_vision_inference_active(False)
+        self._report_real_pose(force=True)
+        message = 'Stage2 完成，等待 Stage3 接管'
+        self._log_session('TASK', message)
+        terminal_write(f'[TASK] {message}')
         self.get_logger().info('第二阶段完成')
         # 独立测试工具可注入 _request_stop；比赛 total 场景保持节点存活待命
         if hasattr(self, '_request_stop') and self._request_stop is not None:
@@ -2454,6 +2481,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         # 仅在真正切到 phase=2 时武装启动
         if previous_phase != 2 and self.phase == 2:
             self._start_session_log()
+            self._log_session('TASK', 'Stage2 启动，进入 Phase 2')
             self.waiting_for_phase2_start = True
             self.start_after_time = None
             self.reported_start_delay = False
@@ -2541,6 +2569,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.get_logger().info(
             f'[MISSION] ✓ Stage2 任务启动: phase=2, direction={self.direction}'
         )
+        terminal_write(f'[TASK] 第二阶段开始 direction={self.direction}')
         self.waiting_for_phase2_start = False
         self.mission_active = True
         self.reported_start = True
@@ -2603,7 +2632,6 @@ def main(args=None):
                 node.get_logger().error(f'Stage2 crashed: {exc}\n{tb}')
         except Exception:
             pass
-        print(f'[Stage2 FATAL] {exc}\n{tb}', flush=True)
         raise
     finally:
         if request_stop is not None:

@@ -5,12 +5,15 @@ from launch.actions import SetEnvironmentVariable
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, GroupAction,
-                            IncludeLaunchDescription, SetEnvironmentVariable)
+                            IncludeLaunchDescription, RegisterEventHandler,
+                            SetEnvironmentVariable)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import PushRosNamespace
 import launch_ros.actions
 from launch.conditions import UnlessCondition
+from launch.event_handlers import OnProcessStart
+from racing_common.launch_status import startup_status
 
 def generate_launch_description():
     # Get the launch directory
@@ -84,6 +87,13 @@ def generate_launch_description():
     ld.add_action(imu_filter_node)
     ld.add_action(robot_ekf)
     ld.add_action(link_to_laser)
+    ld.add_action(RegisterEventHandler(OnProcessStart(
+        target_action=imu_filter_node,
+        on_start=[startup_status('IMU', '/imu_filter_madgwick_node')],
+    )))
+    ld.add_action(RegisterEventHandler(OnProcessStart(
+        target_action=robot_ekf,
+        on_start=[startup_status('定位 EKF', '/ekf_node')],
+    )))
 
     return ld
-

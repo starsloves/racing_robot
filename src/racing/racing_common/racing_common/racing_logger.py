@@ -18,8 +18,18 @@ Output format: ``[TAG] message`` — written to both ROS logger and file.
 """
 
 import time
+import sys
 
 from .session_file_log import SessionFileLog
+
+
+def terminal_write(message):
+    """Write one approved operator message directly to the controlling TTY."""
+    try:
+        with open('/dev/tty', 'w', encoding='utf-8', buffering=1) as terminal:
+            terminal.write(str(message).rstrip() + '\n')
+    except (OSError, IOError):
+        print(message, file=sys.stdout, flush=True)
 
 
 class RacingLogger:
@@ -54,17 +64,16 @@ class RacingLogger:
 
     # ── low-level write ──
 
-    def _write(self, tag, message, level='info', file_only=False):
+    def _write(self, tag, message, level='info', file_only=False, terminal=False):
         formatted = f'[{tag}] {message}'
-        if not file_only:
-            if level == 'info':
-                self._node.get_logger().info(formatted)
-            elif level == 'warn':
-                self._node.get_logger().warn(formatted)
-            elif level == 'error':
-                self._node.get_logger().error(formatted)
+        if terminal and not file_only:
+            self._terminal_write(formatted)
         if self._file_log is not None:
             self._file_log.write(formatted)
+
+    @staticmethod
+    def _terminal_write(message):
+        terminal_write(message)
 
     # ── public: generic tag ──
 
@@ -88,7 +97,7 @@ class RacingLogger:
         self._write('STARTUP', message, 'info', file_only=True)
 
     def mission(self, message):
-        self._write('MISSION', message, 'info')
+        self._write('MISSION', message, 'info', file_only=True)
 
     def segment(self, message):
         self._write('SEGMENT', message, 'info')
@@ -97,7 +106,7 @@ class RacingLogger:
         self._write('PROGRESS', message, 'info', file_only=True)
 
     def feedback(self, message):
-        self._write('FEEDBACK', message, 'info')
+        self._write('FEEDBACK', message, 'info', file_only=True)
 
     def telemetry(self, reason, message):
         now = time.monotonic()
@@ -120,10 +129,46 @@ class RacingLogger:
         self._write('SEGMENT_DONE', message, 'info', file_only=True)
 
     def corner_avoid(self, message):
-        self._write('CORNER_AVOID', message, 'info')
+        self._write('CORNER_AVOID', message, 'info', file_only=True)
 
     def timeout(self, message):
-        self._write('TIMEOUT', message, 'warn')
+        self._write('TIMEOUT', message, 'warn', file_only=True)
+
+    def task(self, message):
+        """Write a task event and show the same concise event in the terminal."""
+        self._write('TASK', message, 'info', terminal=True)
+
+    def real_pose(self, x, y, source='map_tf', force=False, min_delta_m=0.10):
+        """Report the robot's measured map position, never a controller target."""
+        position = (float(x), float(y))
+        previous = getattr(self, '_last_real_pose', None)
+        if not force and previous is not None:
+            if ((position[0] - previous[0]) ** 2 + (position[1] - previous[1]) ** 2) ** 0.5 < min_delta_m:
+                return
+        self._last_real_pose = position
+        self._write(
+            'POSE_REAL',
+            f'real_map=({position[0]:.3f},{position[1]:.3f}) source={source}',
+            'info',
+            terminal=True,
+        )
+
+    def controller_pose(self, x, y, source):
+        """Record an internal navigation pose without exposing it in terminal."""
+        self._write(
+            'POSE_CTRL',
+            f'controller_map=({float(x):.3f},{float(y):.3f}) source={source}',
+            'info',
+            file_only=True,
+        )
+
+    def target_pose(self, x, y, name='target'):
+        self._write(
+            'POSE_TARGET',
+            f'target_map=({float(x):.3f},{float(y):.3f}) name={name}',
+            'info',
+            file_only=True,
+        )
 
     # ── shortcuts: Stage3 tags ──
 

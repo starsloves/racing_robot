@@ -98,8 +98,10 @@ class Stage3ReturnNavigator(Node):
         self._terminal_last_progress_odom = None
         self._terminal_last_progress_at = None
         self._terminal_p_confirmed = False
+        self._p_ever_confirmed = False
         self._terminal_completion_candidate_since = None
         self._terminal_zone_announced = False
+        self._terminal_fallback_hold_since = None
 
         # 路径状态
         self.path_started_at = None
@@ -114,7 +116,10 @@ class Stage3ReturnNavigator(Node):
         self._map_pose_warned = False
         self._entry_anchor_tf_warned = False
         self._visual_search_gate_reached = False
+        self._p_ever_confirmed = False
+        self._terminal_fallback_hold_since = None
         self._initial_align_required = False
+        self._initial_align_target_yaw = None
 
         # P 视觉最终接管：地图只用于粗导航，P 视觉决定最终到达。
         self._p_detector = None
@@ -143,6 +148,8 @@ class Stage3ReturnNavigator(Node):
         self._p_last_valid_depth_status = ''
         self._p_visual_near_since = None
         self._p_visual_near_last_at = None
+        self._p_visual_only_near_since = None
+        self._p_visual_only_near_last_at = None
         self._p_visible_yaw_history = deque()
         self._p_recovery_target_yaw = None
         # Preserve the visual heading while lidar temporarily takes control.
@@ -280,8 +287,10 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_heading_max_angular_speed', 0.45)
         self.declare_parameter('p_heading_reacquire_offset', 0.18)
         self.declare_parameter('p_heading_reacquire_interval_sec', 0.35)
+        self.declare_parameter('p_heading_reacquire_max_delta_deg', 8.0)
         self.declare_parameter('p_loss_reverse_speed', 0.10)
         self.declare_parameter('p_loss_reverse_duration_sec', 0.80)
+        self.declare_parameter('p_loss_grace_period_sec', 0.45)
         self.declare_parameter('p_loss_reverse_max_angular', 0.35)
         self.declare_parameter('p_loss_heading_lookback_sec', 1.0)
         self.declare_parameter('p_loss_heading_tolerance_deg', 6.0)
@@ -303,6 +312,7 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_final_visual_depth_assist_m', 0.75)
         self.declare_parameter('p_final_visual_evidence_hold_sec', 0.10)
         self.declare_parameter('p_final_visual_evidence_timeout_sec', 1.20)
+        self.declare_parameter('p_final_visual_no_depth_fill_trigger_ratio', 0.45)
         self.declare_parameter('p_approach_slow_linear_speed', 0.12)
         self.declare_parameter('p_final_odom_travel_m', 0.50)
         self.declare_parameter('p_final_brake_response_sec', 0.12)
@@ -355,6 +365,12 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('terminal_progress_timeout_sec', 0.75)
         self.declare_parameter('terminal_completion_hold_sec', 0.30)
         self.declare_parameter('terminal_corner_disable_emergency_avoidance', True)
+        self.declare_parameter('terminal_fallback_enabled', True)
+        self.declare_parameter('terminal_fallback_tolerance_m', 0.12)
+        self.declare_parameter('terminal_fallback_linear_speed', 0.24)
+        self.declare_parameter('terminal_fallback_max_angular_speed', 0.35)
+        self.declare_parameter('terminal_fallback_heading_kp', 1.4)
+        self.declare_parameter('terminal_fallback_completion_hold_sec', 0.30)
 
         # ── Pure Pursuit ──
         self.declare_parameter('pursuit_linear_speed', 0.18)
@@ -512,9 +528,15 @@ class Stage3ReturnNavigator(Node):
         self.p_heading_reacquire_interval = max(0.0, float(
             self.get_parameter('p_heading_reacquire_interval_sec').value
         ))
+        self.p_heading_reacquire_max_delta = math.radians(max(0.0, float(
+            self.get_parameter('p_heading_reacquire_max_delta_deg').value
+        )))
         self.p_loss_reverse_speed = abs(float(self.get_parameter('p_loss_reverse_speed').value))
         self.p_loss_reverse_duration = max(
             0.0, float(self.get_parameter('p_loss_reverse_duration_sec').value)
+        )
+        self.p_loss_grace_period = max(
+            0.0, float(self.get_parameter('p_loss_grace_period_sec').value)
         )
         self.p_loss_reverse_max_angular = abs(float(
             self.get_parameter('p_loss_reverse_max_angular').value
@@ -577,6 +599,12 @@ class Stage3ReturnNavigator(Node):
         self.p_final_visual_evidence_timeout = max(
             0.0,
             float(self.get_parameter('p_final_visual_evidence_timeout_sec').value),
+        )
+        self.p_final_visual_no_depth_fill_trigger = min(
+            1.0,
+            max(0.0, float(
+                self.get_parameter('p_final_visual_no_depth_fill_trigger_ratio').value
+            )),
         )
         self.p_approach_slow_linear = max(
             0.02, float(self.get_parameter('p_approach_slow_linear_speed').value)
@@ -730,6 +758,24 @@ class Stage3ReturnNavigator(Node):
         self.terminal_corner_disable_emergency_avoidance = bool(
             self.get_parameter('terminal_corner_disable_emergency_avoidance').value
         )
+        self.terminal_fallback_enabled = bool(
+            self.get_parameter('terminal_fallback_enabled').value
+        )
+        self.terminal_fallback_tolerance = max(0.03, float(
+            self.get_parameter('terminal_fallback_tolerance_m').value
+        ))
+        self.terminal_fallback_linear_speed = max(0.04, float(
+            self.get_parameter('terminal_fallback_linear_speed').value
+        ))
+        self.terminal_fallback_max_angular = max(0.05, float(
+            self.get_parameter('terminal_fallback_max_angular_speed').value
+        ))
+        self.terminal_fallback_heading_kp = max(0.1, float(
+            self.get_parameter('terminal_fallback_heading_kp').value
+        ))
+        self.terminal_fallback_completion_hold = max(0.0, float(
+            self.get_parameter('terminal_fallback_completion_hold_sec').value
+        ))
 
         self.pursuit_linear_speed = float(self.get_parameter('pursuit_linear_speed').value)
         self.pursuit_lookahead = float(self.get_parameter('pursuit_lookahead_m').value)
@@ -1086,6 +1132,7 @@ class Stage3ReturnNavigator(Node):
         elif prev != 3 and self.phase == 3:
             self.log.start_session()
             self.log.startup('phase=3 activated; Stage3 file log session opened')
+            self.log.task('第三阶段开始')
             self._set_stage3_http_active(True)
             self._arm_mission()
 
@@ -1096,6 +1143,9 @@ class Stage3ReturnNavigator(Node):
         self._last_raw_odom_xy = (raw_x, raw_y)
         self._last_raw_odom_yaw = raw_yaw
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
+        real_map = self._lookup_map_xy_from_tf()
+        if real_map is not None and self.log.path is not None:
+            self.log.real_pose(real_map[0], real_map[1], source='map_tf')
         if self._pending_entry_anchor_map is not None:
             pending_anchor = self._pending_entry_anchor_map
             self._pending_entry_anchor_map = None
@@ -1348,7 +1398,10 @@ class Stage3ReturnNavigator(Node):
         self._active_planned_path = list(self._preplanned_path)
         self._active_path_cursor = 0
         self._visual_search_gate_reached = False
+        self._p_ever_confirmed = False
+        self._terminal_fallback_hold_since = None
         self._initial_align_required = False
+        self._initial_align_target_yaw = None
         if self._entry_anchor_map is not None and self._entry_anchor_odom is not None:
             self.current_position = self._apply_terminal_corner_correction(
                 self._position_from_entry_anchor(
@@ -1419,6 +1472,7 @@ class Stage3ReturnNavigator(Node):
         self._active_path_cursor = 0
         self._visual_search_gate_reached = False
         self._initial_align_required = False
+        self._initial_align_target_yaw = None
         self.avoid_state = 'forward'
         self.desired_heading = None
         self.recovery_uses_heading = False
@@ -1471,6 +1525,7 @@ class Stage3ReturnNavigator(Node):
         self._terminal_p_confirmed = False
         self._terminal_completion_candidate_since = None
         self._terminal_zone_announced = False
+        self._terminal_fallback_hold_since = None
 
     def _start_mission(self):
         if self.require_stage3_entry_anchor and (
@@ -1494,6 +1549,7 @@ class Stage3ReturnNavigator(Node):
             target_y - self.current_position[1], target_x - self.current_position[0]
         )
         initial_error = self._angle_error(target_yaw, self.current_yaw)
+        self._initial_align_target_yaw = target_yaw
         self._initial_align_required = abs(initial_error) >= self.initial_align_trigger
         self._publish_state('initial_align' if self._initial_align_required else 'running')
         self._update_p_inference_gate()
@@ -1517,7 +1573,10 @@ class Stage3ReturnNavigator(Node):
             detector.release_model('mission_complete')
         self._publish_state('complete')
         self._publish_feedback(feedback_text)
-        sys.stderr.write('\n=== STAGE3 RETURN COMPLETE ===\n\n')
+        real_map = self._lookup_map_xy_from_tf()
+        if real_map is not None:
+            self.log.real_pose(real_map[0], real_map[1], source='map_tf', force=True)
+        self.log.task(f'Stage3 完成，原因={feedback_text}')
 
     def _fail_mission(self, reason):
         self.cmd_pub.publish(Twist())
@@ -1527,7 +1586,6 @@ class Stage3ReturnNavigator(Node):
         self._set_p_inference_active(False)
         self._publish_state('failed')
         self._publish_feedback(f'return failed: {reason}')
-        sys.stderr.write(f'\n=== STAGE3 RETURN FAILED: {reason} ===\n\n')
 
 
     # ══════════════ Stage3 前置通道重定位 ══════════════
@@ -1633,18 +1691,28 @@ class Stage3ReturnNavigator(Node):
             self._run_p_final_odometry()
             return
 
-        # Both normal and emergency lidar avoidance are permitted only before
-        # the depth-gated final run. The terminal wall is expected structure.
+        # P_SERVO owns the chassis after consecutive P observations. Generic
+        # lidar avoidance cannot classify the P board or terminal wall and is
+        # therefore limited to MAP_SEARCH.
+        if self._p_approaching:
+            self._run_p_approach()
+            return
+
+        # After a confirmed P detection, terminal geometry is the remaining
+        # objective. Do not let the P board/finish wall enter the generic
+        # avoidance state machine or trigger a reverse maneuver.
+        if self._terminal_fallback_ready():
+            self._cancel_avoidance_for_terminal_zone()
+            self._run_terminal_fallback_drive()
+            return
+
+        # MAP_SEARCH keeps the normal lidar safety state machine.
         if self._check_emergency_stop():
             return
         if self.avoid_state == 'forward' and self.latest_scan is not None:
             self._check_obstacle()
         if self.avoid_state != 'forward':
             self._run_avoidance()
-            return
-
-        if self._p_approaching:
-            self._run_p_approach()
             return
 
         # P is absent or was deliberately recovered from. Use the anchored
@@ -1772,14 +1840,18 @@ class Stage3ReturnNavigator(Node):
             self._publish_state('waiting_for_map_tf')
             return
 
-        target_x, target_y = self._goal_center()
-        target_yaw = math.atan2(
-            target_y - self.current_position[1], target_x - self.current_position[0]
-        )
+        target_yaw = self._initial_align_target_yaw
+        if target_yaw is None:
+            target_x, target_y = self._goal_center()
+            target_yaw = math.atan2(
+                target_y - self.current_position[1], target_x - self.current_position[0]
+            )
+            self._initial_align_target_yaw = target_yaw
         heading_error = self._angle_error(target_yaw, self.current_yaw)
         self.desired_heading = target_yaw
         if abs(heading_error) <= self.initial_align_tolerance:
             self._initial_align_required = False
+            self._initial_align_target_yaw = None
             self._filtered_heading_err = 0.0
             self.stop_robot()
             self._publish_state('running')
@@ -1863,6 +1935,8 @@ class Stage3ReturnNavigator(Node):
         self._p_last_valid_depth_status = ''
         self._p_visual_near_since = None
         self._p_visual_near_last_at = None
+        self._p_visual_only_near_since = None
+        self._p_visual_only_near_last_at = None
 
     def _update_p_final_visual_evidence(self, fill, depth_m, depth_status):
         now = self._now_sec()
@@ -1894,6 +1968,22 @@ class Stage3ReturnNavigator(Node):
             self._p_visual_near_since = None
             self._p_visual_near_last_at = None
 
+        visual_only_now = (
+            self.p_final_visual_no_depth_fill_trigger > 0.0
+            and self._p_last_fill_ratio >= self.p_final_visual_no_depth_fill_trigger
+            and depth_m is None
+        )
+        if visual_only_now:
+            if self._p_visual_only_near_since is None:
+                self._p_visual_only_near_since = now
+            self._p_visual_only_near_last_at = now
+        elif (
+            self._p_visual_only_near_last_at is None
+            or now - self._p_visual_only_near_last_at > self.p_final_visual_evidence_timeout
+        ):
+            self._p_visual_only_near_since = None
+            self._p_visual_only_near_last_at = None
+
     def _p_visual_near_ready(self):
         if self.p_final_visual_fill_trigger <= 0.0:
             return False
@@ -1905,6 +1995,20 @@ class Stage3ReturnNavigator(Node):
         if now - self._p_visual_near_since < self.p_final_visual_evidence_hold:
             return False
         return True
+
+    def _p_visual_no_depth_near_ready(self):
+        """Allow a stable large P box to commit when Aurora has no usable ROI."""
+        if self.p_final_visual_no_depth_fill_trigger <= 0.0:
+            return False
+        now = self._now_sec()
+        if (
+            self._p_visual_only_near_since is None
+            or self._p_visual_only_near_last_at is None
+        ):
+            return False
+        if now - self._p_visual_only_near_last_at > self.p_final_visual_evidence_timeout:
+            return False
+        return now - self._p_visual_only_near_since >= self.p_final_visual_evidence_hold
 
     def _p_final_depth_start_text(self):
         if self._p_final_run_depth_m is None:
@@ -2378,6 +2482,7 @@ class Stage3ReturnNavigator(Node):
             return
         if self._p_approaching:
             return
+        self._p_ever_confirmed = True
         self._p_approaching = True
         self._p_offset_filtered = float(offset)
         self._p_target_yaw = self._visual_target_yaw(offset)
@@ -2419,12 +2524,38 @@ class Stage3ReturnNavigator(Node):
             now = self._now_sec()
             if self._p_lost_since is None:
                 self._p_lost_since = now
-                self._p_lost_reverse_started_at = now
+                self._p_lost_reverse_started_at = None
                 self._p_recovery_target_yaw = self._p_heading_before_loss(now)
                 self.desired_heading = self._p_recovery_target_yaw
+                self.log.telemetry(
+                    'P_LOSS_GRACE',
+                    f'P temporarily lost; hold for {self.p_loss_grace_period:.2f}s '
+                    'before recovery reverse',
+                )
+
+            loss_elapsed = now - self._p_lost_since
+            # Once P has been confirmed, a loss inside the terminal zone is
+            # usually caused by the board filling the camera or depth/vision
+            # dropout. Keep converging to the calibrated terminal point; do
+            # not back away from the finish and let lidar classify the board.
+            if self._p_ever_confirmed and self._terminal_fallback_ready():
+                self._resume_map_search_after_p_loss(0.0, True, 0.0)
+                self.log.mission(
+                    'P lost inside terminal zone; skip recovery reverse and '
+                    'continue smooth terminal convergence'
+                )
+                return
+            if loss_elapsed < self.p_loss_grace_period:
+                self._publish_state('p_visual_loss_grace')
+                self.cmd_pub.publish(self._twist(0.0, 0.0))
+                return
+
+            if self._p_lost_reverse_started_at is None:
+                self._p_lost_reverse_started_at = now
                 self.log.warn(
                     'P_DETECTION',
-                    'P lost after acquisition: reversing toward the locked visual heading '
+                    'P remained lost after grace period; reversing toward the locked '
+                    'visual heading '
                     f'({self._format_optional_yaw_deg(self._p_recovery_target_yaw)})'
                 )
                 self._publish_feedback('P lost: reverse toward the locked visual heading')
@@ -2473,12 +2604,27 @@ class Stage3ReturnNavigator(Node):
             or now - self._p_last_heading_reacquire_at >= self.p_heading_reacquire_interval
         )
         if self._p_target_yaw is None or reacquire_due:
-            self._p_target_yaw = self._visual_target_yaw(self._p_offset_filtered)
+            applied_delta = 0.0
+            if self._p_target_yaw is None or self._p_heading_lock_offset is None:
+                self._p_target_yaw = self._visual_target_yaw(self._p_offset_filtered)
+            else:
+                # Apply only the image-space delta. Rebuilding from current
+                # IMU yaw makes the terminal target drift while the chassis turns.
+                offset_delta = self._p_offset_filtered - self._p_heading_lock_offset
+                requested_delta = -self.p_heading_bearing_gain * offset_delta
+                applied_delta = self._clamp(
+                    requested_delta,
+                    self.p_heading_reacquire_max_delta,
+                )
+                self._p_target_yaw = self._normalize_angle(
+                    self._p_target_yaw + applied_delta
+                )
             self._p_heading_lock_offset = self._p_offset_filtered
             self._p_last_heading_reacquire_at = now
             self.log.segment(
                 f'P heading reacquire offset={self._p_offset_filtered:+.3f} '
-                f'target={math.degrees(self._p_target_yaw):.1f}deg'
+                f'target={math.degrees(self._p_target_yaw):.1f}deg '
+                f'delta={math.degrees(applied_delta):+.1f}deg'
             )
         self.desired_heading = self._p_target_yaw
         heading_error = self._angle_error(self._p_target_yaw, self.current_yaw)
@@ -2538,6 +2684,12 @@ class Stage3ReturnNavigator(Node):
                 f'{self._p_last_valid_depth_m:.3f}m <= '
                 f'{self.p_final_visual_depth_assist:.3f}m '
                 f'({self._p_last_valid_depth_status})'
+            )
+        elif self._p_visual_no_depth_near_ready():
+            trigger_text = (
+                f'visual_only_fill={self._p_last_fill_ratio:.2%} >= '
+                f'{self.p_final_visual_no_depth_fill_trigger:.2%}; '
+                'depth_roi_unavailable'
             )
         else:
             return False
@@ -2700,6 +2852,64 @@ class Stage3ReturnNavigator(Node):
             'resume lidar-protected navigation to visual search goal'
         )
         self._publish_feedback('P occluded: resume navigation to visual search goal')
+
+    def _terminal_fallback_ready(self):
+        if (
+            not self.terminal_fallback_enabled
+            or not self._p_ever_confirmed
+            or self.current_position is None
+        ):
+            return False
+        distance = math.hypot(
+            self.terminal_target_map[0] - self.current_position[0],
+            self.terminal_target_map[1] - self.current_position[1],
+        )
+        return distance <= self.terminal_acquire_distance
+
+    def _run_terminal_fallback_drive(self):
+        """Smoothly converge to the terminal point after P was confirmed."""
+        if self.current_position is None or self.current_yaw is None:
+            self.stop_robot()
+            return
+        dx = self.terminal_target_map[0] - self.current_position[0]
+        dy = self.terminal_target_map[1] - self.current_position[1]
+        distance = math.hypot(dx, dy)
+        now = self._now_sec()
+        if distance <= self.terminal_fallback_tolerance:
+            self.stop_robot()
+            if self._terminal_fallback_hold_since is None:
+                self._terminal_fallback_hold_since = now
+                self._publish_state('terminal_done_hold')
+                self.log.segment(
+                    f'terminal fallback reached: distance={distance:.3f}m; '
+                    f'holding {self.terminal_fallback_completion_hold:.2f}s'
+                )
+                return
+            if now - self._terminal_fallback_hold_since >= self.terminal_fallback_completion_hold:
+                self._finish_mission('return complete, smooth terminal fallback reached')
+            return
+
+        self._terminal_fallback_hold_since = None
+        target_yaw = math.atan2(dy, dx)
+        heading_error = self._angle_error(target_yaw, self.current_yaw)
+        angular = self._clamp(
+            self.terminal_fallback_heading_kp * heading_error,
+            self.terminal_fallback_max_angular,
+        )
+        # Couple speed to both remaining distance and heading error. This
+        # makes large errors turn decisively while small errors settle gently.
+        speed = min(self.terminal_fallback_linear_speed, max(0.05, distance * 0.8))
+        if abs(heading_error) > math.radians(45.0):
+            speed = min(speed, 0.10)
+        self.desired_heading = target_yaw
+        self._publish_state('terminal_fallback_drive')
+        self.log.telemetry(
+            'TERMINAL_FALLBACK',
+            f'dist={distance:.3f}m target=({self.terminal_target_map[0]:.2f},'
+            f'{self.terminal_target_map[1]:.2f}) heading_err='
+            f'{math.degrees(heading_error):+.1f}deg v={speed:.2f} w={angular:.2f}',
+        )
+        self.cmd_pub.publish(self._twist(speed, angular))
 
     @staticmethod
     def _format_optional_yaw_deg(yaw_rad):

@@ -1,18 +1,33 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+import logging
+
+import launch.logging as launch_logging
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch.actions import RegisterEventHandler
+from launch.event_handlers import OnProcessStart
+from racing_common.launch_status import startup_status
 
 
 def generate_launch_description() -> LaunchDescription:
     """Start TTS-only node: subscribe ai_description and speak API text."""
+    launch_logging.launch_config.level = logging.ERROR
+    voice_node = Node(
+        package='voice_driver',
+        executable='voice_broadcast_node',
+        name='voice_broadcast_node',
+        output='log',
+        parameters=[{'mode': LaunchConfiguration('mode')}],
+    )
     return LaunchDescription([
-        DeclareLaunchArgument('mode', default_value='tts_only'),
-        Node(
-            package='voice_driver',
-            executable='voice_broadcast_node',
-            name='voice_broadcast_node',
-            output='screen',
-            parameters=[{'mode': LaunchConfiguration('mode')}],
+        SetEnvironmentVariable(
+            'ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_runtime'
         ),
+        DeclareLaunchArgument('mode', default_value='tts_only'),
+        voice_node,
+        RegisterEventHandler(OnProcessStart(
+            target_action=voice_node,
+            on_start=[startup_status('语音节点', '/voice_broadcast_node')],
+        )),
     ])

@@ -136,6 +136,7 @@ class VisionAINode(Node):
         self._latest_frame_time = 0.0
         self._busy = False
         self._busy_lock = threading.Lock()
+        self._shutdown_requested = threading.Event()
         self._mission_complete = False
         self._phase = 0
         self._capture_active = not bool(self.get_parameter('phase_gated').value)
@@ -620,6 +621,9 @@ class VisionAINode(Node):
                 content, winner = self._analyze_stream_race(frame, captured_at)
             else:
                 content, winner = self._analyze_race(frame, captured_at)
+            if self._shutdown_requested.is_set():
+                self.get_logger().info('[VISION_AI] analysis cancelled by node shutdown')
+                return
             elapsed = time.monotonic() - started
             if not content:
                 self.get_logger().error(f'[VISION_AI] all vision responses failed elapsed={elapsed:.3f}s')
@@ -753,7 +757,14 @@ class VisionAINode(Node):
                 None if self._local_no_timeout and any(name == 'local' for name, _ in candidates)
                 else self._request_timeout_sec
             )
-            if not selection_ready.wait(timeout=wait_timeout):
+            while not selection_ready.wait(timeout=0.1):
+                if self._shutdown_requested.is_set():
+                    return None, 'shutdown'
+                if wait_timeout is not None:
+                    wait_timeout -= 0.1
+                    if wait_timeout <= 0.0:
+                        break
+            if not selection_ready.is_set():
                 self.get_logger().error('[VISION_AI] stream race timed out before first usable delta')
                 return None, 'none'
             winner = selected[0]
@@ -832,6 +843,8 @@ class VisionAINode(Node):
         try:
             while pending:
                 completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+                if self._shutdown_requested.is_set():
+                    return None, 'shutdown'
                 for future in completed:
                     name = futures[future]
                     try:
@@ -887,15 +900,18 @@ class VisionAINode(Node):
             self.get_logger().warning(f'[VISION_AI] stage2 log append failed: {exc}')
 
     def destroy_node(self) -> bool:
+        self._shutdown_requested.set()
         with self._busy_lock:
             busy = self._busy
         if busy:
             self.get_logger().info(
-                '[VISION_AI] shutdown waits for submitted image analysis to finish'
+                '[VISION_AI] shutdown cancels pending image analysis and stops local VLM'
             )
-            self._write_stage2_log('[RESOURCE] node shutdown deferred until analysis completes')
-        self._executor.shutdown(wait=True, cancel_futures=False)
+            self._write_stage2_log('[RESOURCE] node shutdown cancelled pending analysis')
+        # Local inference may intentionally have no request timeout. Stopping
+        # its server first releases the blocked HTTP call before executor tear-down.
         self._stop_local_server()
+        self._executor.shutdown(wait=False, cancel_futures=True)
         return super().destroy_node()
 
 

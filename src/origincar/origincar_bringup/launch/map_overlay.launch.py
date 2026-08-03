@@ -2,9 +2,11 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch.event_handlers import OnProcessStart
+from racing_common.launch_status import startup_status
 
 
 def generate_launch_description():
@@ -69,6 +71,10 @@ def generate_launch_description():
         map_to_odom_y_arg,
         map_to_odom_yaw_arg,
         map_server,
+        RegisterEventHandler(OnProcessStart(
+            target_action=map_server,
+            on_start=[startup_status('地图服务', '/map_server')],
+        )),
         lifecycle_manager,
         map_to_odom,
     ])

@@ -144,6 +144,7 @@ private:
 
 	void Publish_ImuSensor();
 	void Publish_Voltage();
+	void Send_Stop_Command();
 	auto createQuaternionMsgFromYaw(double yaw);
 
 	bool Get_Sensor_Data();

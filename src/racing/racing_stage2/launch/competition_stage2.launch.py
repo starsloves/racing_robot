@@ -1,15 +1,18 @@
 import os
+import logging
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+import launch.logging as launch_logging
 
 
 def generate_launch_description():
+    launch_logging.launch_config.level = logging.ERROR
     stage2_dir = get_package_share_directory('racing_stage2')
     bringup_dir = get_package_share_directory('origincar_bringup')
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
@@ -155,7 +158,7 @@ def generate_launch_description():
             'phase_topic': active_phase_topic,
             'task_topic': active_task_topic,
         }],
-        output='screen',
+        output='log',
         condition=IfCondition(LaunchConfiguration('enable_test_publisher')),
     )
 
@@ -174,7 +177,7 @@ def generate_launch_description():
                 'imu_map_yaw_offset_fallback_enabled': LaunchConfiguration('enable_test_publisher'),
             },
         ],
-        output='screen',
+        output='log',
     )
 
     cmd_relay = Node(
@@ -185,7 +188,7 @@ def generate_launch_description():
             'input_topic': LaunchConfiguration('relay_input_topic'),
             'output_topic': LaunchConfiguration('relay_output_topic'),
         }],
-        output='screen',
+        output='log',
         condition=IfCondition(LaunchConfiguration('enable_cmd_relay')),
     )
 
@@ -194,11 +197,22 @@ def generate_launch_description():
         executable='lidar_obstacle_circle_markers',
         name='lidar_obstacle_circle_markers',
         parameters=[obstacle_marker_config],
-        output='screen',
+        output='log',
         condition=IfCondition(LaunchConfiguration('include_obstacle_markers')),
     )
 
+    # Do not suppress RCUTILS: detailed startup diagnostics must remain
+    # available on disk even though child stdout/stderr is terminal-isolated.
+    runtime_ros_log_dir = SetEnvironmentVariable(
+        'ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_stage2/ros'
+    )
+    isolate_process_output = SetEnvironmentVariable(
+        'OVERRIDE_LAUNCH_PROCESS_OUTPUT', 'own_log'
+    )
+
     return LaunchDescription([
+        runtime_ros_log_dir,
+        isolate_process_output,
         include_bringup_arg,
         include_lidar_arg,
         include_bno055_arg,

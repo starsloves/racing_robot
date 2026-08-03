@@ -1,15 +1,18 @@
 import os
+import logging
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+import launch.logging as launch_logging
 
 
 def generate_launch_description():
+    launch_logging.launch_config.level = logging.ERROR
     stage3_dir = get_package_share_directory('racing_stage3')
     bringup_dir = get_package_share_directory('origincar_bringup')
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
@@ -104,7 +107,7 @@ def generate_launch_description():
             'stage_number': 3,
             'test_direction': LaunchConfiguration('test_direction'),
         }],
-        output='screen',
+        output='log',
         condition=IfCondition(LaunchConfiguration('enable_test_publisher')),
     )
 
@@ -122,10 +125,21 @@ def generate_launch_description():
                 'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
             }
         ],
-        output='screen',
+        output='log',
+    )
+
+    # Preserve ROS startup and shutdown diagnostics on disk while keeping the
+    # terminal reserved for the operator-facing status messages.
+    runtime_ros_log_dir = SetEnvironmentVariable(
+        'ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_stage3/ros'
+    )
+    isolate_process_output = SetEnvironmentVariable(
+        'OVERRIDE_LAUNCH_PROCESS_OUTPUT', 'own_log'
     )
 
     return LaunchDescription([
+        runtime_ros_log_dir,
+        isolate_process_output,
         include_bringup_arg,
         include_lidar_arg,
         include_bno055_arg,

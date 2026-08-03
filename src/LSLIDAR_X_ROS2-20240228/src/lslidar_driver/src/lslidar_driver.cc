@@ -42,16 +42,9 @@ int scan_crop_max[]={90,270};     //修改后编译即可
 namespace lslidar_driver
 {
 
-	static void my_hander(int sig)
-	{
-		printf("sig: %d", sig);
-		abort();
-	}
 	LslidarDriver::LslidarDriver() : LslidarDriver(rclcpp::NodeOptions()) {}
 	LslidarDriver::LslidarDriver(const rclcpp::NodeOptions &options) : Node("lslidar_driver_node", options), diagnostics(this)
 	{
-		signal(SIGINT, my_hander);
-
 		if (!this->initialize())
 			RCLCPP_ERROR(this->get_logger(), "Could not initialize the driver...");
 		else

@@ -1,28 +1,11 @@
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler
 from launch.conditions import IfCondition
-from launch.event_handlers import OnShutdown
 from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration
-
-
-def _release_aurora_action():
-    return ExecuteProcess(
-        cmd=[
-            'bash',
-            '-c',
-            (
-                'set +e; '
-                'pkill -CONT -x aurora930_node 2>/dev/null; '
-                'pkill -15 -x aurora930_node 2>/dev/null; '
-                'sleep 0.3; '
-                'pkill -9 -x aurora930_node 2>/dev/null; '
-                'true'
-            ),
-        ],
-        output='log',
-    )
+from launch.event_handlers import OnProcessStart
+from racing_common.launch_status import startup_status
 
 
 def generate_launch_description():
@@ -66,13 +49,17 @@ def generate_launch_description():
             {'phase_topic': 'competition_phase'},
             {'odom_topic': '/odom_combined'},
             {'scan_task_phase': 1},
+            # Keep QR startup evidence separate from the Stage1 controller
+            # session, which truncates latest.log when it starts.
+            {'diagnostics_log_subdir': 'competition_stage1'},
+            {'diagnostics_log_filename': 'qr_scanner.log'},
             {'scan_start_x_m': 1.0},
             {'crop_top_ratio': 0.25},
             {'crop_top_px': 80},
             {'upscale_factor': 1.0},
             {'detection_order': 'crop_only'},
         ],
-        output='screen'
+        output='log'
     )
 
     return LaunchDescription([
@@ -83,5 +70,12 @@ def generate_launch_description():
         resolution_mode_index_arg,
         aurora_node,
         qr_node,
-        RegisterEventHandler(OnShutdown(on_shutdown=[_release_aurora_action()])),
+        RegisterEventHandler(OnProcessStart(
+            target_action=aurora_node,
+            on_start=[startup_status('相机', '/aurora/aurora930_node')],
+        )),
+        RegisterEventHandler(OnProcessStart(
+            target_action=qr_node,
+            on_start=[startup_status('二维码节点', '/qr_scanner')],
+        )),
     ])

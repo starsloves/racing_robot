@@ -1,41 +1,31 @@
 import os
 import math
+import logging
 
 import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, RegisterEventHandler, SetEnvironmentVariable
 from launch.conditions import IfCondition
-from launch.event_handlers import OnShutdown
+from launch.event_handlers import OnProcessStart, OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+import launch.logging as launch_logging
+from racing_common.launch_status import startup_status
 
 
 def _emergency_stop_action():
-    """紧急停车处理器：Ctrl+C 时立即停车并清理进程"""
+    """Ctrl+C 时只发零速度；子进程由 launch 负责正常回收。"""
     return ExecuteProcess(
         cmd=[
             'bash', '-c',
             (
                 'set +e; '
-                # 先停车
                 'timeout --signal=TERM 1s ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '
                 '"{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" '
-                '>/dev/null 2>&1 || true; '
-                # 杀掉相关进程
-                'pkill -CONT -x aurora930_node 2>/dev/null; '
-                'pkill -15 -x aurora930_node 2>/dev/null; '
-                'pkill -15 -f lslidar_driver_node 2>/dev/null; '
-                'sleep 0.3; '
-                'pkill -9 -x aurora930_node 2>/dev/null; '
-                'pkill -9 -f lslidar_driver_node 2>/dev/null; '
-                'pkill -9 -f competition_controller 2>/dev/null; '
-                'pkill -9 -f qr_scanner 2>/dev/null; '
-                'pkill -9 -f stage_test_publisher 2>/dev/null; '
-                'pkill -9 -f origincar 2>/dev/null; '
-                'true'
+                '>/dev/null 2>&1 || true'
             ),
         ],
         output='log',
@@ -54,6 +44,7 @@ def _stage1_map_to_odom_defaults(config_path):
 
 
 def generate_launch_description():
+    launch_logging.launch_config.level = logging.ERROR
     bno055_dir = get_package_share_directory('bno055')
     lidar_dir = get_package_share_directory('lslidar_driver')
     qr_dir = get_package_share_directory('qr_scanner')
@@ -149,7 +140,7 @@ def generate_launch_description():
             'test_direction': LaunchConfiguration('test_direction'),
             'publish_phase': False,
         }],
-        output='screen',
+        output='log',
         condition=IfCondition(LaunchConfiguration('enable_test_publisher')),
     )
 
@@ -182,7 +173,7 @@ def generate_launch_description():
                 'ros_topic_prefix': 'bno055/',
             },
         ],
-        output='screen',
+        output='log',
         condition=IfCondition(LaunchConfiguration('include_bno055')),
     )
 
@@ -197,10 +188,21 @@ def generate_launch_description():
                 'imu_topic': LaunchConfiguration('imu_topic'),
             },
         ],
-        output='screen',
+        output='log',
+    )
+
+    # Process output remains off the terminal, while ROS keeps complete
+    # startup and failure diagnostics in this stage's runtime log directory.
+    runtime_ros_log_dir = SetEnvironmentVariable(
+        'ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_stage1/ros'
+    )
+    isolate_process_output = SetEnvironmentVariable(
+        'OVERRIDE_LAUNCH_PROCESS_OUTPUT', 'own_log'
     )
 
     return LaunchDescription([
+        runtime_ros_log_dir,
+        isolate_process_output,
         device_arg,
         include_camera_arg,
         include_depth_arg,
@@ -228,6 +230,10 @@ def generate_launch_description():
         lidar_launch,
         bno055_node,
         controller_node,
+        RegisterEventHandler(OnProcessStart(
+            target_action=controller_node,
+            on_start=[startup_status('第一阶段控制器', '/competition_controller')],
+        )),
         # 注册 Ctrl+C 时的紧急停车处理器
         RegisterEventHandler(
             OnShutdown(on_shutdown=[_emergency_stop_action()]),

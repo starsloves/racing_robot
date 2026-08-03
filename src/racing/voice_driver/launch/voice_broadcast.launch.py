@@ -13,7 +13,7 @@ def generate_launch_description() -> LaunchDescription:
             package='voice_driver',
             executable='voice_broadcast_node',
             name='voice_broadcast_node',
-            output='screen',
+            output='log',
             parameters=[{
                 'mode': LaunchConfiguration('mode'),
                 'target_sign': LaunchConfiguration('target_sign'),

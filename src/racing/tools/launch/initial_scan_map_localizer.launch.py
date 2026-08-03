@@ -41,7 +41,7 @@ def generate_launch_description():
         package='racing_tools',
         executable='initial_scan_map_localizer',
         name='initial_scan_map_localizer',
-        output='screen',
+        output='log',
         parameters=[LaunchConfiguration('config')],
     )
 

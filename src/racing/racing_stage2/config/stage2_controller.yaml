@@ -162,10 +162,10 @@ stage2_inertial_navigator:
     # 两个 180° 触发 X：
     #   顺时针 entry_medium x<=min，top_long x>=max；
     #   逆时针 entry_medium x>=max，top_long x<=min。
-    track_counterclockwise_turn_force_min_map_x: 1.50
-    track_counterclockwise_turn_force_max_map_x: 4.10
+    track_counterclockwise_turn_force_min_map_x: 1.45
+    track_counterclockwise_turn_force_max_map_x: 4.20
     track_counterclockwise_exit_medium_distance_m: 0.67
-    track_clockwise_turn_force_min_map_x: 1.70
+    track_clockwise_turn_force_min_map_x: 1.50
     track_clockwise_turn_force_max_map_x: 3.75
     track_clockwise_exit_medium_distance_m: 0.52
 
@@ -213,7 +213,7 @@ stage2_inertial_navigator:
 
     # 两个 180° 和出口短直线完成后，按方向执行 90°：顺时针左转、逆时针右转。
     # 随后沿 -Y 直行；实时 TF map_y 严格小于此值时交权给 Stage3。
-    track_stage3_handoff_map_y: 2.40
+    track_stage3_handoff_map_y: 2.70
     stage3_entry_anchor_topic: stage3_entry_anchor
     # S3 交接锚点只取 map <- base_footprint 的实时 TF xy；TF 不可用时暂停交权。
     stage3_entry_anchor_base_frame: base_footprint
@@ -236,10 +236,10 @@ stage2_inertial_navigator:
     imu_heading_correction_enabled: true
     fusion_mode_enabled: true
     # 长直线视觉纠偏：近场中线负责横移拉回，远近差负责航向辅助。
-    track_vision_lateral_scale_m: 2.40
-    track_vision_lateral_weight: 0.35
-    track_vision_lateral_deadband: 0.06
-    track_vision_lateral_release_deadband: 0.035
+    track_vision_lateral_scale_m: 2.60
+    track_vision_lateral_weight: 0.45
+    track_vision_lateral_deadband: 0.04
+    track_vision_lateral_release_deadband: 0.025
     track_vision_heading_gain: 0.22
     # 横偏纠正必须在首张可信 SEG 帧生效，避免出弯残余角速度已造成横移后才介入。
     track_vision_confirm_frames: 1
@@ -250,8 +250,8 @@ stage2_inertial_navigator:
     # 车体物理居中、静止时记录 near_error，填入这里以消除相机安装零偏。
     track_vision_camera_offset: 0.0
     # 每个新 SEG 帧允许的视觉角速度变化；不是最大角速度限幅。
-    track_vision_max_angular_step: 0.12
-    track_vision_correction_max_angular: 0.40
+    track_vision_max_angular_step: 0.15
+    track_vision_correction_max_angular: 0.50
 
     # /odom_combined 单步异常过滤，防 EKF 跳变误累计距离。
     # 这不是限速参数，只是“单次里程跳变是否计入”的阈值。

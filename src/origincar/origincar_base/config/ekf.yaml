@@ -81,10 +81,14 @@ ekf_filter_node:
 # do not provide some of the state variables estimated by the filter. For example, a TwistWithCovarianceStamped message
 # has no pose information, so the first six values would be meaningless in that case. Each vector defaults to all false
 # if unspecified, effectively making this parameter required for each sensor.
-        odom0_config: [true, false, false,
+        # 底盘 /odom 的 pose.x/y 是以 Robot_Vel.Z 积分得出；该角速度与
+        # /imu/data 的真实航向会显著偏离，不能作为世界坐标观测，也不能融合
+        # 其 yaw-rate。只保留车体系前向轮速 vx，由 EKF 在 IMU yaw 约束下
+        # 积分 odom_combined 的 xy。
+        odom0_config: [false, false, false,
                        false, false, false,
-                       true,  true,  false,
-                       false, false, true,
+                       true,  false, false,
+                       false, false, false,
                        false, false, false]
 
 # If you have high-frequency data or are running with a low frequency parameter value, then you may want to increase
@@ -104,7 +108,9 @@ ekf_filter_node:
 # data is converted to velocity data by differentiating the absolute pose measurements. These velocities are then
 # integrated as usual. NOTE: this only applies to sensors that provide pose measurements; setting differential to true
 # for twist measurements has no effect.
-        odom0_differential: true
+        # 当前只融合 twist.vx，differential 对该速度观测没有作用；保留 false，
+        # 明确禁止未来将错误的 /odom pose.x/y 差分后重新接入。
+        odom0_differential: false
 
 # [ADVANCED] When the node starts, if this parameter is true, then the first measurement is treated as a "zero point"
 # for all future measurements. While you can achieve the same effect with the differential paremeter, the key

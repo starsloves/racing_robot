@@ -19,7 +19,7 @@ try:
 except ImportError:
     CN_TTS_AVAILABLE = False
 
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from geometry_msgs.msg import PoseStamped
 from rclpy.duration import Duration
@@ -29,6 +29,7 @@ from rclpy.time import Time
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Float64, Int32, String
 from tf2_ros import Buffer, TransformException, TransformListener
+from robot_localization.srv import SetPose
 
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 from racing_common.racing_logger import RacingLogger
@@ -46,6 +47,13 @@ class CompetitionController(Node):
         self.declare_parameter('imu_map_yaw_offset_topic', 'imu_map_yaw_offset')
         self.declare_parameter('reset_imu_yaw_on_phase2_handoff', True)
         self.declare_parameter('stage2_entry_pose_topic', 'stage2_entry_pose')
+        # The wall-derived Stage2 handoff pose is a measurement of the actual
+        # map position. Apply it to the EKF before Stage2 starts, rather than
+        # carrying it as a private Stage2 X offset.
+        self.declare_parameter('phase2_ekf_tf_rebase_enabled', True)
+        self.declare_parameter('phase2_ekf_set_pose_service', '/set_pose')
+        self.declare_parameter('phase2_ekf_tf_rebase_tolerance_m', 0.08)
+        self.declare_parameter('phase2_ekf_tf_rebase_retry_sec', 0.50)
         self.declare_parameter('odom_topic', '/odom_combined')  # map 坐标系
         self.declare_parameter('qr_result_topic', 'qr_scan_result')
         self.declare_parameter('phase_topic', 'competition_phase')
@@ -367,6 +375,15 @@ class CompetitionController(Node):
         )
         self.reset_imu_yaw_on_phase2_handoff = bool(
             self.get_parameter('reset_imu_yaw_on_phase2_handoff').value
+        )
+        self.phase2_ekf_tf_rebase_enabled = bool(
+            self.get_parameter('phase2_ekf_tf_rebase_enabled').value
+        )
+        self.phase2_ekf_tf_rebase_tolerance_m = max(
+            0.01, float(self.get_parameter('phase2_ekf_tf_rebase_tolerance_m').value)
+        )
+        self.phase2_ekf_tf_rebase_retry_sec = max(
+            0.10, float(self.get_parameter('phase2_ekf_tf_rebase_retry_sec').value)
         )
         control_rate_hz = float(self.get_parameter('control_rate_hz').value)
         self.blind_linear_speed = float(self.get_parameter('blind_linear_speed').value)
@@ -1164,6 +1181,9 @@ class CompetitionController(Node):
         self.latest_map = None
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.ekf_set_pose_client = self.create_client(
+            SetPose, str(self.get_parameter('phase2_ekf_set_pose_service').value)
+        )
         self.qr_processed = False  # 二维码去重标志：防止重复扫码播报
         self._map_pose_warned = False
         self.corridor_active = False
@@ -1227,6 +1247,9 @@ class CompetitionController(Node):
         self._corridor_last_wall_x_correction_log_time = 0.0
         self._phase2_handoff_yaw_target = None
         self._stage2_entry_pose_published = False
+        self._phase2_handoff_pose_xy = None
+        self._phase2_rebase_pending = None
+        self._phase2_ekf_tf_rebase_done = False
         path_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -1262,6 +1285,7 @@ class CompetitionController(Node):
 
         # 初始化时立即发布 phase=1，覆盖可能存在的旧 TRANSIENT_LOCAL 消息
         self.publish_phase()
+        self.log.task('第一阶段开始')
         self.log.startup(f'✓ 初始 phase={self.phase} 已发布到 {self.phase_topic}')
         self.create_timer(1.0 / max(control_rate_hz, 1.0), self.control_loop)
 
@@ -1393,6 +1417,35 @@ class CompetitionController(Node):
             self.log.progress(f'Phase切换请求被忽略: 已经是 phase={target_phase}')
             return
 
+        if (
+            target_phase == 2
+            and self.phase2_ekf_tf_rebase_enabled
+            and not self._phase2_ekf_tf_rebase_done
+        ):
+            if self._phase2_handoff_pose_xy is None or self._phase2_handoff_yaw_target is None:
+                self.log.error(
+                    'EKF_TF_REBASE',
+                    'Stage2 交接缺少墙体锁定的入口位姿，拒绝切换到 Phase2'
+                )
+                self.stop_robot()
+                return
+            if self._phase2_rebase_pending is None:
+                self._phase2_rebase_pending = {
+                    'reason': reason,
+                    'target_map_xy': self._phase2_handoff_pose_xy,
+                    'target_map_yaw': self._phase2_handoff_yaw_target,
+                    'request_in_flight': False,
+                    'ack_time': None,
+                    'last_attempt_time': None,
+                }
+                self.log.mission(
+                    f'EKF_TF_REBASE_PENDING target_map=('
+                    f'{self._phase2_handoff_pose_xy[0]:.3f},'
+                    f'{self._phase2_handoff_pose_xy[1]:.3f}) before Phase2'
+                )
+            self.stop_robot()
+            return
+
         if target_phase == 2:
             self.stage2_state = 'idle'
             self.stage2_run_observed = False
@@ -1417,6 +1470,107 @@ class CompetitionController(Node):
             self.transition_end_time = self.get_clock().now() + Duration(seconds=self.transition_stop_duration)
         else:
             self.transition_end_time = None
+
+    def _request_phase2_ekf_tf_rebase(self):
+        """Reset EKF's odom-frame state from the live wall-measured map pose."""
+        pending = self._phase2_rebase_pending
+        if pending is None or pending['request_in_flight']:
+            return
+        now_ts = self.get_clock().now().nanoseconds / 1e9
+        if (
+            pending['last_attempt_time'] is not None
+            and now_ts - pending['last_attempt_time'] < self.phase2_ekf_tf_rebase_retry_sec
+        ):
+            return
+        if not self.ekf_set_pose_client.service_is_ready():
+            pending['last_attempt_time'] = now_ts
+            self.log.warn('EKF_TF_REBASE', 'waiting for /set_pose service; Phase2 remains stopped')
+            return
+        try:
+            map_to_odom = self.tf_buffer.lookup_transform(
+                self.map_frame, self.odom_frame, Time(), timeout=Duration(seconds=0.05)
+            )
+        except TransformException as exc:
+            pending['last_attempt_time'] = now_ts
+            self.log.warn('EKF_TF_REBASE', f'waiting for {self.map_frame}->{self.odom_frame} TF: {exc}')
+            return
+
+        transform = map_to_odom.transform
+        map_to_odom_yaw = self.quaternion_to_yaw(transform.rotation)
+        dx = pending['target_map_xy'][0] - float(transform.translation.x)
+        dy = pending['target_map_xy'][1] - float(transform.translation.y)
+        cos_yaw = math.cos(map_to_odom_yaw)
+        sin_yaw = math.sin(map_to_odom_yaw)
+        target_odom_x = cos_yaw * dx + sin_yaw * dy
+        target_odom_y = -sin_yaw * dx + cos_yaw * dy
+        target_odom_yaw = self.normalize_angle(pending['target_map_yaw'] - map_to_odom_yaw)
+
+        request = SetPose.Request()
+        request.pose = PoseWithCovarianceStamped()
+        request.pose.header.stamp = self.get_clock().now().to_msg()
+        request.pose.header.frame_id = self.odom_frame
+        request.pose.pose.pose.position.x = target_odom_x
+        request.pose.pose.pose.position.y = target_odom_y
+        request.pose.pose.pose.orientation.z = math.sin(0.5 * target_odom_yaw)
+        request.pose.pose.pose.orientation.w = math.cos(0.5 * target_odom_yaw)
+        request.pose.pose.covariance[0] = 0.0025
+        request.pose.pose.covariance[7] = 0.0025
+        request.pose.pose.covariance[35] = 0.01
+        pending['request_in_flight'] = True
+        pending['last_attempt_time'] = now_ts
+        self.log.mission(
+            f'EKF_TF_REBASE_REQUEST target_map=({pending["target_map_xy"][0]:.3f},'
+            f'{pending["target_map_xy"][1]:.3f}) map_to_odom=('
+            f'{transform.translation.x:.3f},{transform.translation.y:.3f},'
+            f'{math.degrees(map_to_odom_yaw):.1f}deg) target_odom=('
+            f'{target_odom_x:.3f},{target_odom_y:.3f},{math.degrees(target_odom_yaw):.1f}deg)'
+        )
+        future = self.ekf_set_pose_client.call_async(request)
+        future.add_done_callback(self._on_phase2_ekf_tf_rebase_response)
+
+    def _on_phase2_ekf_tf_rebase_response(self, future):
+        pending = self._phase2_rebase_pending
+        if pending is None:
+            return
+        pending['request_in_flight'] = False
+        try:
+            future.result()
+        except Exception as exc:
+            self.log.warn('EKF_TF_REBASE', f'/set_pose failed: {exc}; will retry')
+            return
+        pending['ack_time'] = self.get_clock().now().nanoseconds / 1e9
+        self.log.mission('EKF_TF_REBASE_SERVICE_ACK waiting for corrected map TF')
+
+    def _advance_phase2_ekf_tf_rebase(self):
+        """Keep Phase1 stopped until the requested EKF state is visible in map TF."""
+        pending = self._phase2_rebase_pending
+        if pending is None:
+            return False
+        self.stop_robot()
+        now_ts = self.get_clock().now().nanoseconds / 1e9
+        if pending['ack_time'] is None:
+            self._request_phase2_ekf_tf_rebase()
+            return True
+        raw_map_xy = self._get_uncorrected_map_position()
+        if raw_map_xy is not None:
+            error = math.hypot(
+                raw_map_xy[0] - pending['target_map_xy'][0],
+                raw_map_xy[1] - pending['target_map_xy'][1],
+            )
+            if error <= self.phase2_ekf_tf_rebase_tolerance_m:
+                self.log.mission(
+                    f'EKF_TF_REBASE_ACK map_tf=({raw_map_xy[0]:.3f},{raw_map_xy[1]:.3f}) '
+                    f'target=({pending["target_map_xy"][0]:.3f},'
+                    f'{pending["target_map_xy"][1]:.3f}) error={error:.3f}m'
+                )
+                reason = pending['reason']
+                self._phase2_rebase_pending = None
+                self._phase2_ekf_tf_rebase_done = True
+                self.begin_phase_transition(2, reason)
+                return True
+        if now_ts - pending['ack_time'] >= self.phase2_ekf_tf_rebase_retry_sec:
+            pending['ack_time'] = None
+        return True
 
     def clamp(self, value, limit):
         return max(-limit, min(limit, value))
@@ -2928,6 +3082,8 @@ class CompetitionController(Node):
         msg.pose.orientation.w = math.cos(half_yaw)
         self.stage2_entry_pose_pub.publish(msg)
         self._phase2_handoff_yaw_target = float(yaw)
+        self._phase2_handoff_pose_xy = (float(pose_xy[0]), float(pose_xy[1]))
+        self._phase2_ekf_tf_rebase_done = False
         self._stage2_entry_pose_published = True
         raw_map_xy = self._get_uncorrected_map_position()
         raw_x_text = f'{raw_map_xy[0]:.3f}' if raw_map_xy is not None else 'n/a'
@@ -4190,14 +4346,6 @@ class CompetitionController(Node):
                 f'prealign={terminal_prealign_active} prealign_err={prealign_error_text} '
                 f'min_y={self.corridor_release_min_y:.2f} yaw_ok={yaw_ok} t={elapsed:.1f}s'
             )
-            print(
-                f"\r[Stage1区域进入] map({pose_xy[0]:.2f},{pose_xy[1]:.2f}) → "
-                f"({goal_xy[0]:.2f},{goal_xy[1]:.2f}) | ρ{rho:.2f}m | "
-                f"yaw{math.degrees(yaw):.0f}°/err{math.degrees(yaw_error):.0f}° | "
-                f"v{linear:.2f} w{angular:.2f} | {elapsed:.0f}s",
-                end="",
-                flush=True,
-            )
             self.publish_corridor_path(pose_xy)
 
     def choose_avoid_turn_direction(self, danger_angle, obstacle=None):
@@ -5130,6 +5278,7 @@ class CompetitionController(Node):
         self.qr_processed = True
         self.qr_task = task
         self.task_pub.publish(String(data=task))
+        self.log.task(f'Stage1 二维码识别完成，方向={task}')
 
         # 立即启动后退，不等待播报完成
         if self.enable_backing and len(self.path_record) > 0:
@@ -5165,6 +5314,7 @@ class CompetitionController(Node):
                 )
                 return
             self.log.mission('stage2 complete, entering phase3')
+            self.log.task('Stage2 完成，进入 Stage3')
             self.begin_phase_transition(3, 'stage2 complete, switched to phase3 return-to-p')
             return
 
@@ -5181,7 +5331,11 @@ class CompetitionController(Node):
             self.mission_finished = True
             self.transition_end_time = None
             self.stop_robot()
+            real_map = self._lookup_map_xy_from_tf()
+            if real_map is not None:
+                self.log.real_pose(real_map[0], real_map[1], source='map_tf', force=True)
             self.log.mission('stage3 complete, mission finished at p point')
+            self.log.task('Stage3 完成，比赛结束')
 
     def stage2_cmd_callback(self, msg):
         self.latest_stage2_cmd = msg
@@ -5212,6 +5366,14 @@ class CompetitionController(Node):
         return self.blind_linear_speed
 
     def control_loop(self):
+        real_map = self._lookup_map_xy_from_tf()
+        if real_map is not None:
+            self.log.real_pose(real_map[0], real_map[1], source='map_tf')
+
+        if self._phase2_rebase_pending is not None:
+            self._advance_phase2_ekf_tf_rebase()
+            return
+
         if self.mission_finished:
             self.stop_robot()
             return

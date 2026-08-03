@@ -43,6 +43,12 @@ competition_controller:
     stage2_entry_pose_topic: stage2_entry_pose
     # 交权时将当前物理朝向重标定为墙修正后的入口 yaw，并向 Stage2 发布同一持久 offset。
     reset_imu_yaw_on_phase2_handoff: true
+    # 用本次双墙实时测量到的 Stage2 入口位姿重置 EKF；只有 map TF 回读
+    # 到该位姿误差范围内才发布 Phase2，禁止再由 Stage2 私有 X 偏移补偿。
+    phase2_ekf_tf_rebase_enabled: true
+    phase2_ekf_set_pose_service: /set_pose
+    phase2_ekf_tf_rebase_tolerance_m: 0.08
+    phase2_ekf_tf_rebase_retry_sec: 0.50
 
     # 里程计话题（EKF 融合后的位姿，用于路径记录和后退）
     odom_topic: /odom_combined

@@ -55,7 +55,7 @@ def generate_launch_description():
                 'ros_topic_prefix': 'bno055/',
             },
         ],
-        output='screen',
+        output='log',
         condition=IfCondition(LaunchConfiguration('include_bno055')),
     )
 

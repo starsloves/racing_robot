@@ -157,6 +157,7 @@ class QRScannerNode(Node):
             f'order={self.detection_order}, path={self.active_backend}_raw, '
             'latest_frame_worker=true'
         )
+        self.reset_diagnostic_log()
         self.write_diagnostic(
             'ready '
             f'backend={self.active_backend} topic={self.camera_topic} '
@@ -204,6 +205,26 @@ class QRScannerNode(Node):
                     fcntl.flock(log_file.fileno(), fcntl.LOCK_UN)
         except OSError as exc:
             self.get_logger().warn(f'failed to write QR diagnostic log: {exc}')
+
+    def reset_diagnostic_log(self):
+        """Start a fresh QR diagnostic session without touching Stage1 latest.log."""
+        if not self.diagnostics_enabled:
+            return
+
+        path = self.diagnostic_log_path()
+        if not path:
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as log_file:
+                fcntl.flock(log_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    log_file.write('=== QR scanner diagnostic session ===\n')
+                    log_file.flush()
+                finally:
+                    fcntl.flock(log_file.fileno(), fcntl.LOCK_UN)
+        except OSError as exc:
+            self.get_logger().warn(f'failed to reset QR diagnostic log: {exc}')
 
     def write_debug_image(self, gray_image, candidate_descriptions, results):
         path = self.debug_image_path()

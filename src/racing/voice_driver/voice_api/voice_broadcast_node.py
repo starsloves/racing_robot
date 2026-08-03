@@ -35,6 +35,7 @@ class VoiceBroadcastNode(Node):
         self._service = VoiceBroadcastService(self._config, logger=self.get_logger())
         self._bridge = CvBridge()
         self._speech_queue: Queue[tuple[str, str] | None] = Queue()
+        self._shutdown_requested = threading.Event()
         self._waiting_for_image = False
         self._image_sub = None
 
@@ -134,7 +135,7 @@ class VoiceBroadcastNode(Node):
         )
 
     def _speech_worker_loop(self) -> None:
-        while rclpy.ok():
+        while not self._shutdown_requested.is_set():
             try:
                 item = self._speech_queue.get(timeout=0.2)
             except Empty:
@@ -161,6 +162,13 @@ class VoiceBroadcastNode(Node):
         msg.data = status
         self._status_pub.publish(msg)
         self.get_logger().info(f'voice_broadcast_status: {status}')
+
+    def destroy_node(self) -> bool:
+        self._shutdown_requested.set()
+        self._speech_queue.put(None)
+        self._speech_worker.join(timeout=1.0)
+        self._teardown_image_sub()
+        return super().destroy_node()
 
 
 def main(args=None) -> None:

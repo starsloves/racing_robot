@@ -6,7 +6,6 @@
 
 using std::placeholders::_1;
 using namespace std;
-void sigintHandler(int sig);
 sensor_msgs::msg::Imu Mpu6050;
 rclcpp::Node::SharedPtr node_handle = nullptr;
 
@@ -14,10 +13,11 @@ rclcpp::Node::SharedPtr node_handle = nullptr;
 int main(int argc, char *argv[])
 {
     rclcpp::init(argc, argv);
-    signal(SIGINT, sigintHandler);
     origincar_base Robot_Control;
     Robot_Control.Control();
-    rclcpp::shutdown();
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
     return 0;
 }
 
@@ -297,6 +297,7 @@ void origincar_base::Control()
       }
       last_time = current_time;
     }
+    Send_Stop_Command();
 }
 
 origincar_base::origincar_base()
@@ -359,18 +360,11 @@ origincar_base::origincar_base()
 }
 
 
-void sigintHandler(int sig)
+void origincar_base::Send_Stop_Command()
 {
-    sig = sig;
-      printf("OriginBot shutdown...\n");
-    serial::Serial Stm32_Serial;
-    Stm32_Serial.setPort("/dev/ttyACM0");
-    Stm32_Serial.setBaudrate(115200);
-    serial::Timeout _time = serial::Timeout::simpleTimeout(2000);
-    Stm32_Serial.setTimeout(_time);
-    Stm32_Serial.open();                                       
-    SEND_DATA Send_Data;
-    if (Stm32_Serial.isOpen()) {
+    if (!Stm32_Serial.isOpen()) {
+      return;
+    }
     Send_Data.tx[0]=FRAME_HEADER;
     Send_Data.tx[1] = 0;
     Send_Data.tx[2] = 0;
@@ -383,21 +377,13 @@ void sigintHandler(int sig)
 
     Send_Data.tx[7] = 0;
     Send_Data.tx[8] = 0;
-    int check_sum = 0;
-    for (int k = 0; k < 9; k++) {
-        check_sum = check_sum^Send_Data.tx[k];
-      }
-    Send_Data.tx[9]=check_sum;
+    Send_Data.tx[9]=Check_Sum(9,SEND_DATA_CHECK);
     Send_Data.tx[10]=FRAME_TAIL;
 
     try {
         Stm32_Serial.write(Send_Data.tx,sizeof (Send_Data.tx));
-    } catch (serial::IOException& e) {
+    } catch (serial::IOException&) {
     }
-
-  }
-    // 关闭ROS2接口，清除资源
-    rclcpp::shutdown();
 }
 
 origincar_base::~origincar_base()
