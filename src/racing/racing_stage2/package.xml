@@ -27,7 +27,6 @@
 
   <!-- direct_inertial_test.launch.py support stack; deps for packages-up-to build -->
   <depend>ackermann_msgs</depend>
-  <depend>bno055</depend>
   <depend>lslidar_driver</depend>
   <depend>lslidar_msgs</depend>
   <depend>origincar_base</depend>

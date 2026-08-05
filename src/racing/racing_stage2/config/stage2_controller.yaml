@@ -25,9 +25,6 @@ stage2_inertial_navigator:
 
     # ────────────────────────────────────────────────────────────────────────
     # ROS 话题
-    # ────────────────────────────────────────────────────────────────────────
-    # 赛程阶段话题
-    phase_topic: competition_phase
     # 二维码方向任务话题
     task_topic: competition_qr_task
     # 距离里程计话题（仅使用 xy 位移）
@@ -43,7 +40,7 @@ stage2_inertial_navigator:
     # 激光扫描话题
     scan_topic: /scan
     # Stage2 速度输出话题
-    cmd_topic: /stage2_cmd_vel
+    cmd_topic: /cmd_vel
     # 阶段反馈话题
     feedback_topic: competition_feedback
     # 阶段状态话题
@@ -74,9 +71,9 @@ stage2_inertial_navigator:
     control_gap_stop_sec: 1.00
     # 速度指令心跳频率（Hz）
     command_heartbeat_rate_hz: 20.0
-    # QR 任务到达后、进入 Phase2 前预加载 SEG 模型，避免切换时抢占控制循环。
+    # QR 任务到达后、S1 仍运行时预加载 SEG 模型，避免交接时抢占控制循环。
     stage2_vision_prewarm_on_task: true
-    # Stage1 发布 phase=2 后立即启动 Stage2；不再额外等待 0.5s。
+    # Supervisor activate 后立即由 S2 输出连续接管命令；不额外等待。
     start_delay_sec: 0.0
     # 阶段反馈日志前缀
     test_feedback_prefix: 第二阶段
@@ -200,7 +197,8 @@ stage2_inertial_navigator:
     track_turn_force_map_x_enabled: true
     track_turn_force_min_map_x: 1.60
     track_turn_force_max_map_x: 3.65
-    # Stage1 在交接时发布墙修正入口位姿；S2 用其 X 修正实时 TF map-X，不再固定重置到 YAML 常量。
+    # Stage1 在交接时发布完整 map x/y/yaw；S2 用 x/y 对现有 map TF 做全局锚定，
+    # 用 yaw 初始化轨迹航向；启动后的实时航向仍只来自 IMU，不新增定位或雷达链路。
     stage2_entry_pose_topic: stage2_entry_pose
     stage2_entry_pose_max_age_sec: 2.0
 

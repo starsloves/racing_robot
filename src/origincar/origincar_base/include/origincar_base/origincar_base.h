@@ -8,6 +8,7 @@
 #include "std_msgs/msg/string.hpp"
 #include <csignal>
 #include <thread>
+#include <chrono>
 
 #include <iostream>
 #include <string.h>
@@ -145,6 +146,7 @@ private:
 	void Publish_ImuSensor();
 	void Publish_Voltage();
 	void Send_Stop_Command();
+	void Check_Cmd_Vel_Watchdog();
 	auto createQuaternionMsgFromYaw(double yaw);
 
 	bool Get_Sensor_Data();
@@ -196,6 +198,10 @@ private:
 	MPU6050_DATA Mpu6050_Data;
 	float Power_voltage;
     size_t count_;
+	bool cmd_vel_watchdog_enabled_;
+	double cmd_vel_watchdog_timeout_sec_;
+	bool last_cmd_nonzero_;
+	std::chrono::steady_clock::time_point last_cmd_received_at_;
 };
 
 

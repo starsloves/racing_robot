@@ -17,16 +17,32 @@ Usage::
 Output format: ``[TAG] message`` — written to both ROS logger and file.
 """
 
+import os
 import time
 import sys
 
 from .session_file_log import SessionFileLog
 
 
+REAL_POSE_MIN_DELTA_M = 0.10
+REAL_POSE_MAX_INTERVAL_SEC = 1.0
+
+
+def should_report_real_pose(previous, previous_at, position, now, force=False,
+                            min_delta_m=REAL_POSE_MIN_DELTA_M,
+                            max_interval_sec=REAL_POSE_MAX_INTERVAL_SEC):
+    """Keep position output readable while guaranteeing a one-second heartbeat."""
+    if force or previous is None:
+        return True
+    moved = ((position[0] - previous[0]) ** 2 + (position[1] - previous[1]) ** 2) ** 0.5
+    return moved >= min_delta_m or now - previous_at >= max_interval_sec
+
+
 def terminal_write(message):
     """Write one approved operator message directly to the controlling TTY."""
+    terminal_path = os.environ.get('RACING_OPERATOR_TTY', '/dev/tty')
     try:
-        with open('/dev/tty', 'w', encoding='utf-8', buffering=1) as terminal:
+        with open(terminal_path, 'w', encoding='utf-8', buffering=1) as terminal:
             terminal.write(str(message).rstrip() + '\n')
     except (OSError, IOError):
         print(message, file=sys.stdout, flush=True)
@@ -138,14 +154,22 @@ class RacingLogger:
         """Write a task event and show the same concise event in the terminal."""
         self._write('TASK', message, 'info', terminal=True)
 
-    def real_pose(self, x, y, source='map_tf', force=False, min_delta_m=0.10):
+    def real_pose(self, x, y, source='map_tf', force=False,
+                  min_delta_m=REAL_POSE_MIN_DELTA_M,
+                  max_interval_sec=REAL_POSE_MAX_INTERVAL_SEC):
         """Report the robot's measured map position, never a controller target."""
         position = (float(x), float(y))
         previous = getattr(self, '_last_real_pose', None)
-        if not force and previous is not None:
-            if ((position[0] - previous[0]) ** 2 + (position[1] - previous[1]) ** 2) ** 0.5 < min_delta_m:
-                return
+        now = time.monotonic()
+        previous_at = getattr(self, '_last_real_pose_at', float('-inf'))
+        if not should_report_real_pose(
+            previous, previous_at, position, now, force,
+            min_delta_m=min_delta_m,
+            max_interval_sec=max_interval_sec,
+        ):
+            return
         self._last_real_pose = position
+        self._last_real_pose_at = now
         self._write(
             'POSE_REAL',
             f'real_map=({position[0]:.3f},{position[1]:.3f}) source={source}',

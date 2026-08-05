@@ -7,6 +7,7 @@ import time
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
 from geometry_msgs.msg import PointStamped, PoseStamped
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
@@ -16,7 +17,13 @@ from tf2_ros import TransformException
 from racing_stage2.stage2_inertial_base import Stage2InertialBase
 from racing_stage2.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
-from racing_common.racing_logger import terminal_write
+from racing_common.process_lifecycle import install_parent_death_signal
+from racing_common.racing_logger import (
+    REAL_POSE_MAX_INTERVAL_SEC,
+    REAL_POSE_MIN_DELTA_M,
+    should_report_real_pose,
+    terminal_write,
+)
 from racing_stage2.stage2_vision_mixin import Stage2VisionMixin
 from racing_stage2.track_controller import ImuDistancePose, Stage2TrackController
 
@@ -114,6 +121,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('stage3_entry_anchor_topic', 'stage3_entry_anchor')
         self.declare_parameter('stage3_entry_anchor_base_frame', 'base_footprint')
         self.declare_parameter('stage3_preplan_pose_topic', 'stage3_preplan_pose')
+        self.declare_parameter('stage3_prewarm_topic', 'stage3_prewarm')
         self.declare_parameter('stage3_preplan_map_y', 1.80)
         self.declare_parameter('stage3_handoff_hold_timeout_sec', 1.0)
         self.declare_parameter('stage2_ai_capture_enabled', True)
@@ -170,10 +178,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.test_feedback_prefix = str(self.get_parameter('test_feedback_prefix').value).strip() or '第二阶段'
         self._track_config_name = 'stage2_controller.yaml::track_*'
 
-        # 比赛默认待命：只有 competition_phase=2 后才启动
-        self.phase = 1
-        self.phase_initialized = False
-        self.waiting_for_phase2_start = False
+        # 预热期间不拥有运动权；Supervisor 的 activate 才能启动任务。
+        self._mission_authorized = False
         # 独立测试可用 test_direction；比赛中方向以 competition_qr_task 为准
         self.task_raw = ''
         self.direction = None
@@ -197,7 +203,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._s1_last_duration = 0.0
         self._s1_avoid_obstacle = None
 
-        # 默认关闭推理：Stage1 期间不跑视觉，等 phase=2 再启用
+        # 预热期间仅加载模型，activate 后才执行推理。
         self._setup_vision_centering()
         if getattr(self, '_vision_node', None) is not None:
             self._vision_node.set_inference_active(False)
@@ -410,6 +416,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             str(self.get_parameter('stage3_preplan_pose_topic').value),
             anchor_qos,
         )
+        self._stage3_prewarm_pub = self.create_publisher(
+            String, str(self.get_parameter('stage3_prewarm_topic').value), anchor_qos
+        )
         self._track_stage3_handoff_map_y = float(
             self.get_parameter('track_stage3_handoff_map_y').value
         )
@@ -427,6 +436,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._stage3_handoff_deadline = None
         self._track_map_x_origin = None
         self._track_map_x_correction_offset = 0.0
+        self._track_map_y_correction_offset = 0.0
+        self._stage2_entry_yaw = None
         self._stage2_entry_pose = None
         self._stage2_entry_pose_max_age = max(
             0.1, float(self.get_parameter('stage2_entry_pose_max_age_sec').value)
@@ -461,7 +472,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.segment_end_pose = None  # 世界坐标系下的段终点（仅 world 模式使用）
         self._world_start_pose = None  # 世界坐标系下的起点信息
         self._segment_is_world = False  # 当前段是否使用世界坐标系
-        self._segment_start_wheel_yaw = None  # 直行段起点轮速航向（用于 cross-track 与 odom 位置同坐标系）
         self._map_origin_x = 2.50  # map→odom 变换参数（从 launch 传入）
         self._map_origin_y = 2.80
         self._map_origin_yaw = math.radians(90.0)
@@ -535,6 +545,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._session_log_filename = filename
         self._session_log = None
         self._last_real_pose = None
+        self._last_real_pose_at = float('-inf')
         self._last_telemetry_sec = 0.0
         self._last_wait_log_sec = 0.0
         self._wheel_warmup_logged = False
@@ -595,6 +606,13 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self._last_cmd_angular = float(angular_z)
             self._last_command_at = time.monotonic()
             self._heartbeat_stale_reported = False
+        if (
+            getattr(self, '_activated', False)
+            and not getattr(self, '_handoff_command_announced', False)
+            and (abs(float(linear_x)) > 1e-4 or abs(float(angular_z)) > 1e-4)
+        ):
+            self._handoff_command_announced = True
+            self.publish_state('handoff_command_ready')
         return super().create_twist(linear_x, angular_z)
 
     def _command_heartbeat(self) -> None:
@@ -666,7 +684,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         )
 
     def navigation_yaw(self):
-        """统一位姿航向（current_yaw）；轮速模式下由 /odom 写入，IMU 仅诊断。"""
+        """Return the navigation yaw, which is always the calibrated IMU yaw."""
         return self.current_yaw
 
     def _wheel_pose_source_active(self) -> bool:
@@ -674,14 +692,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             getattr(self, '_navigation_pose_source', 'wheel') == 'wheel'
             and self._use_wheel_odom_for_distance
         )
-
-    def _sync_unified_pose_from_wheel(self) -> None:
-        if not self._wheel_pose_source_active():
-            return
-        if self.current_wheel_yaw is None:
-            return
-        # 位置用轮速里程计，但航向角始终用 IMU（轮速 yaw 不准）
-        # self.current_yaw = self.current_wheel_yaw  # 注释掉，改用 IMU yaw
 
     def imu_callback(self, msg):
         self.current_imu_yaw_rate = float(msg.angular_velocity.z)
@@ -809,13 +819,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 prec=1,
             )
 
-        imu_wheel_err_deg = 'nan'
-        if self.imu_yaw is not None and self.current_wheel_yaw is not None:
-            imu_wheel_err_deg = self._fmt_num(
-                math.degrees(self.angle_error(self.imu_yaw, self.current_wheel_yaw)),
-                prec=1,
-            )
-
         seg_elapsed = 'nan'
         if self.segment_started_at is not None:
             seg_elapsed = self._fmt_num(now_sec - self.segment_started_at, prec=2)
@@ -830,13 +833,10 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             f'wheel_xy=({wx},{wy}) ekf_xy=({ekf_x},{ekf_y}) anchor=({sx},{sy})',
             (
                 f'yaw={self.format_yaw_deg(self.current_yaw)} '
-                f'yaw_wheel={self.format_yaw_deg(self.current_wheel_yaw)} '
                 f'yaw_imu={self.format_yaw_deg(self.imu_yaw)} '
-                f'yaw_ekf={self.format_yaw_deg(self.current_odom_yaw)} '
                 f'yaw_leg={self.format_yaw_deg(self.segment_heading)} '
                 f'yaw_seg0={self.format_yaw_deg(self.segment_start_yaw)} '
                 f'yaw_tgt={self.format_yaw_deg(self.segment_target_yaw)} '
-                f'imu_off={imu_wheel_err_deg} '
                 f'head_err={heading_err_deg} turn_err={turn_err_deg}'
             ),
             (
@@ -954,7 +954,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._wheel_odom_ready = False
         self._wheel_odom_msg_count = 0
         self._wheel_odom_first_rx_sec = None
-        self.current_wheel_yaw = None
         self.imu_yaw = None
         self._use_wheel_odom_for_distance = bool(
             self._wheel_odom_topic and self._wheel_odom_topic != self.odom_topic
@@ -966,7 +965,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self.get_logger().info(
                 f'{self.test_feedback_prefix}统一位姿源={self._navigation_pose_source} '
                 f'topic={self._wheel_odom_topic} '
-                f'(xy+yaw+计程+控制同源; IMU/EKF {self.odom_topic} 仅日志; '
+                f'(xy+计程同源; 航向固定来自 IMU; '
                 f'warmup {self._wheel_odom_warmup_sec:.2f}s×'
                 f'{self._wheel_odom_warmup_min_msgs}条)'
             )
@@ -986,13 +985,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         position = msg.pose.pose.position
         twist = msg.twist.twist
         self.current_position = (float(position.x), float(position.y))
-        self.current_wheel_yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
         self._wheel_twist = (
             float(twist.linear.x),
             float(twist.linear.y),
             float(twist.angular.z),
         )
-        self._sync_unified_pose_from_wheel()
         self._wheel_odom_msg_count += 1
         now_sec = self.get_clock().now().nanoseconds / 1e9
         if self._wheel_odom_first_rx_sec is None:
@@ -1001,7 +998,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 'ODOM_WHEEL',
                 f'首条 {self._wheel_odom_topic} '
                 f'pos=({position.x:.3f},{position.y:.3f}) '
-                f'yaw={self.format_yaw_deg(self.current_wheel_yaw)}deg '
                 f'v=({twist.linear.x:.3f},{twist.linear.y:.3f},{twist.angular.z:.3f})',
             )
         was_ready = self._wheel_odom_ready
@@ -1016,7 +1012,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 f'elapsed={elapsed:.2f}s | {self._full_telemetry()}',
             )
         self._maybe_log_telemetry('wheel_odom')
-        if self.waiting_for_phase2_start:
+        if self._mission_authorized:
             self.try_start_mission()
 
     def odom_callback(self, msg):
@@ -1028,30 +1024,34 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             float(ekf_twist.linear.y),
             float(ekf_twist.angular.z),
         )
-        self.current_odom_yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
         self._update_track_pose_from_odom_combined()
         self._report_real_pose()
         
         if not self._wheel_pose_source_active() or not self._wheel_odom_ready:
             self.current_position = self._last_ekf_position
-        if self.waiting_for_phase2_start:
+        if self._mission_authorized:
             self.try_start_mission()
 
     def _report_real_pose(self, force=False):
         """Report only the measured map TF pose; track coordinates stay in files."""
-        try:
-            real_map = self._lookup_map_xy_from_tf()
-        except Exception:
-            real_map = None
+        real_map = self._lookup_map_xy_from_tf()
         if real_map is None or self._session_log is None:
             return
         previous = self._last_real_pose
-        if not force and previous is not None and math.hypot(
-            real_map[0] - previous[0], real_map[1] - previous[1]
-        ) < 0.10:
+        now = time.monotonic()
+        if not should_report_real_pose(
+            previous,
+            self._last_real_pose_at,
+            real_map,
+            now,
+            force,
+            min_delta_m=REAL_POSE_MIN_DELTA_M,
+            max_interval_sec=REAL_POSE_MAX_INTERVAL_SEC,
+        ):
             return
         self._last_real_pose = real_map
+        self._last_real_pose_at = now
         line = f'real_map=({real_map[0]:.3f},{real_map[1]:.3f}) source=map_tf'
         self._log_session('POSE_REAL', line)
         terminal_write(f'[POSE_REAL] {line}')
@@ -1147,9 +1147,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._segment_is_world = False
         if self.current_position is not None:
             self.segment_start_pose = self.current_position
-        # 保存轮速航向（与 odom 位置同坐标系，用于 cross-track 计算）
-        self._segment_start_wheel_yaw = self.current_wheel_yaw if self.current_wheel_yaw is not None else yaw
-        
         # 优先用 YAML 的 heading_deg（正交矩形边方向）
         if 'heading_deg' in segment:
             heading = self.normalize_angle(math.radians(float(segment['heading_deg'])))
@@ -1189,7 +1186,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                     f'{self._wheel_odom_msg_count}/{self._wheel_odom_warmup_min_msgs})'
                 )
             elif self.current_yaw is None:
-                missing.append('wheel_yaw')
+                missing.append('imu')
         else:
             if self.current_position is None:
                 missing.append(str(self.odom_topic))
@@ -1291,7 +1288,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             f'{self._stage2_entry_pose["y"]:.3f}) '
             f'yaw={math.degrees(yaw):.1f}deg frame={self._stage2_entry_pose["frame_id"]}',
         )
-        if self.waiting_for_phase2_start:
+        if not self._activated and self.direction is not None:
+            self.publish_state('ready')
+        if self._mission_authorized:
             self.try_start_mission()
 
     def _fresh_stage2_entry_pose(self, now=None):
@@ -1317,23 +1316,39 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         if self._last_ekf_position is None or self.current_yaw is None:
             return False
         now = self.get_clock().now().nanoseconds / 1e9
-        entry_map_xy = self._track_map_position()
+        raw_entry_map_xy = self._lookup_raw_map_xy_from_tf()
         entry_pose = self._fresh_stage2_entry_pose(now)
         self._track_map_x_correction_offset = 0.0
+        self._track_map_y_correction_offset = 0.0
+        self._stage2_entry_yaw = None
         track_x_source = 'real_tf'
-        if entry_pose is not None and entry_map_xy is not None:
-            # Stage1 has already committed the live wall measurement to EKF
-            # through /set_pose before publishing Phase2.  Do not apply the
-            # same wall correction a second time inside Stage2.
-            self._track_map_x_origin = entry_map_xy[0]
-            track_x_source = 'stage1_ekf_rebased'
+        track_start_yaw = self.current_yaw
+        if entry_pose is not None:
+            self._stage2_entry_yaw = float(entry_pose['yaw'])
+            track_start_yaw = self._stage2_entry_yaw
+            if raw_entry_map_xy is not None:
+                # The static map->odom TF exposes the raw estimator pose.
+                # Align it to the complete map-frame pose handed off by S1.
+                self._track_map_x_correction_offset = (
+                    float(entry_pose['x']) - float(raw_entry_map_xy[0])
+                )
+                self._track_map_y_correction_offset = (
+                    float(entry_pose['y']) - float(raw_entry_map_xy[1])
+                )
+                self._track_map_x_origin = float(entry_pose['x'])
+                track_x_source = 'stage1_entry_pose'
+            else:
+                self._track_map_x_origin = float(entry_pose['x'])
+                track_x_source = 'stage1_entry_pose_no_tf'
+        elif raw_entry_map_xy is not None:
+            self._track_map_x_origin = float(raw_entry_map_xy[0])
         else:
-            self._track_map_x_origin = None if entry_map_xy is None else entry_map_xy[0]
-        self._track_pose_integrator.reset(self._last_ekf_position, self.current_yaw)
+            self._track_map_x_origin = None
+        self._track_pose_integrator.reset(self._last_ekf_position, track_start_yaw)
         self._track_pose = self._track_pose_integrator.pose
         self._track_distance_m = self._track_pose_integrator.total_distance_m
         self._track_controller.start(self.direction, self._track_pose,
-                                     self.current_yaw, now,
+                                     track_start_yaw, now,
                                      distance_m=self._track_distance_m)
         self._reset_s1_avoidance()
         self._stage2_ai_capture_sent = False
@@ -1341,19 +1356,46 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._stage2_ai_preset_sent = False
         self._stage2_ai_preset_due_at = None
         self._stage3_preplan_sent = False
+        self._handoff_command_announced = False
         self._control_gap_stop_latched = False
         self._track_mission_active = True
         self.mission_active = True
         self.current_segment = {'type': 'track', 'description': 'rounded_track'}
         self.publish_state('running')
+        entry_map_text = (
+            f'({entry_pose["x"]:.3f},{entry_pose["y"]:.3f})'
+            if entry_pose is not None else 'unavailable'
+        )
+        raw_entry_map_text = (
+            f'({raw_entry_map_xy[0]:.3f},{raw_entry_map_xy[1]:.3f})'
+            if raw_entry_map_xy is not None else 'unavailable'
+        )
+        entry_yaw_text = (
+            f'{math.degrees(entry_pose["yaw"]):.1f}deg'
+            if entry_pose is not None else 'unavailable'
+        )
+        entry_pose_age = (
+            f'{now - entry_pose["stamp"]:.3f}s'
+            if entry_pose is not None else 'unavailable'
+        )
         self._log_session(
             'TRACK_START',
             f'direction={self.direction} local=(0.000,0.000) '
+            f'map_entry={entry_map_text} yaw_entry={entry_yaw_text} '
             f'odom_combined=({self._last_ekf_position[0]:.3f},'
             f'{self._last_ekf_position[1]:.3f}) '
             f'yaw_map_imu={math.degrees(self.current_yaw):.1f} '
             f'raw_imu={math.degrees(self.current_raw_imu_yaw):.1f} '
-            f'imu_map_offset={math.degrees(self.imu_map_yaw_offset_rad):+.1f}',
+            f'imu_map_offset={math.degrees(self.imu_map_yaw_offset_rad):+.1f} '
+            f'track_start_yaw={math.degrees(track_start_yaw):.1f}',
+        )
+        self._log_session(
+            'TRACK_MAP_ANCHOR',
+            f'entry_map={entry_map_text} entry_yaw={entry_yaw_text} '
+            f'tf_entry={raw_entry_map_text} '
+            f'offset=({self._track_map_x_correction_offset:+.3f},'
+            f'{self._track_map_y_correction_offset:+.3f}) '
+            f'entry_pose_age={entry_pose_age} source={track_x_source}',
         )
         self._log_session(
             'TRACK_ARC_PROFILE',
@@ -1364,15 +1406,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             'TRACK_DIRECTION_PROFILE',
             f'direction={self.direction} '
             f'{self._track_controller.track_profile_summary(self.direction)}',
-        )
-        self._log_session(
-            'TRACK_MAP_X_RESET',
-            f'track_x={self._track_map_x_origin if self._track_map_x_origin is not None else "unavailable"} '
-            f'origin_map_x={self._track_map_x_origin if self._track_map_x_origin is not None else "unavailable"} '
-            f'tf_entry_x={entry_map_xy[0] if entry_map_xy is not None else "unavailable"} '
-            f'wall_offset={self._track_map_x_correction_offset:+.3f} '
-            f'entry_pose_age={now - entry_pose["stamp"] if entry_pose is not None else "unavailable"} '
-            f'source={track_x_source}',
         )
         self.publish_feedback(
             f'{self.test_feedback_prefix}圆角轨迹闭环启动，方向: {self.direction_text()}'
@@ -1457,6 +1490,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
     def _run_track_controller(self):
         now = self.get_clock().now().nanoseconds / 1e9
         visual = None
+        track_map_xy = None
+        track_map_x = None
         if self._control_gap_stop_latched:
             self._control_gap_stop_latched = False
             self._log_session(
@@ -1538,7 +1573,25 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 )
             if previous_segment == 'top_long' and command.segment == 'right_side_arc':
                 self._arm_stage2_ai_capture_after_right_turn(now)
-        cmd_msg = self.create_twist(command.linear, command.angular)
+        # The track controller marks completion with a zero command. Preserve
+        # the previous non-zero command for the natural S2 -> S3 handoff so a
+        # completion edge cannot insert a stop between the two stages.
+        command_linear = command.linear
+        command_angular = command.angular
+        if (
+            command.complete
+            and abs(command_linear) <= 1e-4
+            and abs(command_angular) <= 1e-4
+            and (abs(self._last_cmd_linear) > 1e-4 or abs(self._last_cmd_angular) > 1e-4)
+        ):
+            command_linear = self._last_cmd_linear
+            command_angular = self._last_cmd_angular
+            self._log_session(
+                'STAGE3_HANDOFF_COMMAND_HOLD',
+                f'completion zero replaced with last command '
+                f'({command_linear:.3f},{command_angular:.3f})',
+            )
+        cmd_msg = self.create_twist(command_linear, command_angular)
         self._log_control_timing(now, f'track:{command.segment or command.state}')
         self.cmd_pub.publish(cmd_msg)
         if visual and bool(visual.get('valid', False)):
@@ -1549,6 +1602,13 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                           f'age={float(visual.get("age", 999.0) or 999.0):.2f}')
         else:
             vision_log = 'invalid'
+        map_text = (
+            f'({track_map_xy[0]:.3f},{track_map_xy[1]:.3f})'
+            if track_map_xy is not None else 'unavailable'
+        )
+        map_x_text = (
+            f'{track_map_x:.3f}' if track_map_x is not None else 'unavailable'
+        )
         now_sec = self.get_clock().now().nanoseconds / 1e9
         track_ctrl_signature = (
             command.state, command.segment, bool(command.safe_stop), bool(command.complete)
@@ -1586,6 +1646,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 f'boundary_angle={command.entry_boundary_angle_deg:.1f} '
                 f'boundary_confirm={command.entry_boundary_confirm_frames} '
                 f'imu_xy=({self._track_pose[0]:.3f},{self._track_pose[1]:.3f}) '
+                f'map_xy={map_text} map_x={map_x_text} '
                 f'ekf_s={self._track_distance_m:.3f} '
                 f'imu_w={getattr(self, "current_imu_yaw_rate", 0.0):.3f} '
                 f'vision={vision_log}',
@@ -1613,6 +1674,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         msg.point.x = map_xy[0]
         msg.point.y = self._stage3_preplan_map_y
         self._stage3_preplan_pub.publish(msg)
+        self._stage3_prewarm_pub.publish(String(data='prewarm'))
         self._stage3_preplan_sent = True
         self._log_session(
             'STAGE3_PREPLAN',
@@ -1621,23 +1683,48 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         return True
 
     def _track_map_position(self):
-        """Return the current map <- base_footprint translation, or None."""
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                self.global_frame_id,
-                self._stage3_entry_anchor_base_frame,
-                Time(),
-            )
+        """Return the live map position, aligned to the Stage1 handoff anchor."""
+        return self._lookup_map_xy_from_tf()
+
+    def _lookup_raw_map_xy_from_tf(self):
+        """Return the uncorrected map TF position from the existing TF chain."""
+        candidates = []
+        for frame in (
+            self._stage3_entry_anchor_base_frame,
+            'base_footprint',
+            'base_link',
+        ):
+            if frame and frame not in candidates:
+                candidates.append(frame)
+        for frame in candidates:
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    self.global_frame_id,
+                    frame,
+                    Time(),
+                    timeout=Duration(seconds=0.05),
+                )
+            except TransformException:
+                continue
             translation = transform.transform.translation
             return float(translation.x), float(translation.y)
-        except TransformException:
+        return None
+
+    def _lookup_map_xy_from_tf(self):
+        """Return live map TF position corrected by the S1 x/y handoff anchor."""
+        raw_map_xy = self._lookup_raw_map_xy_from_tf()
+        if raw_map_xy is None:
             return None
+        return (
+            raw_map_xy[0] + self._track_map_x_correction_offset,
+            raw_map_xy[1] + self._track_map_y_correction_offset,
+        )
 
     def _track_rebased_map_x(self, map_xy):
-        """Return real map X corrected by the Stage1 handoff wall offset."""
+        """Return the already Stage1-anchored map X used by track triggers."""
         if map_xy is None:
             return None
-        corrected_map_x = float(map_xy[0]) + self._track_map_x_correction_offset
+        corrected_map_x = float(map_xy[0])
         if self._track_map_x_origin is None:
             self._track_map_x_origin = corrected_map_x
             self._log_session(
@@ -1691,7 +1778,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
     # ─── 段控制覆盖 ───────────────────────────────────────────────
 
     def begin_inertial_plan_after_nav(self, nav_succeeded):
-        self._sync_unified_pose_from_wheel()
         super().begin_inertial_plan_after_nav(nav_succeeded)
         self._log_plan_summary(nav_succeeded)
 
@@ -1744,7 +1830,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
 
         segment = self.current_segment
         segment_type = segment.get('type')
-        self._sync_unified_pose_from_wheel()
         if segment_type == 'turn' and 'heading_tolerance_rad' in segment:
             self.active_turn_heading_tolerance = max(
                 1e-3, float(segment['heading_tolerance_rad'])
@@ -2351,18 +2436,15 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._log_session('TASK', message)
         terminal_write(f'[TASK] {message}')
         self.get_logger().info('第二阶段完成')
-        # 独立测试工具可注入 _request_stop；比赛 total 场景保持节点存活待命
-        if hasattr(self, '_request_stop') and self._request_stop is not None:
-            self._request_stop()
 
 
     def control_loop(self):
+        if not getattr(self, '_activated', False) or getattr(self, '_released', False):
+            return
         if self._stage3_handoff_active:
             if time.monotonic() >= self._stage3_handoff_deadline:
-                self._stage3_handoff_active = False
-                self.cmd_pub.publish(self.create_twist())
-                self._log_session('STAGE3_HANDOFF_TIMEOUT', 'no Stage3 command before hold timeout')
-                return
+                self._log_session('STAGE3_HANDOFF_TIMEOUT', 'still holding last command; Supervisor owns failure handling')
+                self._stage3_handoff_deadline = float('inf')
             self.cmd_pub.publish(self.create_twist(self._last_cmd_linear, self._last_cmd_angular))
             return
 
@@ -2427,71 +2509,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         if method is not None:
             method()
 
-    def phase_callback(self, msg):
-        previous_phase = self.phase
-        incoming = int(msg.data)
-        self.get_logger().info(
-            f'[PHASE] 收到 competition_phase={incoming} (之前={previous_phase}, initialized={self.phase_initialized})'
-        )
-
-        # 首次 latched 消息：phase=2 视为旧消息；phase=1 完成初始化
-        if not self.phase_initialized:
-            if incoming == 1:
-                self.phase = 1
-                self.phase_initialized = True
-                self.waiting_for_phase2_start = False
-                self.get_logger().info('[PHASE] ✓ Phase 初始化完成: phase=1，等待 Stage1 发布 phase=2')
-                return
-            if incoming == 2:
-                if self.use_test_direction_fallback:
-                    self.phase = 2
-                    self.phase_initialized = True
-                    self._start_session_log()
-                    self.waiting_for_phase2_start = True
-                    self.start_after_time = None
-                    self.reported_start_delay = False
-                    self.reported_waiting_pose = False
-                    self._set_stage2_http_active(True)
-                    self._set_vision_inference_active(True)
-                    self.get_logger().info('[PHASE] ✓ 测试模式接受初始 phase=2，准备启动 Stage2')
-                    self.try_start_mission()
-                    return
-                self.phase = 1
-                self.waiting_for_phase2_start = False
-                self.get_logger().warn('[PHASE] ⚠ 忽略启动时的 phase=2（可能是旧消息），等待 phase=1')
-                return
-            self.phase = incoming
-            return
-
-        self.phase = incoming
-        if previous_phase != self.phase and self.phase != 2:
-            self.waiting_for_phase2_start = False
-            self._set_vision_inference_active(False)
-            self._set_stage2_http_active(False)
-            if self.phase == 3 and getattr(self, '_vision_node', None) is not None:
-                self._vision_node.release_model('phase3_handoff')
-            if self.mission_active or previous_phase == 2:
-                if not self._stage3_handoff_active:
-                    self.cmd_pub.publish(self.create_twist())
-                self.mission_active = False
-                if not self._stage3_handoff_active:
-                    self.publish_state('idle')
-            return
-
-        # 仅在真正切到 phase=2 时武装启动
-        if previous_phase != 2 and self.phase == 2:
-            self._start_session_log()
-            self._log_session('TASK', 'Stage2 启动，进入 Phase 2')
-            self.waiting_for_phase2_start = True
-            self.start_after_time = None
-            self.reported_start_delay = False
-            self.reported_waiting_pose = False
-            self._set_stage2_http_active(True)
-            self._set_vision_inference_active(True)
-            self.get_logger().info('[MISSION] 收到 phase=2，准备启动 Stage2')
-            self.try_start_mission()
-
-
     def task_callback(self, msg):
         raw = msg.data.strip()
         self.task_raw = raw
@@ -2500,27 +2517,29 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             parsed = self.resolve_test_direction(raw)
         self.direction = parsed
         self.get_logger().info(f'[TASK] competition_qr_task="{raw}" → direction={self.direction}')
+        if not self._activated and not self._released:
+            self.publish_state('prewarming')
+            if getattr(self, '_stage2_entry_pose', None) is not None:
+                self.publish_state('ready')
         if (
             self.direction is not None
             and bool(self.get_parameter('stage2_vision_prewarm_on_task').value)
             and getattr(self, '_vision_node', None) is not None
         ):
             self._vision_node.preload_model('qr_task_received')
-        # 扫码方向可提前缓存；只有 phase=2 武装后才真正启动
-        if self.waiting_for_phase2_start:
+        # 扫码方向可提前缓存；只有 Supervisor activate 后才真正启动。
+        if self._mission_authorized:
             self.try_start_mission()
 
 
     def try_start_mission(self):
+        if not getattr(self, '_activated', False) or getattr(self, '_released', False):
+            return
         if self.mission_active or self.mission_finished:
             return
 
-        # 默认静默：只有 stage1 切到 phase=2 后才会 armed
-        if not self.waiting_for_phase2_start:
-            return
-
-        if not self.phase_initialized or self.phase != 2:
-            self.waiting_for_phase2_start = False
+        # 默认静默：只有 Supervisor activate 后才会 armed。
+        if not self._mission_authorized:
             return
 
         if self.direction is None:
@@ -2558,7 +2577,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 )
                 self.reported_start_delay = True
             self.get_logger().info(
-                f'[MISSION] ⏱ phase=2 已确认，{self.start_delay_sec}秒后启动'
+                f'[MISSION] ⏱ S2 activate 已确认，{self.start_delay_sec}秒后启动'
             )
             return
 
@@ -2567,10 +2586,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             return
 
         self.get_logger().info(
-            f'[MISSION] ✓ Stage2 任务启动: phase=2, direction={self.direction}'
+            f'[MISSION] ✓ Stage2 任务启动: direction={self.direction}'
         )
         terminal_write(f'[TASK] 第二阶段开始 direction={self.direction}')
-        self.waiting_for_phase2_start = False
         self.mission_active = True
         self.reported_start = True
 
@@ -2596,6 +2614,7 @@ def main(args=None):
         publish_stop,
     )
 
+    install_parent_death_signal()
     init_without_ros_signal_handler(args)
     node = None
     executor = None
@@ -2608,7 +2627,7 @@ def main(args=None):
         request_stop = install_stop_event(
             stop_event,
             lambda: publish_stop(node.cmd_pub),
-            cli_topics=['/cmd_vel', '/stage2_cmd_vel'],
+            cli_topics=['/cmd_vel'],
         )
         node._request_stop = request_stop
         threading.Thread(
@@ -2618,7 +2637,7 @@ def main(args=None):
         ).start()
         executor.spin()
     except KeyboardInterrupt:
-        if request_stop is not None:
+        if request_stop is not None and not getattr(node, '_released', False):
             request_stop()
     except Exception as exc:
         tb = traceback.format_exc()
@@ -2634,7 +2653,10 @@ def main(args=None):
             pass
         raise
     finally:
-        if request_stop is not None:
+        # A normal Supervisor release has already stopped this node without
+        # parking the vehicle. Never publish a stale zero command after S3
+        # has accepted the continuous handoff.
+        if request_stop is not None and rclpy.ok() and not getattr(node, '_released', False):
             try:
                 request_stop()
             except Exception:

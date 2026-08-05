@@ -43,6 +43,9 @@ float origincar_base::Odom_Trans(uint8_t Data_High,uint8_t Data_Low)
 
 void origincar_base::Akm_Cmd_Vel_Callback(const ackermann_msgs::msg::AckermannDriveStamped::SharedPtr akm_ctl)
 {
+    last_cmd_received_at_ = std::chrono::steady_clock::now();
+    last_cmd_nonzero_ = std::abs(akm_ctl->drive.speed) > 1e-4 ||
+                        std::abs(akm_ctl->drive.steering_angle) > 1e-4;
     short  transition;
   
     Send_Data.tx[0]=FRAME_HEADER;
@@ -71,6 +74,10 @@ void origincar_base::Akm_Cmd_Vel_Callback(const ackermann_msgs::msg::AckermannDr
 
 void origincar_base::Cmd_Vel_Callback(const geometry_msgs::msg::Twist::SharedPtr twist_aux)
 {
+    last_cmd_received_at_ = std::chrono::steady_clock::now();
+    last_cmd_nonzero_ = std::abs(twist_aux->linear.x) > 1e-4 ||
+                        std::abs(twist_aux->linear.y) > 1e-4 ||
+                        std::abs(twist_aux->angular.z) > 1e-4;
     short  transition;
     Send_Data.tx[0]=FRAME_HEADER;
     Send_Data.tx[1] = 0;
@@ -284,6 +291,11 @@ void origincar_base::Control()
       current_time = rclcpp::Node::now();
       Sampling_Time = (current_time - last_time).seconds();
       if (true == Get_Sensor_Data()) {
+        // The serial read can block while SIGINT invalidates the ROS context.
+        // Do not publish or call spin_some after returning from that read.
+        if (!rclcpp::ok()) {
+          break;
+        }
         Robot_Pos.X+=1.03*(Robot_Vel.X * cos(Robot_Pos.Z) - Robot_Vel.Y * sin(Robot_Pos.Z)) * Sampling_Time;
         Robot_Pos.Y+=1.125*(Robot_Vel.X * sin(Robot_Pos.Z) + Robot_Vel.Y * cos(Robot_Pos.Z)) * Sampling_Time;
         Robot_Pos.Z+=Robot_Vel.Z * Sampling_Time;
@@ -293,6 +305,7 @@ void origincar_base::Control()
         Publish_ImuSensor();
         Publish_Voltage();
         Publish_Odom();
+        Check_Cmd_Vel_Watchdog();
         rclcpp::spin_some(this->get_node_base_interface());
       }
       last_time = current_time;
@@ -317,6 +330,8 @@ origincar_base::origincar_base()
   this->declare_parameter<std::string>("odom_frame_id", "odom");
   this->declare_parameter<std::string>("robot_frame_id", "base_link");
   this->declare_parameter<std::string>("gyro_frame_id", "gyro_link");
+  this->declare_parameter<bool>("cmd_vel_watchdog_enabled", true);
+  this->declare_parameter<double>("cmd_vel_watchdog_timeout_sec", 0.35);
 
   this->get_parameter("serial_baud_rate", serial_baud_rate);
   this->get_parameter("usart_port_name", usart_port_name);
@@ -325,6 +340,11 @@ origincar_base::origincar_base()
   this->get_parameter("odom_frame_id", odom_frame_id);
   this->get_parameter("robot_frame_id", robot_frame_id);
   this->get_parameter("gyro_frame_id", gyro_frame_id);
+  this->get_parameter("cmd_vel_watchdog_enabled", cmd_vel_watchdog_enabled_);
+  this->get_parameter("cmd_vel_watchdog_timeout_sec", cmd_vel_watchdog_timeout_sec_);
+  cmd_vel_watchdog_timeout_sec_ = std::max(0.05, cmd_vel_watchdog_timeout_sec_);
+  last_cmd_nonzero_ = false;
+  last_cmd_received_at_ = std::chrono::steady_clock::now();
 
   odom_publisher = create_publisher<nav_msgs::msg::Odometry>("odom", 10);
 
@@ -384,6 +404,21 @@ void origincar_base::Send_Stop_Command()
         Stm32_Serial.write(Send_Data.tx,sizeof (Send_Data.tx));
     } catch (serial::IOException&) {
     }
+}
+
+void origincar_base::Check_Cmd_Vel_Watchdog()
+{
+  if (!cmd_vel_watchdog_enabled_ || !last_cmd_nonzero_) {
+    return;
+  }
+  const double age_sec = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - last_cmd_received_at_).count();
+  if (age_sec <= cmd_vel_watchdog_timeout_sec_) {
+    return;
+  }
+  Send_Stop_Command();
+  last_cmd_nonzero_ = false;
+  RCLCPP_WARN(this->get_logger(), "cmd_vel watchdog stopped stale command after %.3fs", age_sec);
 }
 
 origincar_base::~origincar_base()

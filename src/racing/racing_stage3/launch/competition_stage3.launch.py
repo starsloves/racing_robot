@@ -23,20 +23,18 @@ def generate_launch_description():
 
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='false')
     include_lidar_arg = DeclareLaunchArgument('include_lidar', default_value='false')
-    include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
     include_camera_arg = DeclareLaunchArgument('include_camera', default_value='false')
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='true')
     rgb_fps_arg = DeclareLaunchArgument('rgb_fps', default_value='15')
     resolution_mode_index_arg = DeclareLaunchArgument('resolution_mode_index', default_value='2')
-    bno055_i2c_bus_arg = DeclareLaunchArgument('bno055_i2c_bus', default_value='5')
-    bno055_i2c_addr_arg = DeclareLaunchArgument('bno055_i2c_addr', default_value='41')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
     test_direction_arg = DeclareLaunchArgument('test_direction', default_value='clockwise')
     cmd_topic_arg = DeclareLaunchArgument(
         'cmd_topic',
         default_value='/cmd_vel',
-        description='Stage3 command output; total competition uses /stage3_cmd_vel for Stage1 arbitration',
+        description='Stage3 command output; production uses the direct /cmd_vel owner',
     )
+    standby_arg = DeclareLaunchArgument('standby', default_value='true')
     standalone_map_overlay_arg = DeclareLaunchArgument(
         'standalone_map_overlay',
         default_value='false',
@@ -76,13 +74,10 @@ def generate_launch_description():
                 launch_arguments={
                     'include_bringup': LaunchConfiguration('include_bringup'),
                     'include_lidar': LaunchConfiguration('include_lidar'),
-                    'include_bno055': LaunchConfiguration('include_bno055'),
                     'include_camera': LaunchConfiguration('include_camera'),
                     'include_depth': LaunchConfiguration('include_depth'),
                     'rgb_fps': LaunchConfiguration('rgb_fps'),
                     'resolution_mode_index': LaunchConfiguration('resolution_mode_index'),
-                    'bno055_i2c_bus': LaunchConfiguration('bno055_i2c_bus'),
-                    'bno055_i2c_addr': LaunchConfiguration('bno055_i2c_addr'),
                     'carto_slam': LaunchConfiguration('carto_slam'),
                 }.items(),
             )
@@ -120,6 +115,7 @@ def generate_launch_description():
             {
                 'test_direction': LaunchConfiguration('test_direction'),
                 'cmd_topic': LaunchConfiguration('cmd_topic'),
+                'standby': LaunchConfiguration('standby'),
                 'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
                 'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
                 'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
@@ -142,16 +138,14 @@ def generate_launch_description():
         isolate_process_output,
         include_bringup_arg,
         include_lidar_arg,
-        include_bno055_arg,
         include_camera_arg,
         include_depth_arg,
         rgb_fps_arg,
         resolution_mode_index_arg,
-        bno055_i2c_bus_arg,
-        bno055_i2c_addr_arg,
         carto_slam_arg,
         test_direction_arg,
         cmd_topic_arg,
+        standby_arg,
         standalone_map_overlay_arg,
         include_map_overlay_arg,
         enable_test_publisher_arg,

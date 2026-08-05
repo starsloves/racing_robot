@@ -1,8 +1,10 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.event_handlers import OnProcessStart
 from launch.substitutions import LaunchConfiguration
 from launch.conditions import IfCondition, UnlessCondition
 import launch_ros.actions
+from racing_common.launch_status import startup_status
 
 def generate_launch_description():
     akmcar = LaunchConfiguration('akmcar', default='false')
@@ -13,8 +15,17 @@ def generate_launch_description():
          'robot_frame_id': 'base_footprint',
             'odom_frame_id': 'odom',
          'cmd_vel': 'cmd_vel',
+         'cmd_vel_watchdog_enabled': True,
+         'cmd_vel_watchdog_timeout_sec': 0.35,
          'product_number': 0}
     ]
+
+    origincar_base_node = launch_ros.actions.Node(
+        condition=UnlessCondition(akmcar),
+        package='origincar_base',
+        executable='origincar_base_node',
+        parameters=robot_parameters + [{'akm_cmd_vel': 'none'}],
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -38,10 +49,9 @@ def generate_launch_description():
             name='cmd_vel_to_ackermann_drive',
         ),
 
-        launch_ros.actions.Node(
-            condition=UnlessCondition(akmcar),
-            package='origincar_base',
-            executable='origincar_base_node',
-            parameters=robot_parameters + [{'akm_cmd_vel': 'none'}],
-        )
+        origincar_base_node,
+        RegisterEventHandler(OnProcessStart(
+            target_action=origincar_base_node,
+            on_start=[startup_status('底盘', '/origincar_base')],
+        )),
     ])

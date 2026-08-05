@@ -84,7 +84,7 @@ private:
     int receive_data(unsigned char *packet_bytes);
     int getScan(std::vector<ScanPoint> &points, rclcpp::Time &scan_time, float &scan_duration);
 
-    boost::thread *pubscan_thread_ ;
+    boost::thread *pubscan_thread_{nullptr};
     boost::shared_ptr<Input> msop_input_;
     boost::mutex mutex_; 
     boost::mutex pubscan_mutex_;

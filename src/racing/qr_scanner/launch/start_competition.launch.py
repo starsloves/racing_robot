@@ -13,6 +13,7 @@ def generate_launch_description():
     device_arg = DeclareLaunchArgument('device', default_value='/dev/video0')
     include_camera_arg = DeclareLaunchArgument('include_camera', default_value='true')
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='false')
+    include_qr_arg = DeclareLaunchArgument('include_qr', default_value='true')
     rgb_fps_arg = DeclareLaunchArgument('rgb_fps', default_value='15')
     resolution_mode_index_arg = DeclareLaunchArgument('resolution_mode_index', default_value='2')
 
@@ -46,7 +47,6 @@ def generate_launch_description():
             {'camera_topic': '/aurora/rgb/image_raw'},
             {'use_compressed': False},
             {'result_topic': 'qr_scan_result'},
-            {'phase_topic': 'competition_phase'},
             {'odom_topic': '/odom_combined'},
             {'scan_task_phase': 1},
             # Keep QR startup evidence separate from the Stage1 controller
@@ -59,20 +59,22 @@ def generate_launch_description():
             {'upscale_factor': 1.0},
             {'detection_order': 'crop_only'},
         ],
-        output='log'
+        output='log',
+        condition=IfCondition(LaunchConfiguration('include_qr')),
     )
 
     return LaunchDescription([
         device_arg,
         include_camera_arg,
         include_depth_arg,
+        include_qr_arg,
         rgb_fps_arg,
         resolution_mode_index_arg,
         aurora_node,
         qr_node,
         RegisterEventHandler(OnProcessStart(
             target_action=aurora_node,
-            on_start=[startup_status('相机', '/aurora/aurora930_node')],
+            on_start=[startup_status('相机', '/aurora/aurora')],
         )),
         RegisterEventHandler(OnProcessStart(
             target_action=qr_node,

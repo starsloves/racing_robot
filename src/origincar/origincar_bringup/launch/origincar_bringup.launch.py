@@ -40,20 +40,32 @@ def generate_launch_description():
             package='tf2_ros', 
             executable='static_transform_publisher', 
             name='base_to_link',
-            arguments=['0.41', '0.12', '0','0', '0','0','base_footprint','base_link'],
+            arguments=[
+                '--x', '0.41', '--y', '0.12', '--z', '0.0',
+                '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
+                '--frame-id', 'base_footprint', '--child-frame-id', 'base_link',
+            ],
     )
     base_to_gyro = launch_ros.actions.Node(
             package='tf2_ros', 
             executable='static_transform_publisher', 
             name='base_to_gyro',
-            arguments=['0', '0', '0','0', '0','0','base_footprint','gyro_link'],
+            arguments=[
+                '--x', '0.0', '--y', '0.0', '--z', '0.0',
+                '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
+                '--frame-id', 'base_footprint', '--child-frame-id', 'gyro_link',
+            ],
     )
     
     link_to_laser = launch_ros.actions.Node(
             package='tf2_ros', 
             executable='static_transform_publisher', 
             name='link_to_laser',
-            arguments=['0', '0', '0','0', '0','0','base_link','laser'],
+            arguments=[
+                '--x', '0.0', '--y', '0.0', '--z', '0.0',
+                '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
+                '--frame-id', 'base_link', '--child-frame-id', 'laser',
+            ],
     )
 
     imu_filter_node =  launch_ros.actions.Node(
@@ -89,11 +101,11 @@ def generate_launch_description():
     ld.add_action(link_to_laser)
     ld.add_action(RegisterEventHandler(OnProcessStart(
         target_action=imu_filter_node,
-        on_start=[startup_status('IMU', '/imu_filter_madgwick_node')],
+        on_start=[startup_status('IMU', '/imu_filter_madgwick')],
     )))
     ld.add_action(RegisterEventHandler(OnProcessStart(
         target_action=robot_ekf,
-        on_start=[startup_status('定位 EKF', '/ekf_node')],
+        on_start=[startup_status('定位 EKF', '/ekf_filter_node')],
     )))
 
     return ld

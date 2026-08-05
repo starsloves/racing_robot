@@ -32,6 +32,19 @@ def _emergency_stop_action():
     )
 
 
+def _operator_tty():
+    configured = os.environ.get('RACING_OPERATOR_TTY')
+    if configured:
+        return configured
+    for fd in (1, 2):
+        try:
+            if os.isatty(fd):
+                return os.ttyname(fd)
+        except OSError:
+            continue
+    return '/dev/tty'
+
+
 def _stage1_map_to_odom_defaults(config_path):
     """Read the Stage1-owned map-to-odom transform from its ROS parameter YAML."""
     with open(config_path, 'r', encoding='utf-8') as config_file:
@@ -45,12 +58,10 @@ def _stage1_map_to_odom_defaults(config_path):
 
 def generate_launch_description():
     launch_logging.launch_config.level = logging.ERROR
-    bno055_dir = get_package_share_directory('bno055')
     lidar_dir = get_package_share_directory('lslidar_driver')
     qr_dir = get_package_share_directory('qr_scanner')
     stage1_dir = get_package_share_directory('racing_stage1')
     bringup_dir = get_package_share_directory('origincar_bringup')
-    bno055_config_path = os.path.join(bno055_dir, 'config', 'bno055_params_i2c.yaml')
     lidar_launch_dir = os.path.join(lidar_dir, 'launch')
     qr_launch_dir = os.path.join(qr_dir, 'launch')
     stage1_config_dir = os.path.join(stage1_dir, 'config')
@@ -68,13 +79,9 @@ def generate_launch_description():
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='false')
     rgb_fps_arg = DeclareLaunchArgument('rgb_fps', default_value='15')
     resolution_mode_index_arg = DeclareLaunchArgument('resolution_mode_index', default_value='2')
-    stage2_cmd_topic_arg = DeclareLaunchArgument('stage2_cmd_topic', default_value='/stage2_cmd_vel')
     include_bringup_arg = DeclareLaunchArgument('include_bringup', default_value='true')
     include_lidar_arg = DeclareLaunchArgument('include_lidar', default_value='true')
-    include_bno055_arg = DeclareLaunchArgument('include_bno055', default_value='false')
     imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/imu/data')
-    bno055_i2c_bus_arg = DeclareLaunchArgument('bno055_i2c_bus', default_value='5')
-    bno055_i2c_addr_arg = DeclareLaunchArgument('bno055_i2c_addr', default_value='41')
     carto_slam_arg = DeclareLaunchArgument('carto_slam', default_value='false')
     standalone_map_overlay_arg = DeclareLaunchArgument(
         'standalone_map_overlay',
@@ -111,6 +118,7 @@ def generate_launch_description():
         default_value='clockwise',
         description='Test direction for standalone testing (clockwise/counterclockwise)'
     )
+    standby_arg = DeclareLaunchArgument('standby', default_value='true')
 
     bringup_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(bringup_launch_dir, 'origincar_bringup.launch.py')),
@@ -160,23 +168,6 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('include_lidar')),
     )
 
-    bno055_node = Node(
-        package='bno055',
-        executable='bno055',
-        name='bno055',
-        parameters=[
-            bno055_config_path,
-            {
-                'connection_type': 'i2c',
-                'i2c_bus': LaunchConfiguration('bno055_i2c_bus'),
-                'i2c_addr': LaunchConfiguration('bno055_i2c_addr'),
-                'ros_topic_prefix': 'bno055/',
-            },
-        ],
-        output='log',
-        condition=IfCondition(LaunchConfiguration('include_bno055')),
-    )
-
     controller_node = Node(
         package='racing_stage1',
         executable='competition_controller',
@@ -184,8 +175,8 @@ def generate_launch_description():
         parameters=[
             stage1_config_path,  # 统一配置文件
             {
-                'stage2_cmd_topic': LaunchConfiguration('stage2_cmd_topic'),
                 'imu_topic': LaunchConfiguration('imu_topic'),
+                'standby': LaunchConfiguration('standby'),
             },
         ],
         output='log',
@@ -203,18 +194,15 @@ def generate_launch_description():
     return LaunchDescription([
         runtime_ros_log_dir,
         isolate_process_output,
+        SetEnvironmentVariable('RACING_OPERATOR_TTY', _operator_tty()),
         device_arg,
         include_camera_arg,
         include_depth_arg,
         rgb_fps_arg,
         resolution_mode_index_arg,
-        stage2_cmd_topic_arg,
         include_bringup_arg,
         include_lidar_arg,
-        include_bno055_arg,
         imu_topic_arg,
-        bno055_i2c_bus_arg,
-        bno055_i2c_addr_arg,
         carto_slam_arg,
         standalone_map_overlay_arg,
         include_map_overlay_arg,
@@ -223,12 +211,12 @@ def generate_launch_description():
         map_to_odom_y_arg,
         map_to_odom_yaw_arg,
         test_direction_arg,
+        standby_arg,
         bringup_launch,
         map_overlay_stack,
         test_publisher,
         base_launch,
         lidar_launch,
-        bno055_node,
         controller_node,
         RegisterEventHandler(OnProcessStart(
             target_action=controller_node,

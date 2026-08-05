@@ -53,7 +53,13 @@ namespace lslidar_driver
 
 	LslidarDriver::~LslidarDriver()
 	{
-		return;
+		pubscan_cond_.notify_all();
+		if (pubscan_thread_ != nullptr)
+		{
+			pubscan_thread_->join();
+			delete pubscan_thread_;
+			pubscan_thread_ = nullptr;
+		}
 	}
 
 	bool LslidarDriver::loadParameters()
@@ -966,6 +972,8 @@ namespace lslidar_driver
 				pubscan_cond_.wait(lock);
 				wait_for_wake = false;
 			}
+			if (!rclcpp::ok())
+				break;
 			if (lidar_name == "N10_P" || lidar_name == "M10_DOUBLE")
 			{
 				if (pubScan)

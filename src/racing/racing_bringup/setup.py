@@ -21,4 +21,9 @@ setup(
     description='Top-level launch package for the racing competition workflow',
     license='Apache License 2.0',
     tests_require=['pytest'],
+    entry_points={
+        'console_scripts': [
+            'competition_supervisor = racing_bringup.competition_supervisor:main',
+        ],
+    },
 )

@@ -19,12 +19,6 @@ competition_controller:
     # 输出控制指令话题（发送到底盘）
     output_cmd_topic: /cmd_vel
 
-    # Stage2 控制指令话题（Phase2 时订阅并转发）
-    stage2_cmd_topic: /stage2_cmd_vel
-
-    # Stage3 控制指令话题；总赛由本节点统一仲裁后输出 /cmd_vel。
-    stage3_cmd_topic: /stage3_cmd_vel
-
     # 激光雷达扫描话题（用于避障）
     scan_topic: /scan
 
@@ -39,16 +33,8 @@ competition_controller:
     imu_yaw_offset_deg: 0.0
     # 发布给 Stage2 的 latched IMU->map 航向零点映射；Stage2 必须继承此值。
     imu_map_yaw_offset_topic: imu_map_yaw_offset
-    # 交权时将墙修正后的入口位姿发布给 Stage2，用于 S2 局部 map-X 重置。
+    # 交权时发布真实 map 入口位姿给 Stage2。
     stage2_entry_pose_topic: stage2_entry_pose
-    # 交权时将当前物理朝向重标定为墙修正后的入口 yaw，并向 Stage2 发布同一持久 offset。
-    reset_imu_yaw_on_phase2_handoff: true
-    # 用本次双墙实时测量到的 Stage2 入口位姿重置 EKF；只有 map TF 回读
-    # 到该位姿误差范围内才发布 Phase2，禁止再由 Stage2 私有 X 偏移补偿。
-    phase2_ekf_tf_rebase_enabled: true
-    phase2_ekf_set_pose_service: /set_pose
-    phase2_ekf_tf_rebase_tolerance_m: 0.08
-    phase2_ekf_tf_rebase_retry_sec: 0.50
 
     # 里程计话题（EKF 融合后的位姿，用于路径记录和后退）
     odom_topic: /odom_combined
@@ -59,17 +45,8 @@ competition_controller:
     # 二维码识别结果话题（触发后退与通道导航）
     qr_result_topic: qr_scan_result
 
-    # 赛程阶段发布话题（Phase1/2/3 切换通知）
-    phase_topic: competition_phase
-
     # 扫码任务发布话题（二维码内容）
     task_topic: competition_qr_task
-
-    # Stage2 状态订阅话题（监听 Stage2 完成信号）
-    stage2_state_topic: stage2_state
-
-    # Stage3 状态订阅话题（监听 Stage3 完成信号）
-    stage3_state_topic: stage3_state
 
     # ────────────────────────────────────────────────────────────────────────
     # 坐标系配置 (Frame IDs)
@@ -316,26 +293,35 @@ competition_controller:
     # 后退目标 X (m, map 坐标系) — 后退到 map_x ≤ 此值时停止
     back_target_x: 2.00
 
-    # 后退线速度 (m/s) — 负值表示倒车；速度须低于 0.05m 轨迹采样的可跟踪范围
-    # 倒退速度不能过快，否则角速度尚未建立就会横向漂离历史轨迹。
+    # 后退线速度 (m/s) — 负值表示倒车；扫码后先以此速度直退建立反向运动。
     # 控制器会在航向误差大或接近目标时进一步自动降速。
     back_linear_speed: -0.32
 
     # 后退航向修正增益 — 航向误差 → 角速度增益
-    back_angular_kp: 0.9
+    back_angular_kp: 0.90
 
     # 后退角速度绝对上限与每秒变化率，抑制高速倒退时的反复反打
     back_max_angular_speed: 0.70
     back_angular_slew_rate: 1.80
 
+    # 由直退转入路径转向前，要求里程计位置已沿回程方向移动的距离。
+    back_reverse_engage_distance_m: 0.04
+
+    # 反向建立最长等待时间；超时仍进入路径跟踪，避免底盘异常时永久卡住。
+    back_reverse_engage_timeout_sec: 3.0
+
     # 路点到达容差 (m) — 小于采样间隔的两倍，避免一次跳过多个路点
     back_position_tolerance: 0.04
+
+    # 反向 Pure Pursuit 终点横向误差门限 (m)。速度保持正常倒车速度，
+    # 只有回到历史轨迹附近才允许通过 map_x 终点门线。
+    back_cross_track_tolerance_m: 0.06
 
     # 路径采样间隔 (m) — 前进时每隔此距离记录一个路点
     back_path_sample_distance: 0.02
 
-    # 倒序路径前瞻距离 (m) — 高速倒退需跨多个采样点以平滑目标航向
-    back_lookahead_m: 0.12
+    # 倒序路径前瞻距离 (m) — 投影式 Pure Pursuit 的弧长前瞻
+    back_lookahead_m: 0.18
 
     # 后退超时 (s) — 后退超过此时长则跳过后退，直接通道导航
     back_timeout_sec: 20.0
@@ -390,7 +376,7 @@ competition_controller:
     # ── Stage1→Stage2 交权核心参数（只改这一组） ──
     # 交权 Y 门线。前墙距离达到 handoff_front_distance_m 后，仍须在此
     # 门线检查 X、双墙中心和 IMU 航向；Y 不再拆成 min/max 两个参数。
-    corridor_handoff_y_m: 3.00
+    corridor_handoff_y_m: 3.20
     # 物理通道中心及允许横向误差：实际 X 窗口为 2.50±0.15m。
     corridor_handoff_x_center_m: 2.50
     corridor_handoff_x_tolerance_m: 0.15
@@ -768,28 +754,6 @@ competition_controller:
     blind_right_turn_y: 1.2
     blind_right_turn_angular: 0.70
     blind_right_turn_linear: 0.08
-
-    # ────────────────────────────────────────────────────────────────────────
-    # Phase 切换参数 (Phase Transition)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 切换停车时长 (s) — Phase 切换后停车等待此时长
-    transition_stop_duration: 0.05
-
-    # Stage2 指令超时 (s) — Phase2 时，超过此时长未收到 Stage2 指令则停车
-    stage2_cmd_timeout: 0.5
-
-    # Stage3 指令超时 (s) — Phase3 时，超过此时长未收到 Stage3 指令则停车
-    stage3_cmd_timeout: 0.5
-
-    # Phase2 障碍覆盖 — true: Phase2 时仍响应 Phase1 避障
-    phase2_obstacle_override: false
-
-    # Phase2 紧急停车距离 (m) — Phase2 时障碍物距离 ≤ 此值立即停车
-    phase2_emergency_stop_distance: 0.22
-
-    # Phase3 外部控制 — true: Phase3 由 Stage3 节点控制，Stage1 不发指令
-    phase3_external_control: true
 
     # ────────────────────────────────────────────────────────────────────────
     # 实验视觉通道控制

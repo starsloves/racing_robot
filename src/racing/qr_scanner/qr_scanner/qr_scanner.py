@@ -8,10 +8,12 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry
+from racing_common.process_lifecycle import install_parent_death_signal
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
-from std_msgs.msg import Int32, String
+from std_msgs.msg import String
+from std_srvs.srv import Trigger
 
 class QRScannerNode(Node):
     def __init__(self):
@@ -20,7 +22,7 @@ class QRScannerNode(Node):
         self.declare_parameter('camera_topic', '/image')
         self.declare_parameter('use_compressed', True)
         self.declare_parameter('result_topic', 'qr_scan_result')
-        self.declare_parameter('phase_topic', 'competition_phase')
+        self.declare_parameter('stage1_state_topic', 'stage1_state')
         self.declare_parameter('odom_topic', '/odom_combined')
         self.declare_parameter('scan_task_phase', 1)
         self.declare_parameter('scan_start_x_m', 1.0)
@@ -43,7 +45,7 @@ class QRScannerNode(Node):
         self.camera_topic = self.get_parameter('camera_topic').value
         self.use_compressed = bool(self.get_parameter('use_compressed').value)
         self.result_topic = self.get_parameter('result_topic').value
-        self.phase_topic = self.get_parameter('phase_topic').value
+        self.stage1_state_topic = self.get_parameter('stage1_state_topic').value
         self.odom_topic = self.get_parameter('odom_topic').value
         self.scan_task_phase = int(self.get_parameter('scan_task_phase').value)
         self.scan_start_x_m = float(self.get_parameter('scan_start_x_m').value)
@@ -100,7 +102,8 @@ class QRScannerNode(Node):
         self.wechat_detector = None
         self.active_backend = self.initialize_backend()
         self.publisher_ = self.create_publisher(String, self.result_topic, 10)
-        self.phase = self.scan_task_phase
+        self._activated = False
+        self._released = False
         self.current_x = None
         self.latest_image_msg = None
         self.scan_armed = False
@@ -124,7 +127,13 @@ class QRScannerNode(Node):
         self.frame_event = threading.Event()
         self.shutdown_event = threading.Event()
 
-        self.create_subscription(Int32, self.phase_topic, self.phase_callback, 10)
+        self.create_subscription(String, self.stage1_state_topic, self.stage1_state_callback, 10)
+        self._activate_srv = self.create_service(
+            Trigger, '/competition/stage1/qr_activate', self._activate_cb
+        )
+        self._release_srv = self.create_service(
+            Trigger, '/competition/stage1/qr_release', self._release_cb
+        )
         self.create_subscription(Odometry, self.odom_topic, self.odom_callback, 10)
 
         if self.use_compressed:
@@ -152,7 +161,7 @@ class QRScannerNode(Node):
         image_mode = 'compressed' if self.use_compressed else 'raw'
         self.get_logger().info(
             f'qr scanner ready, topic={self.camera_topic}, mode={image_mode}, result={self.result_topic}, '
-            f'backend={self.active_backend}, arm_phase={self.scan_task_phase}, arm_x>{self.scan_start_x_m:.2f}m, '
+                f'backend={self.active_backend}, arm_x>{self.scan_start_x_m:.2f}m, '
             f'crop_px={self.crop_top_px}, upscale={self.upscale_factor:.1f}x, '
             f'order={self.detection_order}, path={self.active_backend}_raw, '
             'latest_frame_worker=true'
@@ -253,7 +262,7 @@ class QRScannerNode(Node):
             candidate_text = ','.join(candidate_descriptions) or 'none'
             x_text = 'nan' if self.current_x is None else f'{self.current_x:.2f}'
             overlay_lines = [
-                f'QR {status} x={x_text}m phase={self.phase}',
+                f'QR {status} x={x_text}m active={int(self._activated)}',
                 f'order={self.detection_order} candidate={candidate_text}',
             ]
             if results:
@@ -379,21 +388,48 @@ class QRScannerNode(Node):
         return (
             self.active_backend != 'disabled'
             and not self.scan_completed
-            and self.phase == self.scan_task_phase
+            and self._activated
             and self.current_x is not None
             and self.current_x > self.scan_start_x_m
         )
 
-    def phase_callback(self, msg):
-        previous_phase = self.phase
-        self.phase = int(msg.data)
-        if self.phase != self.scan_task_phase:
-            self.scan_armed = False
-            self.scan_activation_logged = False
-            self.clear_latest_frame()
-        elif previous_phase != self.phase:
+    def stage1_state_callback(self, msg):
+        state = msg.data.strip()
+        if state == 'running' and not self._released:
+            self._activated = True
             self.scan_completed = False
             self.scan_activation_logged = False
+        elif state in ('complete', 'failed'):
+            self._activated = False
+            self.scan_armed = False
+            self.clear_latest_frame()
+            if state == 'complete' and not self._released:
+                self._released = True
+                self.create_timer(0.10, self._shutdown_after_release)
+
+    def _activate_cb(self, _request, response):
+        if self._released:
+            response.success = False
+            response.message = 'QR scanner already released'
+            return response
+        self._activated = True
+        response.success = True
+        response.message = 'QR scanner activated'
+        return response
+
+    def _release_cb(self, _request, response):
+        self._released = True
+        self._activated = False
+        self.scan_armed = False
+        self.clear_latest_frame()
+        response.success = True
+        response.message = 'QR scanner released'
+        self.create_timer(0.10, self._shutdown_after_release)
+        return response
+
+    def _shutdown_after_release(self):
+        if rclpy.ok():
+            rclpy.shutdown()
 
     def odom_callback(self, msg):
         self.current_x = float(msg.pose.pose.position.x)
@@ -402,7 +438,7 @@ class QRScannerNode(Node):
             self.scan_activation_logged = True
             self.reset_diagnostic_window()
             self.get_logger().info(f'qr scan armed at x={self.current_x:.2f} m')
-            self.write_diagnostic(f'armed x={self.current_x:.2f}m phase={self.phase}')
+            self.write_diagnostic(f'armed x={self.current_x:.2f}m')
         if not self.scan_armed:
             self.clear_latest_frame()
 
@@ -592,6 +628,7 @@ class QRScannerNode(Node):
         super().destroy_node()
 
 def main(args=None):
+    install_parent_death_signal()
     rclpy.init(args=args)
     node = QRScannerNode()
     try:

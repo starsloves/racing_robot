@@ -11,7 +11,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import Imu, LaserScan
-from std_msgs.msg import Float64, Int32, String
+from std_msgs.msg import Float64, String
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -19,7 +20,7 @@ class Stage2InertialBase(Node):
     def __init__(self, node_name='stage2_inertial_navigator'):
         super().__init__(node_name)
 
-        self.declare_parameter('phase_topic', 'competition_phase')
+        self.declare_parameter('standby', True)
         self.declare_parameter('task_topic', 'competition_qr_task')
         self.declare_parameter('odom_topic', '/odom_combined')
         self.declare_parameter('imu_topic', '/imu/data')
@@ -28,7 +29,8 @@ class Stage2InertialBase(Node):
         self.declare_parameter('imu_map_yaw_offset_fallback_map_yaw_deg', 90.0)
         self.declare_parameter('map_topic', '/map')
         self.declare_parameter('scan_topic', '/scan')
-        self.declare_parameter('cmd_topic', '/stage2_cmd_vel')
+        self.declare_parameter('cmd_topic', '/cmd_vel')
+        self.declare_parameter('lifecycle_service_prefix', '/competition/stage2')
         self.declare_parameter('corridor_path_topic', '/stage2_corridor_path')
         self.declare_parameter('feedback_topic', 'competition_feedback')
         self.declare_parameter('state_topic', 'stage2_state')
@@ -52,8 +54,6 @@ class Stage2InertialBase(Node):
         self.declare_parameter('use_corridor_path', False)
         self.declare_parameter('corridor_waypoints_are_global', False)
         self.declare_parameter('global_frame_id', 'map')
-        self.declare_parameter('global_yaw_source', 'odom')
-        self.declare_parameter('global_yaw_disagreement_deg', 45.0)
         self.declare_parameter('corridor_waypoints_json', '[]')
         self.declare_parameter('corridor_waypoint_tolerance', 0.20)
         self.declare_parameter('corridor_goal_tolerance', 0.12)
@@ -78,7 +78,6 @@ class Stage2InertialBase(Node):
         self.declare_parameter('loop_short_length_m', 1.15)
         self.declare_parameter('exit_distance_m', 1.0)
 
-        self.phase_topic = self.get_parameter('phase_topic').value
         self.task_topic = self.get_parameter('task_topic').value
         self.odom_topic = self.get_parameter('odom_topic').value
         self.imu_topic = self.get_parameter('imu_topic').value
@@ -117,12 +116,6 @@ class Stage2InertialBase(Node):
             self.get_parameter('corridor_waypoints_are_global').value
         )
         self.global_frame_id = str(self.get_parameter('global_frame_id').value).strip() or 'map'
-        self.global_yaw_source = str(self.get_parameter('global_yaw_source').value).strip().lower() or 'odom'
-        if self.global_yaw_source not in ('auto', 'odom', 'imu'):
-            self.global_yaw_source = 'odom'
-        self.global_yaw_disagreement = math.radians(
-            float(self.get_parameter('global_yaw_disagreement_deg').value)
-        )
         self.corridor_waypoints_json = self.get_parameter('corridor_waypoints_json').value
         self.corridor_waypoint_tolerance = float(self.get_parameter('corridor_waypoint_tolerance').value)
         self.corridor_goal_tolerance = float(self.get_parameter('corridor_goal_tolerance').value)
@@ -168,15 +161,12 @@ class Stage2InertialBase(Node):
         self.loop_short_length_m = float(self.get_parameter('loop_short_length_m').value)
         self.exit_distance_m = float(self.get_parameter('exit_distance_m').value)
 
-        self.phase = 1
         self.task_raw = ''
         self.direction = None
-        self.phase_initialized = False  # 标记是否收到过有效的 phase 消息
         self.current_yaw = None
         self.current_raw_imu_yaw = None
         self.imu_map_yaw_offset_rad = None
         self.current_position = None
-        self.current_odom_yaw = None
         self.latest_map = None
         self.latest_scan = None
         self.scan_frame_id = ''
@@ -231,9 +221,14 @@ class Stage2InertialBase(Node):
         self.cmd_pub = self.create_publisher(Twist, self.cmd_topic, 10)
         self.corridor_path_pub = self.create_publisher(Path, self.corridor_path_topic, path_qos)
         self.feedback_pub = self.create_publisher(String, self.feedback_topic, 10)
-        self.state_pub = self.create_publisher(String, self.state_topic, 10)
+        # Stage state is part of the lifecycle handoff protocol.  It must be
+        # latched so the Supervisor can receive the current S2 state even
+        # when S2 became ready before the handoff subscription was matched.
+        self.state_pub = self.create_publisher(String, self.state_topic, event_qos)
+        lifecycle_prefix = str(self.get_parameter('lifecycle_service_prefix').value).rstrip('/')
+        self._activate_srv = self.create_service(Trigger, f'{lifecycle_prefix}/activate', self._activate_cb)
+        self._release_srv = self.create_service(Trigger, f'{lifecycle_prefix}/release', self._release_cb)
 
-        self.create_subscription(Int32, self.phase_topic, self.phase_callback, event_qos)
         self.create_subscription(String, self.task_topic, self.task_callback, event_qos)
         self.create_subscription(Imu, self.imu_topic, self.imu_callback, 10)
         self.create_subscription(
@@ -243,7 +238,9 @@ class Stage2InertialBase(Node):
         self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, map_qos)
         self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
 
-        self.publish_state('idle')
+        self.publish_state('standby')
+        self._activated = False
+        self._released = False
         self.create_timer(1.0 / max(self.control_rate_hz, 1.0), self.control_loop)
 
         self.get_logger().info('stage2 inertial navigator ready')
@@ -309,6 +306,44 @@ class Stage2InertialBase(Node):
     def publish_state(self, text):
         self.segment_state_label = text
         self.state_pub.publish(String(data=text))
+
+    def _activate_cb(self, _request, response):
+        if self._released:
+            response.success = False
+            response.message = 'stage2 already released'
+            return response
+        self._activated = True
+        self._mission_authorized = True
+        self._start_session_log()
+        self._set_stage2_http_active(True)
+        self._set_vision_inference_active(True)
+        self.publish_state('ready')
+        self.get_logger().info('[TASK] S2 activate received; waiting for entry inputs')
+        self.try_start_mission()
+        response.success = True
+        response.message = 'stage2 activated'
+        return response
+
+    def _release_cb(self, _request, response):
+        if self._released:
+            response.success = True
+            response.message = 'stage2 already released'
+            return response
+        self._released = True
+        self._activated = False
+        self.mission_active = False
+        self._track_mission_active = False
+        self._stage3_handoff_active = False
+        self.publish_state('complete')
+        self.get_logger().info('[TASK] S2 released; shutting down process')
+        response.success = True
+        response.message = 'stage2 released; process will exit'
+        self._release_shutdown_timer = self.create_timer(0.15, self._shutdown_after_release)
+        return response
+
+    def _shutdown_after_release(self):
+        if rclpy.ok():
+            rclpy.shutdown()
 
     def clear_corridor_path(self):
         self.publish_path_points([])
@@ -395,20 +430,8 @@ class Stage2InertialBase(Node):
         )
 
     def selected_global_yaw(self):
-        odom_yaw = self.current_odom_yaw
-        imu_yaw = self.current_yaw
-
-        if self.global_yaw_source == 'odom':
-            return odom_yaw if odom_yaw is not None else imu_yaw
-        if self.global_yaw_source == 'imu':
-            return imu_yaw if imu_yaw is not None else odom_yaw
-        if odom_yaw is None:
-            return imu_yaw
-        if imu_yaw is None:
-            return odom_yaw
-        if abs(self.angle_error(imu_yaw, odom_yaw)) > self.global_yaw_disagreement:
-            return imu_yaw
-        return odom_yaw
+        """Return the map-frame heading supplied by the filtered IMU only."""
+        return self.current_yaw
 
     def current_global_yaw(self):
         source_yaw = self.selected_global_yaw()
@@ -811,28 +834,11 @@ class Stage2InertialBase(Node):
         self.latest_scan = msg
         self.scan_frame_id = msg.header.frame_id
 
-    def phase_callback(self, msg):
-        previous_phase = self.phase
-        self.phase = int(msg.data)
-        self.get_logger().info(f'[PHASE] 收到 competition_phase={self.phase} (之前={previous_phase})')
-        
-        # 首次收到 phase 消息：如果是 phase=1，标记为已初始化；如果是 phase=2，可能是旧消息，拒绝
-        if not self.phase_initialized:
-            if self.phase == 1:
-                self.phase_initialized = True
-                self.get_logger().info(f'[PHASE] ✓ Phase 初始化完成: phase=1')
-            elif self.phase == 2:
-                self.get_logger().warn(f'[PHASE] ⚠ 忽略启动时的 phase=2（可能是旧消息），等待 phase=1')
-                self.phase = 1  # 强制重置为 phase=1
-                return
-        
-        if previous_phase != self.phase and self.phase != 2:
-            self.reset_mission(clear_task=False)
-        self.try_start_mission()
-
     def task_callback(self, msg):
         self.task_raw = msg.data.strip()
         self.direction = self.parse_direction(self.task_raw)
+        if not self._activated and not self._released:
+            self.publish_state('prewarming')
         self.try_start_mission()
 
     def imu_callback(self, msg):
@@ -869,7 +875,6 @@ class Stage2InertialBase(Node):
     def odom_callback(self, msg):
         position = msg.pose.pose.position
         self.current_position = (float(position.x), float(position.y))
-        self.current_odom_yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
         self.try_start_mission()
 
@@ -980,11 +985,11 @@ class Stage2InertialBase(Node):
     def try_start_mission(self):
         if self.mission_active or self.mission_finished:
             return
-        if self.phase != 2 or self.direction is None:
-            if self.phase != 2:
-                self.get_logger().info(f'[MISSION] try_start 被阻止: phase={self.phase} (需要2), direction={self.direction}')
-            elif self.direction is None:
-                self.get_logger().info(f'[MISSION] try_start 被阻止: phase=2 ✓, 但 direction=None')
+        if not getattr(self, '_mission_authorized', False) or self.direction is None:
+            if not getattr(self, '_mission_authorized', False):
+                self.get_logger().info(f'[MISSION] try_start 被阻止: Supervisor activate 未到达, direction={self.direction}')
+            else:
+                self.get_logger().info('[MISSION] try_start 被阻止: direction=None')
             return
         if self.current_yaw is None or self.current_position is None:
             self.get_logger().info(f'[MISSION] try_start 被阻止: 等待传感器数据 yaw={self.current_yaw} pos={self.current_position}')
@@ -999,7 +1004,7 @@ class Stage2InertialBase(Node):
         if current_time < self.start_after_time:
             return
 
-        self.get_logger().info(f'[MISSION] ✓ Stage2 任务启动: phase=2, direction={self.direction}')
+        self.get_logger().info(f'[MISSION] ✓ Stage2 任务启动: Supervisor activate, direction={self.direction}')
         self.mission_active = True
         self.reported_start = True
 

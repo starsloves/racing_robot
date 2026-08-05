@@ -24,7 +24,7 @@ def publish_stop(publisher, repeat=25, interval_sec=0.02):
 def emergency_cli_stop_async(topics=None):
     """Publish one bounded CLI stop per topic as a last-resort fallback."""
     if topics is None:
-        topics = ['/cmd_vel', '/stage2_cmd_vel']
+        topics = ['/cmd_vel']
 
     payload = (
         '{linear: {x: 0.0, y: 0.0, z: 0.0}, '

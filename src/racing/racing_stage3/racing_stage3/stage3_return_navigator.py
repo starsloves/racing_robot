@@ -1,8 +1,8 @@
 """Stage3 官方返程导航：地图找 P + P 视觉接管 + 终端里程段 + Stage1 4态避障
 - 状态机: idle → armed → running(map_search_p) → p_approach → p_final_odometry → complete
 - running 时可中断：avoiding → countersteer → recovering → running
-- 仅在 competition_phase=3 时启动
-- 输出 /cmd_vel（phase3 由 Stage1 礼让）
+- 由 Supervisor activate 后启动运动
+- 输出 /cmd_vel（自然交接后独占）
 """
 
 import json
@@ -18,13 +18,15 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped, Twist
 from nav_msgs.msg import Odometry
 from racing_common.racing_logger import RacingLogger
+from racing_common.process_lifecycle import install_parent_death_signal
 from racing_common.yolo_bbox_detector import YoloBBoxDetector
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import Image, Imu, LaserScan
-from std_msgs.msg import Int32, String
+from std_msgs.msg import String
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from .cmd_vel_stop import (
@@ -45,7 +47,7 @@ class Stage3ReturnNavigator(Node):
         self._declare_params()
         self._read_params()
 
-        # 文件会话在 phase=3 激活时才打开，避免 Stage1 覆盖上一轮 Stage3 日志。
+        # 文件会话在 Supervisor activate 时才打开，避免预热覆盖比赛日志。
         self.log = RacingLogger(
             self, log_subdir='competition_stage3',
             log_filename='latest.log', session_title='Stage3 return navigator',
@@ -59,8 +61,10 @@ class Stage3ReturnNavigator(Node):
         )
 
         # ── 状态 ──
-        self.phase = 1
-        self.phase_initialized = False
+        # Prewarming is silent; Supervisor activation grants motion authority.
+        self._activated = False
+        self._released = False
+        self._handoff_command_announced = False
         self.mission_active = False
         self.mission_finished = False
         self.start_after_time = None
@@ -73,7 +77,6 @@ class Stage3ReturnNavigator(Node):
         self.current_yaw = None
         self.odom_frame_id = 'odom'
         self._last_raw_odom_xy = None
-        self._last_raw_odom_yaw = None
         self._imu_yaw = None
         self._imu_yaw_offset = 0.0
         self._awaiting_entry_yaw_alignment = False
@@ -152,6 +155,11 @@ class Stage3ReturnNavigator(Node):
         self._p_visual_only_near_last_at = None
         self._p_visible_yaw_history = deque()
         self._p_recovery_target_yaw = None
+        # Once P is large, centered, and stable, its disappearance means the
+        # chassis has reached the physical terminal.  Do not fall back to a
+        # drift-prone map coordinate and drive past the finish.
+        self._p_terminal_pass_candidate_since = None
+        self._p_terminal_pass_armed = False
         # Preserve the visual heading while lidar temporarily takes control.
         self._p_avoidance_recovery_yaw = None
         self._p_approach_progress_odom = None
@@ -195,10 +203,13 @@ class Stage3ReturnNavigator(Node):
         self.cmd_pub = self.create_publisher(Twist, self.cmd_topic, 10)
         self.state_pub = self.create_publisher(String, self.state_topic, qos_latched)
         self.feedback_pub = self.create_publisher(String, self.feedback_topic, 10)
+        self.declare_parameter('lifecycle_service_prefix', '/competition/stage3')
+        lifecycle_prefix = str(self.get_parameter('lifecycle_service_prefix').value).rstrip('/')
+        self._activate_srv = self.create_service(Trigger, f'{lifecycle_prefix}/activate', self._activate_cb)
+        self._release_srv = self.create_service(Trigger, f'{lifecycle_prefix}/release', self._release_cb)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.create_subscription(Int32, self.phase_topic, self._phase_cb, qos_latched)
         self.create_subscription(String, self.direction_topic, self._direction_cb, qos_latched)
         self.create_subscription(
             PointStamped, self.stage3_entry_anchor_topic,
@@ -234,7 +245,7 @@ class Stage3ReturnNavigator(Node):
         self._init_p_detector()
         self._init_channel_detector()
 
-        self._publish_state('idle')
+        self._publish_state('standby')
         self.create_timer(1.0 / self.control_rate_hz, self._control_loop)
         self.log.startup(
             f'enhanced return navigator ready | waypoints={len(self.return_waypoints)} '
@@ -249,7 +260,7 @@ class Stage3ReturnNavigator(Node):
     # ══════════════ 参数 ══════════════
 
     def _declare_params(self):
-        self.declare_parameter('phase_topic', 'competition_phase')
+        self.declare_parameter('standby', True)
         self.declare_parameter('odom_topic', '/odom_combined')
         self.declare_parameter('imu_topic', '/imu/data')
         self.declare_parameter('scan_topic', '/scan')
@@ -281,6 +292,10 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('p_approach_consecutive_hits', 3)
         self.declare_parameter('p_approach_linear_speed', 0.50)
         self.declare_parameter('p_approach_offset_filter_alpha', 0.55)
+        self.declare_parameter('p_terminal_pass_enabled', True)
+        self.declare_parameter('p_terminal_pass_fill_ratio', 0.35)
+        self.declare_parameter('p_terminal_pass_center_offset', 0.10)
+        self.declare_parameter('p_terminal_pass_evidence_hold_sec', 0.20)
         self.declare_parameter('p_heading_bearing_gain_rad', 0.55)
         self.declare_parameter('p_heading_kp', 1.4)
         self.declare_parameter('p_heading_tolerance_deg', 3.0)
@@ -468,7 +483,6 @@ class Stage3ReturnNavigator(Node):
         self.declare_parameter('stage3_channel_timeout_sec', 14.0)
 
     def _read_params(self):
-        self.phase_topic = str(self.get_parameter('phase_topic').value)
         self.odom_topic = str(self.get_parameter('odom_topic').value)
         self.imu_topic = str(self.get_parameter('imu_topic').value)
         self.scan_topic = str(self.get_parameter('scan_topic').value)
@@ -512,6 +526,18 @@ class Stage3ReturnNavigator(Node):
         self.p_approach_offset_filter_alpha = min(1.0, max(0.05, float(
             self.get_parameter('p_approach_offset_filter_alpha').value
         )))
+        self.p_terminal_pass_enabled = bool(
+            self.get_parameter('p_terminal_pass_enabled').value
+        )
+        self.p_terminal_pass_fill_ratio = min(1.0, max(0.05, float(
+            self.get_parameter('p_terminal_pass_fill_ratio').value
+        )))
+        self.p_terminal_pass_center_offset = min(1.0, max(0.0, float(
+            self.get_parameter('p_terminal_pass_center_offset').value
+        )))
+        self.p_terminal_pass_evidence_hold = max(0.0, float(
+            self.get_parameter('p_terminal_pass_evidence_hold_sec').value
+        ))
         self.p_heading_bearing_gain = max(0.0, float(
             self.get_parameter('p_heading_bearing_gain_rad').value
         ))
@@ -928,11 +954,17 @@ class Stage3ReturnNavigator(Node):
     def _clamp(v, limit):
         return max(-limit, min(limit, v))
 
-    @staticmethod
-    def _twist(linear=0.0, angular=0.0):
+    def _twist(self, linear=0.0, angular=0.0):
         t = Twist()
         t.linear.x = float(linear)
         t.angular.z = float(angular)
+        if (
+            self._activated
+            and not self._handoff_command_announced
+            and (abs(t.linear.x) > 1e-4 or abs(t.angular.z) > 1e-4)
+        ):
+            self._handoff_command_announced = True
+            self._publish_state('handoff_command_ready')
         return t
 
     @staticmethod
@@ -976,6 +1008,37 @@ class Stage3ReturnNavigator(Node):
 
     def _publish_state(self, text):
         self.state_pub.publish(String(data=text))
+
+    def _activate_cb(self, _request, response):
+        if self._released:
+            response.success = False
+            response.message = 'stage3 already released'
+            return response
+        self._activated = True
+        self.log.start_session()
+        self._set_stage3_http_active(True)
+        self._arm_mission()
+        response.success = True
+        response.message = 'stage3 activated'
+        return response
+
+    def _release_cb(self, _request, response):
+        if self._released:
+            response.success = True
+            response.message = 'stage3 already released'
+            return response
+        self._released = True
+        self._activated = False
+        self.mission_active = False
+        self._publish_state('complete')
+        response.success = True
+        response.message = 'stage3 released; process will exit'
+        self._release_shutdown_timer = self.create_timer(0.15, self._shutdown_after_release)
+        return response
+
+    def _shutdown_after_release(self):
+        if rclpy.ok():
+            rclpy.shutdown()
 
     def _parse_waypoints_json(self, raw, param_name, default_speed):
         try:
@@ -1079,7 +1142,7 @@ class Stage3ReturnNavigator(Node):
 
     def _update_p_inference_gate(self):
         self._set_p_inference_active(
-            self.phase == 3 and not self.mission_finished
+            self._activated and not self.mission_finished
         )
 
     @staticmethod
@@ -1096,52 +1159,10 @@ class Stage3ReturnNavigator(Node):
         self.return_direction = direction
         self.log.mission(f'Stage3 direction updated from QR: {self.return_direction}')
 
-    def _phase_cb(self, msg):
-        prev = self.phase
-        incoming = int(msg.data)
-        self.get_logger().info(
-            f'[PHASE] 收到 competition_phase={incoming} (之前={prev}, initialized={self.phase_initialized})'
-        )
-
-        if not self.phase_initialized:
-            if incoming == 1:
-                self.phase = 1
-                self.phase_initialized = True
-                self._set_p_inference_active(False)
-                self._set_stage3_http_active(False)
-                self._clear_depth_cache()
-                self.get_logger().info('[PHASE] ✓ Phase 初始化完成: phase=1')
-                return
-            if incoming == 3:
-                self.phase = 1
-                self._set_p_inference_active(False)
-                self.get_logger().warn('[PHASE] ⚠ 忽略启动时的 phase=3（可能是旧消息），等待 phase=1')
-                return
-            self.phase = incoming
-            self._set_p_inference_active(False)
-            self._set_stage3_http_active(False)
-            self._clear_depth_cache()
-            return
-
-        self.phase = incoming
-        if prev == 3 and self.phase != 3:
-            self._reset_mission()
-            self._set_p_inference_active(False)
-            self._set_stage3_http_active(False)
-            self._clear_depth_cache()
-        elif prev != 3 and self.phase == 3:
-            self.log.start_session()
-            self.log.startup('phase=3 activated; Stage3 file log session opened')
-            self.log.task('第三阶段开始')
-            self._set_stage3_http_active(True)
-            self._arm_mission()
-
     def _odom_cb(self, msg):
         raw_x = float(msg.pose.pose.position.x)
         raw_y = float(msg.pose.pose.position.y)
-        raw_yaw = self._quat_to_yaw(msg.pose.pose.orientation)
         self._last_raw_odom_xy = (raw_x, raw_y)
-        self._last_raw_odom_yaw = raw_yaw
         self.odom_frame_id = msg.header.frame_id or self.odom_frame_id
         real_map = self._lookup_map_xy_from_tf()
         if real_map is not None and self.log.path is not None:
@@ -1149,7 +1170,8 @@ class Stage3ReturnNavigator(Node):
         if self._pending_entry_anchor_map is not None:
             pending_anchor = self._pending_entry_anchor_map
             self._pending_entry_anchor_map = None
-            self._bind_stage3_entry_anchor(pending_anchor)
+            if self._bind_stage3_entry_anchor(pending_anchor) and not self._activated:
+                self._publish_state('ready')
         if self._entry_anchor_map is not None and self._entry_anchor_odom is not None:
             base_position = self._position_from_entry_anchor(
                 self._entry_anchor_map, self._entry_anchor_odom, self._last_raw_odom_xy,
@@ -1219,6 +1241,8 @@ class Stage3ReturnNavigator(Node):
             )
             return
         self._bind_stage3_entry_anchor(anchor_map)
+        if not self._activated:
+            self._publish_state('ready')
 
     def _stage3_preplan_pose_cb(self, msg):
         if msg.header.frame_id and msg.header.frame_id != self.map_frame:
@@ -1232,7 +1256,7 @@ class Stage3ReturnNavigator(Node):
         )
 
     def _maybe_build_preplanned_path(self):
-        if self.phase != 2 or self._preplan_start is None or self._preplanned_path:
+        if self._activated or self._preplan_start is None or self._preplanned_path:
             return
         if not self.use_global_planner or self.global_planner is None or not self.return_waypoints:
             return
@@ -1351,7 +1375,7 @@ class Stage3ReturnNavigator(Node):
 
     def _depth_cb(self, msg):
         """Cache the newest RGB-aligned Aurora depth frame for P diagnostics."""
-        if self.phase != 3 or not self.p_depth_logging_enabled:
+        if not self._activated or not self.p_depth_logging_enabled:
             return
         try:
             depth = self._depth_bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
@@ -1372,6 +1396,7 @@ class Stage3ReturnNavigator(Node):
     def _arm_mission(self):
         self.mission_active = False
         self.mission_finished = False
+        self._handoff_command_announced = False
         self._reset_terminal_corner_state()
         self._imu_yaw_offset = 0.0
         # S2's final handoff line is fixed along map -Y.  Establish the map
@@ -1412,7 +1437,7 @@ class Stage3ReturnNavigator(Node):
         else:
             self.current_position = self._lookup_map_xy_from_tf()
         if self.current_position is None:
-            self.log.warn('POSE', 'phase=3 waiting for map<-base_footprint TF')
+            self.log.warn('POSE', 'waiting for map<-base_footprint TF')
         self.avoid_state = 'forward'
         self.desired_heading = None
         self.recovery_uses_heading = False
@@ -1434,6 +1459,8 @@ class Stage3ReturnNavigator(Node):
         self._p_final_run_trigger = ''
         self._p_final_last_progress_odom = None
         self._p_final_last_progress_at = None
+        self._p_terminal_pass_candidate_since = None
+        self._p_terminal_pass_armed = False
         self._reset_p_final_visual_evidence()
         self._p_visible_yaw_history.clear()
         self._p_recovery_target_yaw = None
@@ -1449,7 +1476,7 @@ class Stage3ReturnNavigator(Node):
         self._channel_offset_filtered = 0.0
         self._publish_state('armed')
         self.log.mission(
-            f'phase=3 detected, direction={self.return_direction}, '
+            f'S3 activated, direction={self.return_direction}, '
             f'tf_map={self.current_position}; '
             'starting return; P is terminal semantic confirmation only'
         )
@@ -1577,6 +1604,18 @@ class Stage3ReturnNavigator(Node):
         if real_map is not None:
             self.log.real_pose(real_map[0], real_map[1], source='map_tf', force=True)
         self.log.task(f'Stage3 完成，原因={feedback_text}')
+        # P point is terminal for the competition.  Stage3 owns its normal
+        # shutdown; Supervisor only verifies that it has disappeared before
+        # closing the common base stack.
+        self._complete_shutdown_timer = self.create_timer(0.50, self._shutdown_after_complete)
+
+    def _shutdown_after_complete(self):
+        timer = getattr(self, '_complete_shutdown_timer', None)
+        if timer is not None:
+            timer.cancel()
+        self.cmd_pub.publish(Twist())
+        self.get_logger().info('Stage3 complete; shutting down process')
+        rclpy.shutdown()
 
     def _fail_mission(self, reason):
         self.cmd_pub.publish(Twist())
@@ -1663,10 +1702,12 @@ class Stage3ReturnNavigator(Node):
     # ══════════════ 主控制循环 ══════════════
 
     def _control_loop(self):
-        if self.phase == 2:
+        if self._released:
+            return
+        if not self._activated:
             self._maybe_build_preplanned_path()
             return
-        if self.phase != 3 or self.mission_finished:
+        if self.mission_finished:
             return
 
         now = self._now_sec()
@@ -1677,8 +1718,17 @@ class Stage3ReturnNavigator(Node):
             return
 
         # First align the vehicle sufficiently for both map navigation and
-        # visual takeover. The P detector then owns the terminal approach.
+        # visual takeover. This is still a moving Ackermann maneuver, so it
+        # must retain the same lidar safety arbitration as map search.
         if self._initial_align_required:
+            self.desired_heading = self._initial_align_target_yaw
+            if self._check_emergency_stop():
+                return
+            if self.avoid_state == 'forward' and self.latest_scan is not None:
+                self._check_obstacle()
+            if self.avoid_state != 'forward':
+                self._run_avoidance()
+                return
             self._run_initial_align()
             return
 
@@ -1691,10 +1741,19 @@ class Stage3ReturnNavigator(Node):
             self._run_p_final_odometry()
             return
 
-        # P_SERVO owns the chassis after consecutive P observations. Generic
-        # lidar avoidance cannot classify the P board or terminal wall and is
-        # therefore limited to MAP_SEARCH.
+        # Preserve lidar protection during the visual approach until final
+        # approach evidence confirms that the P board/terminal wall is the
+        # expected close object.  Before that point it can still be a wall or
+        # another obstacle directly ahead.
         if self._p_approaching:
+            if not self._p_approach_avoidance_disabled():
+                if self._check_emergency_stop():
+                    return
+                if self.avoid_state == 'forward' and self.latest_scan is not None:
+                    self._check_obstacle()
+                if self.avoid_state != 'forward':
+                    self._run_avoidance()
+                    return
             self._run_p_approach()
             return
 
@@ -1752,7 +1811,7 @@ class Stage3ReturnNavigator(Node):
             self.log.mission(
                 f'terminal acquisition zone entered: distance<='
                 f'{self.terminal_acquire_distance:.2f}m; lidar avoidance disabled '
-                'until terminal commit or phase exit'
+                'until terminal commit or mission release'
             )
 
     def _try_start_terminal_corner_approach(self):
@@ -1862,7 +1921,14 @@ class Stage3ReturnNavigator(Node):
             )
             return
 
-        angular = math.copysign(self.initial_align_angular, heading_error)
+        # An Ackermann chassis cannot safely execute an arbitrary angular
+        # command at a nonzero speed.  Keep its commanded radius no tighter
+        # than the pursuit radius, including when a config value is too high.
+        angular_limit = min(
+            self.initial_align_angular,
+            abs(self.initial_align_linear) / self.pursuit_min_turn_radius,
+        )
+        angular = math.copysign(angular_limit, heading_error)
         self._publish_state('initial_align')
         self.log.telemetry(
             'INITIAL_ALIGN',
@@ -2467,7 +2533,7 @@ class Stage3ReturnNavigator(Node):
     def _update_p_detection(self):
         detected, conf, bbox, stamp, offset, _fill = self._p_detection()
         confirmed = (
-            self.phase == 3
+            self._activated
             and detected
             and conf >= self.p_approach_conf
         )
@@ -2522,6 +2588,15 @@ class Stage3ReturnNavigator(Node):
         detected, conf, bbox, _stamp, offset, fill = self._p_detection()
         if not detected or conf < self.p_approach_conf:
             now = self._now_sec()
+            if self._p_terminal_pass_armed:
+                self.stop_robot()
+                self.log.segment(
+                    'P terminal pass confirmed: stable near-and-centered P disappeared; '
+                    'stop at the physical terminal without map-coordinate fallback'
+                )
+                self._finish_mission('return complete, P terminal pass confirmed')
+                return
+            self._p_terminal_pass_candidate_since = None
             if self._p_lost_since is None:
                 self._p_lost_since = now
                 self._p_lost_reverse_started_at = None
@@ -2636,6 +2711,7 @@ class Stage3ReturnNavigator(Node):
             angular = 0.0
         linear = self.p_approach_linear
         self._p_last_angular = angular
+        self._update_p_terminal_pass_evidence(now, conf, fill)
         depth_m, samples, depth_status = self._p_depth_measurement(bbox)
         self._update_p_final_visual_evidence(fill, depth_m, depth_status)
         if (
@@ -2657,6 +2733,31 @@ class Stage3ReturnNavigator(Node):
             f'{self._p_depth_text(bbox)}',
         )
         self.cmd_pub.publish(self._twist(linear, angular))
+
+    def _update_p_terminal_pass_evidence(self, now, conf, fill):
+        """Arm terminal completion only from stable, close, centered P evidence."""
+        if not self.p_terminal_pass_enabled or self._p_terminal_pass_armed:
+            return
+        close_and_centered = (
+            conf >= self.p_approach_conf
+            and fill >= self.p_terminal_pass_fill_ratio
+            and abs(self._p_offset_filtered) <= self.p_terminal_pass_center_offset
+        )
+        if not close_and_centered:
+            self._p_terminal_pass_candidate_since = None
+            return
+        if self._p_terminal_pass_candidate_since is None:
+            self._p_terminal_pass_candidate_since = now
+            return
+        if now - self._p_terminal_pass_candidate_since < self.p_terminal_pass_evidence_hold:
+            return
+        self._p_terminal_pass_armed = True
+        self.log.segment(
+            'P terminal pass armed: '
+            f'conf={conf:.2f} fill={fill:.2%} off={self._p_offset_filtered:+.3f} '
+            f'hold={now - self._p_terminal_pass_candidate_since:.2f}s; '
+            'P disappearance will complete without map-coordinate fallback'
+        )
 
     def _try_arm_p_final_odometry(
         self, depth_m=None, samples=None, depth_status=None, fill=None,
@@ -3597,6 +3698,7 @@ class Stage3ReturnNavigator(Node):
 
 
 def main(args=None):
+    install_parent_death_signal()
     init_without_ros_signal_handler(args)
     node = Stage3ReturnNavigator()
     stop_event = threading.Event()

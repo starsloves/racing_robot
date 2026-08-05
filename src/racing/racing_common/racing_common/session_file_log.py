@@ -20,7 +20,7 @@ def resolve_workspace_root():
 
 
 class SessionFileLog:
-    """Append-only session log; opened with mode ``w`` so each run replaces the previous file."""
+    """Append-only session log with a stable ``latest.log`` convenience link."""
 
     def __init__(
         self,
@@ -32,7 +32,30 @@ class SessionFileLog:
         root = workspace_root or resolve_workspace_root()
         self.log_dir = os.path.join(root, 'log', subdir)
         os.makedirs(self.log_dir, exist_ok=True)
-        self.path = os.path.join(self.log_dir, filename)
+        session_id = os.environ.get('COMPETITION_SESSION_ID', '').strip()
+        if not session_id:
+            session_id = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        self.session_id = session_id
+        self.session_dir = os.path.join(self.log_dir, session_id)
+        os.makedirs(self.session_dir, exist_ok=True)
+        self.path = os.path.join(self.session_dir, filename)
+        latest_path = os.path.join(self.log_dir, filename)
+        relative_target = os.path.join(session_id, filename)
+        try:
+            if os.path.lexists(latest_path) and not os.path.islink(latest_path):
+                legacy_path = os.path.join(
+                    self.log_dir,
+                    f'legacy_{datetime.now().strftime("%Y%m%d_%H%M%S")}_{filename}',
+                )
+                os.replace(latest_path, legacy_path)
+            if os.path.lexists(latest_path):
+                os.unlink(latest_path)
+            os.symlink(relative_target, latest_path)
+        except OSError:
+            # Logging must never prevent a control node from starting on a
+            # read-only or unusual filesystem.  The session file remains the
+            # authoritative copy even if the convenience link cannot update.
+            pass
         self._file = open(self.path, 'w', encoding='utf-8')
         stamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self.write(f'=== {session_title} {stamp} ===')

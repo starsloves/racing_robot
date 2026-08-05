@@ -120,7 +120,7 @@ class DataRecorder(Node):
         self.create_subscription(Odometry, '/odom', self._cb_wheel_odom, 10)
         self.create_subscription(Odometry, '/odom_combined', self._cb_ekf_odom, 10)
         self.create_subscription(Imu, '/imu/data', self._cb_imu, sensor_qos)
-        self.create_subscription(Twist, '/stage2_cmd_vel', self._cb_stage2_cmd, 10)
+        self.create_subscription(Twist, '/cmd_vel', self._cb_stage2_cmd, 10)
         self.create_subscription(Twist, '/lane_cmd_vel', self._cb_lane_cmd, 10)
         self.create_subscription(Twist, '/cmd_vel', self._cb_final_cmd, 10)
         self.create_subscription(LaserScan, '/scan', self._cb_scan, sensor_qos)

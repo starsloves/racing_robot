@@ -15,16 +15,13 @@ stage3_return_navigator:
     # 话题配置 (Topic Configuration)
     # ────────────────────────────────────────────────────────────────────────
 
-    # 赛程阶段订阅话题（监听 Phase 切换）
-    phase_topic: competition_phase
-
-    # 二维码确定的绕行方向；用于 Phase3 入场导航配置选择
+    # 二维码确定的绕行方向；用于 S3 入场导航配置选择
     direction_topic: competition_qr_task
 
     # S2 在交权时发布的 map 锚点。S3 锁存交接时 map<-odom 的旋转，
     # 再以该锚点加旋转后的 /odom_combined 平移增量定位；不在运行中重用 map TF 位姿。
     stage3_entry_anchor_topic: stage3_entry_anchor
-    # S2 最后一条直线发布的预测 A* 起点；仅用于 phase=2 后台预规划。
+    # S2 最后一条直线发布的预测 A* 起点；仅用于 S2 仍运行时的后台预规划。
     stage3_preplan_pose_topic: stage3_preplan_pose
     require_stage3_entry_anchor: true
     stage3_entry_anchor_max_age_sec: 3.0
@@ -57,7 +54,7 @@ stage3_return_navigator:
     # S2 放权后立即继承 S2 发布的 map 锚点和原始 IMU 航向接管，不停车、不重新对齐。
     start_delay_sec: 0.0
 
-    # S2 交接末段固定沿 map -Y。Phase3 武装时将当时 IMU yaw 对齐到该 map 航向，
+    # S2 交接末段固定沿 map -Y。S3 activate 时将当时 IMU yaw 对齐到该 map 航向，
     # 后续航向仍仅使用 IMU 相对转角，绝不使用 /odom orientation。
     stage3_entry_map_yaw_deg: -90.0
 
@@ -86,7 +83,7 @@ stage3_return_navigator:
     # ────────────────────────────────────────────────────────────────────────
 
     # 视觉搜索入口直行速度 (m/s) — 尚未识别到 P 时沿右下方向快速驶入入口。
-    pursuit_linear_speed: 0.72
+    pursuit_linear_speed: 0.42
 
     # 前视距离 (m) — 追踪路径上前方此距离的点
     pursuit_lookahead_m: 0.45
@@ -98,7 +95,7 @@ stage3_return_navigator:
     pursuit_turn_kp: 1.2
 
     # 转弯最低线速度 (m/s)
-    pursuit_turn_linear_speed: 0.14
+    pursuit_turn_linear_speed: 0.12
 
     # A* 转弯最小半径 (m)。跟踪时线速度至少为 |angular_z| * 此值，
     # 避免低速饱和打舵而无法完成大角度转弯。
@@ -111,8 +108,8 @@ stage3_return_navigator:
     initial_align_tolerance_deg: 8.0
 
     # 预对正角速度 (rad/s) 和线速度 (m/s)。阿克曼底盘须低速前进摆弧，不能原地旋转。
-    initial_align_angular_speed: 1.5
-    initial_align_linear_speed: 0.18
+    initial_align_angular_speed: 0.30
+    initial_align_linear_speed: 0.12
 
     # 全局最大角速度 (rad/s)
     max_angular_speed: 0.9
@@ -145,7 +142,14 @@ stage3_return_navigator:
     p_approach_consecutive_hits: 2
 
     # 接近线速度 (m/s) — P 已接近画面中心时的最高速度
-    p_approach_linear_speed: 0.60
+    p_approach_linear_speed: 0.28
+
+    # P 是物理终点。连续稳定的近距居中 P 在贴近车头后消失，即视为到达；
+    # 不再以漂移的 map/里程计坐标继续寻找终点。35% 来自 2026-08-05 实车近距日志。
+    p_terminal_pass_enabled: true
+    p_terminal_pass_fill_ratio: 0.35
+    p_terminal_pass_center_offset: 0.10
+    p_terminal_pass_evidence_hold_sec: 0.20
 
     # P 检测结果的最大有效年龄 (s)
     p_detection_timeout_sec: 0.35
@@ -196,18 +200,18 @@ stage3_return_navigator:
 
     # 首次识别 P 即按框偏差锁定 IMU 目标航向，随后直线保持。
     # 相对上次锁定偏差变化超过该阈值并经过最短间隔后，才更新一次目标航向。
-    p_heading_bearing_gain_rad: 0.55
-    p_heading_kp: 1.4
+    p_heading_bearing_gain_rad: 0.35
+    p_heading_kp: 1.0
     p_heading_tolerance_deg: 3.0
-    p_heading_max_angular_speed: 0.55
-    p_heading_reacquire_offset: 0.18
-    p_heading_reacquire_interval_sec: 0.60
+    p_heading_max_angular_speed: 0.30
+    p_heading_reacquire_offset: 0.25
+    p_heading_reacquire_interval_sec: 0.80
     # 单次视觉框跳变最多只改变该角度，避免目标航向突然跳变造成猛转。
-    p_heading_reacquire_max_delta_deg: 8.0
+    p_heading_reacquire_max_delta_deg: 4.0
 
-    # P 已确认后进入终点附近，使用地图目标点做平滑收敛兜底。
-    # 该段不倒车、不走通用雷达避障，避免终点板/终点墙被反复识别为障碍。
-    terminal_fallback_enabled: true
+    # 锚点后的 map/odom 位置会随长距离回程漂移，禁止把固定地图坐标作为
+    # 生产完成条件或继续驱车的兜底；仅保留代码供离线诊断。
+    terminal_fallback_enabled: false
     terminal_fallback_tolerance_m: 0.12
     terminal_fallback_linear_speed: 0.24
     terminal_fallback_max_angular_speed: 0.35
@@ -458,8 +462,8 @@ stage3_return_navigator:
     # ────────────────────────────────────────────────────────────────────────
 
     # Stage3 继承 Stage1/map_overlay 发布的 map<-base TF，禁止在本节点重置 map 原点。
-    # 生产返程切入 phase=3 后立即由 A* 控制；禁止前置通道 YOLO 阻塞或自行驱动。
-    # P YOLO 从 phase=3 开始即可接管，但雷达避障始终拥有更高控制优先级。
+    # 生产返程由 Supervisor activate 后立即交给 A* 控制；禁止前置通道 YOLO 阻塞或自行驱动。
+    # P YOLO 从 S3 activate 开始即可接管，但雷达避障始终拥有更高控制优先级。
     stage3_channel_yolo_enabled: false
     stage3_channel_model_path: /home/sunrise/dev_ws/best_rdk_tongdao.bin
     stage3_channel_camera_topic: /aurora/rgb/image_raw
