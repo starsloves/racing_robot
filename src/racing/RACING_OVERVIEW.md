@@ -6,7 +6,7 @@
 ros2 launch racing_bringup competition_total.launch.py
 ```
 
-不再存在第二条开赛命令，也不在总启动中并行启动 S1、S2、S3。
+不再存在第二条开赛命令。公共基础层稳定后，S1 取得运动权，S2/S3 可并行驻留待命但不得发布运动命令。
 
 ## 1. 公共基础层
 
@@ -36,7 +36,7 @@ Supervisor 只有在下列条件连续稳定后才开始 S1：`/cmd_vel` 有底�
 session_id, base_state, active_stage, prewarming_stage, lifecycle_state, reason
 ```
 
-`active_stage` 和 `prewarming_stage` 始终分开。例如二维码后是 `active_stage=S1`、`prewarming_stage=S2`，不能把 S1 运行状态覆盖成“Stage2 prewarming”。
+`active_stage` 和 `prewarming_stage` 始终分开。例如 S1 运行期间是 `active_stage=S1`、`prewarming_stage=S2`，不能把 S1 运行状态覆盖成“Stage2 prewarming”。
 
 阶段服务只允许 Supervisor 调用：
 
@@ -53,7 +53,8 @@ session_id, base_state, active_stage, prewarming_stage, lifecycle_state, reason
 ```text
 基础 ready
   -> S1 standby -> ready -> activate -> running
-  -> QR -> S2 prewarming
+  -> S2 standby prewarming（基础 ready 后即启动）
+  -> QR 锁存方向
   -> S1 handoff_ready -> S2 first command -> S1 release/self-exit
   -> S2 running -> S3 prewarming
   -> S2 complete -> S3 first command -> S2 release/self-exit
@@ -69,13 +70,13 @@ S1 只包含 `competition_controller` 与 `qr_scanner`。相机属于公共基�
 
 ### S2
 
-二维码后 Supervisor 启动 S2 和 S2 专属视觉 AI。S2 在 `prewarming/ready` 时加载参数、模型并锁存方向，但绝不发布运动命令。S1 交接位姿和 Supervisor 的 activate 都到达后，S2 才输出第一条 `/cmd_vel` 并发布 `stage2_state=handoff_command_ready`。随后 S1 收到 release，自行退出。
+基础层稳定后 Supervisor 即启动 S2 和 S2 专属视觉 AI 的 standby 进程。二维码只负责传递并锁存方向，S2 在 `prewarming/ready` 时加载参数、模型，但绝不发布运动命令。S1 的 `stage2_entry_pose` 是地图锚点，不是激活时当前位置；S2 记录收到锚点时的原始 TF，Supervisor 的 activate 到达后重新读取实时 TF/IMU，再输出第一条连续 `/cmd_vel` 并发布 `stage2_state=handoff_command_ready`。锚点延迟只记录诊断，不因年龄单独拒绝。随后 S1 收到 release，自行退出。
 
 S2 完成时发布 `stage3_entry_anchor` 与 `stage2_state=complete`，保持最后有效命令直到 S3 接管。S2 后段的 `stage3_prewarm` 事件只预热 S3，不改变 S2 的运动权。
 
 ### S3
 
-S3 standby 时加载 P 点视觉资源并等待新鲜的 `stage3_entry_anchor`，不发布运动命令。activate 后输出第一条连续 `/cmd_vel` 并发布 `stage3_state=handoff_command_ready`，然后 S2 收到 release 并自行退出。
+S3 standby 时加载 P 点视觉资源并等待合法的 `stage3_entry_anchor`，不发布运动命令。锚点允许在 transient-local 交付中延迟到达；S3 以锚点配合 `/odom_combined` 的 XY 位移增量建立当前位姿。activate 后输出第一条连续 `/cmd_vel` 并发布 `stage3_state=handoff_command_ready`，然后 S2 收到 release 并自行退出。
 
 到达 P 点是唯一正常终停：S3 锁定零速、输出最终 `[POSE_REAL]`、发布 `stage3_state=complete`、释放视觉资源并自行退出。Supervisor 只确认它已消失，随后退出；顶层 launch 因此自然结束，不需要额外 Ctrl+C。
 
@@ -86,7 +87,7 @@ S1 -> S2 和 S2 -> S3 的正常路径不会由 Supervisor 主动发送零速：
 ```text
 旧阶段 handoff_wait（保持最后有效命令）
   -> 新阶段 ready
-  -> 新阶段发布第一条连续命令和 handoff_command_ready
+  -> 新阶段 armed 后发布第一条连续命令和 handoff_command_ready
   -> Supervisor 调用旧阶段 release
   -> 旧阶段停止发布并自行退出
 ```

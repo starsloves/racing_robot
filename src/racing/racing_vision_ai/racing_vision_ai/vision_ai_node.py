@@ -25,6 +25,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profi
 from sensor_msgs.msg import Image
 from std_msgs.msg import Empty, Int32, String
 
+from racing_common.process_lifecycle import install_parent_death_signal
 from voice_api.vision_analyzer import VisionAnalyzer
 
 
@@ -916,6 +917,7 @@ class VisionAINode(Node):
 
 
 def main(args=None) -> None:
+    install_parent_death_signal()
     rclpy.init(args=args)
     node = VisionAINode()
     try:

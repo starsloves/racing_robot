@@ -58,7 +58,8 @@ stage3_return_navigator:
     # 后续航向仍仅使用 IMU 相对转角，绝不使用 /odom orientation。
     stage3_entry_map_yaw_deg: -90.0
 
-    # 生产 S3 必须等到新鲜 S2 锚点；实时 map TF 只记录为交接诊断，不参与控制。
+    # 生产 S3 必须等到合法 S2 锚点；transient-local 延迟只记告警，
+    # 当前位姿由锚点与 /odom_combined XY 增量传播，实时 map TF 仅作诊断。
 
     # ────────────────────────────────────────────────────────────────────────
     # 路点与目标区域 (Waypoints and Goal Region)
@@ -147,7 +148,7 @@ stage3_return_navigator:
     # P 是物理终点。连续稳定的近距居中 P 在贴近车头后消失，即视为到达；
     # 不再以漂移的 map/里程计坐标继续寻找终点。35% 来自 2026-08-05 实车近距日志。
     p_terminal_pass_enabled: true
-    p_terminal_pass_fill_ratio: 0.35
+    p_terminal_pass_fill_ratio: 0.50
     p_terminal_pass_center_offset: 0.10
     p_terminal_pass_evidence_hold_sec: 0.20
 

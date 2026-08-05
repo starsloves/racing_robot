@@ -13,6 +13,7 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>cv_bridge</depend>
+  <depend>racing_common</depend>
   <exec_depend>voice_driver</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

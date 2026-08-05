@@ -150,7 +150,7 @@ stage2_inertial_navigator:
     track_clockwise_left_side_arc_exit_lead_deg: 43.0
     track_clockwise_right_side_arc_linear: 0.70
     track_clockwise_right_side_arc_angular: 1.25
-    track_clockwise_right_side_arc_exit_lead_deg: 30.0
+    track_clockwise_right_side_arc_exit_lead_deg: 37.0
     track_clockwise_exit_turn_90_linear: 0.50
     track_clockwise_exit_turn_90_angular: 1.25
     track_clockwise_exit_turn_90_exit_lead_deg: 30.0
@@ -200,6 +200,7 @@ stage2_inertial_navigator:
     # Stage1 在交接时发布完整 map x/y/yaw；S2 用 x/y 对现有 map TF 做全局锚定，
     # 用 yaw 初始化轨迹航向；启动后的实时航向仍只来自 IMU，不新增定位或雷达链路。
     stage2_entry_pose_topic: stage2_entry_pose
+    # 仅用于诊断告警；交接期间车辆继续运动，锚点过期不再阻断激活。
     stage2_entry_pose_max_age_sec: 2.0
 
     # 第二个 180° 的名义里程中心，只用于视觉有效窗口和 TF 缺失保护。

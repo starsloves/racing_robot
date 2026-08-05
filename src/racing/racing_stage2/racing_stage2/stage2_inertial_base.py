@@ -238,6 +238,7 @@ class Stage2InertialBase(Node):
         self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, map_qos)
         self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
 
+        self._last_published_state = None
         self.publish_state('standby')
         self._activated = False
         self._released = False
@@ -306,6 +307,12 @@ class Stage2InertialBase(Node):
     def publish_state(self, text):
         self.segment_state_label = text
         self.state_pub.publish(String(data=text))
+        if text != self._last_published_state:
+            self._last_published_state = text
+            self.get_logger().info(
+                f'[LIFECYCLE] publish stage2_state={text} '
+                f't={self.get_clock().now().nanoseconds / 1e9:.3f}'
+            )
 
     def _activate_cb(self, _request, response):
         if self._released:
@@ -317,8 +324,8 @@ class Stage2InertialBase(Node):
         self._start_session_log()
         self._set_stage2_http_active(True)
         self._set_vision_inference_active(True)
-        self.publish_state('ready')
-        self.get_logger().info('[TASK] S2 activate received; waiting for entry inputs')
+        self.publish_state('armed')
+        self.get_logger().info('[TASK] S2 activate received; armed for immediate handoff command')
         self.try_start_mission()
         response.success = True
         response.message = 'stage2 activated'
@@ -1232,8 +1239,9 @@ class Stage2InertialBase(Node):
             return
 
         if not self.mission_active or self.current_segment is None:
-            if not self.mission_active:
-                self.cmd_pub.publish(Twist())
+            # Standby/armed S2 must not publish even zero commands.  Multiple
+            # direct publishers share /cmd_vel; a standby zero would steal
+            # S1's motion ownership during the prewarm and handoff window.
             return
 
         now_sec = self.get_clock().now().nanoseconds / 1e9

@@ -95,7 +95,10 @@ class CompetitionSupervisor(Node):
         # spawned stage process groups cannot survive a Ctrl+C/restart.
         rclpy.get_default_context().on_shutdown(self._cleanup_child_processes)
         self._publish_state()
-        self._timer = self.create_timer(0.2, self._monitor)
+        # Handoff activation is event-driven; this timer is only the service
+        # discovery/retry safety net.  A 50 ms cadence bounds that fallback
+        # without adding a visible command gap.
+        self._timer = self.create_timer(0.05, self._monitor)
         self._heartbeat = self.create_timer(1.0, self._publish_state)
 
     def _mark(self, name):
@@ -236,11 +239,27 @@ class CompetitionSupervisor(Node):
             # platforms without prctl.
             return
 
-    def _spawn(self, key, package, launch_file, arguments):
+    @staticmethod
+    def _process_start_ticks(pid):
+        """Read the Linux start tick field used to guard against PID reuse."""
+        try:
+            with open(f'/proc/{pid}/stat', 'r', encoding='utf-8') as stream:
+                fields = stream.read().rsplit(')', 1)[1].split()
+            return fields[19]
+        except (IndexError, OSError):
+            return ''
+
+    def _child_environment(self):
         env = os.environ.copy()
         env['COMPETITION_SESSION_ID'] = self.session_id
+        env['COMPETITION_SUPERVISOR_PID'] = str(os.getpid())
+        env['COMPETITION_SUPERVISOR_START_TICKS'] = self._process_start_ticks(os.getpid())
         env['RMW_FASTRTPS_USE_SHM'] = '0'
         env['RMW_FASTRTPS_TRANSPORT'] = 'UDPv4'
+        return env
+
+    def _spawn(self, key, package, launch_file, arguments):
+        env = self._child_environment()
         parent_pid = os.getpid()
         process = subprocess.Popen(
             self._command(package, launch_file, arguments),
@@ -288,8 +307,7 @@ class CompetitionSupervisor(Node):
         if not bool(self.get_parameter('enable_stage2_vision_ai').value) or self._alive('vision_ai'):
             return
         config = os.path.join(get_package_share_directory('racing_vision_ai'), 'config', 'vision_ai_config.yaml')
-        env = os.environ.copy()
-        env['COMPETITION_SESSION_ID'] = self.session_id
+        env = self._child_environment()
         parent_pid = os.getpid()
         self._processes['vision_ai'] = subprocess.Popen([
             'ros2', 'run', 'racing_vision_ai', 'vision_ai_node', '--ros-args',
@@ -459,15 +477,21 @@ class CompetitionSupervisor(Node):
             self._handoff_deadline = time.monotonic() + float(self.get_parameter('handoff_timeout_sec').value)
             if self._stage_states['stage2'] == 'ready':
                 self._task('S2 already ready; scheduling continuous handoff activation')
+                self._activate('stage2')
             else:
                 self._task('S1 handoff ready; waiting for prewarmed S2 ready state')
             self._publish_state()
 
     def _stage2_cb(self, msg):
         state = msg.data.strip()
+        self.get_logger().info(
+            f'[LIFECYCLE] receive stage2_state={state} '
+            f't={self.get_clock().now().nanoseconds / 1e9:.3f}'
+        )
         self._stage_states['stage2'] = state
         if state == 'ready' and self.active_stage == 'stage1' and self.lifecycle_state == 'stage1_handoff_wait':
             self._task('S2 ready; scheduling continuous handoff activation')
+            self._activate('stage2')
         elif state == 'handoff_command_ready' and self.active_stage == 'stage1':
             self.active_stage = 'stage2'
             self.prewarming_stage = ''
@@ -508,6 +532,7 @@ class CompetitionSupervisor(Node):
         self._stage_states['stage3'] = state
         if state == 'ready' and self.active_stage == 'stage2' and self.lifecycle_state == 'stage2_handoff_wait':
             self._task('S3 ready; scheduling continuous handoff activation')
+            self._activate('stage3')
         elif state == 'handoff_command_ready' and self.active_stage == 'stage2':
             self.active_stage = 'stage3'
             self.prewarming_stage = ''
@@ -548,9 +573,16 @@ class CompetitionSupervisor(Node):
                 self.base_state = 'ready'
                 self.active_stage = 'stage1'
                 self.lifecycle_state = 'stage1_starting'
-                self.reason = 'common base layer stable; launching S1'
+                self.reason = 'common base layer stable; launching S1 and prewarming S2'
                 self._task('基础节点 ready; S1 standby starting')
                 self._launch_stage1()
+                # S2 imports cv2/numpy/cv_bridge and its vision stack. Start
+                # that cold path while S1 is driving so the handoff window
+                # contains only task/anchor delivery and service activation.
+                self._launch_stage2()
+                self._launch_vision_ai()
+                self.prewarming_stage = 'stage2'
+                self._task('S2 standby prewarm started before QR; no motion authority')
                 self._publish_state()
             elif time.monotonic() - self._last_wait_log > 5.0:
                 self._task('waiting for base: ' + self._base_wait_reason())

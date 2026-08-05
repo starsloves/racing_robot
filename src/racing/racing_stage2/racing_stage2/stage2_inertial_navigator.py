@@ -439,6 +439,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._track_map_y_correction_offset = 0.0
         self._stage2_entry_yaw = None
         self._stage2_entry_pose = None
+        # Raw map TF captured when S1 publishes the handoff anchor.  The
+        # published PoseStamped is a map anchor, not the vehicle's activation
+        # pose; retaining this sample lets us apply only the wall/map offset
+        # after the vehicle has continued moving during the handoff window.
+        self._stage2_entry_raw_map_xy = None
         self._stage2_entry_pose_max_age = max(
             0.1, float(self.get_parameter('stage2_entry_pose_max_age_sec').value)
         )
@@ -1180,12 +1185,12 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
     def _missing_pose_inputs(self):
         missing = []
         if self._wheel_pose_source_active():
-            if not self._wheel_odom_warmed_up():
-                missing.append(
-                    f'wheel_odom({self._wheel_odom_topic} '
-                    f'{self._wheel_odom_msg_count}/{self._wheel_odom_warmup_min_msgs})'
-                )
-            elif self.current_yaw is None:
+            # The first wheel sample is sufficient to preserve continuous
+            # handoff motion.  Warmup remains a quality/diagnostic flag and
+            # must not add a fixed activation delay.
+            if self.current_position is None:
+                missing.append(f'wheel_odom({self._wheel_odom_topic})')
+            if self.current_yaw is None:
                 missing.append('imu')
         else:
             if self.current_position is None:
@@ -1282,6 +1287,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             'yaw': yaw,
             'frame_id': msg.header.frame_id or self.global_frame_id,
         }
+        self._stage2_entry_raw_map_xy = self._lookup_raw_map_xy_from_tf()
         self._log_session(
             'STAGE2_ENTRY_POSE_RX',
             f'map=({self._stage2_entry_pose["x"]:.3f},'
@@ -1298,12 +1304,20 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             return None
         now = self.get_clock().now().nanoseconds / 1e9 if now is None else float(now)
         age = now - self._stage2_entry_pose['stamp']
-        if age < -0.25 or age > self._stage2_entry_pose_max_age:
+        if age < -0.25:
             self._log_session(
                 'STAGE2_ENTRY_POSE_STALE',
-                f'age={age:.3f}s max={self._stage2_entry_pose_max_age:.3f}s ignored',
+                f'age={age:.3f}s invalid future timestamp ignored',
             )
             return None
+        if age > self._stage2_entry_pose_max_age:
+            # The anchor remains valid after the handoff because the vehicle
+            # keeps moving under S1.  Its age is diagnostic only; the raw TF
+            # sample captured on receipt is used to preserve the map offset.
+            self._log_session(
+                'STAGE2_ENTRY_POSE_STALE',
+                f'age={age:.3f}s max={self._stage2_entry_pose_max_age:.3f}s accepted_as_anchor',
+            )
         if self._stage2_entry_pose['frame_id'] != self.global_frame_id:
             self._log_session(
                 'STAGE2_ENTRY_POSE_STALE',
@@ -1317,23 +1331,25 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             return False
         now = self.get_clock().now().nanoseconds / 1e9
         raw_entry_map_xy = self._lookup_raw_map_xy_from_tf()
+        raw_anchor_map_xy = self._stage2_entry_raw_map_xy or raw_entry_map_xy
         entry_pose = self._fresh_stage2_entry_pose(now)
         self._track_map_x_correction_offset = 0.0
         self._track_map_y_correction_offset = 0.0
         self._stage2_entry_yaw = None
         track_x_source = 'real_tf'
+        # Activation uses the live IMU yaw.  The S1 yaw is retained as an
+        # anchor diagnostic and is not allowed to freeze a moving vehicle.
         track_start_yaw = self.current_yaw
         if entry_pose is not None:
             self._stage2_entry_yaw = float(entry_pose['yaw'])
-            track_start_yaw = self._stage2_entry_yaw
-            if raw_entry_map_xy is not None:
+            if raw_anchor_map_xy is not None:
                 # The static map->odom TF exposes the raw estimator pose.
                 # Align it to the complete map-frame pose handed off by S1.
                 self._track_map_x_correction_offset = (
-                    float(entry_pose['x']) - float(raw_entry_map_xy[0])
+                    float(entry_pose['x']) - float(raw_anchor_map_xy[0])
                 )
                 self._track_map_y_correction_offset = (
-                    float(entry_pose['y']) - float(raw_entry_map_xy[1])
+                    float(entry_pose['y']) - float(raw_anchor_map_xy[1])
                 )
                 self._track_map_x_origin = float(entry_pose['x'])
                 track_x_source = 'stage1_entry_pose'
@@ -1393,6 +1409,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             'TRACK_MAP_ANCHOR',
             f'entry_map={entry_map_text} entry_yaw={entry_yaw_text} '
             f'tf_entry={raw_entry_map_text} '
+            f'tf_anchor={raw_anchor_map_xy if raw_anchor_map_xy is not None else "unavailable"} '
             f'offset=({self._track_map_x_correction_offset:+.3f},'
             f'{self._track_map_y_correction_offset:+.3f}) '
             f'entry_pose_age={entry_pose_age} source={track_x_source}',
@@ -2457,8 +2474,10 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             return
 
         if not self.mission_active or self.current_segment is None:
-            if not self.mission_active:
-                self.cmd_pub.publish(self.create_twist())
+            # An activated-but-not-yet-running navigator still does not own
+            # the chassis. Never publish a standby zero on the shared topic;
+            # S1 must keep its continuous handoff command until S2 emits a
+            # non-zero command and the Supervisor releases S1.
             self._maybe_log_telemetry('idle')
             return
 

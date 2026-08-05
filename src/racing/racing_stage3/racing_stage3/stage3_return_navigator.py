@@ -1225,13 +1225,22 @@ class Stage3ReturnNavigator(Node):
             )
             return
         stamp_sec = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
-        if stamp_sec > 0.0 and self._now_sec() - stamp_sec > self.stage3_entry_anchor_max_age:
+        anchor_age = self._now_sec() - stamp_sec if stamp_sec > 0.0 else 0.0
+        if anchor_age < -0.25:
             self.log.warn(
                 'ENTRY_ANCHOR',
-                f'ignored stale anchor age={self._now_sec() - stamp_sec:.2f}s '
-                f'max={self.stage3_entry_anchor_max_age:.2f}s',
+                f'ignored future anchor age={anchor_age:.2f}s',
             )
             return
+        if anchor_age > self.stage3_entry_anchor_max_age:
+            # S2 publishes a physical anchor before it keeps moving.  A
+            # delayed/transient-local delivery is still usable because the
+            # current /odom_combined sample is propagated from that anchor.
+            self.log.warn(
+                'ENTRY_ANCHOR',
+                f'accepted delayed anchor age={anchor_age:.2f}s '
+                f'max={self.stage3_entry_anchor_max_age:.2f}s',
+            )
         anchor_map = (float(msg.point.x), float(msg.point.y))
         self._entry_anchor_stamp_sec = stamp_sec if stamp_sec > 0.0 else self._now_sec()
         if self._last_raw_odom_xy is None:
