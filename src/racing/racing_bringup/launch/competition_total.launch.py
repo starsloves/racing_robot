@@ -2,17 +2,23 @@
 
 import math
 import os
+import threading
 import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, RegisterEventHandler, SetEnvironmentVariable, Shutdown
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    LogInfo,
+    RegisterEventHandler,
+    SetEnvironmentVariable,
+    Shutdown,
+)
 from launch.conditions import IfCondition
-from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration
-from launch.actions import DeclareLaunchArgument
 
 
 def _map_defaults(config_path):
@@ -21,7 +27,7 @@ def _map_defaults(config_path):
     return (
         str(params['map_to_odom_x']),
         str(params['map_to_odom_y']),
-        str(math.radians(float(params['imu_initial_map_yaw_deg']))),
+        str(math.radians(float(params['map_to_odom_yaw_deg']))),
     )
 
 
@@ -36,6 +42,10 @@ def _operator_tty():
         except OSError:
             continue
     return '/dev/tty'
+
+
+_SUPERVISOR_SHUTDOWN_LOCK = threading.Lock()
+_SUPERVISOR_SHUTDOWN_REQUESTED = False
 
 
 def generate_launch_description():
@@ -86,16 +96,30 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(os.path.join(voice_dir, 'launch', 'voice_tts.launch.py')),
         condition=IfCondition(LaunchConfiguration('include_voice')),
     )
+    def _supervisor_exit(event, context):
+        del event
+        if context.is_shutdown:
+            return []
+        global _SUPERVISOR_SHUTDOWN_REQUESTED
+        with _SUPERVISOR_SHUTDOWN_LOCK:
+            if _SUPERVISOR_SHUTDOWN_REQUESTED:
+                return []
+            _SUPERVISOR_SHUTDOWN_REQUESTED = True
+        return [
+            LogInfo(msg='competition supervisor exited; shutting down top-level launch'),
+            Shutdown(reason='competition supervisor finished'),
+        ]
+
+    # Bind the completion callback directly to the ExecuteProcess action
+    # created by Node.  This keeps the callback attached to the exact process
+    # action that emits ProcessExited, including when the Supervisor exits
+    # through its normal rclpy shutdown path.
     supervisor = Node(
         package='racing_bringup', executable='competition_supervisor',
         name='competition_supervisor', output='screen',
         parameters=[{'enable_stage2_vision_ai': True}],
+        on_exit=_supervisor_exit,
     )
-
-    def _supervisor_exit(event, context):
-        if context.is_shutdown:
-            return []
-        return [Shutdown(reason='competition supervisor finished')]
 
     return LaunchDescription([
         SetEnvironmentVariable('ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_runtime'),
@@ -103,9 +127,9 @@ def generate_launch_description():
         SetEnvironmentVariable('RMW_FASTRTPS_USE_SHM', '0'),
         SetEnvironmentVariable('RMW_FASTRTPS_TRANSPORT', 'UDPv4'),
         SetEnvironmentVariable('RACING_OPERATOR_TTY', _operator_tty()),
-        map_yaml, include_depth, include_voice, map_x, map_y, map_yaw,
+        map_yaml, include_depth, include_voice,
+        map_x, map_y, map_yaw,
         base, map_stack, camera, lidar,
         voice,
         supervisor,
-        RegisterEventHandler(OnProcessExit(target_action=supervisor, on_exit=_supervisor_exit)),
     ])

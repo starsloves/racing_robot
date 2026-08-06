@@ -111,8 +111,14 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('track_vision_max_age_sec', 0.60)
         self.declare_parameter('track_vision_max_frame_delta', 0.25)
         self.declare_parameter('track_vision_opposition_threshold', 0.08)
+        self.declare_parameter('track_vision_max_heading_delta', 0.18)
         self.declare_parameter('track_vision_camera_offset', 0.0)
         self.declare_parameter('track_vision_max_angular_step', 0.12)
+        self.declare_parameter('track_vision_filter_alpha', 0.35)
+        self.declare_parameter('track_vision_cross_deadband_m', 0.10)
+        self.declare_parameter('track_vision_cross_full_scale_m', 0.25)
+        self.declare_parameter('track_vision_cross_gain', 0.25)
+        self.declare_parameter('track_vision_min_response_ratio', 0.35)
         self.declare_parameter('track_lookahead_m', 0.45)
         self.declare_parameter('track_heading_slowdown_deg', 10.0)
         self.declare_parameter('track_finish_tolerance_m', 0.10)
@@ -123,7 +129,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('stage3_preplan_pose_topic', 'stage3_preplan_pose')
         self.declare_parameter('stage3_prewarm_topic', 'stage3_prewarm')
         self.declare_parameter('stage3_preplan_map_y', 1.80)
-        self.declare_parameter('stage3_handoff_hold_timeout_sec', 1.0)
         self.declare_parameter('stage2_ai_capture_enabled', True)
         self.declare_parameter('stage2_ai_capture_delay_after_turn_sec', 0.50)
         self.declare_parameter('stage2_ai_trigger_topic', 'stage2_ai_capture')
@@ -355,9 +360,23 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             vision_opposition_threshold=float(
                 self.get_parameter('track_vision_opposition_threshold').value
             ),
+            vision_max_heading_delta=float(
+                self.get_parameter('track_vision_max_heading_delta').value
+            ),
             vision_camera_offset=float(self.get_parameter('track_vision_camera_offset').value),
             vision_max_angular_step=float(
                 self.get_parameter('track_vision_max_angular_step').value
+            ),
+            vision_filter_alpha=float(self.get_parameter('track_vision_filter_alpha').value),
+            vision_cross_deadband_m=float(
+                self.get_parameter('track_vision_cross_deadband_m').value
+            ),
+            vision_cross_full_scale_m=float(
+                self.get_parameter('track_vision_cross_full_scale_m').value
+            ),
+            vision_cross_gain=float(self.get_parameter('track_vision_cross_gain').value),
+            vision_min_response_ratio=float(
+                self.get_parameter('track_vision_min_response_ratio').value
             ),
             lookahead_m=float(self.get_parameter('track_lookahead_m').value),
             heading_slowdown_deg=float(
@@ -428,12 +447,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._stage3_preplan_map_y = float(
             self.get_parameter('stage3_preplan_map_y').value
         )
-        self._stage3_handoff_hold_timeout = max(0.1, float(
-            self.get_parameter('stage3_handoff_hold_timeout_sec').value
-        ))
         self._stage3_preplan_sent = False
         self._stage3_handoff_active = False
-        self._stage3_handoff_deadline = None
         self._track_map_x_origin = None
         self._track_map_x_correction_offset = 0.0
         self._track_map_y_correction_offset = 0.0
@@ -621,8 +636,11 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         return super().create_twist(linear_x, angular_z)
 
     def _command_heartbeat(self) -> None:
-        """Hold zero velocity only while a control command is stale."""
-        if not getattr(self, '_track_mission_active', False):
+        """Hold the accepted motion command only after S2 owns the chassis."""
+        if (
+            not getattr(self, '_track_mission_active', False)
+            or not getattr(self, '_handoff_command_announced', False)
+        ):
             return
         with self._command_lock:
             age = time.monotonic() - self._last_command_at
@@ -1374,6 +1392,8 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self._stage3_preplan_sent = False
         self._handoff_command_announced = False
         self._control_gap_stop_latched = False
+        self._heartbeat_stale_reported = False
+        self._last_command_at = time.monotonic()
         self._track_mission_active = True
         self.mission_active = True
         self.current_segment = {'type': 'track', 'description': 'rounded_track'}
@@ -1655,6 +1675,9 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
                 f'done={command.arc_completion_reason or "pending"}) '
                 f'angular_parts=(head={command.line_heading_angular:+.3f},'
                 f'vision={command.vision_angular:+.3f},'
+                f'vision_lateral={command.vision_lateral_error:+.3f},'
+                f'vision_cross={command.vision_cross_angular:+.3f},'
+                f'vision_confirm={command.vision_confirm_frames},'
                 f'damping={command.yaw_rate_damping_angular:+.3f}) '
                 f'turn_boundary={command.entry_boundary_trigger or "none"} '
                 f'entry_guard={command.entry_boundary_window_min_m:.3f}/'
@@ -2446,7 +2469,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.publish_state('complete')
         self.publish_feedback('第二阶段完成，保持末段速度等待第三阶段接管')
         self._stage3_handoff_active = True
-        self._stage3_handoff_deadline = time.monotonic() + self._stage3_handoff_hold_timeout
         self._set_vision_inference_active(False)
         self._report_real_pose(force=True)
         message = 'Stage2 完成，等待 Stage3 接管'
@@ -2459,9 +2481,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         if not getattr(self, '_activated', False) or getattr(self, '_released', False):
             return
         if self._stage3_handoff_active:
-            if time.monotonic() >= self._stage3_handoff_deadline:
-                self._log_session('STAGE3_HANDOFF_TIMEOUT', 'still holding last command; Supervisor owns failure handling')
-                self._stage3_handoff_deadline = float('inf')
             self.cmd_pub.publish(self.create_twist(self._last_cmd_linear, self._last_cmd_angular))
             return
 

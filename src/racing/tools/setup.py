@@ -26,6 +26,8 @@ setup(
             'data_recorder = racing_tools.data_recorder:main',
             'camera_video_recorder = racing_tools.camera_video_recorder:main',
             'initial_scan_map_localizer = racing_tools.initial_scan_map_localizer:main',
+            'start_corner_pose_diagnostic = racing_tools.start_corner_pose_diagnostic:main',
+            'manual_trajectory_recorder = racing_tools.manual_trajectory_recorder:main',
         ],
     },
 )

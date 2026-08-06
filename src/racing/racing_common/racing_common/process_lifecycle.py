@@ -30,7 +30,11 @@ def _watch_supervisor(pid, start_ticks, signal_number):
                 os.kill(os.getpid(), signal_number)
             except OSError:
                 pass
-            return
+            # A custom SIGTERM handler may only publish the final stop and
+            # fail to unwind a blocked ROS spin. Do not let that leave an
+            # orphan phase node behind after the Supervisor is gone.
+            time.sleep(0.5)
+            os._exit(0)
         time.sleep(0.2)
 
 

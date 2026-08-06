@@ -16,6 +16,7 @@
   <depend>std_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>visualization_msgs</depend>
+  <depend>tf2_ros</depend>
   <depend>python3-opencv</depend>
   <depend>python3-numpy</depend>
   <exec_depend>launch</exec_depend>

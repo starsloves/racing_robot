@@ -395,8 +395,12 @@ class VisionAnalyzer:
                 ],
             }
             request_kwargs.update(self._thinking_request_options())
+            if self._request_timeout_sec is not None:
+                request_kwargs['timeout'] = self._request_timeout_sec
+            if self._max_tokens is not None:
+                request_kwargs['max_output_tokens'] = self._max_tokens
             response = self._ark_client.responses.create(**request_kwargs)
-            content = getattr(response, 'output_text', None)
+            content = self._extract_ark_response_text(response)
             if isinstance(content, str) and content.strip():
                 return content.strip()
             self._log_error('Ark model returned empty content')
@@ -475,6 +479,10 @@ class VisionAnalyzer:
                 'stream': True,
             }
             request_kwargs.update(self._thinking_request_options())
+            if self._request_timeout_sec is not None:
+                request_kwargs['timeout'] = self._request_timeout_sec
+            if self._max_tokens is not None:
+                request_kwargs['max_output_tokens'] = self._max_tokens
             stream = self._ark_client.responses.create(**request_kwargs)
             parts: list[str] = []
             for event in stream:
@@ -494,6 +502,23 @@ class VisionAnalyzer:
         except Exception as exc:  # noqa: BLE001
             self._log_error(f'Ark streaming API call failed: {exc}')
         return None
+
+    @staticmethod
+    def _extract_ark_response_text(response: Any) -> str:
+        """Extract final text from Ark Responses API output items."""
+        output_text = getattr(response, 'output_text', None)
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        parts: list[str] = []
+        for output in getattr(response, 'output', None) or []:
+            if getattr(output, 'type', None) != 'message':
+                continue
+            for content in getattr(output, 'content', None) or []:
+                text = getattr(content, 'text', None)
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+        return ''.join(parts).strip()
 
     @staticmethod
     def _ark_sdk_base_url(base_url: str) -> str:

@@ -1,232 +1,201 @@
-# ================================================================================
-# Stage2 生产配置 — 唯一调参入口
-# ================================================================================
-# 生产控制器：Stage2TrackController
-# 位姿规则：
-#   - 距离只用 /odom_combined 相邻 xy 欧氏位移累计
-#   - 航向/转角只用 /imu/data 的 yaw
-#   - 禁止使用 /odom 或 /odom_combined 的 orientation 做导航角度
-#
-# 固定段序：
-#   entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
-#   -> exit_medium -> exit_turn_90 -> stage3_handoff_line
-#
-# 调参速查：
-#   两个 180° 前触发点：SEG 在名义窗口确认；map x 作为固定坐标强制兜底。
-#   S2 启动时优先使用 Stage1 交接墙修正 X 作为真实 track_x；IMU 保持航向与全部转角。
-#   直线速度：track_max_speed
-#   四弯速度：track_<segment>_linear / track_<segment>_angular
-#   四个弯均以 IMU 相对转角为准；达到各自 exit_lead 提前角后立即切下一直线。
-#   出弯反修过猛：track_line_heading_kp / track_yaw_rate_damping
-# ================================================================================
-
+# Stage2 生产配置：距离仅用 /odom_combined XY，全部航向和转角仅用 /imu/data yaw。
+# 段序固定：entry_arc -> entry_medium -> left_side_arc -> top_long -> right_side_arc
+#           -> exit_medium -> exit_turn_90 -> stage3_handoff_line。
 stage2_inertial_navigator:
   ros__parameters:
-
-    # ────────────────────────────────────────────────────────────────────────
-    # ROS 话题
-    # 二维码方向任务话题
+    # 固定话题与运行定义；正式比赛方向由 competition_qr_task 锁存。
     task_topic: competition_qr_task
-    # 距离里程计话题（仅使用 xy 位移）
     odom_topic: /odom_combined
-    # 航向 IMU 话题
     imu_topic: /imu/data
-    # Stage1 latched 发布的 map yaw - 原始 IMU yaw 偏置。S2 收到前不启动，
-    # 避免把原始 IMU 坐标误当作赛场 map 航向。
     imu_map_yaw_offset_topic: imu_map_yaw_offset
-    # 正式比赛必须等待 Stage1 的锁存映射；独立参数测试由 launch 临时开启回退。
     imu_map_yaw_offset_fallback_enabled: false
     imu_map_yaw_offset_fallback_map_yaw_deg: 90.0
-    # 激光扫描话题
     scan_topic: /scan
-    # Stage2 速度输出话题
     cmd_topic: /cmd_vel
-    # 阶段反馈话题
     feedback_topic: competition_feedback
-    # 阶段状态话题
     state_topic: stage2_state
-    # 是否启用第二个 180 度弯内的图像采集
+    # What: stage2_ai_capture_delay_after_turn_sec 是完成指定转弯后等待 AI 抓拍的时间。
+    # Why: 0.20s 让车体角速度和图像拖影稳定；preset_* 是隔离测试文本，生产关闭。
+    # Range: 0.10-0.80s；仅在 AI 抓拍模糊或错过目标时调整。
+    # Impact: 增大可提升画面稳定性但延后抓拍；过小可能抓到转弯模糊帧。
     stage2_ai_capture_enabled: true
-    # 从 top_long 切入 right_side_arc 后的抓拍延迟，确保相机已转向展示牌。
     stage2_ai_capture_delay_after_turn_sec: 0.20
-    # 图像采集触发话题
     stage2_ai_trigger_topic: stage2_ai_capture
-    # 关闭时：第二个 180 度弯后执行 Ark/Qwen/本地 VLM 三路并发图生文。
-    # 开启时：不触发图生文，入第二个 180 度弯 5 秒后直接播报对应方向的手填文字。
     stage2_ai_preset_enabled: false
     stage2_ai_preset_delay_after_turn_sec: 5.0
     stage2_ai_preset_clockwise_text: "病人躺在病床上吊水"
     stage2_ai_preset_counterclockwise_text: "医生和护士站在病房门口"
     stage2_ai_result_topic: ai_description
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 启动 / 循环
-    # ────────────────────────────────────────────────────────────────────────
-    # 主控制循环频率（Hz）
     control_rate_hz: 20.0
-    # 控制循环/命令发布间隔超过该阈值时写 CTRL_GAP 诊断日志。
     control_gap_warn_sec: 0.35
-    # 速度命令超过该时长未由控制循环刷新时，心跳临时发布零速度；控制循环恢复后继续当前段。
-    # 与告警阈值分开，避免偶发 0.35s 级调度抖动误停。
     control_gap_stop_sec: 1.00
-    # 速度指令心跳频率（Hz）
     command_heartbeat_rate_hz: 20.0
-    # QR 任务到达后、S1 仍运行时预加载 SEG 模型，避免交接时抢占控制循环。
     stage2_vision_prewarm_on_task: true
-    # Supervisor activate 后立即由 S2 输出连续接管命令；不额外等待。
     start_delay_sec: 0.0
-    # 阶段反馈日志前缀
     test_feedback_prefix: 第二阶段
-
-    # 生产定位源：距离使用 /odom_combined，角度使用 IMU。
-    # 导航距离位姿源；航向始终使用 IMU
     navigation_pose_source: ekf
-    # 轮速里程计话题（仅用于启动诊断/预热）
     wheel_odom_topic: /odom
-    # 轮速里程计预热时间（s）
     wheel_odom_warmup_sec: 0.40
-    # 轮速里程计预热最少消息数
     wheel_odom_warmup_min_msgs: 5
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 生产轨迹参数
-    # ────────────────────────────────────────────────────────────────────────
-    # 直线速度：entry_medium / top_long / exit_medium / stage3_handoff_line
-    # 直线段最大线速度（m/s）
+    # 主速度与默认弯道速度。
+    # What: track_max_speed/track_max_angular 是全局上限；track_<segment>_linear/ angular 分别是入口、左右侧 180deg 弯和出口 90deg 的命令速度。
+    # Why: 默认值是方向覆盖缺失时的后备，0.70m/s 配 1.25-1.30rad/s 适合四个实测弯道。
+    # Range: 直线 0.45-0.90m/s；弯道线速度 0.30-0.75m/s；弯道角速度 0.70-1.60rad/s。
+    # Impact: 线速度增大使弯半径变大、可能压线；角速度增大转得更紧但会打滑或引发出弯摆动。先调线速度，再调角速度。
+    # track_max_speed: 直线最高线速度；Why=缩短赛程；Range=0.45-0.90m/s；Impact=调大更快但弯前余量更小。
     track_max_speed: 0.80
-
-    # 全局角速度限幅
-    # 全局最大角速度（rad/s）
+    # track_max_angular: 全局角速度上限；Why=限制转向命令；Range=0.8-1.8rad/s；Impact=调大转弯更紧但更易打滑。
     track_max_angular: 1.5
-
-    # 四个弯各自的巡航线速度与角速度。
-    # 无前缀参数保留为兼容默认；当前实车基准按逆时针配置。
-    # 入口 90°：0.50 / 1.25 = 0.40m。
+    # track_entry_arc_linear: 入口 180deg 弯线速度；Why=入口姿态变化大需保守；Range=0.30-0.65m/s；Impact=调大易外甩。
     track_entry_arc_linear: 0.50
+    # track_entry_arc_angular: 入口弯角速度；Why=决定转弯半径；Range=0.8-1.6rad/s；Impact=调大转得紧，过大抖动。
     track_entry_arc_angular: 1.25
-    # 第一侧 180°：独立设置，不与第二侧共享。
+    # track_left_side_arc_linear: 左侧 180deg 弯线速度；Why=按左弯标定；Range=0.30-0.75m/s；Impact=调大可能压外墙。
     track_left_side_arc_linear: 0.70
+    # track_left_side_arc_angular: 左侧 180deg 弯角速度；Why=补偿左弯半径；Range=0.8-1.6rad/s；Impact=调大更贴内侧，过大蛇形。
     track_left_side_arc_angular: 1.30
-    # 第二侧 180°：独立设置，不与第一侧共享。
+    # track_right_side_arc_linear: 右侧 180deg 弯线速度；Why=按右弯标定；Range=0.30-0.75m/s；Impact=调大可能压外墙。
     track_right_side_arc_linear: 0.70
+    # track_right_side_arc_angular: 右侧 180deg 弯角速度；Why=补偿右弯半径；Range=0.8-1.6rad/s；Impact=调大更贴内侧，过大蛇形。
     track_right_side_arc_angular: 1.30
-    # 出口 90°：独立设置，不与入口共享。
+    # track_exit_turn_90_linear: 出口 90deg 弯线速度；Why=交接前保持可控；Range=0.30-0.65m/s；Impact=调大交接位置误差增大。
     track_exit_turn_90_linear: 0.50
+    # track_exit_turn_90_angular: 出口 90deg 弯角速度；Why=保证进入交接直线；Range=0.8-1.6rad/s；Impact=调大可能提前贴墙。
     track_exit_turn_90_angular: 1.25
-
-    # 四个弯均按各自配置的线速度、角速度巡航。到达剩余提前角后
-    # 立即切入下一直线；残余航向由直线的 IMU 航向闭环和 yaw-rate 阻尼吸收。
-    # entry_arc：入口 90°
+    # What: track_<segment>_exit_lead_deg 是该弯相对 IMU 目标转角尚余多少度时，提前切入下一条直线；不是触发入弯的条件。
+    # Why: 车辆有惯性，保留 25-45deg 可避免实际累计转到 180/90deg 后才切换而过转。
+    # Range: 15-55deg；必须结合该段线/角速度调整。
+    # Impact: 数值增大更早出弯，可能转角不足、直线向内偏；减小更晚出弯，可能过转、需要反向修正。
+    # track_entry_arc_exit_lead_deg: 入口弯提前出弯角；Why=补偿惯性；Range=15-55deg；Impact=调大更早切直线，可能转角不足。
     track_entry_arc_exit_lead_deg: 45.0
-    # left_side_arc：第一个 180°
+    # track_left_side_arc_exit_lead_deg: 左侧弯提前出弯角；Why=左弯独立补偿；Range=15-55deg；Impact=调大欠转，调小过转。
     track_left_side_arc_exit_lead_deg: 32.0
-    # right_side_arc：第二个 180°
+    # track_right_side_arc_exit_lead_deg: 右侧弯提前出弯角；Why=右弯独立补偿；Range=15-55deg；Impact=调大欠转，调小过转。
     track_right_side_arc_exit_lead_deg: 35.0
-    # exit_turn_90：出口 90°，进入 Stage3 交接直线前的最后一弯
+    # track_exit_turn_90_exit_lead_deg: 出口提前出弯角；Why=保证交接直线航向；Range=15-55deg；Impact=调大可能航向未到位。
     track_exit_turn_90_exit_lead_deg: 45.0
-
-    # 方向独立弯道参数。二维码方向为 counterclockwise 时使用本组，
-    # 保持当前逆时针实车效果；若某项填 nan 或删除，则回退到上方无前缀默认。
+    # 逆时针专属弯道覆盖。
+    # What: track_counterclockwise_<segment>_* 覆盖默认弯道速度和提前出弯角，只在二维码结果为 counterclockwise 时生效。
+    # Why: 逆时针的左右侧墙体、入弯姿态不同，保留独立标定，不能用另一方向的数值互换。
+    # Range: 同默认弯道速度；exit_lead 15-55deg。出现单一逆时针弯过转/欠转时，只改对应 segment 的三个参数。
+    # Impact: linear/ angular 增大分别使弯更快/更紧；exit_lead 增大更早切直线，减小更晚切直线。
+    # 逆时针方向覆盖：仅二维码为 counterclockwise 时生效，linear/ angular/ exit_lead 分别调单段速度、转紧程度和出弯时机。
+    # 每个参数都应只按对应弯的日志调整；Range=linear 0.30-0.75m/s，angular 0.8-1.6rad/s，exit_lead 15-55deg。
+    # What=逆时针入口弯线速；Why=入口保守；Range=0.30-0.65m/s；Impact=调大外甩增大。
     track_counterclockwise_entry_arc_linear: 0.50
+    # What=逆时针入口弯角速；Why=补偿半径；Range=0.8-1.6rad/s；Impact=调大更紧但易抖。
     track_counterclockwise_entry_arc_angular: 1.25
+    # What=逆时针入口提前出弯角；Why=补偿惯性；Range=15-55deg；Impact=调大更早切直线。
     track_counterclockwise_entry_arc_exit_lead_deg: 45.0
+    # What=逆时针左弯线速；Why=按左弯实测；Range=0.30-0.75m/s；Impact=调大压外墙风险增大。
     track_counterclockwise_left_side_arc_linear: 0.70
+    # What=逆时针左弯角速；Why=按左弯半径；Range=0.8-1.6rad/s；Impact=调大更贴内侧。
     track_counterclockwise_left_side_arc_angular: 1.30
+    # What=逆时针左弯提前出弯角；Why=防过转；Range=15-55deg；Impact=调大欠转，调小过转。
     track_counterclockwise_left_side_arc_exit_lead_deg: 29.0
+    # What=逆时针右弯线速；Why=按右弯实测；Range=0.30-0.75m/s；Impact=调大横向余量变小。
     track_counterclockwise_right_side_arc_linear: 0.70
+    # What=逆时针右弯角速；Why=按右弯半径；Range=0.8-1.6rad/s；Impact=调大转向更紧。
     track_counterclockwise_right_side_arc_angular: 1.43
+    # What=逆时针右弯提前出弯角；Why=防过转；Range=15-55deg；Impact=调大更早切直线。
     track_counterclockwise_right_side_arc_exit_lead_deg: 30.5
+    # What=逆时针出口弯线速；Why=交接前保守；Range=0.30-0.65m/s；Impact=调大交接位置误差增大。
     track_counterclockwise_exit_turn_90_linear: 0.50
+    # What=逆时针出口弯角速；Why=对齐交接直线；Range=0.8-1.6rad/s；Impact=调大易过冲。
     track_counterclockwise_exit_turn_90_angular: 1.25
+    # What=逆时针出口提前出弯角；Why=确保交接航向；Range=15-55deg；Impact=调大可能未到位。
     track_counterclockwise_exit_turn_90_exit_lead_deg: 45.0
-
-    # 顺时针单独参数。顺时针上一轮在入口/末段提前收角后仍带较大正 yaw-rate，
-    # 因此先减小提前角，让主动转向多打一段，再交给直线阻尼吸收。
-    track_clockwise_entry_arc_linear: 0.50
-    track_clockwise_entry_arc_angular: 1.25
-    track_clockwise_entry_arc_exit_lead_deg: 25.0
+    # 顺时针专属弯道覆盖：仅二维码结果为 clockwise 时生效，调参规则与逆时针相同。
+    # 顺时针方向覆盖：仅二维码为 clockwise 时生效；Range 同逆时针，增大 angular 更紧，增大 exit_lead 更早出弯。
+    # What=顺时针入口弯线速；Why=入口保守；Range=0.30-0.65m/s；Impact=调大外甩增大。
+    track_clockwise_entry_arc_linear: 0.65
+    # What=顺时针入口弯角速；Why=补偿半径；Range=0.8-1.6rad/s；Impact=调大更紧但易抖。
+    track_clockwise_entry_arc_angular: 1.27
+    # What=顺时针入口提前出弯角；Why=补偿惯性；Range=15-55deg；Impact=调大更早切直线。
+    track_clockwise_entry_arc_exit_lead_deg: 15.0
+    # What=顺时针左弯线速；Why=按左弯实测；Range=0.30-0.75m/s；Impact=调大压墙风险增大。
     track_clockwise_left_side_arc_linear: 0.70
+    # What=顺时针左弯角速；Why=按左弯半径；Range=0.8-1.6rad/s；Impact=调大更贴内侧。
     track_clockwise_left_side_arc_angular: 1.25
+    # What=顺时针左弯提前出弯角；Why=防过转；Range=15-55deg；Impact=调大欠转，调小过转。
     track_clockwise_left_side_arc_exit_lead_deg: 43.0
+    # What=顺时针右弯线速；Why=按右弯实测；Range=0.30-0.75m/s；Impact=调大横向余量变小。
     track_clockwise_right_side_arc_linear: 0.70
+    # What=顺时针右弯角速；Why=按右弯半径；Range=0.8-1.6rad/s；Impact=调大转向更紧。
     track_clockwise_right_side_arc_angular: 1.25
-    track_clockwise_right_side_arc_exit_lead_deg: 37.0
+    # What=顺时针右弯提前出弯角；Why=防过转；Range=15-55deg；Impact=调大更早切直线。
+    track_clockwise_right_side_arc_exit_lead_deg: 40.0
+    # What=顺时针出口弯线速；Why=交接前保守；Range=0.30-0.65m/s；Impact=调大交接位置误差增大。
     track_clockwise_exit_turn_90_linear: 0.50
+    # What=顺时针出口弯角速；Why=对齐交接直线；Range=0.8-1.6rad/s；Impact=调大易过冲。
     track_clockwise_exit_turn_90_angular: 1.25
+    # What=顺时针出口提前出弯角；Why=确保交接航向；Range=15-55deg；Impact=调大可能未到位。
     track_clockwise_exit_turn_90_exit_lead_deg: 30.0
-
-    # 方向独立直线/触发参数。两边先填成当前同一套，后续只改对应方向即可。
-    # 两个 180° 触发 X：
-    #   顺时针 entry_medium x<=min，top_long x>=max；
-    #   逆时针 entry_medium x>=max，top_long x<=min。
+    # 两个 180deg 弯的触发保护与中间直线长度。
+    # What: *_turn_force_min/max_map_x 是名义 IMU 转角未及时确认时允许强制切入下一弯的 map X 窗口；*_medium_distance_m 是对应中间直线的里程长度。
+    # Why: 正常入弯由 IMU 段状态触发，map X 只作场地固定位置的兜底，防止漏触发导致一直跑直线。
+    # Range: 强制窗口必须由实测 map X 标定并包住目标弯点约 +-0.2-0.5m；中间直线 0.35-1.00m。
+    # Impact: 窗口前移/加宽会更早强制转弯，可能在 IMU 尚未到位时切弯；后移/变窄更依赖 IMU，漏触发风险更高。不要把它作为常规转弯时机。
+    # track_counterclockwise_turn_force_min_map_x: 逆时针 180deg 兜底窗口下界；Why=防漏触发；Range=目标弯点前 0.2-0.5m；Impact=调小会过早强制转弯。
     track_counterclockwise_turn_force_min_map_x: 1.45
+    # track_counterclockwise_turn_force_max_map_x: 逆时针兜底窗口上界；Why=限制强制转弯最晚位置；Range=覆盖目标弯点后 0.2-0.5m；Impact=调大可能直线跑过弯点。
     track_counterclockwise_turn_force_max_map_x: 4.20
+    # track_counterclockwise_exit_medium_distance_m: 逆时针出口中段长度；Why=决定下一段弯的里程触发；Range=0.35-1.00m；Impact=调大下一弯更晚。
     track_counterclockwise_exit_medium_distance_m: 0.67
-    track_clockwise_turn_force_min_map_x: 1.50
-    track_clockwise_turn_force_max_map_x: 3.75
-    track_clockwise_exit_medium_distance_m: 0.52
-
-    # 第一个 180° 的标定中心：entry_arc 后 entry_medium 的名义距离。
-    # 视觉触发开启后，此值不再是常规切段点，而是下方保护窗口的中心。
+    # track_clockwise_turn_force_min_map_x: 顺时针 180deg 兜底窗口下界；Why=防漏触发；Range=目标弯点前 0.2-0.5m；Impact=调小会过早强制转弯。
+    track_clockwise_turn_force_min_map_x: 1.30
+    # track_clockwise_turn_force_max_map_x: 顺时针兜底窗口上界；Why=限制强制转弯最晚位置；Range=覆盖目标弯点后 0.2-0.5m；Impact=调大可能跑过弯点。
+    track_clockwise_turn_force_max_map_x: 3.80
+    # track_clockwise_exit_medium_distance_m: 顺时针出口中段长度；Why=决定下一段弯的里程触发；Range=0.35-1.00m；Impact=调大下一弯更晚。
+    track_clockwise_exit_medium_distance_m: 0.54
+    # What: track_entry_medium_distance_m、track_top_long_distance_m、track_exit_medium_distance_m 是各直线段按 XY 位移累计的切段距离。
+    # Why: 这些距离把相邻转弯隔开，必须与赛道实测长度一致。
+    # Range: 每段以实测值为中心调整 +-0.20m，先修正入口锚点再修改距离。
+    # Impact: 数值增大使下一弯更晚触发，减小更早触发；误调会把所有后续弯点整体推移。
+    # track_entry_medium_distance_m: 入口直线到首弯的距离；Why=匹配赛道实测长度；Range=实测值 +-0.20m；Impact=调大首弯更晚，调小更早。
     track_entry_medium_distance_m: 0.65
-
-    # 第一个 180° 的名义里程中心；横向激光边界丢失时才使用窗口上限兜底。
     track_entry_boundary_trigger_enabled: false
-    track_entry_boundary_guard_half_width_m: 0.50 # 让纯视觉
-    # 前方横边在分割 ROI 中自顶部向下的位置比例；值越大代表边界越靠近车头。
+    track_entry_boundary_guard_half_width_m: 0.50
     track_entry_boundary_top_y_ratio: 0.20
-    # 只接受近似水平、正对车头的横向边界。
     track_entry_boundary_max_angle_deg: 20.0
-    # 连续有效视觉帧数；现场试跑先用 1，支持改为 2 或 3 抑制误检。
     track_entry_boundary_confirm_frames: 1
-
-    # 第二个 180°：复用第一个弯的 SEG 横边判定，独立保留调参入口。
     track_top_boundary_trigger_enabled: false
     track_top_boundary_guard_half_width_m: 0.50
     track_top_boundary_top_y_ratio: 0.20
     track_top_boundary_max_angle_deg: 20.0
     track_top_boundary_confirm_frames: 1
-
-    # SEG 横边只在两个名义里程窗口内参与切弯确认；窗口外不使用视觉强制转向。
-    # 此处限速给横边确认留出稳定帧，未确认时仍由下方 map-X 保护条件兜底。
-    track_side_arc_vision_enabled: true
+    # 边界视觉触发为可选兜底；生产仍以 IMU 段状态与 map-X 强制窗口为主。
     track_side_arc_vision_trigger_lead_m: 0.20
     track_side_arc_vision_trigger_speed_mps: 0.45
-
-    # 顺时针：entry_medium x<=min，top_long x>=max；逆时针顺序相反。
+    # track_turn_force_map_x_enabled: 是否启用 map X 强制转弯兜底；Why=防 IMU 段确认丢失；Range=true/false；Impact=false 完全依赖 IMU，漏触发会继续直行。
     track_turn_force_map_x_enabled: true
+    # track_turn_force_min_map_x: 通用强制转弯窗口下界；Why=限定固定坐标触发起点；Range=目标弯点前 0.2-0.5m；Impact=调小可能提前转弯。
     track_turn_force_min_map_x: 1.60
+    # track_turn_force_max_map_x: 通用强制转弯窗口上界；Why=限定固定坐标触发终点；Range=目标弯点后 0.2-0.5m；Impact=调大可能越过弯点后才转。
     track_turn_force_max_map_x: 3.65
-    # Stage1 在交接时发布完整 map x/y/yaw；S2 用 x/y 对现有 map TF 做全局锚定，
-    # 用 yaw 初始化轨迹航向；启动后的实时航向仍只来自 IMU，不新增定位或雷达链路。
+    # S1 -> S2 与 S2 -> S3 交接。
+    # What: stage2_entry_pose_max_age_sec 限制入口锚点诊断年龄；track_stage3_handoff_map_y 是 S2 发布 stage3_entry_anchor 的 map Y 门线。
+    # Why: S1 交接锚点建立 S2 的 track X；S2 到 y=2.70m 后保持最后非零命令，等待 S3 连续接管，避免正常交接停车。
+    # Range: handoff_map_y 按实测门线调整 +-0.20m。入口年龄参数通常不调，它只记录诊断，不单独拒绝锚点。
+    # Impact: handoff_y 提前会缩短 S2 末段但把位置误差带给 S3；推后可能越过 S3 搜索起点。S2 会持续保持末段命令，真实接管超时仅由 Supervisor 判定。
     stage2_entry_pose_topic: stage2_entry_pose
-    # 仅用于诊断告警；交接期间车辆继续运动，锚点过期不再阻断激活。
     stage2_entry_pose_max_age_sec: 2.0
-
-    # 第二个 180° 的名义里程中心，只用于视觉有效窗口和 TF 缺失保护。
+    # track_top_long_distance_m: 顶部长直线长度；Why=决定右侧 180deg 弯入口；Range=实测值 +-0.20m；Impact=调大右弯更晚，调小更早。
     track_top_long_distance_m: 2.47
-
-    # 出口最后直线长度：right_side_arc 后走多远判定 Stage2 完成。
-    # 最新实车反馈最后一段偏长，缩短 20cm：1.49m -> 1.29m。
+    # track_exit_medium_distance_m: 出口 90deg 弯前中段长度；Why=匹配交接前直线；Range=0.35-1.00m；Impact=调大出口弯更晚。
     track_exit_medium_distance_m: 0.60
-
-    # 两个 180° 和出口短直线完成后，按方向执行 90°：顺时针左转、逆时针右转。
-    # 随后沿 -Y 直行；实时 TF map_y 严格小于此值时交权给 Stage3。
-    track_stage3_handoff_map_y: 2.70
+    # track_stage3_handoff_map_y: S2 发布 stage3_entry_anchor 的 map Y 门线；Why=让 S3 从确定位置预热接管；Range=实测门线 +-0.20m；Impact=调大交权更晚，调小可能过早把位置误差交给 S3。
+    track_stage3_handoff_map_y: 2.85
     stage3_entry_anchor_topic: stage3_entry_anchor
-    # S3 交接锚点只取 map <- base_footprint 的实时 TF xy；TF 不可用时暂停交权。
     stage3_entry_anchor_base_frame: base_footprint
-    # S2 末段 x 固定；进入最后 -Y 直线即把该 x 和预测起点 y 交给 S3 后台 A*。
     stage3_preplan_pose_topic: stage3_preplan_pose
     stage3_preplan_map_y: 1.80
-    # 正式交权后持续末段命令的最长时间；S3 未及时接管则安全停车。
-    stage3_handoff_hold_timeout_sec: 1.0
-
-    # 直线段出弯修正
+    # 直线视觉/位移融合回正。
+    # What: IMU 负责直线航向；视觉只在近场中线连续稳定后给出横向回正，远场和相对横偏只作诊断。
+    # Why: 相对横偏由轮速和 IMU 航向积分得到，出弯残余航向会使它和透视误差同向，不能作为视觉可信度或增益来源。
+    # Impact: confirm_frames 与 max_frame_delta 拦截瞬态分割跳变；lateral_deadband 控制静区，max_angular 保留硬上限。
     track_line_heading_kp: 0.80
     track_yaw_rate_damping: 0.45
-
-    # 视觉横向辅助：只在 LINE 段小幅纠偏，不接管主控
     vision_pure_mode_enabled: false
     vision_primary_control: false
     vision_offset_correction_enabled: true
@@ -234,36 +203,32 @@ stage2_inertial_navigator:
     vision_turn_assist_enabled: false
     imu_heading_correction_enabled: true
     fusion_mode_enabled: true
-    # 长直线视觉纠偏：近场中线负责横移拉回，远近差负责航向辅助。
-    track_vision_lateral_scale_m: 2.60
-    track_vision_lateral_weight: 0.45
-    track_vision_lateral_deadband: 0.04
-    track_vision_lateral_release_deadband: 0.025
-    track_vision_heading_gain: 0.22
-    # 横偏纠正必须在首张可信 SEG 帧生效，避免出弯残余角速度已造成横移后才介入。
-    track_vision_confirm_frames: 1
-    # SEG 实测约 2~3Hz；必须覆盖相邻推理帧间隔，否则确认计数会在下一帧前被清零。
-    track_vision_max_age_sec: 0.60
-    track_vision_max_frame_delta: 0.25
+    track_vision_lateral_scale_m: 0.80
+    track_vision_lateral_weight: 0.35
+    track_vision_lateral_deadband: 0.12
+    track_vision_lateral_release_deadband: 0.08
+    # 远近差只作诊断，不直接对直线产生角速度。
+    track_vision_heading_gain: 0.0
+    track_vision_confirm_frames: 3
+    track_vision_max_age_sec: 0.55
+    track_vision_max_frame_delta: 0.30
     track_vision_opposition_threshold: 0.08
-    # 车体物理居中、静止时记录 near_error，填入这里以消除相机安装零偏。
+    track_vision_max_heading_delta: 0.18
     track_vision_camera_offset: 0.0
-    # 每个新 SEG 帧允许的视觉角速度变化；不是最大角速度限幅。
-    track_vision_max_angular_step: 0.15
-    track_vision_correction_max_angular: 0.50
-
-    # /odom_combined 单步异常过滤，防 EKF 跳变误累计距离。
-    # 这不是限速参数，只是“单次里程跳变是否计入”的阈值。
-    # 最新日志里 top_long 后半段 /odom_combined 单步超过 0.12m 被连续丢弃，
-    # 导致 seg_s 卡在 2.07/2.59m，right_side_arc 没有触发。
-    # 0.40m 可覆盖 0.50m/s 高速直线下的低频/抖动里程更新，同时仍过滤明显跳变。
+    track_vision_max_angular_step: 0.06
+    track_vision_correction_max_angular: 0.18
+    track_vision_filter_alpha: 0.55
+    track_vision_cross_deadband_m: 0.10
+    track_vision_cross_full_scale_m: 0.25
+    # 保留兼容旧 launch 参数；生产直线不使用积分横偏产生视觉角速度。
+    track_vision_cross_gain: 0.0
+    track_vision_min_response_ratio: 0.35
     track_odom_combined_step_max_m: 0.40
-
-    # ────────────────────────────────────────────────────────────────────────
-    # S1 同构前向聚类避障
-    # ────────────────────────────────────────────────────────────────────────
-    # 只在 top_long 直线段接管：前方有效聚类触发后依次绕开、反舵、
-    # 以 IMU 回正至该段航向。没有 MPPI、围栏推断、连续帧门控或弯道预检。
+    # top_long 专用激光避障，状态和 S1 一致。
+    # What: stage2_s1_avoid_window_* 与 cluster_* 决定何物算正前方障碍；avoid/counter/recovery_* 决定绕行、反打和恢复动作。
+    # Why: 仅在 top_long 启用，避免弯道内把侧墙误判为障碍；当前窗口与 S1 采用相同安全尺寸。
+    # Range: 前向窗口 0.15-0.90m、半宽 0.15-0.35m；绕障速度 0.15-0.40m/s，角速度 0.4-1.2rad/s。
+    # Impact: 窗口/净空放宽更早避障但可能误触发；线速度和角速度增大绕障更快但会扩大轨迹和摆动。
     stage2_s1_avoid_enabled: true
     stage2_s1_avoid_window_min_x: 0.18
     stage2_s1_avoid_window_max_x: 0.60
@@ -291,17 +256,16 @@ stage2_inertial_navigator:
     stage2_s1_recovery_turn_threshold_deg: 8.0
     stage2_s1_recovery_heading_tolerance_deg: 6.0
     stage2_s1_recovery_timeout_sec: 2.5
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 视觉模型 / 日志
-    # ────────────────────────────────────────────────────────────────────────
+    # What: vision_conf_thres/iou_thres 过滤检测框；crop_ratio/crop_side_ratio 限制参与横向修正的画面区域。
+    # Why: 当前 0.25/0.45 优先保证窄赛道中的检出率，同时用裁剪排除无关画面。
+    # Range: confidence 0.15-0.60，IoU 0.30-0.70，crop_ratio 0.35-0.85，side_ratio 0.00-0.20。
+    # Impact: 阈值增大减少误检但可能漏检；裁剪范围增大可保留更多目标但也引入边缘干扰。
     vision_model_path: /home/sunrise/dev_ws/src/racing/racing_stage2/models/bset.bin
     vision_conf_thres: 0.25
     vision_iou_thres: 0.45
     vision_crop_ratio: 0.60
     vision_crop_side_ratio: 0.05
     vision_http_port: 8082
-
     session_log_subdir: competition_stage2
     session_log_filename: latest.log
     session_telemetry_interval_sec: 0.50

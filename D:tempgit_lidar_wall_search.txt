@@ -1,0 +1,1 @@
+bash: line 1: findstr: command not found

@@ -34,7 +34,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 from racing_common.process_lifecycle import install_parent_death_signal
-from racing_common.racing_logger import RacingLogger
+from racing_common.racing_logger import RacingLogger, terminal_write
 class CompetitionController(Node):
     def __init__(self):
         super().__init__('competition_controller')
@@ -43,8 +43,10 @@ class CompetitionController(Node):
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('imu_topic', '/imu/data')
         self.declare_parameter('imu_yaw_offset_deg', 0.0)
-        self.declare_parameter('imu_initial_map_yaw_deg', 10.0)
+        # Heading only: this does not define the static map->odom transform.
+        self.declare_parameter('initial_map_heading_deg', 10.0)
         self.declare_parameter('imu_map_yaw_offset_topic', 'imu_map_yaw_offset')
+        self.declare_parameter('start_corner_diagnostic_topic', 'start_corner_pose_diagnostic')
         self.declare_parameter('stage2_entry_pose_topic', 'stage2_entry_pose')
         self.declare_parameter('odom_topic', '/odom_combined')  # map 坐标系
         self.declare_parameter('qr_result_topic', 'qr_scan_result')
@@ -53,20 +55,26 @@ class CompetitionController(Node):
         self.declare_parameter('standby', True)
         self.declare_parameter('lifecycle_service_prefix', '/competition/stage1')
         self.declare_parameter('control_rate_hz', 20.0)
+        # Coordinate transform only: launch converts this degree value to the
+        # radian argument consumed by static_transform_publisher.
+        self.declare_parameter('map_to_odom_yaw_deg', 10.0)
+        self.declare_parameter('start_delay_sec', 0.0)
+        self.declare_parameter('start_corner_diagnostic_wait_sec', 3.0)
         self.declare_parameter('blind_linear_speed', 0.2)
-        self.declare_parameter('blind_qr_slowdown_start_x_m', 1.5)
+        self.declare_parameter('blind_qr_slowdown_start_map_x_m', 1.5)
         self.declare_parameter('blind_qr_slowdown_linear_speed', 0.4)
         self.declare_parameter('blind_angular_speed', 0.0)
         self.declare_parameter('blind_scan_centerline_json', '[]')
         self.declare_parameter('blind_scan_corridor_half_width_m', 0.35)
-        self.declare_parameter('blind_scan_capture_start_odom_x_m', 1.0)
-        self.declare_parameter('blind_scan_guidance_start_odom_x_m', 3.0)
+        self.declare_parameter('blind_scan_capture_start_map_x_m', 1.0)
+        self.declare_parameter('blind_scan_guidance_start_map_x_m', 3.0)
         self.declare_parameter('blind_scan_guidance_ramp_m', 0.80)
         self.declare_parameter('blind_scan_lateral_kp', 1.0)
         self.declare_parameter('blind_scan_max_heading_offset_deg', 20.0)
         self.declare_parameter('blind_scan_heading_kp', 1.4)
         self.declare_parameter('blind_scan_max_angular_speed', 0.35)
         self.declare_parameter('blind_scan_guidance_max_angular_speed', 0.18)
+        self.declare_parameter('blind_scan_guidance_angular_slew_rate_rad_s2', 0.45)
         self.declare_parameter('blind_scan_avoid_prediction_sec', 1.80)
         self.declare_parameter('blind_scan_avoid_prediction_step_sec', 0.05)
         self.declare_parameter('blind_scan_avoid_min_clearance_m', 0.28)
@@ -137,9 +145,15 @@ class CompetitionController(Node):
         self.declare_parameter('enable_backing', True)
         self.declare_parameter('back_target_x', 2.0)
         self.declare_parameter('back_linear_speed', -0.15)
+        self.declare_parameter('back_min_linear_speed', 0.20)
+        self.declare_parameter('back_lateral_accel_limit', 0.16)
+        self.declare_parameter('back_speed_preview_gain', 0.25)
         self.declare_parameter('back_angular_kp', 1.8)
         self.declare_parameter('back_max_angular_speed', 0.60)
         self.declare_parameter('back_angular_slew_rate', 1.50)
+        self.declare_parameter('back_cross_track_filter_tau_sec', 0.25)
+        self.declare_parameter('back_heading_kp', 0.80)
+        self.declare_parameter('back_heading_deadband_deg', 3.0)
         self.declare_parameter('back_reverse_engage_distance_m', 0.04)
         self.declare_parameter('back_reverse_engage_timeout_sec', 3.0)
         self.declare_parameter('back_position_tolerance', 0.15)
@@ -346,6 +360,7 @@ class CompetitionController(Node):
         self.scan_topic = self.get_parameter('scan_topic').value
         self.imu_topic = self.get_parameter('imu_topic').value
         self.imu_map_yaw_offset_topic = self.get_parameter('imu_map_yaw_offset_topic').value
+        self.start_corner_diagnostic_topic = self.get_parameter('start_corner_diagnostic_topic').value
         self.stage2_entry_pose_topic = self.get_parameter('stage2_entry_pose_topic').value
         self.odom_topic = self.get_parameter('odom_topic').value
         self.qr_result_topic = self.get_parameter('qr_result_topic').value
@@ -353,13 +368,16 @@ class CompetitionController(Node):
         self.imu_yaw_offset_rad = math.radians(
             float(self.get_parameter('imu_yaw_offset_deg').value)
         )
-        self.imu_initial_map_yaw_rad = math.radians(
-            float(self.get_parameter('imu_initial_map_yaw_deg').value)
+        self.imu_control_heading_anchor_rad = math.radians(
+            float(self.get_parameter('initial_map_heading_deg').value)
+        )
+        self.map_to_odom_yaw_config_rad = math.radians(
+            float(self.get_parameter('map_to_odom_yaw_deg').value)
         )
         control_rate_hz = float(self.get_parameter('control_rate_hz').value)
         self.blind_linear_speed = float(self.get_parameter('blind_linear_speed').value)
-        self.blind_qr_slowdown_start_x_m = float(
-            self.get_parameter('blind_qr_slowdown_start_x_m').value
+        self.blind_qr_slowdown_start_map_x_m = float(
+            self.get_parameter('blind_qr_slowdown_start_map_x_m').value
         )
         self.blind_qr_slowdown_linear_speed = float(
             self.get_parameter('blind_qr_slowdown_linear_speed').value
@@ -371,12 +389,12 @@ class CompetitionController(Node):
         self.blind_scan_corridor_half_width = max(
             0.05, float(self.get_parameter('blind_scan_corridor_half_width_m').value)
         )
-        self.blind_scan_capture_start_odom_x = float(
-            self.get_parameter('blind_scan_capture_start_odom_x_m').value
+        self.blind_scan_capture_start_map_x = float(
+            self.get_parameter('blind_scan_capture_start_map_x_m').value
         )
-        self.blind_scan_guidance_start_odom_x = max(
-            self.blind_scan_capture_start_odom_x,
-            float(self.get_parameter('blind_scan_guidance_start_odom_x_m').value),
+        self.blind_scan_guidance_start_map_x = max(
+            self.blind_scan_capture_start_map_x,
+            float(self.get_parameter('blind_scan_guidance_start_map_x_m').value),
         )
         self.blind_scan_guidance_ramp = max(
             0.05, float(self.get_parameter('blind_scan_guidance_ramp_m').value)
@@ -399,6 +417,10 @@ class CompetitionController(Node):
                 0.0,
                 float(self.get_parameter('blind_scan_guidance_max_angular_speed').value),
             ),
+        )
+        self.blind_scan_guidance_angular_slew_rate = max(
+            0.0,
+            float(self.get_parameter('blind_scan_guidance_angular_slew_rate_rad_s2').value),
         )
         self.blind_scan_avoid_prediction_sec = max(
             0.10, float(self.get_parameter('blind_scan_avoid_prediction_sec').value)
@@ -538,12 +560,30 @@ class CompetitionController(Node):
         self.enable_backing = bool(self.get_parameter('enable_backing').value)
         self.back_target_x = float(self.get_parameter('back_target_x').value)
         self.back_linear_speed = float(self.get_parameter('back_linear_speed').value)
+        self.back_min_linear_speed = max(
+            0.05, abs(float(self.get_parameter('back_min_linear_speed').value))
+        )
+        self.back_lateral_accel_limit = max(
+            0.02, float(self.get_parameter('back_lateral_accel_limit').value)
+        )
+        self.back_speed_preview_gain = max(
+            0.0, float(self.get_parameter('back_speed_preview_gain').value)
+        )
         self.back_angular_kp = float(self.get_parameter('back_angular_kp').value)
         self.back_max_angular_speed = max(
             0.0, float(self.get_parameter('back_max_angular_speed').value)
         )
         self.back_angular_slew_rate = max(
             0.0, float(self.get_parameter('back_angular_slew_rate').value)
+        )
+        self.back_cross_track_filter_tau_sec = max(
+            0.0, float(self.get_parameter('back_cross_track_filter_tau_sec').value)
+        )
+        self.back_heading_kp = max(
+            0.0, float(self.get_parameter('back_heading_kp').value)
+        )
+        self.back_heading_deadband_rad = math.radians(
+            max(0.0, float(self.get_parameter('back_heading_deadband_deg').value))
         )
         self.back_reverse_engage_distance = max(
             0.01, float(self.get_parameter('back_reverse_engage_distance_m').value)
@@ -630,6 +670,7 @@ class CompetitionController(Node):
         self.corridor_stanley_k = float(self.get_parameter('corridor_stanley_k').value)
         self.corridor_align_linear_speed = float(self.get_parameter('corridor_align_linear_speed').value)
         self.phase1_avoid_startup_grace_sec = float(self.get_parameter('phase1_avoid_startup_grace_sec').value)
+        self.start_delay_sec = max(0.0, float(self.get_parameter('start_delay_sec').value))
         self.pure_pursuit_lookahead = float(self.get_parameter('pure_pursuit_lookahead_m').value)
         self.pure_pursuit_turn_kp = float(self.get_parameter('pure_pursuit_turn_kp').value)
         self.pure_pursuit_heading_stop = math.radians(
@@ -1097,6 +1138,9 @@ class CompetitionController(Node):
         )
         self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, map_qos)
         self.create_subscription(String, self.qr_result_topic, self.qr_callback, 10)
+        self.create_subscription(
+            String, self.start_corner_diagnostic_topic, self.start_corner_diagnostic_callback, latched_qos
+        )
 
         self.phase = 1
         self.mission_finished = False
@@ -1109,6 +1153,7 @@ class CompetitionController(Node):
         self._motion_enabled = False
         self._released = False
         self._stage1_running_reported = False
+        self._start_after_time = None
         self._handoff_wait = False
         self._handoff_command = Twist()
         self._control_timer = None
@@ -1124,6 +1169,8 @@ class CompetitionController(Node):
         self.blind_scan_escape_pending = False
         self.blind_scan_escape_deadline = None
         self.blind_scan_escape_direction = 0.0
+        self._blind_scan_last_angular_z = 0.0
+        self._blind_scan_last_angular_time = None
         self.corridor_reverse_started_time = None
         self.corridor_reverse_clear_since = None
         self.corridor_reverse_direction = 0.0
@@ -1152,7 +1199,7 @@ class CompetitionController(Node):
         self.backing_path_index = -1
         self.backing_last_angular_z = 0.0
         self.backing_last_command_time = None
-        self.backing_engage_started_time = None
+        self.backing_filtered_cross_track = None
         self.backing_engage_start_xy = None
         self.backing_engage_direction_xy = None
         self.aligning_started_time = None
@@ -1199,6 +1246,12 @@ class CompetitionController(Node):
         self.corridor_capture_active = False
         self.corridor_align_active = False
         self._node_start_time = self.get_clock().now()
+        self._start_corner_diagnostic_state = 'waiting'
+        self._stage_ready_announced = False
+        self._start_corner_diagnostic_deadline = (
+            self.get_clock().now().nanoseconds / 1e9
+            + max(0.0, float(self.get_parameter('start_corner_diagnostic_wait_sec').value))
+        )
         self.corridor_index = 0
         self.corridor_started_at = None
         self.corridor_entry_pose = None
@@ -1236,6 +1289,8 @@ class CompetitionController(Node):
             self, log_subdir='competition_stage1',
             log_filename='latest.log', session_title='Stage1 competition',
         )
+        self.log.startup(f'S1 start_delay_sec={self.start_delay_sec:.2f}s')
+        terminal_write(f'[STARTUP] 第一阶段启动等待参数 start_delay_sec={self.start_delay_sec:.2f}s')
         # CN-TTS 语音播报初始化
         self.tts_player = None
         if CN_TTS_AVAILABLE:
@@ -1257,8 +1312,9 @@ class CompetitionController(Node):
         )
         self._phase1_last_clusters = []  # 缓存上一帧的聚类结果
 
-        self.stage1_state_pub.publish(String(data='ready'))
-        self.log.startup('S1 standby; waiting for Supervisor activate')
+        self.log.startup(
+            'S1 standby; waiting for startup-corner diagnostic before Supervisor ready'
+        )
         self._control_timer = self.create_timer(1.0 / max(control_rate_hz, 1.0), self.control_loop)
         self.log.startup('S1 controller ready: QR scan and corridor handoff only')
 
@@ -1286,9 +1342,17 @@ class CompetitionController(Node):
             response.message = 'stage1 already released'
             return response
         self._motion_enabled = True
+        self._start_after_time = (
+            self.get_clock().now().nanoseconds / 1e9 + self.start_delay_sec
+        )
         self.phase1_motion_state = 'forward'
         self.stage1_state_pub.publish(String(data='running'))
-        self.log.task('S1 activate received; motion enabled')
+        if self.start_delay_sec > 0.0:
+            self.log.task(
+                f'S1 activate received; motion starts in {self.start_delay_sec:.2f}s'
+            )
+        else:
+            self.log.task('S1 activate received; motion enabled')
         response.success = True
         response.message = 'stage1 activated'
         return response
@@ -1433,21 +1497,21 @@ class CompetitionController(Node):
     def stop_robot(self):
         self.cmd_pub.publish(Twist())
 
-    def _rebase_imu_map_yaw(self, target_yaw, reason):
-        """Set the current physical IMU direction as a new shared map yaw."""
+    def _rebase_imu_control_heading(self, target_yaw, reason):
+        """Reset only the IMU control-heading anchor; map->odom TF is unchanged."""
         if self.current_raw_imu_yaw is None:
             self.log.warn('IMU', f'IMU_REBASE skipped reason={reason}: no raw yaw')
             return False
         target_yaw = self.normalize_angle(float(target_yaw))
         self._imu_initial_raw_yaw = self.current_raw_imu_yaw
-        self.imu_initial_map_yaw_rad = target_yaw
+        self.imu_control_heading_anchor_rad = target_yaw
         self.current_yaw = target_yaw
         imu_map_yaw_offset = self.normalize_angle(target_yaw - self.current_raw_imu_yaw)
         self.imu_map_yaw_offset_pub.publish(Float64(data=imu_map_yaw_offset))
         self.log.mission(
-            f'IMU_REBASE reason={reason} raw={math.degrees(self.current_raw_imu_yaw):.1f}deg '
-            f'-> map={math.degrees(target_yaw):.1f}deg '
-            f'offset={math.degrees(imu_map_yaw_offset):+.1f}deg published_to_stage2'
+            f'IMU_CONTROL_HEADING_REBASE reason={reason} raw={math.degrees(self.current_raw_imu_yaw):.1f}deg '
+            f'-> control_heading={math.degrees(target_yaw):.1f}deg '
+            f'offset={math.degrees(imu_map_yaw_offset):+.1f}deg; map_to_odom TF unchanged'
         )
         return True
 
@@ -1457,12 +1521,12 @@ class CompetitionController(Node):
         if self._imu_initial_raw_yaw is None:
             self._imu_initial_raw_yaw = raw_yaw
             imu_map_yaw_offset = self.normalize_angle(
-                self.imu_initial_map_yaw_rad - raw_yaw
+                self.imu_control_heading_anchor_rad - raw_yaw
             )
             self.imu_map_yaw_offset_pub.publish(Float64(data=imu_map_yaw_offset))
             self.log.config(
                 f'IMU yaw initialized: raw_start={math.degrees(raw_yaw):.1f}° '
-                f'-> map_start={math.degrees(self.imu_initial_map_yaw_rad):.1f}° '
+                f'-> control_heading_start={math.degrees(self.imu_control_heading_anchor_rad):.1f}° '
                 f'(map_offset={math.degrees(imu_map_yaw_offset):+.1f}°)'
             )
 
@@ -1470,13 +1534,13 @@ class CompetitionController(Node):
         # 不读取 /odom 或 /odom_combined 的 orientation。
         raw_delta = self.normalize_angle(raw_yaw - self._imu_initial_raw_yaw)
         self.current_yaw = self.normalize_angle(
-            self.imu_initial_map_yaw_rad + raw_delta
+            self.imu_control_heading_anchor_rad + raw_delta
         )
         if self.phase == 1 and self.desired_heading is None:
             self.desired_heading = self.current_yaw
             self.log.config(
                 f'phase1 heading locked at {math.degrees(self.desired_heading):.1f} deg '
-                f'(initial map yaw={math.degrees(self.imu_initial_map_yaw_rad):.1f} deg)'
+                f'(initial control heading={math.degrees(self.imu_control_heading_anchor_rad):.1f} deg)'
             )
 
     def odom_callback(self, msg):
@@ -1555,6 +1619,47 @@ class CompetitionController(Node):
 
     def map_callback(self, msg):
         self.latest_map = msg
+
+    def start_corner_diagnostic_callback(self, msg):
+        """Keep passive startup-calibration evidence in the normal S1 log."""
+        try:
+            diagnostic = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.log.warn('START_CORNER_DIAG', f'invalid payload: {msg.data}')
+            return
+        state = diagnostic.get('state', 'unknown')
+        self._start_corner_diagnostic_state = state
+        if state == 'valid':
+            self.log.config(
+                'START_CORNER_DIAG valid '
+                f'corner_base=({diagnostic.get("corner_base_x"):.3f},'
+                f'{diagnostic.get("corner_base_y"):.3f}) '
+                f'map=({diagnostic.get("map_x"):.3f},{diagnostic.get("map_y"):.3f},'
+                f'{diagnostic.get("map_yaw_deg"):.1f}deg) '
+                f'suggested_tf=({diagnostic.get("map_to_odom_x"):.3f},'
+                f'{diagnostic.get("map_to_odom_y"):.3f},'
+                f'{diagnostic.get("map_to_odom_yaw_deg"):.1f}deg) '
+                f'imu_offset={diagnostic.get("imu_map_heading_offset_deg"):+.1f}deg '
+                f'delta_tf=({diagnostic.get("delta_map_to_odom_x"):+.3f},'
+                f'{diagnostic.get("delta_map_to_odom_y"):+.3f},'
+                f'{diagnostic.get("delta_map_to_odom_yaw_deg"):+.1f}deg)'
+            )
+        else:
+            self.log.progress(
+                f'START_CORNER_DIAG state={state} reason={diagnostic.get("reason", "n/a")}'
+            )
+
+    def _publish_stage1_ready_if_allowed(self):
+        if self._stage_ready_announced:
+            return True
+        # The corner node is evidence collection only.  Its result must never
+        # gate readiness or alter the production motion path; this also keeps
+        # a transient diagnostic fit from changing startup timing.
+        reason = 'startup-corner diagnostic is log-only; production control unchanged'
+        self._stage_ready_announced = True
+        self.stage1_state_pub.publish(String(data='ready'))
+        self.log.startup(f'S1 ready: {reason}; waiting for Supervisor activate')
+        return True
 
     @staticmethod
     def _parse_corridor_waypoints(raw_json):
@@ -1716,11 +1821,11 @@ class CompetitionController(Node):
             )
             self._map_to_odom_yaw_source = 'tf'
         except TransformException:
-            # Production launch derives this static yaw from the same
-            # imu_initial_map_yaw_deg parameter.  The parameter fallback keeps
-            # standalone S1 tests deterministic when TF starts late.
+            # Static map->odom yaw is intentionally independent from the IMU
+            # heading anchor. The parameter fallback keeps standalone S1 tests
+            # deterministic when TF starts late.
             self._map_to_odom_yaw_rad = self.normalize_angle(
-                self.imu_initial_map_yaw_rad
+                self.map_to_odom_yaw_config_rad
             )
             self._map_to_odom_yaw_source = 'parameter'
         self.log.config(
@@ -2370,32 +2475,55 @@ class CompetitionController(Node):
             or self.qr_processed
             or self.phase1_motion_state in ('backing', 'corridor')
             or len(self.blind_scan_centerline) < 2
-            or self.current_odom is None
         ):
             return False
-        return (
-            float(self.current_odom.pose.pose.position.x)
-            >= self.blind_scan_capture_start_odom_x
-        )
+        map_x = self._lookup_map_x()
+        return map_x is not None and map_x >= self.blind_scan_capture_start_map_x
 
     def blind_scan_guidance_is_active(self):
-        """仅在接近二维码观察位时允许中心线开始引导转向。"""
-        return (
-            self.blind_scan_is_active()
-            and float(self.current_odom.pose.pose.position.x)
-            >= self.blind_scan_guidance_start_odom_x
-        )
+        """Enable line guidance as soon as the scan lane is armed.
+
+        The configured centerline and its activation gate are expressed in
+        map coordinates.  The smooth-entry scale below still starts at zero
+        and ramps the steering command in gradually.
+        """
+        return self.blind_scan_is_active()
 
     def blind_scan_guidance_scale(self):
         """在导向切入窗口内平滑增加转向，避免瞬时拉向二维码横带。"""
-        if self.current_odom is None:
+        map_x = self._lookup_map_x()
+        if map_x is None:
             return 0.0
         progress = (
-            float(self.current_odom.pose.pose.position.x)
-            - self.blind_scan_guidance_start_odom_x
+            map_x - self.blind_scan_guidance_start_map_x
         ) / self.blind_scan_guidance_ramp
-        progress = self.clamp(progress, 1.0)
+        progress = max(0.0, min(1.0, progress))
         return progress * progress * (3.0 - 2.0 * progress)
+
+    def _slew_blind_scan_angular(self, requested_angular):
+        """Limit centerline steering rate so commands remain continuous."""
+        now_ts = self.get_clock().now().nanoseconds / 1e9
+        requested = self.clamp(
+            float(requested_angular), self.blind_scan_guidance_max_angular_speed
+        )
+        if (
+            self._blind_scan_last_angular_time is None
+            or self.blind_scan_guidance_angular_slew_rate <= 0.0
+        ):
+            angular = requested
+        else:
+            elapsed = max(
+                0.0,
+                min(0.25, now_ts - self._blind_scan_last_angular_time),
+            )
+            max_delta = self.blind_scan_guidance_angular_slew_rate * elapsed
+            angular = max(
+                self._blind_scan_last_angular_z - max_delta,
+                min(self._blind_scan_last_angular_z + max_delta, requested),
+            )
+        self._blind_scan_last_angular_z = angular
+        self._blind_scan_last_angular_time = now_ts
+        return angular
 
     def project_to_blind_scan_centerline(self, point_xy):
         """返回折线投影的有符号横向误差、切线航向和前瞻基点。"""
@@ -2444,21 +2572,43 @@ class CompetitionController(Node):
     def blind_scan_guidance_cmd(self):
         """接近二维码观察位后，平滑并入扫码中心线。"""
         if not self.blind_scan_guidance_is_active() or self.current_yaw is None:
+            self._blind_scan_last_angular_z = 0.0
+            self._blind_scan_last_angular_time = None
             return None
         pose_xy = self.get_map_position()
         if pose_xy is None:
-            return None
+            return self.create_twist(
+                self.blind_forward_speed(),
+                self._slew_blind_scan_angular(0.0),
+            )
         target_heading, projection = self.blind_scan_heading(pose_xy)
         if target_heading is None:
-            return None
+            return self.create_twist(
+                self.blind_forward_speed(),
+                self._slew_blind_scan_angular(0.0),
+            )
         self.desired_heading = target_heading
+        heading_error = self.angle_error(target_heading, self.current_yaw)
         angular = self.clamp(
-            self.blind_scan_heading_kp * self.angle_error(target_heading, self.current_yaw),
+            self.blind_scan_heading_kp * heading_error,
             self.blind_scan_guidance_max_angular_speed,
+        )
+        angular *= self.blind_scan_guidance_scale()
+        commanded_angular = self._slew_blind_scan_angular(angular)
+        self.log.telemetry(
+            'blind_scan_guidance',
+            f'map=({pose_xy[0]:.3f},{pose_xy[1]:.3f}) '
+            f'segment={projection["segment"]} lateral={projection["lateral"]:+.3f}m '
+            f'line_yaw={math.degrees(projection["heading"]):.1f}deg '
+            f'target_yaw={math.degrees(target_heading):.1f}deg '
+            f'imu_yaw={math.degrees(self.current_yaw):.1f}deg '
+            f'yaw_error={math.degrees(heading_error):+.1f}deg '
+            f'ramp={self.blind_scan_guidance_scale():.2f} '
+            f'v={self.blind_forward_speed():.2f}mps w={commanded_angular:+.3f}radps'
         )
         return self.create_twist(
             self.blind_forward_speed(),
-            self.blind_scan_guidance_scale() * angular,
+            commanded_angular,
         )
 
     def predict_blind_scan_avoidance(self, direction, obstacle, corridor_extra=0.0):
@@ -2936,7 +3086,7 @@ class CompetitionController(Node):
         # the next control cycles gently align the chassis with the wall.
         corrected_yaw = self.normalize_angle(self.corridor_goal_yaw - relative_heading)
         self._corridor_wall_corrected_yaw = corrected_yaw
-        if self._rebase_imu_map_yaw(corrected_yaw, 'corridor_wall_axis_lock'):
+        if self._rebase_imu_control_heading(corrected_yaw, 'corridor_wall_axis_lock'):
             self._corridor_wall_yaw_rebased = True
             self.log.mission(
                 f'WALL_YAW_REBASE local_axis={math.degrees(relative_heading):+.1f}deg '
@@ -3010,11 +3160,23 @@ class CompetitionController(Node):
         }
 
     def _publish_stage2_entry_pose(self, pose_xy, yaw, gate_status):
+        now_ts = self.get_clock().now().nanoseconds / 1e9
+        front_wall = (
+            self._corridor_front_wall_latch_fresh()
+            or self._corridor_front_wall_lock_fresh(now_ts)
+        )
+        entry_y = float(pose_xy[1])
+        front_distance_text = 'n/a'
+        if front_wall is not None:
+            front_distance = float(front_wall['distance'])
+            entry_y = 5.0 - front_distance
+            front_distance_text = f'{front_distance:.3f}'
+
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.map_frame
         msg.pose.position.x = float(pose_xy[0])
-        msg.pose.position.y = float(pose_xy[1])
+        msg.pose.position.y = entry_y
         msg.pose.position.z = 0.0
         half_yaw = 0.5 * float(yaw)
         msg.pose.orientation.z = math.sin(half_yaw)
@@ -3024,8 +3186,9 @@ class CompetitionController(Node):
         raw_map_xy = self._get_uncorrected_map_position()
         raw_x_text = f'{raw_map_xy[0]:.3f}' if raw_map_xy is not None else 'n/a'
         self.log.mission(
-            f'STAGE2_ENTRY_POSE wall_corrected map=({pose_xy[0]:.3f},{pose_xy[1]:.3f}) '
+            f'STAGE2_ENTRY_POSE wall_corrected map=({pose_xy[0]:.3f},{entry_y:.3f}) '
             f'raw_x={raw_x_text} offset={self._corridor_map_x_offset:+.3f} '
+            f'front_distance={front_distance_text} y_formula=5.000-front '
             f'yaw={math.degrees(yaw):.1f}deg '
             f'wall_center={gate_status["wall_center_error"]:.3f}m '
             f'wall_axis={math.degrees(gate_status["wall_axis_error"]):.1f}deg'
@@ -5230,9 +5393,13 @@ class CompetitionController(Node):
         if self.enable_backing and len(self.path_record) > 0:
             now = self.get_clock().now()
             self.phase1_motion_state = 'backing_engage'
+            # One timestamp owns the complete QR-to-corridor backing action.
+            # The engage and path-following phases use different timeout limits
+            # but must share this start time.
             self.backing_started_time = now
             self.backing_last_angular_z = 0.0
             self.backing_last_command_time = now
+            self.backing_filtered_cross_track = None
             # 反向 Pure Pursuit 会投影当前位置，不依赖固定离散点。
             self.backing_path_index = max(0, len(self.path_record) - 2)
             self._rebuild_backing_path_metrics()
@@ -5267,10 +5434,9 @@ class CompetitionController(Node):
 
 
     def blind_forward_speed(self):
-        if self.current_odom is not None:
-            odom_x = float(self.current_odom.pose.pose.position.x)
-            if odom_x > self.blind_qr_slowdown_start_x_m:
-                return self.blind_qr_slowdown_linear_speed
+        map_x = self._lookup_map_x()
+        if map_x is not None and map_x > self.blind_qr_slowdown_start_map_x_m:
+            return self.blind_qr_slowdown_linear_speed
         return self.blind_linear_speed
 
     def control_loop(self):
@@ -5281,8 +5447,16 @@ class CompetitionController(Node):
         real_map = self._lookup_map_xy_from_tf()
         if real_map is not None:
             self.log.real_pose(real_map[0], real_map[1], source='map_tf')
+        if not self._publish_stage1_ready_if_allowed():
+            return
         if not self._motion_enabled:
             return
+        if self._start_after_time is not None:
+            now_sec = self.get_clock().now().nanoseconds / 1e9
+            if now_sec < self._start_after_time:
+                return
+            self._start_after_time = None
+            self.log.task('S1 start delay elapsed; motion enabled')
         if self._handoff_wait:
             self.cmd_pub.publish(self._handoff_command)
             return
@@ -5387,17 +5561,17 @@ class CompetitionController(Node):
                 self.cmd_pub.publish(scan_cmd)
                 return
 
-            # 未配置扫描中心线时，保留旧版盲开区域转向作为兼容回退。
-            right_cmd = self.maybe_blind_right_turn_cmd()
-            if right_cmd is not None:
-                self.cmd_pub.publish(right_cmd)
-                return
-
-            # 盲开阶段 map_x 过大：向左旋回，避免贴右墙
-            left_cmd = self.maybe_left_recover_cmd('blind_left_recover')
-            if left_cmd is not None:
-                self.cmd_pub.publish(left_cmd)
-                return
+            if len(self.blind_scan_centerline) < 2:
+                # 仅在没有配置中心线时保留旧版盲开区域转向兼容回退。
+                # 中心线已配置但暂时无法计算时继续低速直行，不能突然打满角度。
+                right_cmd = self.maybe_blind_right_turn_cmd()
+                if right_cmd is not None:
+                    self.cmd_pub.publish(right_cmd)
+                    return
+                left_cmd = self.maybe_left_recover_cmd('blind_left_recover')
+                if left_cmd is not None:
+                    self.cmd_pub.publish(left_cmd)
+                    return
 
             self.cmd_pub.publish(
                 self.create_twist(self.blind_forward_speed(), self.blind_angular_speed)
@@ -5412,9 +5586,16 @@ class CompetitionController(Node):
             return
 
         now = self.get_clock().now()
+        if self.backing_started_time is None:
+            # This should only be possible after an unexpected state reset;
+            # initialize it instead of silently disabling the safety timeout.
+            self.backing_started_time = now
+            self.log.warn(
+                'BACKING',
+                'backing start timestamp was missing; initialized at engage time'
+            )
         elapsed = (
-            (now - self.backing_engage_started_time).nanoseconds / 1e9
-            if self.backing_engage_started_time is not None else 0.0
+            (now - self.backing_started_time).nanoseconds / 1e9
         )
         current_xy = (
             float(self.current_odom.pose.pose.position.x),
@@ -5458,7 +5639,7 @@ class CompetitionController(Node):
             )
 
     def handle_backing(self):
-        """Follow the recorded path with projection-based reverse Pure Pursuit."""
+        """Follow the frozen QR-era path with a monotonic reverse Stanley controller."""
         if self.current_odom is None or self.current_yaw is None:
             self.stop_robot()
             return
@@ -5485,7 +5666,9 @@ class CompetitionController(Node):
         # Search a bounded window so the projection can only move toward the
         # beginning of the recorded path, never jump to a later route section.
         search_start = max(0, min(self.backing_path_index, len(self.path_record) - 2) - 120)
-        search_end = min(len(self.path_record) - 2, self.backing_path_index + 3)
+        # The return projection is strictly monotonic toward the beginning of
+        # the frozen path; never jump to a later segment after a noisy frame.
+        search_end = min(len(self.path_record) - 2, self.backing_path_index)
         best = None
         for index in range(search_start, search_end + 1):
             x0, y0, _ = self.path_record[index]
@@ -5515,36 +5698,106 @@ class CompetitionController(Node):
         self.backing_path_progress_s = progress_s
         self.backing_path_cross_track = cross_track_error
 
-        target = self._path_point_at_s(max(0.0, progress_s - self.back_lookahead_m))
-        if target is None:
-            self.begin_backing_align(f'qr task={self.qr_task}, backing path target unavailable')
-            return
-        target_x, target_y = target
-        dx, dy = target_x - odom_x, target_y - odom_y
+        # Odometer noise at the projection boundary can flip the signed error
+        # every frame.  Filter only this transient backing signal; the recorded
+        # path itself remains untouched so the return route stays exact.
+        now = self.get_clock().now()
+        if self.backing_filtered_cross_track is None:
+            self.backing_filtered_cross_track = cross_track_error
+        else:
+            dt = max(
+                0.0,
+                (now - (self.backing_last_command_time or now)).nanoseconds / 1e9,
+            )
+            if self.back_cross_track_filter_tau_sec <= 0.0:
+                self.backing_filtered_cross_track = cross_track_error
+            else:
+                alpha = self.clamp(
+                    dt / (self.back_cross_track_filter_tau_sec + dt), 1.0
+                )
+                self.backing_filtered_cross_track += alpha * (
+                    cross_track_error - self.backing_filtered_cross_track
+                )
+
         odom_yaw = self._current_odom_yaw()
         if odom_yaw is None:
             self.stop_robot()
             return
-        linear_x = self.back_linear_speed
-        cos_yaw = math.cos(odom_yaw)
-        sin_yaw = math.sin(odom_yaw)
-        body_x = cos_yaw * dx + sin_yaw * dy
-        body_y = -sin_yaw * dx + cos_yaw * dy
-        lookahead_sq = max(0.01, body_x * body_x + body_y * body_y)
-        curvature = 2.0 * body_y / lookahead_sq
-        requested_angular_z = self.clamp(
-            linear_x * curvature,
-            self.back_max_angular_speed,
+
+        # Preview farther ahead as speed rises.  The same preview is used to
+        # smooth the tangent and estimate curvature from the frozen route.
+        max_speed = max(abs(self.back_linear_speed), self.back_min_linear_speed)
+        tangent_span = max(
+            0.08,
+            min(0.35, self.back_lookahead_m + self.back_speed_preview_gain * max_speed),
         )
-        tangent_index = min(len(self.path_record) - 1, segment_index + 1)
-        tangent_x = self.path_record[tangent_index][0] - self.path_record[segment_index][0]
-        tangent_y = self.path_record[tangent_index][1] - self.path_record[segment_index][1]
-        # The chassis keeps facing the original forward tangent while its
-        # negative linear velocity moves the rear axle along the path.  Do not
-        # add pi here; that would demand a 180-degree heading flip.
+        tangent_before = self._path_point_at_s(
+            min(self.backing_path_total_length, progress_s + tangent_span)
+        )
+        tangent_after = self._path_point_at_s(
+            max(0.0, progress_s - tangent_span)
+        )
+        if tangent_before is None or tangent_after is None:
+            self.begin_backing_align(f'qr task={self.qr_task}, backing path tangent unavailable')
+            return
+        tangent_x = tangent_before[0] - tangent_after[0]
+        tangent_y = tangent_before[1] - tangent_after[1]
+        tangent_norm = math.hypot(tangent_x, tangent_y)
+        if tangent_norm < 1e-4:
+            self.begin_backing_align(f'qr task={self.qr_task}, backing path tangent degenerate')
+            return
         target_yaw = self.normalize_angle(math.atan2(tangent_y, tangent_x))
         heading_error = self.angle_error(target_yaw, odom_yaw)
-        now = self.get_clock().now()
+
+        center_point = self._path_point_at_s(progress_s)
+        if center_point is None:
+            self.begin_backing_align(f'qr task={self.qr_task}, backing path center unavailable')
+            return
+        incoming_yaw = math.atan2(
+            center_point[1] - tangent_after[1],
+            center_point[0] - tangent_after[0],
+        )
+        outgoing_yaw = math.atan2(
+            tangent_before[1] - center_point[1],
+            tangent_before[0] - center_point[0],
+        )
+        curvature_span = math.hypot(
+            tangent_before[0] - tangent_after[0],
+            tangent_before[1] - tangent_after[1],
+        )
+        curvature = 0.0
+        if curvature_span > 1e-3:
+            curvature = self.angle_error(outgoing_yaw, incoming_yaw) / curvature_span
+
+        # Limit speed from lateral acceleration before applying feedback.  This
+        # makes straight portions fast while keeping curved portions inside the
+        # chassis' available turning envelope.
+        curve_speed = math.sqrt(
+            self.back_lateral_accel_limit / max(abs(curvature), 1e-3)
+        )
+        speed_mag = max(
+            self.back_min_linear_speed,
+            min(max_speed, curve_speed),
+        )
+        linear_x = -speed_mag if self.back_linear_speed < 0.0 else speed_mag
+
+        # Reverse Stanley: the cross-track term is converted to a bounded
+        # correction angle using |v|, so reversing does not invert its sign.
+        speed_for_control = max(speed_mag, 0.05)
+        cross_track_angle = math.atan2(
+            self.backing_filtered_cross_track,
+            speed_for_control,
+        )
+        heading_term = 0.0
+        if abs(heading_error) > self.back_heading_deadband_rad:
+            heading_term = self.back_heading_kp * heading_error
+        requested_angular_z = self.clamp(
+            linear_x * curvature
+            + heading_term
+            + self.back_angular_kp * cross_track_angle,
+            self.back_max_angular_speed,
+        )
+
         if self.backing_last_command_time is not None:
             elapsed = max(
                 0.0,
@@ -5563,7 +5816,7 @@ class CompetitionController(Node):
         path_target_reached = (
             map_x is not None
             and map_x <= self.back_target_x
-            and abs(cross_track_error) <= self.back_cross_track_tolerance
+            and abs(self.backing_filtered_cross_track) <= self.back_cross_track_tolerance
         )
         if path_target_reached:
             self.log.segment(
@@ -5573,14 +5826,14 @@ class CompetitionController(Node):
             self.begin_backing_align(f'qr task={self.qr_task}, backing complete')
             return
 
-        dist_to_target = math.hypot(dx, dy)
         self.cmd_pub.publish(self.create_twist(linear_x, angular_z))
         
         self.log.progress(
             f'backing: wp={self.backing_path_index}, '
             f'map_x={map_x if map_x is not None else float("nan"):.2f}m, '
             f'odom_x={odom_x:.2f}m, '
-            f'dist={dist_to_target:.2f}m, '
+            f'cross_track_filtered={self.backing_filtered_cross_track:.3f}m, '
+            f'curvature={curvature:.3f}, speed={abs(linear_x):.2f}m/s, '
             f'cross_track={cross_track_error:.3f}m, '
             f'path_tangent_odom={math.degrees(target_yaw):.1f}°, '
             f'map_yaw={math.degrees(self.current_yaw):.1f}°, '

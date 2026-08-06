@@ -21,7 +21,7 @@ from racing_common.racing_logger import terminal_write
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, Imu, LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import Int32, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -52,6 +52,7 @@ class CompetitionSupervisor(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self._state_pub = self.create_publisher(String, 'competition_supervisor_state', latched)
+        self._phase_pub = self.create_publisher(Int32, 'competition_phase', latched)
         self._cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_subscription(String, 'competition_qr_task', self._qr_cb, latched)
         self.create_subscription(String, 'stage1_state', self._stage1_cb, latched)
@@ -87,13 +88,16 @@ class CompetitionSupervisor(Node):
         self._handoff_deadline = None
         self._finalizing = False
         self._child_cleanup_done = False
+        self._child_cleanup_lock = threading.Lock()
         self._async_cleanup_threads = set()
         self._last_monitor_finished = time.monotonic()
         self._last_wait_log = 0.0
+        self._competition_phase = None
         # Top-level launch can shut down the ROS context before executor spin
         # unwinds.  Register cleanup at the context boundary so independently
         # spawned stage process groups cannot survive a Ctrl+C/restart.
         rclpy.get_default_context().on_shutdown(self._cleanup_child_processes)
+        self._set_competition_phase(0)
         self._publish_state()
         # Handoff activation is event-driven; this timer is only the service
         # discovery/retry safety net.  A 50 ms cadence bounds that fallback
@@ -118,6 +122,14 @@ class CompetitionSupervisor(Node):
             'reason': self.reason,
         }
         self._state_pub.publish(String(data=json.dumps(payload, ensure_ascii=True, sort_keys=True)))
+
+    def _set_competition_phase(self, phase):
+        phase = int(phase)
+        if phase == self._competition_phase:
+            return
+        self._competition_phase = phase
+        self._phase_pub.publish(Int32(data=phase))
+        self.get_logger().info(f'[LIFECYCLE] publish competition_phase={phase}')
 
     def _task(self, message):
         terminal_write(f'[TASK] {message}')
@@ -207,11 +219,6 @@ class CompetitionSupervisor(Node):
     def _residual_stage_nodes(self):
         names = {name for name, _namespace in self.get_node_names_and_namespaces()}
         return sorted(name for nodes in self.STAGE_NODES.values() for name in nodes if name in names)
-
-    def _stage_node_alive(self, stage):
-        """Check the actual stage node, independent of its launch wrapper."""
-        names = {name for name, _namespace in self.get_node_names_and_namespaces()}
-        return any(name in names for name in self.STAGE_NODES[stage])
 
     @staticmethod
     def _command(package, launch_file, arguments):
@@ -466,6 +473,7 @@ class CompetitionSupervisor(Node):
         if state != previous:
             self._task(f'S1 state={state}')
         if state == 'running' and self.active_stage == 'stage1':
+            self._set_competition_phase(1)
             self.lifecycle_state = 'stage1_running'
             self.reason = 'S1 activated; motion ownership granted'
             self._publish_state()
@@ -493,6 +501,7 @@ class CompetitionSupervisor(Node):
             self._task('S2 ready; scheduling continuous handoff activation')
             self._activate('stage2')
         elif state == 'handoff_command_ready' and self.active_stage == 'stage1':
+            self._set_competition_phase(2)
             self.active_stage = 'stage2'
             self.prewarming_stage = ''
             self.lifecycle_state = 'stage2_running'
@@ -534,6 +543,7 @@ class CompetitionSupervisor(Node):
             self._task('S3 ready; scheduling continuous handoff activation')
             self._activate('stage3')
         elif state == 'handoff_command_ready' and self.active_stage == 'stage2':
+            self._set_competition_phase(3)
             self.active_stage = 'stage3'
             self.prewarming_stage = ''
             self.lifecycle_state = 'stage3_running'
@@ -545,11 +555,14 @@ class CompetitionSupervisor(Node):
             self._task('S3 command ready; S2 released itself')
             self._publish_state()
         elif state == 'complete' and self.active_stage == 'stage3':
-            self.lifecycle_state = 'stage3_complete_wait_exit'
-            self.reason = 'S3 reached P point and issued terminal zero speed'
-            self._handoff_deadline = time.monotonic() + float(self.get_parameter('shutdown_grace_sec').value)
-            self._task('S3 reached P point; waiting for its self-shutdown')
-            self._publish_state()
+            self._set_competition_phase(0)
+            # ``complete`` is the terminal handoff event: Stage3 has already
+            # issued zero speed, released its visual resources, and started
+            # its own shutdown.  Do not hold the competition open for a
+            # fixed grace interval or for the child launch wrapper to vanish.
+            # The top-level launch owns the remaining base-layer teardown.
+            self._finish()
+            return
 
     def _monitor(self):
         if self._finalizing:
@@ -608,24 +621,8 @@ class CompetitionSupervisor(Node):
             self._fail('common base prerequisite lost: ' + self._base_loss_reason())
             return
 
-        # ``stage3`` is started through a separate ``ros2 launch`` process.
-        # That wrapper can remain alive briefly while launch tears down after
-        # the navigator node has already shut down.  The node disappearance is
-        # the authoritative self-exit signal; waiting on the wrapper alone can
-        # incorrectly trip the completion deadline.
-        if (
-            self.lifecycle_state == 'stage3_complete_wait_exit'
-            and not self._stage_node_alive('stage3')
-        ):
-            self._task('S3 self-exit confirmed (stage node disappeared)')
-            self._finish()
-            return
-
         if self._handoff_deadline is not None and time.monotonic() > self._handoff_deadline:
-            if self.lifecycle_state == 'stage3_complete_wait_exit':
-                self._fail('S3 reported complete but did not self-exit before deadline')
-            else:
-                self._fail(f'{self.lifecycle_state} timed out before new stage command')
+            self._fail(f'{self.lifecycle_state} timed out before new stage command')
             return
 
         for stage in ('stage1', 'stage2', 'stage3'):
@@ -644,9 +641,6 @@ class CompetitionSupervisor(Node):
                 ):
                     self._handoff_deadline = None
                 continue
-            if stage == 'stage3' and self.lifecycle_state == 'stage3_complete_wait_exit':
-                self._finish()
-                return
             pre_motion = self.active_stage != stage
             if pre_motion and self._restart_count[stage] < int(self.get_parameter('restart_limit').value):
                 self._restart_count[stage] += 1
@@ -661,10 +655,15 @@ class CompetitionSupervisor(Node):
         for _ in range(10):
             self._cmd_pub.publish(Twist())
 
-    def _terminate_process(self, process):
+    def _terminate_process(self, process, shutdown_grace_sec=None):
         if process is None or process.poll() is not None:
             return
-        for sig, timeout in ((signal.SIGINT, float(self.get_parameter('shutdown_grace_sec').value)), (signal.SIGTERM, 2.0), (signal.SIGKILL, 0.5)):
+        if shutdown_grace_sec is None:
+            try:
+                shutdown_grace_sec = float(self.get_parameter('shutdown_grace_sec').value)
+            except Exception:
+                shutdown_grace_sec = 3.0
+        for sig, timeout in ((signal.SIGINT, shutdown_grace_sec), (signal.SIGTERM, 2.0), (signal.SIGKILL, 0.5)):
             try:
                 os.killpg(process.pid, sig)
                 process.wait(timeout=timeout)
@@ -673,17 +672,38 @@ class CompetitionSupervisor(Node):
                 continue
 
     def _cleanup_child_processes(self):
-        if self._child_cleanup_done:
-            return
-        self._child_cleanup_done = True
-        for process in self._processes.values():
-            self._terminate_process(process)
+        with self._child_cleanup_lock:
+            if self._child_cleanup_done:
+                return
+            self._child_cleanup_done = True
+            processes = tuple(self._processes.values())
+            try:
+                shutdown_grace_sec = float(self.get_parameter('shutdown_grace_sec').value)
+            except Exception:
+                shutdown_grace_sec = 3.0
+
+        # Context shutdown callbacks run synchronously.  Waiting here for a
+        # child launch wrapper would keep rclpy.spin() alive and prevent the
+        # top-level launch from seeing Supervisor exit.  The worker sends the
+        # normal signal sequence independently; the parent-death signal on
+        # each wrapper remains the final fallback when this process exits.
+        def worker():
+            for process in processes:
+                self._terminate_process(process, shutdown_grace_sec)
+
+        thread = threading.Thread(
+            target=worker,
+            name='competition-child-group-cleanup',
+            daemon=True,
+        )
+        thread.start()
 
     def _fail(self, reason):
         if self._finalizing:
             return
         self._finalizing = True
         self.base_state = 'failed'
+        self._set_competition_phase(0)
         self.lifecycle_state = 'failed'
         self.reason = reason
         self._publish_zero()
@@ -691,21 +711,26 @@ class CompetitionSupervisor(Node):
         self._error(reason)
         self._cleanup_child_processes()
         self._timer.cancel()
-        # A failed session must still terminate its parent launch after the
-        # mandatory zero-speed protection and child-process cleanup.
-        rclpy.shutdown()
+        # Do not call rclpy.shutdown() here.  On Humble it can block inside a
+        # callback and prevent this process exit from reaching launch.
+        os._exit(1)
 
     def _finish(self):
         self._finalizing = True
+        self._set_competition_phase(0)
         self.active_stage = ''
         self.prewarming_stage = ''
         self.lifecycle_state = 'finished'
-        self.reason = 'S3 self-exit confirmed; closing common base layer'
+        self.reason = 'S3 reported complete; closing common base layer'
         self._publish_zero()
         self._publish_state()
         self._task('competition complete; Supervisor exits and top-level launch closes base layer')
         self._timer.cancel()
-        rclpy.shutdown()
+        # Do not call rclpy.shutdown() from this callback.  It can block
+        # before os._exit() runs, which leaves the top-level launch alive.
+        # The Supervisor Node's on_exit handler is the single owner of the
+        # resulting top-level Shutdown event.
+        os._exit(0)
 
     def destroy_node(self):
         # Ctrl+C and failure use the independent zero-speed publisher before

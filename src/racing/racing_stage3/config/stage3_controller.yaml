@@ -1,483 +1,58 @@
-# ================================================================================
-# Stage3 回P点导航配置 (stage3_return_navigator)
-# ================================================================================
-# 功能模块：
-#   1. 锚点后的单目标地图搜索（生产）
-#   2. S1 风格激光聚类避障（forward → avoiding → countersteering → recovering）
-#   3. P 终点语义确认、墙角锚定与受限短程终停（生产）
-#   4. A* 全局路径规划（可选能力，生产配置关闭）
-# ================================================================================
-
+# Stage3: MAP_SEARCH -> VISUAL_APPROACH -> TERMINAL_COMMIT -> COMPLETE
 stage3_return_navigator:
   ros__parameters:
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 话题配置 (Topic Configuration)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 二维码确定的绕行方向；用于 S3 入场导航配置选择
-    direction_topic: competition_qr_task
-
-    # S2 在交权时发布的 map 锚点。S3 锁存交接时 map<-odom 的旋转，
-    # 再以该锚点加旋转后的 /odom_combined 平移增量定位；不在运行中重用 map TF 位姿。
-    stage3_entry_anchor_topic: stage3_entry_anchor
-    # S2 最后一条直线发布的预测 A* 起点；仅用于 S2 仍运行时的后台预规划。
-    stage3_preplan_pose_topic: stage3_preplan_pose
-    require_stage3_entry_anchor: true
-    stage3_entry_anchor_max_age_sec: 3.0
-
-    # 里程计话题（仅用于 S2 锚点后的 xy 位移增量；不使用 orientation）
     odom_topic: /odom_combined
-
-    # 激光雷达扫描话题（激光避障）
+    imu_topic: /imu/data
     scan_topic: /scan
-
-    # 速度指令输出话题（发送到底盘）
     cmd_topic: /cmd_vel
-
-    # 状态发布话题（完成信号：'complete'）
     state_topic: stage3_state
-
-    # 反馈话题（状态反馈给 Stage1）
     feedback_topic: competition_feedback
-
-    # 地图话题（栅格地图，用于 A* 规划）
-    map_topic: /map
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 控制频率 (Control Rate)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 主控制循环频率 (Hz)
+    direction_topic: competition_qr_task
+    stage3_entry_anchor_topic: stage3_entry_anchor
+    lifecycle_service_prefix: /competition/stage3
+    require_stage3_entry_anchor: true
+    stage3_entry_map_yaw_deg: -90.0
     control_rate_hz: 20.0
-
-    # S2 放权后立即继承 S2 发布的 map 锚点和原始 IMU 航向接管，不停车、不重新对齐。
     start_delay_sec: 0.0
 
-    # S2 交接末段固定沿 map -Y。S3 activate 时将当时 IMU yaw 对齐到该 map 航向，
-    # 后续航向仍仅使用 IMU 相对转角，绝不使用 /odom orientation。
-    stage3_entry_map_yaw_deg: -90.0
-
-    # 生产 S3 必须等到合法 S2 锚点；transient-local 延迟只记告警，
-    # 当前位姿由锚点与 /odom_combined XY 增量传播，实时 map TF 仅作诊断。
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 路点与目标区域 (Waypoints and Goal Region)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # --- P 视觉搜索终点 (map 全局坐标系) ---
-    # (0.50, 0.10) 是终端锚点采集前的粗导航/等待点；实际终点由下方
-    # 墙角校正模块锁定为 (0.25, 0.10)。P 只确认终点语义，不直接控制车体。
-
-    # 途经路点列表（JSON 格式）
-    # [{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
-    return_waypoints_json: '[{"x":0.50,"y":0.10,"speed":0.65,"description":"P_visual_search_goal"}]'
-
-    # 终端采集等待点容差 (m) — 到达后停车，等待 P 语义和墙角锚点。
-    waypoint_tolerance: 0.25
-
-    # 路径超时 (s) — 超过此时长未到达则任务失败
+    # Map search generates one minimum-radius entry arc, then its tangent
+    # straight segment toward the visual search area.  It never completes on map data.
     path_timeout_sec: 60.0
+    search_target_map_x_m: 0.50
+    search_target_map_y_m: 0.20
+    search_linear_speed: 0.20
+    search_min_turn_radius_m: 0.42
+    search_lookahead_m: 0.35
+    search_angular_slew_rate_rad_s2: 0.90
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Pure Pursuit 路径跟踪 (Pure Pursuit Path Following)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 视觉搜索入口直行速度 (m/s) — 尚未识别到 P 时沿右下方向快速驶入入口。
-    pursuit_linear_speed: 0.42
-
-    # 前视距离 (m) — 追踪路径上前方此距离的点
-    pursuit_lookahead_m: 0.45
-
-    # 大航向差阈值 (°) — 诊断/调参参考；大误差仍沿可实现的转弯弧线行驶。
-    pursuit_heading_stop_deg: 70.0
-
-    # 转向增益 — 曲率 → 角速度增益
-    pursuit_turn_kp: 1.2
-
-    # 转弯最低线速度 (m/s)
-    pursuit_turn_linear_speed: 0.12
-
-    # A* 转弯最小半径 (m)。跟踪时线速度至少为 |angular_z| * 此值，
-    # 避免低速饱和打舵而无法完成大角度转弯。
-    pursuit_min_turn_radius_m: 0.42
-
-    # 起步目标方位预对正：初始目标方位误差达到该值时，先摆正再允许单目标追踪或 P 接管。
-    initial_align_trigger_deg: 30.0
-
-    # 预对正完成容差 (°)。进入此范围后开始单目标直追。
-    initial_align_tolerance_deg: 8.0
-
-    # 预对正角速度 (rad/s) 和线速度 (m/s)。阿克曼底盘须低速前进摆弧，不能原地旋转。
-    initial_align_angular_speed: 0.30
-    initial_align_linear_speed: 0.12
-
-    # 全局最大角速度 (rad/s)
-    max_angular_speed: 0.9
-
-    # 最小角速度 (rad/s) — 防止转速过低
-    min_angular_speed: 0.22
-
-    # ────────────────────────────────────────────────────────────────────────
-    # P 点视觉检测与伺服接近 (P-Mark Visual Detection and Servo Approach)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # --- P 点视觉模型配置 ---
-    # 视觉模型路径（FastDeploy .bin 格式）
+    # P detector and continuous visual steering.
     p_model_path: /home/sunrise/dev_ws/src/racing/racing_stage3/models/best_p.bin
-
-    # 置信度阈值 — 检测置信度 < 此值的 bbox 被过滤
     p_conf_thres: 0.25
-
-    # IoU 阈值 — NMS 去重时的 IoU 阈值
     p_iou_thres: 0.45
-
-    # 图像裁剪比例 — 保留图像下方此比例（0.4 = 下方 40%）
-    p_crop_ratio: 0.4
-
-    # --- P 点视觉伺服参数 ---
-    # 触发视觉接近的置信度阈值 — 检测置信度 > 此值触发视觉接近模式
-    p_approach_conf_threshold: 0.5
-
-    # 连续检测次数阈值 — 连续检测到 P 点此帧数后触发接近（抗抖动）
-    p_approach_consecutive_hits: 2
-
-    # 接近线速度 (m/s) — P 已接近画面中心时的最高速度
-    p_approach_linear_speed: 0.28
-
-    # P 是物理终点。连续稳定的近距居中 P 在贴近车头后消失，即视为到达；
-    # 不再以漂移的 map/里程计坐标继续寻找终点。35% 来自 2026-08-05 实车近距日志。
-    p_terminal_pass_enabled: true
-    p_terminal_pass_fill_ratio: 0.50
-    p_terminal_pass_center_offset: 0.10
-    p_terminal_pass_evidence_hold_sec: 0.20
-
-    # P 检测结果的最大有效年龄 (s)
-    p_detection_timeout_sec: 0.35
-
-    # P 框内 Aurora 对齐深度。进入阈值后切换为低速最终里程段。
-    # Aurora /aurora/depth/image_raw 为 16UC1 毫米值，故比例为 0.001 m/unit。
-    p_depth_logging_enabled: true
-    p_depth_topic: /aurora/depth/image_raw
-    p_depth_unit_scale_m: 0.001
-    p_depth_max_age_sec: 0.25
-    p_depth_min_m: 0.10
-    p_depth_max_m: 4.00
-    # 仅取 P bbox 中心区域，降低边缘背景、空洞和 P 边框的影响。
-    p_depth_roi_fraction: 0.50
-    # P 框内有效深度中位数不大于此值时，锁定当时 IMU 航向并开始
-    # 最终低速里程段；不要求 P 在该段内持续可见。
-    p_depth_stop_distance_m: 0.50
-    # Aurora 近距离深度在 P 框放大后可能出现空洞。若 P 框已占画面较大比例，
-    # 且最近一次有效深度已进入近距离辅助阈值，也允许提前切最终里程段；
-    # 该备用证据只在 P 已连续确认接管后生效。
-    p_final_visual_fill_trigger_ratio: 0.45
-    p_final_visual_depth_assist_m: 0.75
-    p_final_visual_evidence_hold_sec: 0.10
-    p_final_visual_evidence_timeout_sec: 1.20
-    # 深度 ROI 全为空时，持续可见且大于该比例的 P 框也可提交终段。
-    p_final_visual_no_depth_fill_trigger_ratio: 0.45
-    p_approach_slow_linear_speed: 0.16
-    p_final_odom_travel_m: 0.50
-    # 最终段按当前下发速度预留制动距离：v*响应时间 + v^2/(2*减速度) + 余量。
-    # 进入制动窗立即发零速，完成允许落在该受控窗内，避免指令滞后越过 P 点。
-    p_final_brake_response_sec: 0.12
-    p_final_brake_decel_mps2: 0.80
-    p_final_brake_margin_m: 0.015
-    p_final_completion_tolerance_m: 0.040
-    # 终段只做小幅航向保持。若已经顶到终点墙导致 odom 不再增长，
-    # 且已完成最低可信终段距离，则立即停车并发布 complete，避免持续顶墙绕圈。
-    p_final_heading_tolerance_deg: 10.0
-    p_final_heading_max_angular_speed: 0.12
-    p_final_progress_min_delta_m: 0.015
-    p_final_progress_timeout_sec: 0.75
-    p_final_stall_completion_min_m: 0.25
-
-    # 进入最终里程段时取消普通和紧急雷达避障，避免 P/终点墙抢占控制。
-    p_approach_disable_avoidance_distance_m: 0.50
-
-    # P 偏移滤波用于视觉航向重捕获，而不是逐帧直接打舵。
-    p_approach_offset_filter_alpha: 0.55
-
-    # 首次识别 P 即按框偏差锁定 IMU 目标航向，随后直线保持。
-    # 相对上次锁定偏差变化超过该阈值并经过最短间隔后，才更新一次目标航向。
-    p_heading_bearing_gain_rad: 0.35
-    p_heading_kp: 1.0
-    p_heading_tolerance_deg: 3.0
-    p_heading_max_angular_speed: 0.30
-    p_heading_reacquire_offset: 0.25
-    p_heading_reacquire_interval_sec: 0.80
-    # 单次视觉框跳变最多只改变该角度，避免目标航向突然跳变造成猛转。
-    p_heading_reacquire_max_delta_deg: 4.0
-
-    # 锚点后的 map/odom 位置会随长距离回程漂移，禁止把固定地图坐标作为
-    # 生产完成条件或继续驱车的兜底；仅保留代码供离线诊断。
-    terminal_fallback_enabled: false
-    terminal_fallback_tolerance_m: 0.12
-    terminal_fallback_linear_speed: 0.24
-    terminal_fallback_max_angular_speed: 0.35
-    terminal_fallback_heading_kp: 1.4
-    terminal_fallback_completion_hold_sec: 0.30
-
-    # P 偶发丢帧时先短暂停车等待视觉恢复；持续丢失后才倒退并恢复到地图搜索点。
-    p_loss_grace_period_sec: 0.45
-    p_loss_reverse_speed: 0.14
-    p_loss_reverse_duration_sec: 2.00
-    p_loss_reverse_max_angular: 0.42
-    # P 丢失时取此前该时长的有效 P 画面对应 IMU 航向作为回转目标。
-    p_loss_heading_lookback_sec: 1.0
-    p_loss_heading_tolerance_deg: 6.0
-    p_loss_heading_kp: 1.2
-    # P 视觉接近阶段仍必须避开真实障碍。若持续下发前进但 /odom_combined
-    # 没有有效 xy 推进，判定车体已顶住障碍，复用紧急倒车带转向脱困。
-    # 该保护只在最终 0.5m 里程段之前生效；最终段仍屏蔽雷达误触发。
-    p_approach_stall_reverse_enabled: true
-    p_approach_progress_min_delta_m: 0.015
-    p_approach_progress_timeout_sec: 0.75
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 保留墙角终端校正参数供离线调试；生产控制不使用墙角作为完成前置条件。
-    # ────────────────────────────────────────────────────────────────────────
-    # 赛场固定墙角为 map 原点；P 的车体原点终点为 (0.25, 0.10)。
-    # 现场坐标若实测不同，仅调整这四个坐标，不能改用里程计角度。
-    terminal_corner_enabled: false
-    terminal_corner_map_x: 0.00
-    terminal_corner_map_y: 0.00
-    terminal_target_map_x: 0.25
-    terminal_target_map_y: 0.10
-
-    # 仅在接近最终目标后寻找墙角，避免把赛道其他直角结构误作终端。
-    terminal_corner_activation_distance_m: 1.20
-    terminal_corner_max_range_m: 1.80
-    terminal_corner_cluster_gap_m: 0.18
-    terminal_corner_min_points: 8
-    terminal_corner_min_span_m: 0.25
-    terminal_corner_fit_residual_m: 0.030
-    terminal_corner_perpendicular_tolerance_deg: 25.0
-    # 大幅 map 平移通常意味着误锁了其他 L 形结构，拒绝而不是盲行补偿。
-    terminal_corner_max_correction_m: 0.55
-    terminal_corner_source_axis_jump_deg: 18.0
-    # 终点图为 map 轴对齐墙角；候选必须同时符合两条无向墙轴。
-    terminal_corner_expected_axes_deg_json: '[0.0, 90.0]'
-    terminal_corner_expected_axis_tolerance_deg: 15.0
-    terminal_corner_lock_hold_sec: 0.45
-    terminal_corner_filter_alpha: 0.35
-    # 连续候选推导出的 map 平移必须稳定，防止扫描分簇跳到其他墙角。
-    terminal_corner_correction_stability_m: 0.06
-
-    # 仅在距最终目标该范围内接受 P 作为终点语义确认，并关闭所有通用
-    # 激光避障/紧急倒车。此范围必须覆盖墙角仍可稳定拟合的位置。
-    terminal_acquire_distance_m: 1.20
-
-    # P 语义和墙角均锁定后，先以低速追终点方位；只有进入短程半径且
-    # 航向误差进入门限才冻结目标航向，随后用 /odom_combined xy 盲行。
-    terminal_corner_commit_max_distance_m: 0.65
-    terminal_precommit_linear_speed: 0.06
-    terminal_precommit_heading_kp: 1.2
-    terminal_precommit_heading_max_angular_speed: 0.25
-    terminal_precommit_heading_tolerance_deg: 6.0
-    terminal_corner_approach_speed: 0.12
-    terminal_corner_heading_kp: 1.4
-    terminal_corner_heading_max_angular_speed: 0.30
-    terminal_corner_stop_tolerance_m: 0.035
-    terminal_corner_lateral_tolerance_m: 0.060
-    # 短程一旦偏离进场线，不允许继续推进等待最终横向误差变大。
-    terminal_lateral_guard_m: 0.090
-    terminal_corner_max_extra_travel_m: 0.08
-    # 非零命令下 /odom_combined xy 无推进，立即停止并上报 guard。
-    terminal_progress_min_delta_m: 0.015
-    terminal_progress_timeout_sec: 0.75
-    # 目标坐标连续满足后保持停车时长，防止单帧里程计跨越即上报完成。
-    terminal_completion_hold_sec: 0.30
-    # 保留兼容参数；生产终端采集区和提交短程均不允许紧急倒车。
-    terminal_corner_disable_emergency_avoidance: true
-
-    # Stage3 专用 Web 端口 — HTTP 实时预览端口（避免与 Stage2 冲突）
+    p_crop_ratio: 0.40
     p_web_port: 8083
+    p_detection_timeout_sec: 0.35
+    p_approach_conf_threshold: 0.50
+    p_approach_consecutive_hits: 2
+    p_approach_linear_speed: 0.30
+    p_approach_min_linear_speed: 0.18
+    p_offset_filter_alpha: 0.55
+    p_centering_angular_gain: 0.52
+    p_centering_max_angular_speed: 0.38
+    p_centering_slew_rate_rad_s2: 0.70
+    p_centering_slow_offset: 0.20
+    p_visual_loss_grace_sec: 0.45
 
-    # ────────────────────────────────────────────────────────────────────────
-    # 激光聚类避障 (Lidar Clustering Obstacle Avoidance - 4-State)
-    # ────────────────────────────────────────────────────────────────────────
+    # Wide terminal acceptance: half-body occupancy is sufficient; no late turn.
+    terminal_conf_threshold: 0.50
+    terminal_fill_ratio: 0.35
+    terminal_center_offset: 0.40
+    terminal_evidence_hold_sec: 0.15
+    terminal_linear_speed: 0.14
+    terminal_loss_hold_sec: 0.35
 
-    # --- 避障动作参数 ---
-    # 避障线速度 (m/s) — 避障期间前进速度
-    avoid_linear_speed: 0.16
-
-    # 避障角速度 (rad/s) — 转向速度（根据障碍物方向选择±）
-    avoid_angular_speed: 0.80
-
-    # 避障最小持续时间 (s)
-    avoid_min_duration_sec: 0.70
-
-    # 障碍清除保持时间 (s) — 障碍清除后需保持此时长才切换状态
-    avoid_clear_hold_sec: 0.25
-
-    # 避障最小转向角度 (°) — 相对初始航向至少转过此角度
-    avoid_min_turn_angle_deg: 18.0
-
-    # 明显左前障碍才硬性偏向右绕；其余情况由下方目标趋近评分选择绕行侧。
-    avoid_right_turn_left_obstacle_angle_deg: 15.0
-
-    # 对当前 P 视觉搜索目标评估左右绕行后的航向，选择更接近目标的一侧。
-    # 明确朝障碍同侧转入时加入安全惩罚，避免为了靠近目标切入近障。
-    avoid_goal_bias_enabled: true
-    avoid_obstacle_side_penalty: 3.5
-
-    # 安全距离 (m) — 障碍物距离 < 此值触发避障
-    avoid_safe_distance: 0.50
-
-    # 清除距离 (m) — 障碍物距离 > 此值视为清除
-    avoid_clear_distance: 0.65
-
-    # 紧急近障距离 (m) — 命中后限时倒车并带反向侧转，再重新进入常规避障。
-    emergency_stop_distance: 0.30
-    emergency_reverse_speed: 0.20
-    emergency_reverse_duration_sec: 1.20
-    emergency_reverse_angular_speed: 0.35
-
-    # --- 反舵阶段 (Counter Steering) ---
-    # 反舵线速度 (m/s)
-    counter_steer_linear_speed: 0.16
-
-    # 反舵角速度 (rad/s)
-    counter_steer_angular_speed: 0.95
-
-    # 反舵持续时间缩放系数 — 反舵时长 = 避障时长 × 此系数
-    counter_steer_duration_scale: 1.35
-
-    # 反舵最小持续时间 (s)
-    counter_steer_min_duration_sec: 0.45
-
-    # 反舵最大持续时间 (s)
-    counter_steer_max_duration_sec: 1.20
-
-    # --- 恢复阶段 (Recovery) ---
-    # 恢复线速度 (m/s) — 直行恢复速度
-    recovery_linear_speed: 0.18
-
-    # 恢复转弯线速度 (m/s) — 转弯修正时的前进速度
-    recovery_turn_linear_speed: 0.12
-
-    # 恢复角速度 (rad/s) — 基于时间的恢复转向速度
-    recovery_angular_speed: 0.75
-
-    # 恢复航向比例增益 — 航向误差 → 角速度修正增益
-    recovery_heading_kp: 2.4
-
-    # 恢复最大角速度 (rad/s)
-    recovery_max_angular_speed: 1.1
-
-    # 恢复最小角速度 (rad/s)
-    recovery_min_angular_speed: 0.5
-
-    # 原地转向角度阈值 (°) — 航向误差 < 此值时边走边转，否则原地转
-    recovery_in_place_angle_deg: 8.0
-
-    # 恢复到原始 IMU 航向的完成容差，与 S1 保持一致
-    heading_tolerance_deg: 6.0
-
-    # 恢复超时 (s) — 恢复阶段最长时间
-    recovery_timeout: 2.5
-
-    # 恢复持续时间缩放 — 基于避障时长估算恢复时长
-    recovery_duration_scale: 0.9
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 激光聚类窗口 (Lidar Clustering Window)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 窗口最小 X 距离 (m) — 距车体前端的近界
-    window_min_x: 0.18
-
-    # 窗口最大 X 距离 (m) — 距车体前端的远界
-    window_max_x: 0.85
-
-    # 窗口半宽 (m) — Y 方向±半宽，形成矩形检测区域
-    window_half_width: 0.22
-
-    # 避障转向期间使用 S1 的近场紧急窗口
-    emergency_window_min_x: 0.08
-    emergency_window_max_x: 0.45
-    emergency_window_half_width: 0.12
-    emergency_min_cluster_points: 2
-
-    # 聚类间隙容差 (m) — 点云间距 < 此值视为同一障碍物
-    cluster_gap_tolerance: 0.12
-
-    # 最小聚类点数 — 点数 < 此值的聚类被过滤
-    min_cluster_points: 3
-
-    # 最小聚类宽度 (m) — 宽度 < 此值的聚类被过滤（噪声）
-    min_cluster_width: 0.06
-
-    # 最大聚类宽度 (m) — 与 S1 保持一致
-    max_cluster_width: 0.55
-
-    # 最小有效量程 (m) — 激光点距离 < 此值视为无效
-    min_valid_range: 0.15
-
-    # ────────────────────────────────────────────────────────────────────────
-    # A* 全局路径规划 (A* Global Path Planner)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 生产返程使用“右下视觉搜索入口 + S1 雷达避障”，不使用漂移敏感 A*。
-    use_global_planner: false
-
-    # 全局坐标系名称
-    global_frame_id: map
-
-    # --- 栅格参数 (Grid Parameters) ---
-    # 地图降采样倍率 — 每 N×N 个栅格合并为 1 个
-    planner_downsample: 4
-
-    # 占据阈值 (0-100) — 栅格值 ≥ 此阈值视为障碍物
-    planner_occupied_threshold: 50
-
-    # 未知区域视为占据 — false: Stage3 地图已建好，未知区域可通行
-    planner_unknown_is_occupied: false
-
-    # 静态障碍物膨胀半径 (m)
-    planner_obstacle_inflation_m: 0.14
-
-    # A* 只使用静态地图；雷达仅进入下方聚类避障状态机，不注入全局栅格。
-    # 固定路径明显偏离后才重新规划，避免每周期改变前视点。
-    planner_path_deviation_replan_m: 0.35
-
-    # 空值表示直接使用 /map 的真实黑色占据栅格，禁止用粗略矩形替代地图。
-    planner_forbidden_rectangles_json: '[]'
-
-    # /map 中仅供视觉参考、不参与 S3 规划的图案。坐标为 map 半开矩形。
-    # 此区域覆盖上方 U 形外框及中部横条；下方两块真实黑区仍由原始地图保留。
-    planner_clear_rectangles_json: '[{"x_min":0.45,"x_max":4.60,"y_min":2.90,"y_max":4.80}]'
-
-    # 当前位置落入黑区/膨胀安全边界时，沿当前航向负速度退回自由区后重新 A*
-    planner_forbidden_reverse_speed: 0.10
-    planner_forbidden_reverse_distance_m: 0.30
-    planner_forbidden_reverse_timeout_sec: 5.0
-
-    # 连续固定倒车后仍命中禁区时停车并发布 planner_forbidden_recovery_failed。
-    planner_forbidden_reverse_max_attempts: 3
-
-    # ────────────────────────────────────────────────────────────────────────
-    # Stage3 通道 YOLO（生产返程禁用）
-    # ────────────────────────────────────────────────────────────────────────
-
-    # Stage3 继承 Stage1/map_overlay 发布的 map<-base TF，禁止在本节点重置 map 原点。
-    # 生产返程由 Supervisor activate 后立即交给 A* 控制；禁止前置通道 YOLO 阻塞或自行驱动。
-    # P YOLO 从 S3 activate 开始即可接管，但雷达避障始终拥有更高控制优先级。
-    stage3_channel_yolo_enabled: false
-    stage3_channel_model_path: /home/sunrise/dev_ws/best_rdk_tongdao.bin
-    stage3_channel_camera_topic: /aurora/rgb/image_raw
-    stage3_channel_conf_thres: 0.25
-    stage3_channel_iou_thres: 0.45
-    stage3_channel_preview_path: /tmp/stage3_channel_yolo.jpg
-
-    # YOLO 中心接近控制与到达判据；不要求固定 IMU 航向
-    stage3_channel_linear_speed: 0.10
-    stage3_channel_angular_kp: 0.55
-    stage3_channel_max_angular: 0.25
-    stage3_channel_offset_deadband: 0.05
-    stage3_channel_offset_tolerance: 0.08
-    stage3_channel_fill_ratio: 0.20
-    stage3_channel_consecutive_hits: 3
-    stage3_channel_timeout_sec: 14.0
+    # Unknown obstacles are safety holds during MAP_SEARCH only.
+    search_emergency_distance_m: 0.28
+    search_emergency_half_width_m: 0.12
+    search_emergency_min_x_m: 0.08
+    search_emergency_max_x_m: 0.45

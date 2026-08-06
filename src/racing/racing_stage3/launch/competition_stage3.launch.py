@@ -34,7 +34,6 @@ def generate_launch_description():
         default_value='/cmd_vel',
         description='Stage3 command output; production uses the direct /cmd_vel owner',
     )
-    standby_arg = DeclareLaunchArgument('standby', default_value='true')
     standalone_map_overlay_arg = DeclareLaunchArgument(
         'standalone_map_overlay',
         default_value='false',
@@ -113,12 +112,7 @@ def generate_launch_description():
         parameters=[
             stage3_config,  # 统一配置文件
             {
-                'test_direction': LaunchConfiguration('test_direction'),
                 'cmd_topic': LaunchConfiguration('cmd_topic'),
-                'standby': LaunchConfiguration('standby'),
-                'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
-                'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
-                'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
             }
         ],
         output='log',
@@ -145,7 +139,6 @@ def generate_launch_description():
         carto_slam_arg,
         test_direction_arg,
         cmd_topic_arg,
-        standby_arg,
         standalone_map_overlay_arg,
         include_map_overlay_arg,
         enable_test_publisher_arg,

@@ -5,7 +5,7 @@ vision_models:
   ark:
     enabled: true
     provider: ark
-    base_rl: "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    base_url: "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
     api_key: ""
     api_key_env: "ark-api-key"
     model_id: "doubao-seed-2-0-mini-260428"

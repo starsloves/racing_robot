@@ -52,7 +52,8 @@ def _stage1_map_to_odom_defaults(config_path):
     return (
         str(params['map_to_odom_x']),
         str(params['map_to_odom_y']),
-        str(math.radians(float(params['imu_initial_map_yaw_deg']))),
+        str(math.radians(float(params['map_to_odom_yaw_deg']))),
+        float(params['initial_map_heading_deg']),
     )
 
 
@@ -72,6 +73,7 @@ def generate_launch_description():
         map_to_odom_x_default,
         map_to_odom_y_default,
         map_to_odom_yaw_default,
+        initial_map_heading_default,
     ) = _stage1_map_to_odom_defaults(stage1_config_path)
 
     device_arg = DeclareLaunchArgument('device', default_value='/dev/video0')
@@ -101,17 +103,17 @@ def generate_launch_description():
     map_to_odom_x_arg = DeclareLaunchArgument(
         'map_to_odom_x',
         default_value=map_to_odom_x_default,
-        description='Stage1 start X position in map frame'
+        description='Static map->odom translation X (m)'
     )
     map_to_odom_y_arg = DeclareLaunchArgument(
         'map_to_odom_y',
         default_value=map_to_odom_y_default,
-        description='Stage1 start Y position in map frame'
+        description='Static map->odom translation Y (m)'
     )
     map_to_odom_yaw_arg = DeclareLaunchArgument(
         'map_to_odom_yaw',
         default_value=map_to_odom_yaw_default,
-        description='Stage1 start yaw in map frame (rad, derived from imu_initial_map_yaw_deg)'
+        description='Static map->odom rotation (rad, derived from map_to_odom_yaw_deg)'
     )
     test_direction_arg = DeclareLaunchArgument(
         'test_direction',
@@ -182,6 +184,29 @@ def generate_launch_description():
         output='log',
     )
 
+    # Runs only with S1, publishes diagnostics only, and self-terminates when
+    # the controller latches competition_qr_task after a successful QR scan.
+    corner_diagnostic_node = Node(
+        package='racing_tools',
+        executable='start_corner_pose_diagnostic',
+        name='start_corner_pose_diagnostic',
+        parameters=[
+            os.path.join(
+                get_package_share_directory('racing_tools'),
+                'config', 'start_corner_pose_diagnostic.yaml',
+            ),
+            {
+                'configured_map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
+                'configured_map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
+                'configured_map_to_odom_yaw_deg': PythonExpression([
+                    'float(', LaunchConfiguration('map_to_odom_yaw'), ') * 180.0 / ', str(math.pi),
+                ]),
+                'configured_initial_map_heading_deg': initial_map_heading_default,
+            },
+        ],
+        output='log',
+    )
+
     # Process output remains off the terminal, while ROS keeps complete
     # startup and failure diagnostics in this stage's runtime log directory.
     runtime_ros_log_dir = SetEnvironmentVariable(
@@ -217,6 +242,7 @@ def generate_launch_description():
         test_publisher,
         base_launch,
         lidar_launch,
+        corner_diagnostic_node,
         controller_node,
         RegisterEventHandler(OnProcessStart(
             target_action=controller_node,

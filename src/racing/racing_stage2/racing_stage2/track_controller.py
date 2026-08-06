@@ -56,6 +56,9 @@ class TrackCommand:
     arc_damping_angular: float = 0.0
     arc_cutoff_active: bool = False
     arc_completion_reason: str = ''
+    vision_lateral_error: float = 0.0
+    vision_cross_angular: float = 0.0
+    vision_confirm_frames: int = 0
 
 
 class ImuDistancePose:
@@ -222,8 +225,14 @@ class Stage2TrackController:
                  vision_max_age_sec: float = 0.60,
                  vision_max_frame_delta: float = 0.25,
                  vision_opposition_threshold: float = 0.08,
+                 vision_max_heading_delta: float = 0.18,
                  vision_camera_offset: float = 0.0,
                  vision_max_angular_step: float = 0.12,
+                 vision_filter_alpha: float = 0.35,
+                 vision_cross_deadband_m: float = 0.10,
+                 vision_cross_full_scale_m: float = 0.25,
+                 vision_cross_gain: float = 0.25,
+                 vision_min_response_ratio: float = 0.35,
                  lookahead_m: float = 0.45,
                  heading_slowdown_deg: float = 10.0,
                  finish_tolerance_m: float = 0.10):
@@ -232,9 +241,9 @@ class Stage2TrackController:
         self.corner_speed = max(0.02, corner_speed)
         self.heading_kp = max(0.1, stanley_heading_kp)
         self.line_heading_kp = max(0.1, line_heading_kp)
-        # Kept in the constructor for launch compatibility. Inertial
-        # cross-track is not a valid lateral measurement and is never used
-        # for steering; only a validated visual offset may affect a line.
+        # Kept in the constructor for launch compatibility. The line controller
+        # uses XY only as a relative displacement from the current segment's
+        # start; IMU remains the sole source of every heading and turn angle.
         self.cross_kp = max(0.0, stanley_cross_kp)
         self.max_angular = max(0.1, max_angular)
         def arc_speed(value: Optional[float], fallback: float) -> float:
@@ -359,8 +368,14 @@ class Stage2TrackController:
         self.vision_max_age_sec = max(0.05, min(2.0, vision_max_age_sec))
         self.vision_max_frame_delta = max(0.01, min(1.0, vision_max_frame_delta))
         self.vision_opposition_threshold = max(0.0, min(1.0, vision_opposition_threshold))
+        self.vision_max_heading_delta = max(0.0, min(1.0, vision_max_heading_delta))
         self.vision_camera_offset = max(-0.50, min(0.50, vision_camera_offset))
         self.vision_max_angular_step = max(0.01, min(self.max_angular, vision_max_angular_step))
+        self.vision_filter_alpha = max(0.05, min(1.0, vision_filter_alpha))
+        self.vision_cross_deadband = max(0.0, vision_cross_deadband_m)
+        self.vision_cross_full_scale = max(0.01, vision_cross_full_scale_m)
+        self.vision_cross_gain = max(0.0, vision_cross_gain)
+        self.vision_min_response_ratio = max(0.0, min(1.0, vision_min_response_ratio))
         self.distance_tolerance = 0.025
         self.max_arc_overrun_m = 0.16
         self.max_line_overrun_m = 0.12
@@ -382,10 +397,13 @@ class Stage2TrackController:
         self._entry_boundary_angle_deg = 90.0
         self._clockwise = True
         self._vision_last_timestamp = 0.0
-        self._vision_confirmed_frames = 0
-        self._vision_last_lateral = None
         self._vision_lateral_active = False
         self._vision_last_angular = 0.0
+        self._vision_filtered_lateral: Optional[float] = None
+        self._vision_filtered_heading = 0.0
+        self._vision_cross_angular = 0.0
+        self._vision_confirmed_frames = 0
+        self._vision_candidate_lateral = 0.0
 
     def _build_specs(self, clockwise: bool) -> List[_SegmentSpec]:
         sign = -1.0 if clockwise else 1.0
@@ -539,70 +557,107 @@ class Stage2TrackController:
 
     def _reset_line_vision_state(self) -> None:
         self._vision_last_timestamp = 0.0
-        self._vision_confirmed_frames = 0
-        self._vision_last_lateral = None
+        self._clear_visual_line_response()
+
+    def _clear_visual_line_response(self) -> None:
         self._vision_lateral_active = False
         self._vision_last_angular = 0.0
+        self._vision_filtered_lateral = None
+        self._vision_filtered_heading = 0.0
+        self._vision_cross_angular = 0.0
+        self._vision_confirmed_frames = 0
+        self._vision_candidate_lateral = 0.0
 
-    def _visual_line_angular(self, visual) -> float:
-        """Return a robust visual assist for a straight segment.
+    def _visual_line_angular(self, visual, cross_track: float) -> float:
+        """Return a confirmed near-field visual correction for a line.
 
-        Near-field centerline error estimates lateral displacement.  The
-        far-minus-near term estimates heading relative to the lane.  A raw
-        mixed image-center error cannot distinguish those two effects and can
-        pull the vehicle away from a straight after a corner.
+        ``cross_track`` is integrated from wheel distance and IMU yaw. It is
+        useful for diagnostics, but is not an independent lateral measurement:
+        a residual exit-turn yaw makes it move with the same sign as an image
+        perspective error. It must therefore never validate or amplify the
+        camera correction.
         """
+        del cross_track
         fresh = (
             bool(visual and visual.get('valid', False))
             and float(visual.get('age', 999.0) or 999.0) <= self.vision_max_age_sec
             and float(visual.get('confidence', 0.0) or 0.0) >= 0.35
         )
         if not fresh:
-            self._vision_confirmed_frames = 0
-            self._vision_last_lateral = None
-            self._vision_lateral_active = False
-            self._vision_last_angular = 0.0
+            self._clear_visual_line_response()
             return 0.0
 
         near = float(visual.get('near_error', visual.get('error', 0.0)) or 0.0)
         far = float(visual.get('far_error', visual.get('error', 0.0)) or 0.0)
-        lateral = max(-1.0, min(1.0, near - self.vision_camera_offset))
-        heading = max(-1.0, min(1.0, far - near))
-        opposed = near * far < 0.0 and min(abs(near), abs(far)) >= self.vision_opposition_threshold
+        # Near-field error is the only lateral measurement. Far-field error
+        # mostly describes perspective/path heading and must not move a
+        # straight-line chassis by itself.
+        raw_lateral = max(-1.0, min(1.0, near - self.vision_camera_offset))
         timestamp = float(visual.get('timestamp', 0.0) or 0.0)
-
-        # Count only new inference frames.  A 20 Hz control loop must not turn
-        # one SEG frame into three confirmations.
         is_new_frame = timestamp > self._vision_last_timestamp + 1e-6
-        if is_new_frame:
-            stable = (
-                not opposed
-                and (self._vision_last_lateral is None
-                     or abs(lateral - self._vision_last_lateral) <= self.vision_max_frame_delta)
-            )
-            self._vision_confirmed_frames = self._vision_confirmed_frames + 1 if stable else 0
-            self._vision_last_lateral = lateral if stable else None
-            self._vision_last_timestamp = timestamp
-
-        if opposed or self._vision_confirmed_frames < self.vision_confirm_frames:
-            self._vision_lateral_active = False
-            self._vision_last_angular = 0.0
+        opposed = near * far < 0.0 and min(abs(near), abs(far)) >= self.vision_opposition_threshold
+        if opposed:
+            self._clear_visual_line_response()
             return 0.0
-
-        # Hold the result between inference frames.  This makes the angular
-        # slew limit a property of the SEG stream, not of the faster control
-        # timer that consumes it.
-        if not is_new_frame:
-            return self._vision_last_angular
 
         threshold = (
             self.vision_lateral_release_deadband if self._vision_lateral_active
             else self.vision_lateral_deadband
         )
-        lateral_term = lateral if abs(lateral) >= threshold else 0.0
-        self._vision_lateral_active = abs(lateral_term) > 0.0
-        raw = -0.8 * self.vision_lateral_weight * self.vision_lateral_scale_m * lateral_term
-        raw -= self.vision_heading_gain * heading
+        if abs(raw_lateral) <= threshold:
+            self._clear_visual_line_response()
+            return 0.0
+
+        # Count only distinct frames. A valid frame that changes side or jumps
+        # by more than the configured frame delta starts a new candidate, so a
+        # transient segmentation shift cannot create a turn command.
+        if is_new_frame:
+            same_candidate = (
+                self._vision_confirmed_frames > 0
+                and raw_lateral * self._vision_candidate_lateral > 0.0
+                and abs(raw_lateral - self._vision_candidate_lateral)
+                <= self.vision_max_frame_delta
+            )
+            self._vision_confirmed_frames = (
+                self._vision_confirmed_frames + 1 if same_candidate else 1
+            )
+            self._vision_candidate_lateral = raw_lateral
+            self._vision_last_timestamp = timestamp
+
+        if self._vision_confirmed_frames < self.vision_confirm_frames:
+            self._vision_lateral_active = False
+            self._vision_last_angular = 0.0
+            self._vision_filtered_lateral = None
+            self._vision_cross_angular = 0.0
+            return 0.0
+
+        if is_new_frame:
+            if self._vision_filtered_lateral is None:
+                self._vision_filtered_lateral = raw_lateral
+            else:
+                alpha = self.vision_filter_alpha
+                # A decreasing error can release steering immediately; a
+                # growing error remains filtered to avoid a single-frame kick.
+                if abs(raw_lateral) < 0.5 * abs(self._vision_filtered_lateral):
+                    alpha = max(alpha, min(1.0, 2.0 * alpha))
+                self._vision_filtered_lateral += alpha * (
+                    raw_lateral - self._vision_filtered_lateral
+                )
+
+        lateral = self._vision_filtered_lateral or 0.0
+        lateral_excess = math.copysign(max(0.0, abs(lateral) - threshold), lateral)
+        if not lateral_excess:
+            self._clear_visual_line_response()
+            return 0.0
+        self._vision_lateral_active = True
+
+        # The camera alone supplies the correction. IMU heading and yaw-rate
+        # damping remain responsible for the exit-turn transient.
+        raw = -self.vision_lateral_weight * self.vision_lateral_scale_m * lateral_excess
+        self._vision_cross_angular = 0.0
+
+        if not is_new_frame:
+            return self._vision_last_angular
         target = max(-self.vision_correction_max_angular,
                      min(self.vision_correction_max_angular, raw))
         lower = self._vision_last_angular - self.vision_max_angular_step
@@ -617,7 +672,8 @@ class Stage2TrackController:
                  vision_angular=0.0, yaw_rate_damping_angular=0.0,
                  arc_reference_yaw=0.0, arc_final_heading_error=0.0,
                  arc_base_angular=0.0, arc_damping_angular=0.0,
-                 arc_cutoff_active=False, arc_completion_reason=''):
+                 arc_cutoff_active=False, arc_completion_reason='',
+                 vision_lateral_error=0.0, vision_cross_angular=0.0):
         spec = active.spec if active is not None else None
         progress = max(0.0, distance - active.start_distance) if active is not None else 0.0
         return TrackCommand(linear, angular, self.state, distance, cross, heading_error, linear,
@@ -637,7 +693,10 @@ class Stage2TrackController:
                             arc_base_angular,
                             arc_damping_angular,
                             arc_cutoff_active,
-                            arc_completion_reason)
+                            arc_completion_reason,
+                            vision_lateral_error,
+                            vision_cross_angular,
+                            self._vision_confirmed_frames)
 
     def _boundary_ready(self, segment: str, progress: float, visual: Optional[dict],
                         map_x: Optional[float]) -> bool:
@@ -738,11 +797,8 @@ class Stage2TrackController:
         heading_error = wrap_angle(active.start_heading - yaw)
         dx, dy = position[0] - active.start_position[0], position[1] - active.start_position[1]
         inertial_cross = -math.sin(active.start_heading) * dx + math.cos(active.start_heading) * dy
-        visual_angular = self._visual_line_angular(visual)
+        visual_angular = self._visual_line_angular(visual, inertial_cross)
         speed = active.spec.speed_mps
-        # The IMU-distance pose is dead reckoning, not an independent lateral
-        # observation. Its cross value is logged for diagnosis only.  Vision
-        # is the sole lateral correction source once it is fresh/confident.
         heading_angular = self.line_heading_kp * heading_error
         damping_angular = -self.yaw_rate_damping * yaw_rate
         angular = self._clamp_angular(heading_angular + visual_angular + damping_angular)
@@ -771,7 +827,9 @@ class Stage2TrackController:
                              cross=inertial_cross, heading_error=heading_error,
                              line_heading_angular=heading_angular,
                              vision_angular=visual_angular,
-                             yaw_rate_damping_angular=damping_angular)
+                             yaw_rate_damping_angular=damping_angular,
+                             vision_lateral_error=self._vision_filtered_lateral or 0.0,
+                             vision_cross_angular=self._vision_cross_angular)
 
     def _arc_command(self, active, position, yaw, yaw_rate, distance, visual, now):
         turn_sign = 1.0 if active.spec.turn_rad > 0.0 else -1.0

@@ -1,0 +1,31 @@
+start_corner_pose_diagnostic:
+  ros__parameters:
+    # 只读启动标定：后方已知墙角为 map (0,0)，两面墙分别沿 +X 和 +Y。
+    scan_topic: /scan
+    imu_topic: /imu/data
+    odom_topic: /odom_combined
+    qr_task_topic: competition_qr_task
+    diagnostic_topic: start_corner_pose_diagnostic
+    base_frame: base_footprint
+    corner_map_x: 0.0
+    corner_map_y: 0.0
+    yaw_min_deg: 0.0
+    yaw_max_deg: 90.0
+    # 墙角本身在车后，但两条墙从墙角向场地内部延伸时可落在车侧或前方。
+    # 保留全扫描，由后续双墙正交、残差、长度和稳定性门限判定，不能裁掉真墙。
+    rear_half_angle_deg: 180.0
+    min_scan_range_m: 0.15
+    max_scan_range_m: 2.50
+    ransac_iterations: 80
+    max_line_candidates: 8
+    line_inlier_distance_m: 0.025
+    line_fit_rms_max_m: 0.03
+    line_min_span_m: 0.35
+    line_min_points: 12
+    orthogonal_tolerance_deg: 5.0
+    stable_frame_count: 5
+    stable_xy_spread_m: 0.03
+    stable_yaw_spread_deg: 2.0
+    stationary_speed_mps: 0.02
+    imu_stable_samples: 8
+    imu_stable_yaw_deg: 1.0

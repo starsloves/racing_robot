@@ -17,6 +17,7 @@
   <depend>racing_common</depend>
   <depend>qr_scanner</depend>
   <depend>origincar_bringup</depend>
+  <exec_depend>racing_tools</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

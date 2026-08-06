@@ -13,8 +13,16 @@ rclcpp::Node::SharedPtr node_handle = nullptr;
 int main(int argc, char *argv[])
 {
     rclcpp::init(argc, argv);
-    origincar_base Robot_Control;
-    Robot_Control.Control();
+    auto robot_control = std::make_shared<origincar_base>();
+    std::thread control_thread([robot_control]() {
+      robot_control->Control();
+    });
+
+    rclcpp::spin(robot_control);
+
+    if (control_thread.joinable()) {
+      control_thread.join();
+    }
     if (rclcpp::ok()) {
       rclcpp::shutdown();
     }
@@ -43,9 +51,13 @@ float origincar_base::Odom_Trans(uint8_t Data_High,uint8_t Data_Low)
 
 void origincar_base::Akm_Cmd_Vel_Callback(const ackermann_msgs::msg::AckermannDriveStamped::SharedPtr akm_ctl)
 {
-    last_cmd_received_at_ = std::chrono::steady_clock::now();
-    last_cmd_nonzero_ = std::abs(akm_ctl->drive.speed) > 1e-4 ||
-                        std::abs(akm_ctl->drive.steering_angle) > 1e-4;
+    {
+      std::lock_guard<std::mutex> lock(cmd_state_mutex_);
+      last_cmd_received_at_ = std::chrono::steady_clock::now();
+      last_cmd_nonzero_ = std::abs(akm_ctl->drive.speed) > 1e-4 ||
+                          std::abs(akm_ctl->drive.steering_angle) > 1e-4;
+    }
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     short  transition;
   
     Send_Data.tx[0]=FRAME_HEADER;
@@ -74,10 +86,14 @@ void origincar_base::Akm_Cmd_Vel_Callback(const ackermann_msgs::msg::AckermannDr
 
 void origincar_base::Cmd_Vel_Callback(const geometry_msgs::msg::Twist::SharedPtr twist_aux)
 {
-    last_cmd_received_at_ = std::chrono::steady_clock::now();
-    last_cmd_nonzero_ = std::abs(twist_aux->linear.x) > 1e-4 ||
-                        std::abs(twist_aux->linear.y) > 1e-4 ||
-                        std::abs(twist_aux->angular.z) > 1e-4;
+    {
+      std::lock_guard<std::mutex> lock(cmd_state_mutex_);
+      last_cmd_received_at_ = std::chrono::steady_clock::now();
+      last_cmd_nonzero_ = std::abs(twist_aux->linear.x) > 1e-4 ||
+                          std::abs(twist_aux->linear.y) > 1e-4 ||
+                          std::abs(twist_aux->angular.z) > 1e-4;
+    }
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     short  transition;
     Send_Data.tx[0]=FRAME_HEADER;
     Send_Data.tx[1] = 0;
@@ -292,7 +308,6 @@ void origincar_base::Control()
       Sampling_Time = (current_time - last_time).seconds();
       if (true == Get_Sensor_Data()) {
         // The serial read can block while SIGINT invalidates the ROS context.
-        // Do not publish or call spin_some after returning from that read.
         if (!rclcpp::ok()) {
           break;
         }
@@ -306,7 +321,6 @@ void origincar_base::Control()
         Publish_Voltage();
         Publish_Odom();
         Check_Cmd_Vel_Watchdog();
-        rclcpp::spin_some(this->get_node_base_interface());
       }
       last_time = current_time;
     }
@@ -382,6 +396,7 @@ origincar_base::origincar_base()
 
 void origincar_base::Send_Stop_Command()
 {
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     if (!Stm32_Serial.isOpen()) {
       return;
     }
@@ -408,16 +423,20 @@ void origincar_base::Send_Stop_Command()
 
 void origincar_base::Check_Cmd_Vel_Watchdog()
 {
-  if (!cmd_vel_watchdog_enabled_ || !last_cmd_nonzero_) {
-    return;
-  }
-  const double age_sec = std::chrono::duration<double>(
-      std::chrono::steady_clock::now() - last_cmd_received_at_).count();
-  if (age_sec <= cmd_vel_watchdog_timeout_sec_) {
-    return;
+  double age_sec = 0.0;
+  {
+    std::lock_guard<std::mutex> lock(cmd_state_mutex_);
+    if (!cmd_vel_watchdog_enabled_ || !last_cmd_nonzero_) {
+      return;
+    }
+    age_sec = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - last_cmd_received_at_).count();
+    if (age_sec <= cmd_vel_watchdog_timeout_sec_) {
+      return;
+    }
+    last_cmd_nonzero_ = false;
   }
   Send_Stop_Command();
-  last_cmd_nonzero_ = false;
   RCLCPP_WARN(this->get_logger(), "cmd_vel watchdog stopped stale command after %.3fs", age_sec);
 }
 

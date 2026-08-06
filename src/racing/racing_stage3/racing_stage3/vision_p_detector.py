@@ -54,10 +54,16 @@ class VisionPDetector:
         self._fill_ratio = 0.0
         self._inference_active = False
 
-        # HTTP 可视化
+        # HTTP 可视化。视觉快照固定覆盖到 Stage3 日志目录，避免在
+        # /tmp 或工作区其他位置散落诊断图片。
         self._combined_frame = None
-        # 与现有 vision_viewer.html 共用的图像路径。
-        self._jpeg_output_path = '/tmp/stage3_vision.jpg'
+        workspace_root = os.getcwd()
+        if not os.path.isdir(os.path.join(workspace_root, 'src', 'racing')):
+            workspace_root = os.environ.get('DEV_WS', workspace_root)
+        self._vision_log_dir = os.path.join(workspace_root, 'log', 'competition_stage3')
+        os.makedirs(self._vision_log_dir, exist_ok=True)
+        # 与现有 vision_viewer.html 共用的图像路径；每帧原子覆盖。
+        self._jpeg_output_path = os.path.join(self._vision_log_dir, 'latest_vision.jpg')
         self._http_server_start_time = time.time()
         self._last_frame_save_time = 0.0
         self._http_lock = threading.Lock()
@@ -499,7 +505,28 @@ setInterval(health, 500); health();
                                  (0, 255, 0), 2)
                     cx = int((x1 + x2) / 2)
                     cy = int((y1 + y2) / 2)
+                    # Depth is summarized over the inset center ROI, not a
+                    # single pixel. Draw that exact ROI so the saved preview
+                    # makes the sampled area unambiguous.
+                    roi_fraction = 0.50
+                    roi_inset_x = int((x2 - x1) * (1.0 - roi_fraction) / 2.0)
+                    roi_inset_y = int((y2 - y1) * (1.0 - roi_fraction) / 2.0)
+                    roi_left = int(x1 + roi_inset_x)
+                    roi_top = int(y1 + roi_inset_y)
+                    roi_right = int(x2 - roi_inset_x)
+                    roi_bottom = int(y2 - roi_inset_y)
+                    cv2.rectangle(
+                        frame_after,
+                        (roi_left, roi_top),
+                        (roi_right, roi_bottom),
+                        (255, 0, 255),
+                        2,
+                    )
                     cv2.circle(frame_after, (cx, cy), 5, (0, 0, 255), -1)
+                    cv2.drawMarker(
+                        frame_after, (cx, cy), (255, 0, 255),
+                        cv2.MARKER_CROSS, 18, 2,
+                    )
                     cv2.line(frame_after, (cx, cy), (w_crop//2, h_crop//2), (255, 0, 0), 2)
 
                     offset = cx / (w_crop / 2) - 1.0
@@ -509,6 +536,11 @@ setInterval(health, 500); health();
                     cv2.putText(frame_after, f'P conf={confidence:.2f} off={offset:+.2f} fill={fill_ratio:.2%}',
                                (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX,
                                0.5, (0, 255, 255), 2)
+                    cv2.putText(
+                        frame_after, 'depth ROI / center',
+                        (max(5, roi_left), min(h_crop - 8, roi_bottom + 18)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1,
+                    )
 
             # 6. 更新共享变量
             with self._lock:

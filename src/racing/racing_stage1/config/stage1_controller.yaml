@@ -1,491 +1,247 @@
-# ================================================================================
 # Stage1 竞赛控制器配置 (competition_controller)
-# ================================================================================
-# 功能模块：
-#   1. 盲开前进（blind forward）
-#   2. 激光聚类避障（4状态：forward → avoiding → countersteering → recovering）
-#   3. 二维码识别触发后退
-#   4. 路径记录与后退（backing along recorded path）
-#   5. 实测中心线快速通道导航（激光避障后回归中心线）
-# ================================================================================
-
 competition_controller:
   ros__parameters:
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 话题配置 (Topic Configuration)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 输出控制指令话题（发送到底盘）
+    # 话题与坐标：距离/位置使用 /odom_combined，航向只使用 /imu/data。
     output_cmd_topic: /cmd_vel
-
-    # 激光雷达扫描话题（用于避障）
     scan_topic: /scan
-
-    # IMU 九轴数据话题（用于航向控制）
     imu_topic: /imu/data
-
-    # 初始静止时的赛场 map 航向 (°)。首帧原始 IMU yaw 映射到该值，
-    # 后续仅叠加 IMU 的相对转角，供 Stage1 全部状态使用。
-    # Stage1 和总启动会由此派生 map_to_odom_yaw，二者必须一致。
-    imu_initial_map_yaw_deg: 20.0
-    # 原始 IMU 的安装零偏 (°)。仅在已实测固定零偏时调整；默认不额外修正。
+    # 航向链：启动时 IMU 原始角映射到的 Map 航向；只供 IMU 航向控制使用。
+    initial_map_heading_deg: 20.0
     imu_yaw_offset_deg: 0.0
-    # 发布给 Stage2 的 latched IMU->map 航向零点映射；Stage2 必须继承此值。
     imu_map_yaw_offset_topic: imu_map_yaw_offset
-    # 交权时发布真实 map 入口位姿给 Stage2。
+    start_corner_diagnostic_topic: start_corner_pose_diagnostic
     stage2_entry_pose_topic: stage2_entry_pose
-
-    # 里程计话题（EKF 融合后的位姿，用于路径记录和后退）
     odom_topic: /odom_combined
-
-    # 地图话题（保留给可选 A* 降级规划）
     map_topic: /map
-
-    # 二维码识别结果话题（触发后退与通道导航）
     qr_result_topic: qr_scan_result
-
-    # 扫码任务发布话题（二维码内容）
     task_topic: competition_qr_task
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 坐标系配置 (Frame IDs)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 全局地图坐标系（A* 规划与位姿查询）
     map_frame: map
-
-    # 机器人底盘坐标系（TF 变换目标）
     base_frame: base_footprint
-
-    # 里程计坐标系（odom_combined 对应的 TF 坐标系）
     odom_frame: odom_combined
-
-    # map -> odom_combined 静态变换平移 (m)。由 Stage1/总启动读取后发布 TF。
-    map_to_odom_x: 0.25
+    map_to_odom_x: 0.50
     map_to_odom_y: 0.15
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 控制频率 (Control Rate)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 主控制循环频率 (Hz)
+    # 坐标链：仅定义静态 map->odom_combined 变换，不从 IMU 航向参数隐式派生。
+    map_to_odom_yaw_deg: 20.0
+    # 启动墙角诊断只输出建议值和差值，绝不修改以上参数或发布 TF。
+    # S1 在诊断有效或等待超时后才向 Supervisor 发布 ready，确保诊断发生在静止期。
+    start_corner_diagnostic_wait_sec: 3.0
     control_rate_hz: 20.0
+    # What: 正式取得第一阶段运动权后，车辆开始发布运动指令前的等待时间。
+    # Unit: 秒；默认 0.0 秒表示激活后立即运动。
+    start_delay_sec: 0.0
 
-    # ────────────────────────────────────────────────────────────────────────
-    # 盲开速度 (Blind Forward Speed)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 盲开线速度 (m/s) — Phase1 初始前进速度
+    # 盲开与中心线修正（起点到二维码）。
+    # What: blind_linear_speed 是盲开巡航速度；blind_qr_slowdown_* 定义 map X 靠近二维码前的减速门线和速度。
+    # Why: 当前场地在 x=1.5m 后需要降低二维码通过速度，既保证行驶连续，也给扫描器稳定画面。
+    # Range: blind_linear_speed 0.35-0.65m/s；slowdown_start 1.2-1.8m；slowdown_speed 0.25-0.50m/s。
+    # Impact: 速度或减速门线增大可缩短用时，但会降低扫码和避障余量；slowdown_speed 过低会拉长前段。
     blind_linear_speed: 0.55
-
-    # 二维码接近区减速起点（/odom_combined X，m）。超过该值时使用下方速度。
-    blind_qr_slowdown_start_x_m: 1.5
-
-    # 二维码接近区盲开线速度 (m/s)，降低运动模糊。
+    blind_qr_slowdown_start_map_x_m: 2.0
     blind_qr_slowdown_linear_speed: 0.4
-
-    # 盲开角速度 (rad/s) — 通常为 0（直行）
     blind_angular_speed: 0.0
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 二维码扫描中心线与受限避障 (QR Scan Centerline Avoidance)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 二维码观察区的 map 中心线。代码按折线处理；用多点折线近似现场弯曲路线。
-    # 扫码解码和中心线导向使用不同门线，避免过早拐向横带。
-    blind_scan_centerline_json: '[{"x":0.25,"y":0.20},{"x":0.64,"y":0.23},{"x":1.00,"y":0.28},{"x":1.750,"y":0.36},{"x":2.50,"y":0.56},{"x":3.20,"y":0.98},{"x":3.53,"y":1.13},{"x":3.80,"y":1.45}]'
-    # 二维码解码从此处开始；该门线不产生转向命令。
-    blind_scan_capture_start_odom_x_m: 1.0
-    # 未识别二维码时，接近观察位才允许向中心线切入；切入角速度经 ramp 平滑增加。
-    blind_scan_guidance_start_odom_x_m: 3.0
+    # What: blind_scan_centerline_json 是 map 坐标下的实测中心线；capture/guidance_start_map_x/ramp 控制中心线渐入。
+    # Why: 扫码带武装后立即计算折线切线和横向误差，角速度从 0 平滑增加，避免在 map_x 门线处突然大转。
+    # Range: capture_start/guidance_start 0.5-1.5m，ramp 0.6-2.5m；中心线必须由实测 map XY 更新。
+    # Impact: guidance_start 仅作为渐入起点，ramp 越长越平顺；最大角速度和角速度变化率共同限制转向。
+    blind_scan_centerline_json: '[{"x":0.50,"y":0.200},{"x":0.86,"y":0.418},{"x":1.23,"y":0.536},{"x":1.59,"y":0.655},{"x":1.95,"y":0.773},{"x":2.32,"y":0.891},{"x":2.68,"y":1.009},{"x":3.05,"y":1.127},{"x":3.41,"y":1.245},{"x":3.77,"y":1.364},{"x":4.14,"y":1.482},{"x":4.50,"y":1.600}]'
+    blind_scan_capture_start_map_x_m: 0.5
+    blind_scan_guidance_start_map_x_m: 0.5
     blind_scan_guidance_ramp_m: 0.80
-
-    # 识别带允许偏离中心线的最大横向距离。左/右避障完整预测任一时刻超出该值
-    # 即淘汰；车辆已经在带外时，只允许令偏差不再增大的候选。
+    # What: corridor_half_width、lateral_kp、heading_kp 和两个 max_* 限制中心线横向/航向修正。
+    # Why: 0.35m 覆盖正常定位误差；角速度限幅防止高速盲开时蛇形。
+    # Range: half_width 0.20-0.50m，两个 kp 0.5-2.0，heading_offset 8-30deg，角速度 0.10-0.50rad/s。
+    # Impact: kp 或限幅增大时回线更快但摆动更明显；half_width 变小会更早介入，变大则允许偏离更远。
     blind_scan_corridor_half_width_m: 0.35
-
-    # 进入 guidance 窗口后，才以中心线横向误差生成 IMU 目标航向。
     blind_scan_lateral_kp: 1.0
     blind_scan_max_heading_offset_deg: 20.0
     blind_scan_heading_kp: 1.4
     blind_scan_max_angular_speed: 0.35
     blind_scan_guidance_max_angular_speed: 0.18
-
-    # 左/右候选按避障、反舵及回归中心线的完整动作积分预测。障碍净距和扫描带
-    # 是硬约束；越过障碍只用于候选排序，不能因固定预测时长小于实际低速绕行时间
-    # 而拒绝一条已满足净距和扫描带的路径并停车。
+    blind_scan_guidance_angular_slew_rate_rad_s2: 0.45
+    # What: avoid_prediction_* 按未来轨迹选绕障侧；min_clearance/pass_margin 是与障碍的净空门限；escape_* 是预测无解时的短倒车动作。
+    # Why: 1.8s 预见距离与 0.28m 净空在当前 0.55m/s 下可避免临近障碍才急转。
+    # Range: prediction 0.8-2.5s，clearance 0.20-0.40m，pass_margin 0.05-0.20m；倒车速度 -0.10--0.30m/s、持续 0.4-1.5s。
+    # Impact: 预测时间/净空增大更保守且更早绕行；过小会贴障，过大可能频繁误绕；倒车更快或更久脱困强，但碰撞后方风险更高。
     blind_scan_avoid_prediction_sec: 1.80
     blind_scan_avoid_prediction_step_sec: 0.05
     blind_scan_avoid_min_clearance_m: 0.28
-    # 正向预测比障碍中心额外前进该距离时，标记为完整绕过并优先选择。
     blind_scan_avoid_pass_margin_m: 0.10
-    # 扫码阶段提前发现前方聚类，给完整 S 形绕行保留制动/横移距离。
     blind_scan_avoid_detection_max_x_m: 1.00
-    # 障碍明显偏左/偏右时优先选择远离障碍的一侧；该侧可获得少量扫描带放宽，
-    # 但仍必须满足障碍净距，避免为了贴中心线朝障碍同侧绕行。
     blind_scan_avoid_obstacle_side_min_angle_deg: 5.0
     blind_scan_avoid_obstacle_side_lane_extra_m: 0.12
-    # 两个前向候选均不可行时，只尝试一次后退转向脱困。车后近区有聚类则立刻停车。
     blind_scan_escape_reverse_linear_speed_mps: -0.22
     blind_scan_escape_reverse_angular_speed: 0.55
     blind_scan_escape_reverse_duration_sec: 1.00
-    # 后退已创造前向净距时，允许一次有限的扫描带外横移，随后恢复中心线。
     blind_scan_escape_corridor_extra_m: 0.12
     blind_scan_escape_rear_min_x_m: -0.45
     blind_scan_escape_rear_max_x_m: -0.08
     blind_scan_escape_rear_half_width_m: 0.22
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 激光避障参数 (Lidar Obstacle Avoidance)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # --- 前方检测窗口 (Forward Detection Window) ---
-    # 前方窗口最小 X 距离 (m) — 距车体前端的近界
+    # 前向聚类检测窗口。
+    # What: phase1_window_* 是常规障碍的车体前方矩形；cluster_gap/min_points/min_width/max_width 过滤稀疏噪点；emergency_* 是更近的急停窗口。
+    # Why: 0.18-0.60m、半宽 0.22m 覆盖车头正前方，紧急窗口只捕获即将碰撞的目标。
+    # Range: 常规前向 0.15-0.90m、半宽 0.15-0.35m；gap 0.05-0.20m；最少点 2-6；最小宽 0.03-0.12m。
+    # Impact: 窗口加宽/加长更早避障但更易把墙或赛道边缘误判为障碍；过滤放宽更灵敏但噪声触发更多。
     phase1_window_min_x: 0.18
-
-    # 前方窗口最大 X 距离 (m) — 距车体前端的远界
     phase1_window_max_x: 0.60
-
-    # 前方窗口半宽 (m) — Y 方向±半宽，形成矩形检测区域
     phase1_window_half_width: 0.22
-
-    # --- 聚类过滤参数 (Clustering Filter) ---
-    # 聚类间隙容差 (m) — 点云间距小于此值视为同一障碍物
     phase1_cluster_gap_tolerance: 0.12
-
-    # 最小聚类点数 — 点数少于此值的聚类被过滤
     phase1_min_cluster_points: 3
-
-    # 最小聚类宽度 (m) — 宽度小于此值的聚类被过滤（噪声）
     phase1_min_cluster_width: 0.06
-
-    # 最大聚类宽度 (m) — 宽度大于此值的聚类被过滤（墙体）
     phase1_max_cluster_width: 0.55
-
-    # --- 紧急停障窗口 (Emergency Stop Window) ---
-    # 紧急窗口最小 X 距离 (m) — 更近的检测窗口
     phase1_emergency_min_x: 0.08
-
-    # 紧急窗口最大 X 距离 (m)
     phase1_emergency_max_x: 0.45
-
-    # 紧急窗口半宽 (m) — 更窄的检测区域
     phase1_emergency_half_width: 0.12
-
-    # 紧急窗口最小点数
     phase1_emergency_min_points: 2
-
-    # --- 避障动作参数 (Avoidance Action) ---
-    # 避障线速度 (m/s) — 避障期间前进速度
+    # 四状态避障动作。
+    # What: avoid_* 控制绕障初始弧线；counter_steer_* 控制反打回正；recovery_* 控制恢复原航向，safe/clear_distance 决定进入/退出避障。
+    # Why: 当前速度、转角与 0.60/0.65m 门限在不停车的约束下留出转向距离和防抖回差。
+    # Range: 线速度 0.15-0.40m/s，角速度 0.4-1.2rad/s，safe/clear 0.35-0.80m 且 clear 必须大于 safe 0.03m 以上。
+    # Impact: 线速度增大更快但转弯半径变大；角速度或持续时间增大绕障更激进，过大容易反打过头；clear-safe 回差变小会反复切换状态。
     avoid_linear_speed: 0.3
-
-    # 避障角速度 (rad/s)
     avoid_angular_speed: 0.8
-
-    # 有效障碍物中心位于车体左前方且角度不小于此值时，首次避障改为右转；
-    # 通道导航的局部安全回退也使用此阈值。ROS base 坐标中，正角为左侧。
     avoid_right_turn_left_obstacle_angle_deg: 15.0
-
-    # 通道导航避障时，结合当前 map 路点选择左右绕行；true 时生效。
     corridor_avoid_goal_bias_enabled: true
-
-    # 障碍物明确位于候选绕行侧时附加的安全代价（rad），必须大于 π，
-    # 使路点方向不能驱动车辆朝该侧近障切入。
     corridor_avoid_obstacle_side_penalty: 3.5
-
-    # 通道内小于该宽度的短点簇不触发倒车，避免 7~8cm 边缘/噪声误判障碍。
     corridor_obstacle_min_width_m: 0.12
-
-    # 通道已由雷达墙簇接管时，不做正向绕障：持续倒车并让车头摆离障碍，
-    # 直到前方障碍连续清除，再直接恢复墙簇跟随回到通道入口。
     corridor_reverse_avoid_enabled: true
     corridor_reverse_avoid_linear_speed_mps: -0.14
     corridor_reverse_avoid_angular_speed: 0.14
     corridor_reverse_avoid_min_duration_sec: 0.65
     corridor_reverse_avoid_clear_hold_sec: 0.25
-    # 用本次倒退结束后的通道起点作为回退目标；不是倒车时长上限。
     corridor_reverse_avoid_entry_tolerance_m: 0.25
-
-    # 避障最小持续时间 (s) — 避障至少持续时长
     avoid_min_duration_sec: 0.5
-
-    # 障碍清除保持时间 (s) — 障碍清除后需保持此时长才切换状态
     avoid_clear_hold_sec: 0.25
-
-    # 避障最小转向角度 (°) — 相对初始航向至少转过此角度
     avoid_min_turn_angle_deg: 30.0
-
-    # 启动宽限期 (s) — 节点启动后此时间内不触发避障（避免噪声误触发）
     phase1_avoid_startup_grace_sec: 0.5
-
-    # --- 激光扫描配置 (Lidar Scan Config) ---
-    # 扫描角度范围 (°) — ±此角度内的激光点参与检测
     scan_angle_deg: 45.0
-
-    # 安全距离 (m) — 障碍物距离小于此值触发避障
     safe_distance: 0.6
-
-    # 清除距离 (m) — 障碍物距离大于此值视为清除
     clear_distance: 0.65
-
-    # 最小有效量程 (m) — 激光点距离小于此值视为无效
     min_valid_range: 0.10
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 避障恢复 (Avoidance Recovery)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # --- 反舵阶段 (Counter Steering) ---
-    # 反舵线速度 (m/s)
     counter_steer_linear_speed: 0.30
-
-    # 反舵角速度 (rad/s) — 反向转向速度（第二个转角，减小避免过冲）
     counter_steer_angular_speed: 1.0
-
-    # 反舵持续时间缩放系数 — 反舵时长 = 避障时长 × 此系数
     counter_steer_duration_scale: 0.6
-
-    # 反舵最小持续时间 (s)
     counter_steer_min_duration_sec: 0.30
-
-    # 反舵最大持续时间 (s)
     counter_steer_max_duration_sec: 1.00
-
-    # --- 恢复阶段 (Recovery) ---
-    # 恢复线速度 (m/s) — 直行恢复速度
     recovery_linear_speed: 0.35
-
-    # 恢复转弯线速度 (m/s) — 转弯修正时的前进速度
     recovery_turn_linear_speed: 0.20
-
-    # 恢复角速度 (rad/s) — 基于时间的恢复转向速度（减小避免回正过冲）
     recovery_angular_speed: 0.40
-
-    # 恢复航向比例增益 — 航向误差 → 角速度修正增益（减小避免回正过冲）
     recovery_heading_kp: 1.5
-
-    # 恢复最大角速度 (rad/s)
     recovery_max_angular_speed: 0.6
-
-    # 恢复最小角速度 (rad/s) — 防止微小误差时转速过低
     recovery_min_angular_speed: 0.3
-
-    # 原地转向角度阈值 (°) — 航向误差小于此值时边走边转，否则原地转
     recovery_in_place_angle_deg: 8.0
-
-    # 航向容差 (°) — 航向误差小于此值视为到位
     heading_tolerance_deg: 6.0
-
-    # 恢复超时 (s) — 恢复阶段最长时间
     recovery_timeout: 2.5
-
-    # 恢复持续时间缩放 — 基于避障时长估算恢复时长
     recovery_duration_scale: 0.9
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 后退功能 (Backing Along Recorded Path)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 启用后退功能 — true: 扫码后沿轨迹后退, false: 直接通道导航
+    # 扫码后倒车沿历史轨迹运行。
+    # What: 直线段使用 back_linear_speed 上限，弯道按曲率和横向加速度自动限速；角速度使用曲率前馈加 Stanley 反馈。
+    # Why: 在保持连续速度的同时，直线段可以提速，弯道不因固定高速而扩大路线误差。
+    # Impact: lateral_accel 越大弯道越快但侧滑和偏线风险越高；preview_gain 越大高速时提前看得更远但可能切弯。
+    back_min_linear_speed: 0.20
+    back_lateral_accel_limit: 0.16
+    back_speed_preview_gain: 0.25
     enable_backing: true
-
-    # 后退目标 X (m, map 坐标系) — 后退到 map_x ≤ 此值时停止
+    # back_target_x: 倒车结束 map X 门线；Why=回到通报口前的指定位置；Range=按起点/赛道实测 +-0.20m；Impact=调大倒车更远，调小更早结束。
     back_target_x: 2.00
-
-    # 后退线速度 (m/s) — 负值表示倒车；扫码后先以此速度直退建立反向运动。
-    # 控制器会在航向误差大或接近目标时进一步自动降速。
-    back_linear_speed: -0.32
-
-    # 后退航向修正增益 — 航向误差 → 角速度增益
-    back_angular_kp: 0.90
-
-    # 后退角速度绝对上限与每秒变化率，抑制高速倒退时的反复反打
-    back_max_angular_speed: 0.70
-    back_angular_slew_rate: 1.80
-
-    # 由直退转入路径转向前，要求里程计位置已沿回程方向移动的距离。
+    # back_linear_speed: 倒车最高线速度（负值）；直线段使用该上限，弯道由曲率自动限速。
+    back_linear_speed: -0.35
+    # back_angular_kp: 倒车横向误差角增益；Why=把车拉回记录轨迹；Range=0.3-1.2；Impact=调大收敛快但左右摆动。
+    back_angular_kp: 0.65
+    # back_max_angular_speed: 倒车最大角速度；Why=限制曲率前馈与反馈合成转向；Impact=调大纠偏更快但易打满。
+    back_max_angular_speed: 0.42
+    # back_angular_slew_rate: 倒车角速度变化率；Why=抑制方向突变；Range=0.8-3.0rad/s2；Impact=调大响应快但冲击大，调小更平滑。
+    back_angular_slew_rate: 0.90
+    # 后退控制专用的瞬时误差滤波和航向微调；不影响前进/避障恢复。
+    back_cross_track_filter_tau_sec: 0.25
+    back_heading_kp: 0.80
+    back_heading_deadband_deg: 3.0
     back_reverse_engage_distance_m: 0.04
-
-    # 反向建立最长等待时间；超时仍进入路径跟踪，避免底盘异常时永久卡住。
     back_reverse_engage_timeout_sec: 3.0
-
-    # 路点到达容差 (m) — 小于采样间隔的两倍，避免一次跳过多个路点
+    # back_position_tolerance: 倒车位置结束容差；Why=避免在门线附近抖动；Range=0.02-0.10m；Impact=调大更易结束但位置误差增大。
     back_position_tolerance: 0.04
-
-    # 反向 Pure Pursuit 终点横向误差门限 (m)。速度保持正常倒车速度，
-    # 只有回到历史轨迹附近才允许通过 map_x 终点门线。
+    # back_cross_track_tolerance_m: 历史轨迹横向安全门；Why=防止偏离来时路线仍被判完成；Range=0.04-0.10m；Impact=调大容许偏离，调小可能因噪声无法结束。
     back_cross_track_tolerance_m: 0.06
-
-    # 路径采样间隔 (m) — 前进时每隔此距离记录一个路点
     back_path_sample_distance: 0.02
-
-    # 倒序路径前瞻距离 (m) — 投影式 Pure Pursuit 的弧长前瞻
-    back_lookahead_m: 0.18
-
-    # 后退超时 (s) — 后退超过此时长则跳过后退，直接通道导航
+    back_lookahead_m: 0.20
     back_timeout_sec: 20.0
-
-    # 对齐目标航向 (°) — 后退完成后对齐到此航向（通常 90°）
     back_align_yaw_deg: 90.0
-
-    # 对齐航向容差 (°)
     back_align_tolerance_deg: 5.0
-
-    # 对齐超时 (s) — 航向对齐超过此时长则跳过，进入通道导航
     back_align_timeout_sec: 10.0
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 通道导航 (Corridor Navigation - Region Entry)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 启用通道导航 — false: 后退完成直接切 Stage2
+    # 通道路径与 S1 -> S2 交权位置。
+    # What: corridor_waypoints_json/reference_path_json 是通道实测路线；waypoint/goal_tolerance 是到点半径；corridor_linear_speed 是通道巡航速度。
+    # Why: 路点给出从倒车终点到通道中线的可复现路线，0.58m/s 是当前墙体锁定后的巡航值。
+    # Range: 路点须由实测坐标更新；容差 0.08-0.30m；巡航 0.25-0.65m/s；turn_linear_speed 0.08-0.35m/s。
+    # Impact: 容差变大更容易切下一点但会削角；巡航速度增大缩短时间但降低墙体纠偏余量。
     enable_corridor_navigation: true
-
-    # 通道路径发布话题（用于 RViz2 可视化）
     corridor_path_topic: /stage1_corridor_path
-
-    # --- 通道路点 (Waypoints in map frame) ---
-    # 途经点 + 终点，JSON 格式：[{"x": ..., "y": ..., "speed": ..., "description": ...}, ...]
-    # 按数组顺序逐点跟踪；用于中继点推进与最终交接判据。
     corridor_waypoints_json: '[{"x":2.55,"y":1.20,"speed":0.28,"description":"corridor_mid_1"},{"x":2.55,"y":2.55,"speed":0.26,"yaw_deg":90.0,"description":"corridor_goal"}]'
-
-    # 使用实车测得的快速中心线。正常行驶及激光避障恢复均沿该线跟踪，
-    # 不因局部偏差反复运行全局 A*；障碍避让仍由既有激光状态机接管。
     corridor_reference_path_enabled: true
     corridor_reference_path_json: '[{"x":2.18,"y":0.72},{"x":2.38,"y":0.96},{"x":2.45,"y":1.20},{"x":2.55,"y":1.75},{"x":2.55,"y":2.20},{"x":2.55,"y":2.55}]'
-
-    # 途经点容差 (m) — 距离途经点小于此值时推进到下一路点
     corridor_waypoint_tolerance: 0.25
-
-    # 终点容差 (m) — 距离终点小于此值时判定到达
-    # X方向±10cm，Y方向±5cm，欧氏距离约12cm
     corridor_goal_tolerance: 0.12
-
-    # 终点目标航向 (°, map 坐标系) — 通道出口期望航向
     corridor_goal_yaw_deg: 90.0
-
-    # 终点航向容差 (°) — 航向误差小于此值判定航向到位
-    # Stage2 入口会再对齐，此处控制在 15° 保证精度
     corridor_goal_yaw_tolerance_deg: 15.0
-
-    # --- 区域进入判据 (Region Entry Criteria) ---
-    # 旧版圆形进入判定半径 (m) — 仅 terminal_enabled=false 时使用
     corridor_entry_region_radius_m: 0.10
-
-    # ── Stage1→Stage2 交权核心参数（只改这一组） ──
-    # 交权 Y 门线。前墙距离达到 handoff_front_distance_m 后，仍须在此
-    # 门线检查 X、双墙中心和 IMU 航向；Y 不再拆成 min/max 两个参数。
-    corridor_handoff_y_m: 3.20
-    # 物理通道中心及允许横向误差：实际 X 窗口为 2.50±0.15m。
+    # What: handoff_y/x_center/x_tolerance/yaw_tolerance/wall_center_tolerance/front_distance 是发布 stage1_state=handoff_ready 的联合门限；S1 在此后保持最后非零命令，直到 S2 首命令接管。
+    # Why: y=3.20m、x=2.50m、IMU 航向 90deg 和双墙居中共同保证 S2 从正确通道出口连续接管，单独到达 y 不能交权。
+    # Range: 坐标必须按场地实测；x 容差 0.06-0.20m，yaw 5-15deg，墙中心 0.05-0.15m，前墙距离 2.0-3.2m。
+    # Impact: 门限放宽会更早交权但把偏差带入 S2；收紧会更稳但可能因传感器噪声迟迟不交权。force_after_reject 仅用于诊断后兜底，不应靠它完成正常交接。
+    # corridor_handoff_y_m: S1 交权 map Y 门线；Why=进入通报口后才允许交接；Range=实测门线 +-0.20m；Impact=调大交权更晚，调小可能提前交权。
+    corridor_handoff_y_m: 3.05
+    # corridor_handoff_x_center_m: S1 交权目标 map X 中线；Why=给 S2 正确入口横坐标；Range=赛道中心 +-0.15m；Impact=调偏会把横向误差传给 S2。
     corridor_handoff_x_center_m: 2.50
+    # corridor_handoff_x_tolerance_m: 交权允许的 X 偏差；Why=过滤未居中的入口；Range=0.06-0.20m；Impact=调大更易交权但入口偏差更大。
     corridor_handoff_x_tolerance_m: 0.15
-    # 交权时 IMU 航向允许偏差（相对 corridor_goal_yaw_deg）。
+    # corridor_handoff_yaw_tolerance_deg: 交权 IMU 航向容差；Why=确保 S2 首命令方向正确；Range=5-15deg；Impact=调大抗噪但可能斜着交权。
     corridor_handoff_yaw_tolerance_deg: 10.0
-    # 双墙中心误差允许值；这是交权硬门，不与终端捕获阈值混用。
+    # corridor_handoff_wall_center_tolerance_m: 双墙中心横向容差；Why=确认车在通道中间；Range=0.05-0.15m；Impact=调大误检风险增大，调小可能迟交权。
     corridor_handoff_wall_center_tolerance_m: 0.12
-    # 前方横墙实际测距低于此值才产生 front_wall 触发证据。
-    corridor_handoff_front_distance_m: 2.60
-
-    # 终端重捕获的默认最高 staging Y。实际 staging 会根据当前横向偏差
-    # 回退到更早的参考中心线点，保证在门线前可按受限角度重新并线。
+    # corridor_handoff_front_distance_m: 交权时前墙参考距离；Why=确认已到出口；Range=2.0-3.2m；Impact=调大允许更远处交权，调小要求更靠近前墙。
+    corridor_handoff_front_distance_m: 2.70
     corridor_reacquire_y_m: 2.05
     corridor_reacquire_reverse_speed: -0.16
-    # 倒退后 map Y 仍比越界起点继续升高该距离，切换为大半径反向回正，禁止紧弯画圈。
     corridor_reacquire_y_rise_guard_m: 0.04
-    # 重入参考中心线时允许的最大几何航向偏差；控制器据此选择最晚 staging 点。
     corridor_reacquire_max_reentry_heading_deg: 45.0
-    # 重入点必须位于交权最小 Y 门线之前保留的距离，供末端捕获和围墙锁定使用。
     corridor_reacquire_terminal_margin_m: 0.20
-    # 首次交接门被拒后，累计超过该时间仍未成功，则到 Y 门线直接强制放行。
     corridor_handoff_force_after_reject_sec: 10.0
-
-    # 旧版进入区域判定兼容参数（生产终端交权不使用）
-
-    # --- 终端逼近 (Terminal Approach) ---
-    # 近 Y 门线且 X 已进入捕获带时锁存；锁存后先回正航向再微调至最终 X 窗口
+    # 通道末端对齐与墙体锁定。
+    # What: terminal_* 将车体对齐至交接中心；terminal_wall_* 和 front_wall_* 规定两侧墙/前墙的点云拟合窗口、质量门限、滤波与保持时间。
+    # Why: 末段以激光墙体修正横向误差，map 坐标仅用于交接门线，防止局部定位漂移把车带偏。
+    # Range: terminal_linear_speed 0.15-0.45m/s；x 容差 0.04-0.15m；yaw 门限 3-12deg；wall_max_age 0.10-0.40s；fit_residual 0.02-0.06m。
+    # Impact: 速度/增益/角速度上调会更快对中但易振荡；拟合门限放宽可减少失锁但可能把障碍误作墙；保持时间增大抗短暂遮挡但会使用旧墙数据。
     corridor_terminal_enabled: true
-
-    # Stage2 交权所需的最终横向 X 误差容差 (m)
     corridor_terminal_x_tolerance_m: 0.06
-
-    # 只有横向误差已收敛到该捕获带才进入终端微调。更大的误差必须在
-    # staging 到门线之间沿参考中心线修正，避免终端正向微调越过 Y 窗口。
     corridor_terminal_entry_x_tolerance_m: 0.10
-
-    # 终端锁存后若 X 再偏离该值，才退出回 Pure Pursuit；必须大于最终 X 容差以避免抖动
     corridor_terminal_x_exit_tolerance_m: 0.28
-
-    # 切入终端逼近所需的 IMU 航向误差容差 (°)
     corridor_terminal_yaw_tolerance_deg: 8.0
-
-    # Stage1 放权 Stage2 所需的 IMU 航向误差容差 (°)
     corridor_terminal_release_yaw_tolerance_deg: 10.0
-
-    # 终端速度（m/s）：逼近与墙几何锁存后均使用此值；保持 IMU 固定 90°。
+    # corridor_terminal_linear_speed: 通道末端对齐时的前进速度；Why=交权前仍保持非零命令；Range=0.15-0.45m/s；Impact=调大更快但墙体横向误差更难收敛。
     corridor_terminal_linear_speed: 0.40
-
-    # 距离 Y 门线该距离以内，若仍未进入最终 X 容差才开启微小横向修正 (m)
     corridor_terminal_micro_start_y_margin_m: 0.18
-
-    # 无双墙时，最后一小段 map X 兜底误差映射到期望航向的增益 (1/m)。
-    # 双墙有效时终端目标航向固定为 corridor_goal_yaw，不使用该项拉偏 IMU yaw。
     corridor_terminal_lateral_gain: 1.2
-
-    # 期望航向误差到角速度的比例增益
     corridor_terminal_heading_kp: 1.4
-
-    # 航向死区 (°) — 死区内 w=0，防止持续反复打舵
     corridor_terminal_yaw_deadband_deg: 1.0
-
-    # 终端逼近角速度绝对上限 (rad/s)
     corridor_terminal_max_angular_speed: 0.45
-
-    # 最后一小段 X 微调的角速度绝对上限 (rad/s)
     corridor_terminal_micro_max_angular_speed: 0.18
-
-    # 终端逼近角速度每秒最大变化量 (rad/s²)，限制左右反打
     corridor_terminal_angular_slew_rate_rad_s2: 0.85
-
-    # 仅用于终端横向闭环的 X 误差低通时间常数 (s)；交权判据仍使用原始 map X
     corridor_terminal_x_filter_tau_sec: 0.20
-
-    # 终端横向修正反向前的 X 误差滞回带 (m)，抑制目标线附近的来回换向
     corridor_terminal_x_reverse_hysteresis_m: 0.015
-
-    # 最后路点进入 Y 门线前的预对正距离 (m)。在仍正向行驶时同时收敛 IMU 航向。
     corridor_terminal_prealign_y_margin_m: 0.50
-
-    # 预对正航向闭环增益与角速度上限 (rad/s)
     corridor_terminal_prealign_heading_kp: 1.2
     corridor_terminal_prealign_max_angular_speed: 0.32
-
-    # 仅在已到 Y 门线和最终 X 窗口、但航向未对齐时，低速后退回正
     terminal_reverse_align_linear_speed: -0.16
     terminal_reverse_align_heading_kp: 1.0
     terminal_reverse_align_max_angular_speed: 0.60
-
-    # --- 两侧围墙终端锁定 (Side-Wall Terminal Lock) ---
-    # 通道没有额外标记；倒退后先用 IMU 对正 90°进入通道，再使用 5m 场地尺度
-    # 的左右侧墙作物理参考。墙几何用于修正 Stage1 map X 和交给 Stage2 的入口 yaw。
     corridor_terminal_wall_lock_enabled: true
     corridor_terminal_wall_min_forward_m: 0.10
     corridor_terminal_wall_max_forward_m: 1.60
     corridor_terminal_wall_min_lateral_m: 0.16
-    # 5m 场地侧墙点会远超 1.2m；这里使用大场地取点窗口，
-    # 再由轴向/平行/宽度质量门拒绝横墙或错误边界。
     corridor_terminal_wall_max_lateral_m: 4.00
     corridor_terminal_wall_min_points: 8
     corridor_terminal_wall_min_span_m: 0.45
     corridor_terminal_wall_fit_residual_m: 0.035
-    # 墙线轴向只和车体系前向比较；候选锁墙放宽到 35°，让入口偏航时先锁墙再对齐。
-    # IMU 重标定仍由 corridor_wall_yaw_rebase_axis_tolerance_deg=10° 控制。
     corridor_terminal_wall_axis_tolerance_deg: 35.0
-    # 仅相邻激光点间距不超过 0.30m 的连续整段才可构成边墙；障碍物离散点不会并入。
     corridor_terminal_wall_cluster_gap_m: 0.30
-    # 完整赛道边界在当前前视窗口内至少应有该前向跨度。
     corridor_terminal_wall_cluster_min_span_m: 0.75
-    # 同侧已锁墙簇短暂消失时，不切换到另一段不相干结构。
     corridor_terminal_wall_source_hold_sec: 0.60
     corridor_terminal_wall_source_heading_jump_deg: 12.0
     corridor_terminal_wall_source_distance_jump_m: 0.35
@@ -494,21 +250,11 @@ competition_controller:
     corridor_terminal_wall_width_max_m: 5.60
     corridor_terminal_wall_filter_tau_sec: 0.18
     corridor_terminal_wall_max_age_sec: 0.25
-    # 墙簇被入口边缘短暂遮住时，最多沿用该双墙数据持续收敛；交权仍须新鲜锁或合格锁存。
     corridor_terminal_wall_control_hold_sec: 0.75
-    # 进入终端时冻结最近一次合格双墙物理中心；后续扫描只作诊断，不能改变交权几何。
-    # 该快照只在新的重捕获尝试开始时重置，没有超时失效门槛。
-    # 车体参考点不在物理通道中心时，在此填入中心线在车体系的 Y 偏置；默认 0。
     corridor_terminal_wall_center_offset_m: 0.0
-
-    # 交权以双墙物理中线为准；中心门限统一由 handoff_wall_center_tolerance_m 提供。
     corridor_terminal_wall_release_heading_deg: 2.5
     corridor_terminal_release_hold_sec: 0.20
-
-    # 前方横墙触发交权：S1 最后一段优先用雷达横墙距离，不依赖 map_y/里程计。
-    # 先锁定同一面连续横墙源，距离进入阈值后冻结触发证据；Y 门线仅作兜底。
     corridor_front_wall_handoff_enabled: true
-    # 候选横墙选择的物理参考距离；实际测量值仍来自 /scan，不会被该值伪造。
     corridor_front_wall_reference_distance_m: 2.70
     corridor_front_wall_min_forward_m: 0.80
     corridor_front_wall_max_forward_m: 3.20
@@ -522,33 +268,28 @@ competition_controller:
     corridor_front_wall_source_distance_jump_m: 0.45
     corridor_front_wall_filter_tau_sec: 0.18
     corridor_front_wall_max_age_sec: 0.30
-
-    # 首次入墙时可能仍有约 15cm 横向偏差；在交权 Y 门线前 1.20m 开始居中，
-    # 给低速横向收敛保留足够距离，避免到门线才被迫倒回重捕获。
+    # What: capture_y_margin 是开始墙体纠偏距交接门线的提前量；commit_* 是满足居中/航向后锁定通过的条件；abort_* 是锁定后撤销条件。
+    # Why: 1.20m 给 15cm 初始横向误差留出收敛距离；commit 和 abort 使用不同阈值避免在门线前反复切换。
+    # Range: capture 0.6-1.8m，commit_speed 0.20-0.50m/s，commit_center 0.05-0.15m，commit_heading 3-10deg；abort 必须大于 commit。
+    # Impact: 提前量增大更早纠偏但易受入口杂波影响；commit 放宽更容易保持高速交权，收紧更居中但可能错过门线。
     corridor_terminal_capture_y_margin_m: 1.20
-    # 墙中心误差进入 12cm 以内才允许切入低速终端段；大误差继续由高速墙跟随消化。
     corridor_terminal_capture_max_center_error_m: 0.12
-
-    # 到 Y 门线前 0.35m 已居中平行则提交为直线段；提交后禁止再用横向误差反打。
-    # 提交后以该次合格墙锁存作为物理交权依据；新鲜墙短暂波动不得触发整段倒回。
     corridor_terminal_commit_y_margin_m: 0.35
-    # 提交后固定 IMU 90° 直行速度（m/s）；不再根据新墙帧改舵。
+    # corridor_terminal_commit_speed_mps: 满足 commit 条件后的交权前进速度；Why=让 S1->S2 以连续运动接管；Range=0.20-0.50m/s；Impact=调大缩短交接时间但把更多速度/位置误差带给 S2。
     corridor_terminal_commit_speed_mps: 0.42
     corridor_terminal_commit_center_tolerance_m: 0.120
-    # 居中后允许在 90°±5° 内提交直线段；提交后的固定 90°闭环和最终±10°交权门保持不变。
     corridor_terminal_commit_heading_deg: 5.0
     corridor_terminal_commit_abort_center_m: 0.100
-    # 只有航向偏离超过 12° 或提交锁存失效才撤销提交，避免与±5°提交门槛互相矛盾。
     corridor_terminal_commit_abort_heading_deg: 12.0
-
-    # 二维码倒退结束后先恢复 90°入口转向，再进入围墙直跟。
-    # 只有成对、轴向正确的围墙可参与诊断/居中参考。
+    # What: wall_follow_* 是锁墙后的主速度、横向/航向增益和限幅；wall_acquire_* 是未锁墙时的低速搜索；wall_x_adjust_* 用 map X 做有限的横向补偿。
+    # Why: 已锁墙时 0.48m/s 巡航，失锁时降至 0.30m/s，避免在无可靠墙体时高速进入交接区。
+    # Range: follow 0.25-0.60m/s，acquire 0.10-0.35m/s，lateral/heading kp 0.5-2.0，最大角速度 0.25-0.70rad/s。
+    # Impact: 跟随速度或增益增大，纠偏更快但更易蛇形；acquire 速度降低，重获墙体更稳但耗时更长；关闭 require_lock 只用于排障，正式比赛会失去墙体保护。
     corridor_wall_follow_enabled: true
     corridor_wall_follow_require_lock: true
-    # 居中后以 0.48m/s 巡航；偏差超过 12cm 时减到 0.32m/s。
-    # 墙轴只作为质量和 IMU->map 重标定信号，绝不单独抢占转向。
-    # 墙轴进入 10° 内时重标 IMU->map yaw；行驶始终围绕 90°并叠加 X 并线修正。
+    # corridor_wall_follow_linear_speed_mps: 双墙锁定后的通道巡航速度；Why=交权前保持连续前进；Range=0.25-0.60m/s；Impact=调大更快但横向纠偏余量变小。
     corridor_wall_follow_linear_speed_mps: 0.48
+    # corridor_wall_follow_correction_speed_mps: 有横向误差时的修正速度；Why=避免高速修正过冲；Range=0.15-0.45m/s；Impact=调大回中快但摆动增大。
     corridor_wall_follow_correction_speed_mps: 0.32
     corridor_wall_follow_slow_center_error_m: 0.12
     corridor_wall_follow_lateral_gain: 1.0
@@ -556,208 +297,76 @@ competition_controller:
     corridor_wall_follow_heading_kp: 1.4
     corridor_wall_follow_max_angular_speed: 0.45
     corridor_wall_follow_no_lock_log_sec: 1.0
-    # 阿克曼底盘不能原地转。未形成双墙时，大角度以 0.22m/s 行驶并快速转向；
-    # 小于 20° 后提高到 0.30m/s 取墙，始终禁止发布 v=0。
     corridor_wall_acquire_speed_mps: 0.30
     corridor_wall_acquire_turn_linear_speed_mps: 0.22
     corridor_wall_acquire_heading_kp: 1.20
     corridor_wall_acquire_max_angular_speed: 0.55
     corridor_wall_acquire_turn_in_place_angle_deg: 20.0
-    # 单墙不能区分底边/侧边，只保留诊断，不允许决定通道行进方向。
     corridor_wall_follow_single_wall_enabled: false
     corridor_wall_follow_single_wall_speed_mps: 0.28
-    # Y 门线只触发交接检查；X 窗口、yaw 和中心门限统一使用上面的核心参数。
-    # 不满足时倒退到 staging 重新修正，不能把错误入口交给 Stage2。
     corridor_wall_follow_require_map_x_handoff: false
     corridor_wall_yaw_rebase_enabled: true
     corridor_wall_yaw_rebase_axis_tolerance_deg: 10.0
     corridor_wall_map_x_correction_enabled: true
-    # 修正后的 X 未进窗口时动态并线；贴近窗口时仍是小角度，偏差超过 5cm 后
-    # 允许按 atan(gain*error) 平滑放大到 32°，避免在 Y 门线前只横移几厘米。
     corridor_wall_x_adjust_gain: 2.0
     corridor_wall_x_adjust_max_heading_deg: 6.0
     corridor_wall_x_large_error_m: 0.05
     corridor_wall_x_large_adjust_max_heading_deg: 32.0
-
-    # 通道导航超时 (s) — 超时后强制切 Stage2
+    # 通道通用跟踪与规划参数。path_follow_mode 固定为 pure_pursuit；planner_* 仅在 use_corridor_planner=true 时参与。
+    # What: lookahead/turn_kp/heading_stop 控制路径转弯；brake_*、capture_*、near_distance 控制接近路点时的降速；timeout 是异常退出上限。
+    # Why: 当前 0.35m 前视适合狭通道和 0.58m/s 巡航，45s 仅防止状态机卡死。
+    # Range: lookahead 0.20-0.60m，turn_kp 0.8-2.5，heading_stop 45-85deg，timeout 30-90s。
+    # Impact: 前视增大更平滑但会切弯；turn_kp 增大转向更快但易摆动；timeout 过短会误失败，过长会拖延异常处理。
     corridor_timeout_sec: 45.0
-
-    # 日志输出周期 (s) — 每隔此时间打印一次导航状态
     corridor_log_period_sec: 0.5
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 通道导航控制参数 (Corridor Control)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # --- 路径跟踪模式 (Path Following Mode) ---
-    # pure_pursuit: 纯追踪, stanley: Stanley 控制器
     corridor_path_follow_mode: pure_pursuit
-
-    # --- 速度参数 (Speed Control) ---
-    # 通道巡航速度 (m/s)：中心线模式无障碍时的高速上限
     corridor_linear_speed: 0.58
-
-    # 转弯线速度 (m/s) — 大角度转向时的前进速度
     turn_linear_speed: 0.18
-
-    # 转弯最小角速度 (rad/s) — 防止转速过低
     turn_min_angular_speed: 0.15
-
-    # 转弯角速度上限 (rad/s)
     turn_angular_speed: 0.55
-
-    # 全局最大角速度 (rad/s)
     max_angular_speed: 0.60
-
-    # 蠕行速度 (m/s) — 近场收敛时的最低速度
     corridor_creep_speed: 0.10
-
-    # 最低巡航速度 (m/s) — 通道中的最低前进速度
     corridor_min_cruise_speed: 0.22
-
-    # 转弯时最大线速度 (m/s) — 大角速度时限制线速度
     corridor_max_turn_linear_speed: 0.30
-
-    # --- Pure Pursuit 参数 ---
-    # 前视距离 (m) — 追踪路径上前方此距离的点
     pure_pursuit_lookahead_m: 0.35
-
-    # 转向增益 — 曲率 → 角速度增益
     pure_pursuit_turn_kp: 1.5
-
-    # 航向差停止阈值 (°) — 航向误差大于此值时停止纯追踪
     pure_pursuit_heading_stop_deg: 70.0
-
-    # 最小前视距离 (m) — 防止前视距离过小
     corridor_pp_min_lookahead_m: 0.25
-
-    # 速度缩放系数 — 线速度 = 巡航速度 × 此系数
     corridor_pp_speed_scale: 1.0
-
-    # --- 控制增益 (Control Gains) ---
-    # 距离误差 → 线速度增益
     corridor_rho_kp: 0.85
-
-    # 航向误差 → 角速度增益（LOS 方向）
     corridor_alpha_kp: 2.0
-
-    # 目标航向 → 角速度增益（融合终点航向）
     corridor_beta_kp: 0.80
-
-    # 航向修正增益 — IMU 航向误差 → 角速度
     corridor_heading_kp: 1.0
-
-    # Stanley 横向误差增益
     corridor_stanley_k: 1.2
-
-    # 横向偏差修正增益
     corridor_lateral_kp: 1.8
-
-    # X 坐标到位容差 (m) — map_x 误差小于此值视为 X 到位
     corridor_x_tolerance: 0.25
-
-    # --- 近场收敛 (Near-Field Convergence) ---
-    # 制动距离 (m) — 距离终点小于此值时开始减速
     corridor_brake_distance: 0.50
-
-    # 制动增益 — 距离 → 线速度衰减系数
     corridor_brake_kp: 0.35
-
-    # 捕获距离 (m) — 进入近场控制的距离
     corridor_capture_distance: 0.28
-
-    # 捕获退出距离 (m) — 退出近场控制的距离
     corridor_capture_exit_distance: 0.45
-
-    # 捕获速度 (m/s) — 近场控制时的线速度
     corridor_capture_speed: 0.28
-
-    # 对齐线速度 (m/s) — 航向对齐时的线速度（0 = 原地转）
     corridor_align_linear_speed: 0.22
-
-    # Beta 混合距离 (m) — 距离终点小于此值时融合目标航向
     corridor_beta_blend_distance: 0.70
-
-    # 近场距离阈值 (m)
     corridor_near_distance: 0.45
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 通道地图规划 (Corridor A* Path Planning)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 启用栅格规划器 — true: A* 避开障碍物, false: 直线连接路点
     use_corridor_planner: true
-
-    # --- 栅格参数 (Grid Parameters) ---
-    # 地图降采样倍率 — 每 N×N 个栅格合并为 1 个（降低计算量）
     planner_downsample: 4
-
-    # 占据阈值 (0-100) — 栅格值 ≥ 此阈值视为障碍物
     planner_occupied_threshold: 50
-
-    # 未知区域视为占据 — true: 未知区域不可通行
     planner_unknown_is_occupied: true
-
-    # 障碍物膨胀半径 (m) — 障碍物向外膨胀此距离（安全余量）
     planner_obstacle_inflation_m: 0.14
-
-    # --- 重规划触发条件 (Replanning Triggers) ---
-    # 重规划周期 (s) — 最长间隔此时间重规划一次
     planner_replan_period_sec: 2.0
-
-    # 重规划最小进度 (m) — 移动距离 ≥ 此值 + 超过周期时才重规划
     corridor_replan_min_progress_m: 0.30
-
-    # 偏航重规划阈值 (m) — 偏离路径距离 ≥ 此值时立即重规划
     corridor_replan_offpath_m: 0.20
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 倒车后重定向 (Post-Backing Reorientation, 可选)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 启用入口重定向 — true: 倒车后航向误差大时原地拧正
     corridor_entry_reorient_enabled: false
-
-    # 触发重定向角度阈值 (°) — 航向误差 ≥ 此值时触发重定向
     corridor_entry_reorient_angle_deg: 50.0
-
-    # 重定向完成角度 (°) — 航向误差 ≤ 此值时重定向完成
     corridor_entry_reorient_done_deg: 25.0
-
-    # 重定向超时 (s)
     corridor_entry_reorient_timeout_sec: 4.0
-
-    # 中线重定向角度阈值 (°) — 偏离中线航向 ≥ 此值时触发重定向
     corridor_centerline_reorient_deg: 55.0
-
-    # 重定向时允许避障 — false: 重定向期间禁用避障（防止侧墙干扰）
     corridor_avoid_while_reorient: false
-
-    # 强制重定向 — true: 每次进入通道都重定向
     corridor_force_reorient_enabled: false
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 左侧恢复 (Left Recovery - Anti Right-Wall Drift)
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 触发 X 阈值 (m, map 坐标系) — map_x > 此值时降速运行（防止贴右墙）
     corridor_left_recover_x: 3.0
-
-    # 左旋角速度 (rad/s) — 向左旋回的角速度
     corridor_left_recover_angular: 0.70
-
-    # 左旋线速度 (m/s) — 向左旋回时的前进速度（x>3.5m 时小速度运行）
     corridor_left_recover_linear: 0.08
-
-    # Stage1 盲开右转区域（map 坐标系）
     blind_right_turn_x: 3.5
     blind_right_turn_y: 1.2
     blind_right_turn_angular: 0.70
     blind_right_turn_linear: 0.08
-
-    # ────────────────────────────────────────────────────────────────────────
-    # 实验视觉通道控制
-    # ────────────────────────────────────────────────────────────────────────
-
-    # 生产流程由激光围墙跟随完成通道导航，不启用此实验分支。其余视觉通道
-    # 参数采用代码默认值，避免同一套未参与生产的参数长期占用调参入口。

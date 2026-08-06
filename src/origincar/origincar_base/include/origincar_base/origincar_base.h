@@ -9,6 +9,7 @@
 #include <csignal>
 #include <thread>
 #include <chrono>
+#include <mutex>
 
 #include <iostream>
 #include <string.h>
@@ -200,6 +201,8 @@ private:
     size_t count_;
 	bool cmd_vel_watchdog_enabled_;
 	double cmd_vel_watchdog_timeout_sec_;
+	std::mutex cmd_state_mutex_;
+	std::mutex serial_mutex_;
 	bool last_cmd_nonzero_;
 	std::chrono::steady_clock::time_point last_cmd_received_at_;
 };
