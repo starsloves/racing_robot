@@ -2,6 +2,7 @@
 
 import math
 import os
+import socket
 import threading
 import yaml
 
@@ -28,6 +29,7 @@ def _map_defaults(config_path):
         str(params['map_to_odom_x']),
         str(params['map_to_odom_y']),
         str(math.radians(float(params['map_to_odom_yaw_deg']))),
+        float(params['initial_map_heading_deg']),
     )
 
 
@@ -44,6 +46,28 @@ def _operator_tty():
     return '/dev/tty'
 
 
+def _web_host_hint():
+    """Pick a usable IPv4 address for the terminal browser hint."""
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(('8.8.8.8', 80))
+        address = probe.getsockname()[0]
+        probe.close()
+        if not address.startswith('127.'):
+            return address
+    except OSError:
+        pass
+    try:
+        addresses = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        for _, _, _, _, sockaddr in addresses:
+            address = sockaddr[0]
+            if not address.startswith('127.'):
+                return address
+    except OSError:
+        pass
+    return '127.0.0.1'
+
+
 _SUPERVISOR_SHUTDOWN_LOCK = threading.Lock()
 _SUPERVISOR_SHUTDOWN_REQUESTED = False
 
@@ -53,7 +77,7 @@ def generate_launch_description():
     stage1_dir = get_package_share_directory('racing_stage1')
     voice_dir = get_package_share_directory('voice_driver')
     qr_dir = get_package_share_directory('qr_scanner')
-    x_default, y_default, yaw_default = _map_defaults(
+    x_default, y_default, yaw_default, initial_heading_default = _map_defaults(
         os.path.join(stage1_dir, 'config', 'stage1_controller.yaml')
     )
 
@@ -62,6 +86,9 @@ def generate_launch_description():
     )
     include_depth = DeclareLaunchArgument('include_depth', default_value='true')
     include_voice = DeclareLaunchArgument('include_voice', default_value='true')
+    enable_web_monitor = DeclareLaunchArgument('enable_web_monitor', default_value='true')
+    web_monitor_host = DeclareLaunchArgument('web_monitor_host', default_value='0.0.0.0')
+    web_monitor_port = DeclareLaunchArgument('web_monitor_port', default_value='8081')
     map_x = DeclareLaunchArgument('map_to_odom_x', default_value=x_default)
     map_y = DeclareLaunchArgument('map_to_odom_y', default_value=y_default)
     map_yaw = DeclareLaunchArgument('map_to_odom_yaw', default_value=yaw_default)
@@ -120,6 +147,27 @@ def generate_launch_description():
         parameters=[{'enable_stage2_vision_ai': True}],
         on_exit=_supervisor_exit,
     )
+    web_monitor = Node(
+        package='racing_tools',
+        executable='telemetry_web_monitor',
+        name='telemetry_web_monitor',
+        output='screen',
+        emulate_tty=True,
+        parameters=[{
+            'host': LaunchConfiguration('web_monitor_host'),
+            'port': LaunchConfiguration('web_monitor_port'),
+            'initial_map_heading_deg': initial_heading_default,
+        }],
+        condition=IfCondition(LaunchConfiguration('enable_web_monitor')),
+    )
+    web_monitor_hint = LogInfo(
+        msg=[
+            '[WEB] BROWSER_URL=http://', _web_host_hint(),
+            ':', LaunchConfiguration('web_monitor_port'), '/ '
+            '(默认地址；若端口占用，以监视器输出的实际 URL 为准；页面只读)',
+        ],
+        condition=IfCondition(LaunchConfiguration('enable_web_monitor')),
+    )
 
     return LaunchDescription([
         SetEnvironmentVariable('ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_runtime'),
@@ -128,8 +176,11 @@ def generate_launch_description():
         SetEnvironmentVariable('RMW_FASTRTPS_TRANSPORT', 'UDPv4'),
         SetEnvironmentVariable('RACING_OPERATOR_TTY', _operator_tty()),
         map_yaml, include_depth, include_voice,
+        enable_web_monitor, web_monitor_host, web_monitor_port,
         map_x, map_y, map_yaw,
         base, map_stack, camera, lidar,
         voice,
+        web_monitor,
+        web_monitor_hint,
         supervisor,
     ])

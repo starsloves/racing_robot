@@ -20,6 +20,7 @@
   <depend>python3-opencv</depend>
   <depend>python3-yaml</depend>
   <depend>racing_common</depend>
+  <depend>racing_tools</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

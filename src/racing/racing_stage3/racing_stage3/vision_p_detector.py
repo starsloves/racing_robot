@@ -5,7 +5,7 @@ vision_p_detector.py — P 标牌视觉检测模块
 1. 订阅相机 topic，BPU 推理，缓存最新检测结果
 2. 解码 YOLO 检测头的 bbox 和单类别置信度，不计算 mask
 3. 提供 get_p_detection() 接口供导航节点调用
-4. HTTP 图片、健康检查和自动刷新的 Web 页面（兼容 vision_viewer.html 的 8080 接口）
+4. HTTP 图片、健康检查和自动刷新的 Web 页面（Stage3 专用 8083 接口）
 """
 
 import threading
@@ -17,6 +17,7 @@ from socketserver import ThreadingTCPServer
 
 import cv2
 import numpy as np
+from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -225,8 +226,9 @@ class VisionPDetector:
 
                     def do_GET(self):
                         if self.path in ('/', '/index.html', '/vision_p.html'):
-                            viewer_path = os.path.abspath(
-                                os.path.join(os.path.dirname(__file__), '../../../../vision_viewer.html')
+                            viewer_path = os.path.join(
+                                get_package_share_directory('racing_tools'),
+                                'web', 'vision_viewer.html',
                             )
                             try:
                                 with open(viewer_path, 'rb') as viewer_file:

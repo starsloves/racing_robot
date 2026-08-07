@@ -9,7 +9,7 @@ from queue import Empty, Queue
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from rclpy.qos import QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Int32, String
 
@@ -24,6 +24,8 @@ class VoiceBroadcastNode(Node):
         super().__init__('voice_broadcast_node')
         self.declare_parameter('mode', '')
         self.declare_parameter('target_sign', -1)
+        self.declare_parameter('qr_task_topic', 'competition_qr_task')
+        self.declare_parameter('qr_odd_is_clockwise', True)
 
         self._config = VoiceEnvConfig.from_env()
         mode = self.get_parameter('mode').get_parameter_value().string_value.strip()
@@ -31,6 +33,13 @@ class VoiceBroadcastNode(Node):
 
         target_sign = self.get_parameter('target_sign').get_parameter_value().integer_value
         self._target_sign = target_sign if target_sign >= 0 else self._config.target_sign
+        self._qr_task_topic = str(
+            self.get_parameter('qr_task_topic').get_parameter_value().string_value
+        ).strip() or 'competition_qr_task'
+        self._qr_odd_is_clockwise = bool(
+            self.get_parameter('qr_odd_is_clockwise').value
+        )
+        self._last_qr_task = None
 
         self._service = VoiceBroadcastService(self._config, logger=self.get_logger())
         self._bridge = CvBridge()
@@ -41,6 +50,20 @@ class VoiceBroadcastNode(Node):
 
         qos = QoSProfile(depth=10)
         self._status_pub = self.create_publisher(String, 'voice_broadcast_status', qos)
+        qr_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            String,
+            self._qr_task_topic,
+            self._qr_task_callback,
+            qr_qos,
+        )
+        self.get_logger().info(
+            f'QR voice confirmation: listening on {self._qr_task_topic}'
+        )
         self._speech_worker = threading.Thread(target=self._speech_worker_loop, daemon=True)
         self._speech_worker.start()
 
@@ -110,6 +133,35 @@ class VoiceBroadcastNode(Node):
             'queueing background speech task'
         )
         self._enqueue_speech('text', text)
+
+    def _qr_task_callback(self, msg: String) -> None:
+        """Speak a short confirmation when S1 latches a QR task."""
+        raw = msg.data.strip()
+        if not raw or raw == self._last_qr_task:
+            return
+        self._last_qr_task = raw
+        direction = self._parse_qr_direction(raw)
+        if direction:
+            text = f'{raw} {direction}'
+        else:
+            text = raw
+        self.get_logger().info(
+            f'[VOICE_BROADCAST] QR task received raw={raw!r}; queueing confirmation'
+        )
+        self._enqueue_speech('qr', text)
+
+    def _parse_qr_direction(self, raw: str):
+        normalized = raw.lower()
+        if any(keyword in normalized for keyword in ('逆时针', 'counterclockwise', 'anticlockwise', 'ccw')):
+            return '逆时针'
+        if any(keyword in normalized for keyword in ('顺时针', 'clockwise', 'cw')):
+            return '顺时针'
+        try:
+            value = int(raw)
+        except ValueError:
+            return None
+        clockwise = (value % 2 == 1) if self._qr_odd_is_clockwise else (value % 2 == 0)
+        return '顺时针' if clockwise else '逆时针'
 
     def _run_async(self, kind: str, task) -> None:
         def _worker() -> None:

@@ -19,8 +19,8 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 from racing_common.racing_logger import terminal_write
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Image, Imu, LaserScan
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from sensor_msgs.msg import CameraInfo, Imu, LaserScan
 from std_msgs.msg import Int32, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -59,10 +59,14 @@ class CompetitionSupervisor(Node):
         self.create_subscription(String, 'stage2_state', self._stage2_cb, latched)
         self.create_subscription(String, 'stage3_state', self._stage3_cb, latched)
         self.create_subscription(String, 'stage3_prewarm', self._stage3_prewarm_cb, latched)
-        self.create_subscription(Imu, '/imu/data', lambda _: self._mark('imu'), 10)
-        self.create_subscription(Odometry, '/odom_combined', lambda _: self._mark('odom'), 10)
-        self.create_subscription(LaserScan, '/scan', lambda _: self._mark('scan'), 10)
-        self.create_subscription(Image, '/aurora/rgb/image_raw', lambda _: self._mark('camera'), 10)
+        # Sensor streams use the ROS sensor-data QoS.  In particular, do not
+        # deserialize the high-bandwidth raw RGB Image in this single-threaded
+        # lifecycle supervisor: camera_info is the driver's lightweight frame
+        # heartbeat and is emitted alongside every RGB frame.
+        self.create_subscription(Imu, '/imu/data', lambda _: self._mark('imu'), qos_profile_sensor_data)
+        self.create_subscription(Odometry, '/odom_combined', lambda _: self._mark('odom'), qos_profile_sensor_data)
+        self.create_subscription(LaserScan, '/scan', lambda _: self._mark('scan'), qos_profile_sensor_data)
+        self.create_subscription(CameraInfo, '/aurora/rgb/camera_info', lambda _: self._mark('camera'), qos_profile_sensor_data)
         self.create_subscription(OccupancyGrid, '/map', lambda _: self._mark('map'), latched)
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)

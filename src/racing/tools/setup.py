@@ -13,6 +13,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*launch.[pxy][yma]*'))),
         (os.path.join('share', package_name, 'config'), glob(os.path.join('config', '*'))),
+        (os.path.join('share', package_name, 'web'), glob(os.path.join('web', '*'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -28,6 +29,7 @@ setup(
             'initial_scan_map_localizer = racing_tools.initial_scan_map_localizer:main',
             'start_corner_pose_diagnostic = racing_tools.start_corner_pose_diagnostic:main',
             'manual_trajectory_recorder = racing_tools.manual_trajectory_recorder:main',
+            'telemetry_web_monitor = racing_tools.telemetry_web_monitor:main',
         ],
     },
 )

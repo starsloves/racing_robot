@@ -1,376 +1,115 @@
-# Stage1 竞赛控制器配置 (competition_controller)
+# S1 生产导航配置
+# 静态禁行地图由 map_overlay.launch.py 发布 map_restricted.yaml；扫描障碍只进入
+# 控制器的临时局部层，不回写 /map。位置来自 /odom_combined/TF，航向只来自 /imu/data。
 competition_controller:
   ros__parameters:
-    # 话题与坐标：距离/位置使用 /odom_combined，航向只使用 /imu/data。
     output_cmd_topic: /cmd_vel
     scan_topic: /scan
     imu_topic: /imu/data
-    # 航向链：启动时 IMU 原始角映射到的 Map 航向；只供 IMU 航向控制使用。
-    initial_map_heading_deg: 20.0
-    imu_yaw_offset_deg: 0.0
-    imu_map_yaw_offset_topic: imu_map_yaw_offset
-    start_corner_diagnostic_topic: start_corner_pose_diagnostic
-    stage2_entry_pose_topic: stage2_entry_pose
     odom_topic: /odom_combined
     map_topic: /map
-    qr_result_topic: qr_scan_result
-    task_topic: competition_qr_task
     map_frame: map
     base_frame: base_footprint
     odom_frame: odom_combined
+    stage1_state_topic: stage1_state
+    qr_result_topic: qr_scan_result
+    task_topic: competition_qr_task
+    stage2_entry_pose_topic: stage2_entry_pose
+    imu_map_yaw_offset_topic: imu_map_yaw_offset
+    start_corner_diagnostic_topic: start_corner_pose_diagnostic
+    lifecycle_service_prefix: /competition/stage1
+    control_rate_hz: 20.0
+
+    # 仅用于静态 map->odom_combined TF 的 launch 默认值；控制器不会自动修改。
     map_to_odom_x: 0.50
     map_to_odom_y: 0.15
-    # 坐标链：仅定义静态 map->odom_combined 变换，不从 IMU 航向参数隐式派生。
-    map_to_odom_yaw_deg: 20.0
-    # 启动墙角诊断只输出建议值和差值，绝不修改以上参数或发布 TF。
-    # S1 在诊断有效或等待超时后才向 Supervisor 发布 ready，确保诊断发生在静止期。
-    start_corner_diagnostic_wait_sec: 3.0
-    control_rate_hz: 20.0
-    # What: 正式取得第一阶段运动权后，车辆开始发布运动指令前的等待时间。
-    # Unit: 秒；默认 0.0 秒表示激活后立即运动。
+    map_to_odom_yaw_deg: 10.0
+    initial_map_heading_deg: 10.0
     start_delay_sec: 0.0
+    start_corner_diagnostic_wait_sec: 3.0
+    localization_max_age_sec: 0.40
+    map_max_age_sec: 5.0
 
-    # 盲开与中心线修正（起点到二维码）。
-    # What: blind_linear_speed 是盲开巡航速度；blind_qr_slowdown_* 定义 map X 靠近二维码前的减速门线和速度。
-    # Why: 当前场地在 x=1.5m 后需要降低二维码通过速度，既保证行驶连续，也给扫描器稳定画面。
-    # Range: blind_linear_speed 0.35-0.65m/s；slowdown_start 1.2-1.8m；slowdown_speed 0.25-0.50m/s。
-    # Impact: 速度或减速门线增大可缩短用时，但会降低扫码和避障余量；slowdown_speed 过低会拉长前段。
-    blind_linear_speed: 0.55
-    blind_qr_slowdown_start_map_x_m: 2.0
-    blind_qr_slowdown_linear_speed: 0.4
-    blind_angular_speed: 0.0
-    # What: blind_scan_centerline_json 是 map 坐标下的实测中心线；capture/guidance_start_map_x/ramp 控制中心线渐入。
-    # Why: 扫码带武装后立即计算折线切线和横向误差，角速度从 0 平滑增加，避免在 map_x 门线处突然大转。
-    # Range: capture_start/guidance_start 0.5-1.5m，ramp 0.6-2.5m；中心线必须由实测 map XY 更新。
-    # Impact: guidance_start 仅作为渐入起点，ramp 越长越平顺；最大角速度和角速度变化率共同限制转向。
-    blind_scan_centerline_json: '[{"x":0.50,"y":0.200},{"x":0.86,"y":0.418},{"x":1.23,"y":0.536},{"x":1.59,"y":0.655},{"x":1.95,"y":0.773},{"x":2.32,"y":0.891},{"x":2.68,"y":1.009},{"x":3.05,"y":1.127},{"x":3.41,"y":1.245},{"x":3.77,"y":1.364},{"x":4.14,"y":1.482},{"x":4.50,"y":1.600}]'
-    blind_scan_capture_start_map_x_m: 0.5
-    blind_scan_guidance_start_map_x_m: 0.5
-    blind_scan_guidance_ramp_m: 0.80
-    # What: corridor_half_width、lateral_kp、heading_kp 和两个 max_* 限制中心线横向/航向修正。
-    # Why: 0.35m 覆盖正常定位误差；角速度限幅防止高速盲开时蛇形。
-    # Range: half_width 0.20-0.50m，两个 kp 0.5-2.0，heading_offset 8-30deg，角速度 0.10-0.50rad/s。
-    # Impact: kp 或限幅增大时回线更快但摆动更明显；half_width 变小会更早介入，变大则允许偏离更远。
-    blind_scan_corridor_half_width_m: 0.35
-    blind_scan_lateral_kp: 1.0
-    blind_scan_max_heading_offset_deg: 20.0
-    blind_scan_heading_kp: 1.4
-    blind_scan_max_angular_speed: 0.35
-    blind_scan_guidance_max_angular_speed: 0.18
-    blind_scan_guidance_angular_slew_rate_rad_s2: 0.45
-    # What: avoid_prediction_* 按未来轨迹选绕障侧；min_clearance/pass_margin 是与障碍的净空门限；escape_* 是预测无解时的短倒车动作。
-    # Why: 1.8s 预见距离与 0.28m 净空在当前 0.55m/s 下可避免临近障碍才急转。
-    # Range: prediction 0.8-2.5s，clearance 0.20-0.40m，pass_margin 0.05-0.20m；倒车速度 -0.10--0.30m/s、持续 0.4-1.5s。
-    # Impact: 预测时间/净空增大更保守且更早绕行；过小会贴障，过大可能频繁误绕；倒车更快或更久脱困强，但碰撞后方风险更高。
-    blind_scan_avoid_prediction_sec: 1.80
-    blind_scan_avoid_prediction_step_sec: 0.05
-    blind_scan_avoid_min_clearance_m: 0.28
-    blind_scan_avoid_pass_margin_m: 0.10
-    blind_scan_avoid_detection_max_x_m: 1.00
-    blind_scan_avoid_obstacle_side_min_angle_deg: 5.0
-    blind_scan_avoid_obstacle_side_lane_extra_m: 0.12
-    blind_scan_escape_reverse_linear_speed_mps: -0.22
-    blind_scan_escape_reverse_angular_speed: 0.55
-    blind_scan_escape_reverse_duration_sec: 1.00
-    blind_scan_escape_corridor_extra_m: 0.12
-    blind_scan_escape_rear_min_x_m: -0.45
-    blind_scan_escape_rear_max_x_m: -0.08
-    blind_scan_escape_rear_half_width_m: 0.22
-    # 前向聚类检测窗口。
-    # What: phase1_window_* 是常规障碍的车体前方矩形；cluster_gap/min_points/min_width/max_width 过滤稀疏噪点；emergency_* 是更近的急停窗口。
-    # Why: 0.18-0.60m、半宽 0.22m 覆盖车头正前方，紧急窗口只捕获即将碰撞的目标。
-    # Range: 常规前向 0.15-0.90m、半宽 0.15-0.35m；gap 0.05-0.20m；最少点 2-6；最小宽 0.03-0.12m。
-    # Impact: 窗口加宽/加长更早避障但更易把墙或赛道边缘误判为障碍；过滤放宽更灵敏但噪声触发更多。
-    phase1_window_min_x: 0.18
-    phase1_window_max_x: 0.60
-    phase1_window_half_width: 0.22
-    phase1_cluster_gap_tolerance: 0.12
-    phase1_min_cluster_points: 3
-    phase1_min_cluster_width: 0.06
-    phase1_max_cluster_width: 0.55
-    phase1_emergency_min_x: 0.08
-    phase1_emergency_max_x: 0.45
-    phase1_emergency_half_width: 0.12
-    phase1_emergency_min_points: 2
-    # 四状态避障动作。
-    # What: avoid_* 控制绕障初始弧线；counter_steer_* 控制反打回正；recovery_* 控制恢复原航向，safe/clear_distance 决定进入/退出避障。
-    # Why: 当前速度、转角与 0.60/0.65m 门限在不停车的约束下留出转向距离和防抖回差。
-    # Range: 线速度 0.15-0.40m/s，角速度 0.4-1.2rad/s，safe/clear 0.35-0.80m 且 clear 必须大于 safe 0.03m 以上。
-    # Impact: 线速度增大更快但转弯半径变大；角速度或持续时间增大绕障更激进，过大容易反打过头；clear-safe 回差变小会反复切换状态。
-    avoid_linear_speed: 0.3
-    avoid_angular_speed: 0.8
-    avoid_right_turn_left_obstacle_angle_deg: 15.0
-    corridor_avoid_goal_bias_enabled: true
-    corridor_avoid_obstacle_side_penalty: 3.5
-    corridor_obstacle_min_width_m: 0.12
-    corridor_reverse_avoid_enabled: true
-    corridor_reverse_avoid_linear_speed_mps: -0.14
-    corridor_reverse_avoid_angular_speed: 0.14
-    corridor_reverse_avoid_min_duration_sec: 0.65
-    corridor_reverse_avoid_clear_hold_sec: 0.25
-    corridor_reverse_avoid_entry_tolerance_m: 0.25
-    avoid_min_duration_sec: 0.5
-    avoid_clear_hold_sec: 0.25
-    avoid_min_turn_angle_deg: 30.0
-    phase1_avoid_startup_grace_sec: 0.5
-    scan_angle_deg: 45.0
-    safe_distance: 0.6
-    clear_distance: 0.65
-    min_valid_range: 0.10
-    counter_steer_linear_speed: 0.30
-    counter_steer_angular_speed: 1.0
-    counter_steer_duration_scale: 0.6
-    counter_steer_min_duration_sec: 0.30
-    counter_steer_max_duration_sec: 1.00
-    recovery_linear_speed: 0.35
-    recovery_turn_linear_speed: 0.20
-    recovery_angular_speed: 0.40
-    recovery_heading_kp: 1.5
-    recovery_max_angular_speed: 0.6
-    recovery_min_angular_speed: 0.3
-    recovery_in_place_angle_deg: 8.0
-    heading_tolerance_deg: 6.0
-    recovery_timeout: 2.5
-    recovery_duration_scale: 0.9
-    # 扫码后倒车沿历史轨迹运行。
-    # What: 直线段使用 back_linear_speed 上限，弯道按曲率和横向加速度自动限速；角速度使用曲率前馈加 Stanley 反馈。
-    # Why: 在保持连续速度的同时，直线段可以提速，弯道不因固定高速而扩大路线误差。
-    # Impact: lateral_accel 越大弯道越快但侧滑和偏线风险越高；preview_gain 越大高速时提前看得更远但可能切弯。
-    back_min_linear_speed: 0.20
-    back_lateral_accel_limit: 0.16
-    back_speed_preview_gain: 0.25
-    enable_backing: true
-    # back_target_x: 倒车结束 map X 门线；Why=回到通报口前的指定位置；Range=按起点/赛道实测 +-0.20m；Impact=调大倒车更远，调小更早结束。
-    back_target_x: 2.00
-    # back_linear_speed: 倒车最高线速度（负值）；直线段使用该上限，弯道由曲率自动限速。
-    back_linear_speed: -0.35
-    # back_angular_kp: 倒车横向误差角增益；Why=把车拉回记录轨迹；Range=0.3-1.2；Impact=调大收敛快但左右摆动。
-    back_angular_kp: 0.65
-    # back_max_angular_speed: 倒车最大角速度；Why=限制曲率前馈与反馈合成转向；Impact=调大纠偏更快但易打满。
-    back_max_angular_speed: 0.42
-    # back_angular_slew_rate: 倒车角速度变化率；Why=抑制方向突变；Range=0.8-3.0rad/s2；Impact=调大响应快但冲击大，调小更平滑。
-    back_angular_slew_rate: 0.90
-    # 后退控制专用的瞬时误差滤波和航向微调；不影响前进/避障恢复。
-    back_cross_track_filter_tau_sec: 0.25
-    back_heading_kp: 0.80
-    back_heading_deadband_deg: 3.0
-    back_reverse_engage_distance_m: 0.04
-    back_reverse_engage_timeout_sec: 3.0
-    # back_position_tolerance: 倒车位置结束容差；Why=避免在门线附近抖动；Range=0.02-0.10m；Impact=调大更易结束但位置误差增大。
-    back_position_tolerance: 0.04
-    # back_cross_track_tolerance_m: 历史轨迹横向安全门；Why=防止偏离来时路线仍被判完成；Range=0.04-0.10m；Impact=调大容许偏离，调小可能因噪声无法结束。
-    back_cross_track_tolerance_m: 0.06
-    back_path_sample_distance: 0.02
-    back_lookahead_m: 0.20
-    back_timeout_sec: 20.0
-    back_align_yaw_deg: 90.0
-    back_align_tolerance_deg: 5.0
-    back_align_timeout_sec: 10.0
-    # 通道路径与 S1 -> S2 交权位置。
-    # What: corridor_waypoints_json/reference_path_json 是通道实测路线；waypoint/goal_tolerance 是到点半径；corridor_linear_speed 是通道巡航速度。
-    # Why: 路点给出从倒车终点到通道中线的可复现路线，0.58m/s 是当前墙体锁定后的巡航值。
-    # Range: 路点须由实测坐标更新；容差 0.08-0.30m；巡航 0.25-0.65m/s；turn_linear_speed 0.08-0.35m/s。
-    # Impact: 容差变大更容易切下一点但会削角；巡航速度增大缩短时间但降低墙体纠偏余量。
-    enable_corridor_navigation: true
-    corridor_path_topic: /stage1_corridor_path
-    corridor_waypoints_json: '[{"x":2.55,"y":1.20,"speed":0.28,"description":"corridor_mid_1"},{"x":2.55,"y":2.55,"speed":0.26,"yaw_deg":90.0,"description":"corridor_goal"}]'
-    corridor_reference_path_enabled: true
-    corridor_reference_path_json: '[{"x":2.18,"y":0.72},{"x":2.38,"y":0.96},{"x":2.45,"y":1.20},{"x":2.55,"y":1.75},{"x":2.55,"y":2.20},{"x":2.55,"y":2.55}]'
-    corridor_waypoint_tolerance: 0.25
-    corridor_goal_tolerance: 0.12
-    corridor_goal_yaw_deg: 90.0
-    corridor_goal_yaw_tolerance_deg: 15.0
-    corridor_entry_region_radius_m: 0.10
-    # What: handoff_y/x_center/x_tolerance/yaw_tolerance/wall_center_tolerance/front_distance 是发布 stage1_state=handoff_ready 的联合门限；S1 在此后保持最后非零命令，直到 S2 首命令接管。
-    # Why: y=3.20m、x=2.50m、IMU 航向 90deg 和双墙居中共同保证 S2 从正确通道出口连续接管，单独到达 y 不能交权。
-    # Range: 坐标必须按场地实测；x 容差 0.06-0.20m，yaw 5-15deg，墙中心 0.05-0.15m，前墙距离 2.0-3.2m。
-    # Impact: 门限放宽会更早交权但把偏差带入 S2；收紧会更稳但可能因传感器噪声迟迟不交权。force_after_reject 仅用于诊断后兜底，不应靠它完成正常交接。
-    # corridor_handoff_y_m: S1 交权 map Y 门线；Why=进入通报口后才允许交接；Range=实测门线 +-0.20m；Impact=调大交权更晚，调小可能提前交权。
-    corridor_handoff_y_m: 3.05
-    # corridor_handoff_x_center_m: S1 交权目标 map X 中线；Why=给 S2 正确入口横坐标；Range=赛道中心 +-0.15m；Impact=调偏会把横向误差传给 S2。
-    corridor_handoff_x_center_m: 2.50
-    # corridor_handoff_x_tolerance_m: 交权允许的 X 偏差；Why=过滤未居中的入口；Range=0.06-0.20m；Impact=调大更易交权但入口偏差更大。
-    corridor_handoff_x_tolerance_m: 0.15
-    # corridor_handoff_yaw_tolerance_deg: 交权 IMU 航向容差；Why=确保 S2 首命令方向正确；Range=5-15deg；Impact=调大抗噪但可能斜着交权。
-    corridor_handoff_yaw_tolerance_deg: 10.0
-    # corridor_handoff_wall_center_tolerance_m: 双墙中心横向容差；Why=确认车在通道中间；Range=0.05-0.15m；Impact=调大误检风险增大，调小可能迟交权。
-    corridor_handoff_wall_center_tolerance_m: 0.12
-    # corridor_handoff_front_distance_m: 交权时前墙参考距离；Why=确认已到出口；Range=2.0-3.2m；Impact=调大允许更远处交权，调小要求更靠近前墙。
-    corridor_handoff_front_distance_m: 2.70
-    corridor_reacquire_y_m: 2.05
-    corridor_reacquire_reverse_speed: -0.16
-    corridor_reacquire_y_rise_guard_m: 0.04
-    corridor_reacquire_max_reentry_heading_deg: 45.0
-    corridor_reacquire_terminal_margin_m: 0.20
-    corridor_handoff_force_after_reject_sec: 10.0
-    # 通道末端对齐与墙体锁定。
-    # What: terminal_* 将车体对齐至交接中心；terminal_wall_* 和 front_wall_* 规定两侧墙/前墙的点云拟合窗口、质量门限、滤波与保持时间。
-    # Why: 末段以激光墙体修正横向误差，map 坐标仅用于交接门线，防止局部定位漂移把车带偏。
-    # Range: terminal_linear_speed 0.15-0.45m/s；x 容差 0.04-0.15m；yaw 门限 3-12deg；wall_max_age 0.10-0.40s；fit_residual 0.02-0.06m。
-    # Impact: 速度/增益/角速度上调会更快对中但易振荡；拟合门限放宽可减少失锁但可能把障碍误作墙；保持时间增大抗短暂遮挡但会使用旧墙数据。
-    corridor_terminal_enabled: true
-    corridor_terminal_x_tolerance_m: 0.06
-    corridor_terminal_entry_x_tolerance_m: 0.10
-    corridor_terminal_x_exit_tolerance_m: 0.28
-    corridor_terminal_yaw_tolerance_deg: 8.0
-    corridor_terminal_release_yaw_tolerance_deg: 10.0
-    # corridor_terminal_linear_speed: 通道末端对齐时的前进速度；Why=交权前仍保持非零命令；Range=0.15-0.45m/s；Impact=调大更快但墙体横向误差更难收敛。
-    corridor_terminal_linear_speed: 0.40
-    corridor_terminal_micro_start_y_margin_m: 0.18
-    corridor_terminal_lateral_gain: 1.2
-    corridor_terminal_heading_kp: 1.4
-    corridor_terminal_yaw_deadband_deg: 1.0
-    corridor_terminal_max_angular_speed: 0.45
-    corridor_terminal_micro_max_angular_speed: 0.18
-    corridor_terminal_angular_slew_rate_rad_s2: 0.85
-    corridor_terminal_x_filter_tau_sec: 0.20
-    corridor_terminal_x_reverse_hysteresis_m: 0.015
-    corridor_terminal_prealign_y_margin_m: 0.50
-    corridor_terminal_prealign_heading_kp: 1.2
-    corridor_terminal_prealign_max_angular_speed: 0.32
-    terminal_reverse_align_linear_speed: -0.16
-    terminal_reverse_align_heading_kp: 1.0
-    terminal_reverse_align_max_angular_speed: 0.60
-    corridor_terminal_wall_lock_enabled: true
-    corridor_terminal_wall_min_forward_m: 0.10
-    corridor_terminal_wall_max_forward_m: 1.60
-    corridor_terminal_wall_min_lateral_m: 0.16
-    corridor_terminal_wall_max_lateral_m: 4.00
-    corridor_terminal_wall_min_points: 8
-    corridor_terminal_wall_min_span_m: 0.45
-    corridor_terminal_wall_fit_residual_m: 0.035
-    corridor_terminal_wall_axis_tolerance_deg: 35.0
-    corridor_terminal_wall_cluster_gap_m: 0.30
-    corridor_terminal_wall_cluster_min_span_m: 0.75
-    corridor_terminal_wall_source_hold_sec: 0.60
-    corridor_terminal_wall_source_heading_jump_deg: 12.0
-    corridor_terminal_wall_source_distance_jump_m: 0.35
-    corridor_terminal_wall_parallel_tolerance_deg: 5.0
-    corridor_terminal_wall_width_min_m: 0.35
-    corridor_terminal_wall_width_max_m: 5.60
-    corridor_terminal_wall_filter_tau_sec: 0.18
-    corridor_terminal_wall_max_age_sec: 0.25
-    corridor_terminal_wall_control_hold_sec: 0.75
-    corridor_terminal_wall_center_offset_m: 0.0
-    corridor_terminal_wall_release_heading_deg: 2.5
-    corridor_terminal_release_hold_sec: 0.20
-    corridor_front_wall_handoff_enabled: true
-    corridor_front_wall_reference_distance_m: 2.70
-    corridor_front_wall_min_forward_m: 0.80
-    corridor_front_wall_max_forward_m: 3.20
-    corridor_front_wall_max_lateral_m: 2.80
-    corridor_front_wall_min_points: 12
-    corridor_front_wall_min_lateral_span_m: 0.80
-    corridor_front_wall_fit_residual_m: 0.040
-    corridor_front_wall_axis_tolerance_deg: 15.0
-    corridor_front_wall_cluster_gap_m: 0.30
-    corridor_front_wall_source_heading_jump_deg: 20.0
-    corridor_front_wall_source_distance_jump_m: 0.45
-    corridor_front_wall_filter_tau_sec: 0.18
-    corridor_front_wall_max_age_sec: 0.30
-    # What: capture_y_margin 是开始墙体纠偏距交接门线的提前量；commit_* 是满足居中/航向后锁定通过的条件；abort_* 是锁定后撤销条件。
-    # Why: 1.20m 给 15cm 初始横向误差留出收敛距离；commit 和 abort 使用不同阈值避免在门线前反复切换。
-    # Range: capture 0.6-1.8m，commit_speed 0.20-0.50m/s，commit_center 0.05-0.15m，commit_heading 3-10deg；abort 必须大于 commit。
-    # Impact: 提前量增大更早纠偏但易受入口杂波影响；commit 放宽更容易保持高速交权，收紧更居中但可能错过门线。
-    corridor_terminal_capture_y_margin_m: 1.20
-    corridor_terminal_capture_max_center_error_m: 0.12
-    corridor_terminal_commit_y_margin_m: 0.35
-    # corridor_terminal_commit_speed_mps: 满足 commit 条件后的交权前进速度；Why=让 S1->S2 以连续运动接管；Range=0.20-0.50m/s；Impact=调大缩短交接时间但把更多速度/位置误差带给 S2。
-    corridor_terminal_commit_speed_mps: 0.42
-    corridor_terminal_commit_center_tolerance_m: 0.120
-    corridor_terminal_commit_heading_deg: 5.0
-    corridor_terminal_commit_abort_center_m: 0.100
-    corridor_terminal_commit_abort_heading_deg: 12.0
-    # What: wall_follow_* 是锁墙后的主速度、横向/航向增益和限幅；wall_acquire_* 是未锁墙时的低速搜索；wall_x_adjust_* 用 map X 做有限的横向补偿。
-    # Why: 已锁墙时 0.48m/s 巡航，失锁时降至 0.30m/s，避免在无可靠墙体时高速进入交接区。
-    # Range: follow 0.25-0.60m/s，acquire 0.10-0.35m/s，lateral/heading kp 0.5-2.0，最大角速度 0.25-0.70rad/s。
-    # Impact: 跟随速度或增益增大，纠偏更快但更易蛇形；acquire 速度降低，重获墙体更稳但耗时更长；关闭 require_lock 只用于排障，正式比赛会失去墙体保护。
-    corridor_wall_follow_enabled: true
-    corridor_wall_follow_require_lock: true
-    # What: turn_start_angle 是从后退对齐完成后的 IMU 航向变化门槛；dual_lock_hold 要求双墙连续有效后才接管。
-    # Why: 起点、二维码和倒车结束后的开放区没有可依赖的双墙，避免墙体误拟合提前修正。
-    corridor_wall_follow_turn_start_angle_deg: 18.0
-    corridor_wall_follow_dual_lock_hold_sec: 0.30
-    # corridor_wall_follow_linear_speed_mps: 双墙锁定后的通道巡航速度；Why=交权前保持连续前进；Range=0.25-0.60m/s；Impact=调大更快但横向纠偏余量变小。
-    corridor_wall_follow_linear_speed_mps: 0.48
-    # corridor_wall_follow_correction_speed_mps: 有横向误差时的修正速度；Why=避免高速修正过冲；Range=0.15-0.45m/s；Impact=调大回中快但摆动增大。
-    corridor_wall_follow_correction_speed_mps: 0.32
-    corridor_wall_follow_slow_center_error_m: 0.12
-    corridor_wall_follow_lateral_gain: 1.0
-    corridor_wall_follow_center_heading_max_deg: 12.0
-    corridor_wall_follow_heading_kp: 1.4
-    corridor_wall_follow_max_angular_speed: 0.45
-    corridor_wall_follow_no_lock_log_sec: 1.0
-    corridor_wall_acquire_speed_mps: 0.30
-    corridor_wall_acquire_turn_linear_speed_mps: 0.22
-    corridor_wall_acquire_heading_kp: 1.20
-    corridor_wall_acquire_max_angular_speed: 0.55
-    corridor_wall_acquire_turn_in_place_angle_deg: 20.0
-    corridor_wall_follow_single_wall_enabled: false
-    corridor_wall_follow_single_wall_speed_mps: 0.28
-    corridor_wall_follow_require_map_x_handoff: false
-    corridor_wall_yaw_rebase_enabled: true
-    corridor_wall_yaw_rebase_axis_tolerance_deg: 10.0
-    corridor_wall_map_x_correction_enabled: true
-    corridor_wall_x_adjust_gain: 2.0
-    corridor_wall_x_adjust_max_heading_deg: 6.0
-    corridor_wall_x_large_error_m: 0.05
-    corridor_wall_x_large_adjust_max_heading_deg: 32.0
-    # 通道通用跟踪与规划参数。path_follow_mode 固定为 pure_pursuit；planner_* 仅在 use_corridor_planner=true 时参与。
-    # What: lookahead/turn_kp/heading_stop 控制路径转弯；brake_*、capture_*、near_distance 控制接近路点时的降速；timeout 是异常退出上限。
-    # Why: 当前 0.35m 前视适合狭通道和 0.58m/s 巡航，45s 仅防止状态机卡死。
-    # Range: lookahead 0.20-0.60m，turn_kp 0.8-2.5，heading_stop 45-85deg，timeout 30-90s。
-    # Impact: 前视增大更平滑但会切弯；turn_kp 增大转向更快但易摆动；timeout 过短会误失败，过长会拖延异常处理。
-    corridor_timeout_sec: 45.0
-    corridor_log_period_sec: 0.5
-    corridor_path_follow_mode: pure_pursuit
-    corridor_linear_speed: 0.58
-    turn_linear_speed: 0.18
-    turn_min_angular_speed: 0.15
-    turn_angular_speed: 0.55
-    max_angular_speed: 0.60
-    corridor_creep_speed: 0.10
-    corridor_min_cruise_speed: 0.22
-    corridor_max_turn_linear_speed: 0.30
-    pure_pursuit_lookahead_m: 0.35
-    pure_pursuit_turn_kp: 1.5
-    pure_pursuit_heading_stop_deg: 70.0
-    corridor_pp_min_lookahead_m: 0.25
-    corridor_pp_speed_scale: 1.0
-    corridor_rho_kp: 0.85
-    corridor_alpha_kp: 2.0
-    corridor_beta_kp: 0.80
-    corridor_heading_kp: 1.0
-    corridor_stanley_k: 1.2
-    corridor_lateral_kp: 1.8
-    corridor_x_tolerance: 0.25
-    corridor_brake_distance: 0.50
-    corridor_brake_kp: 0.35
-    corridor_capture_distance: 0.28
-    corridor_capture_exit_distance: 0.45
-    corridor_capture_speed: 0.28
-    corridor_align_linear_speed: 0.22
-    corridor_beta_blend_distance: 0.70
-    corridor_near_distance: 0.45
-    use_corridor_planner: true
-    planner_downsample: 4
+    # 生产目标：扫码后先到二维码实际位置，再从实时位置规划到通道口。
+    qr_goal_x_m: 4.50
+    qr_goal_y_m: 1.60
+    qr_goal_tolerance_m: 0.35
+    channel_entry_x_m: 2.50
+    channel_entry_y_m: 2.50
+    channel_entry_yaw_deg: 90.0
+    channel_entry_tolerance_m: 0.16
+    channel_entry_yaw_tolerance_deg: 12.0
+
+    # Hybrid-A* 风格全局搜索：航向离散、前进/倒车运动原语、最小转弯半径、
+    # 换挡/倒车惩罚；地图外、未知格和黑色区域均为硬障碍。
+    # Static-map route is held long enough for the local tracker to execute
+    # its tangent; scan obstacles remain handled by the local layer.
+    global_replan_period_sec: 1.50
+    global_replan_position_delta_m: 0.65
+    planner_grid_step_m: 0.08
+    planner_heading_bins: 24
+    planner_motion_step_m: 0.12
+    planner_max_expansions: 50000
     planner_occupied_threshold: 50
     planner_unknown_is_occupied: true
-    planner_obstacle_inflation_m: 0.14
-    planner_replan_period_sec: 2.0
-    corridor_replan_min_progress_m: 0.30
-    corridor_replan_offpath_m: 0.20
-    corridor_entry_reorient_enabled: false
-    corridor_entry_reorient_angle_deg: 50.0
-    corridor_entry_reorient_done_deg: 25.0
-    corridor_entry_reorient_timeout_sec: 4.0
-    corridor_centerline_reorient_deg: 55.0
-    corridor_avoid_while_reorient: false
-    corridor_force_reorient_enabled: false
-    corridor_left_recover_x: 3.0
-    corridor_left_recover_angular: 0.70
-    corridor_left_recover_linear: 0.08
-    blind_right_turn_x: 3.5
-    blind_right_turn_y: 1.2
-    blind_right_turn_angular: 0.70
-    blind_right_turn_linear: 0.08
+    planner_robot_radius_m: 0.26
+    planner_robot_front_m: 0.32
+    planner_robot_rear_m: 0.23
+    planner_min_turn_radius_m: 0.62
+    planner_reverse_penalty: 2.8
+    planner_change_gear_penalty: 4.0
+    planner_turn_penalty: 0.35
+    planner_steer_change_penalty: 0.40
+    planner_goal_yaw_tolerance_deg: 18.0
+
+    # 车体几何：雷达在 base_footprint，车体中心由实时 TF
+    # base_footprint->base_link 给出；禁止再用以雷达为圆心的碰撞圆。
+    robot_body_length_m: 0.276
+    robot_body_width_m: 0.164
+    robot_footprint_margin_m: 0.02
+    scan_self_filter_margin_m: 0.04
+
+    # MPPI 风格短时域采样：每条候选同时检查静态地图和实时 /scan 足迹碰撞。
+    local_horizon_sec: 1.60
+    local_dt_sec: 0.10
+    local_samples_speed: 5
+    local_samples_steer: 9
+    local_nominal_speed_mps: 0.42
+    local_min_speed_mps: 0.12
+    local_max_speed_mps: 0.55
+    local_min_turn_radius_m: 0.62
+    local_max_angular_speed_rad_s: 0.75
+    local_path_lookahead_m: 0.42
+    local_footprint_radius_m: 0.28
+    local_obstacle_clearance_m: 0.10
+    local_dynamic_obstacle_max_range_m: 2.20
+    # 倒车保留为受控恢复档：只有前进候选全部不安全，或当前车头明显
+    # 背离路径切线时才会参与选择；不能单凭目标距离更近而倒车。
+    local_allow_reverse: true
+    local_reverse_only_when_forward_unsafe: true
+    local_reverse_heading_threshold_deg: 105.0
+    local_reverse_speed_mps: -0.22
+    local_scan_max_points: 64
+    local_reverse_penalty: 3.0
+    local_steer_change_penalty: 0.25
+    local_heading_control_weight: 60.0
+    local_angular_effort_weight: 5.0
+    local_path_distance_weight: 12.0
+    local_heading_weight: 2.5
+    local_goal_weight: 4.0
+    local_clearance_weight: 3.0
+    local_obstacle_cost_weight: 1000.0
+    local_replan_period_sec: 0.10
+    local_command_hold_sec: 0.55
+    # 独立规划线程期间保持上一条安全命令；速度和角速度均限制变化率。
+    local_max_linear_accel_mps2: 0.80
+    local_max_angular_accel_rad_s2: 2.50
+
+    # 独立硬安全层（Collision Monitor 等价约束），优先于任何局部轨迹。
+    collision_stop_distance_m: 0.24
+    collision_slow_distance_m: 0.62
+    collision_stop_ttc_sec: 0.55
+    collision_slow_ttc_sec: 1.40
+    collision_slow_scale: 0.35
+    collision_forward_half_angle_deg: 38.0
+    collision_static_lateral_margin_m: 0.04

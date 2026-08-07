@@ -62,7 +62,10 @@ def generate_launch_description():
             executable='static_transform_publisher', 
             name='link_to_laser',
             arguments=[
-                '--x', '0.0', '--y', '0.0', '--z', '0.0',
+                # The physical lidar is at the base_footprint origin.  The
+                # base_link offset is retained for the robot model, so this
+                # inverse offset makes base_footprint -> laser exactly zero.
+                '--x', '-0.41', '--y', '-0.12', '--z', '0.0',
                 '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
                 '--frame-id', 'base_link', '--child-frame-id', 'laser',
             ],

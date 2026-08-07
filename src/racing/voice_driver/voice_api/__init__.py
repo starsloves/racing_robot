@@ -5,7 +5,6 @@ from .module_player import ModuleVoicePlayer
 from .tts_client import TtsClient
 from .vision_analyzer import VisionAnalyzer
 from .voice_broadcast import VoiceBroadcastService
-from .voice_client import VoiceClient
 from .voice_ids import VoiceId, voice_name_for_id
 
 __all__ = [
@@ -13,7 +12,6 @@ __all__ = [
     'CnTtsPlayer',
     'ModuleVoicePlayer',
     'VoiceBroadcastService',
-    'VoiceClient',
     'VoiceEnvConfig',
     'VoiceId',
     'TtsClient',

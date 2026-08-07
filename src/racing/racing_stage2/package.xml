@@ -17,6 +17,7 @@
   <depend>geometry_msgs</depend>
   <depend>visualization_msgs</depend>
   <depend>racing_common</depend>
+  <depend>racing_tools</depend>
   <depend>sensor_msgs</depend>
   <depend>racing_stage1</depend>
   <depend>nav_msgs</depend>

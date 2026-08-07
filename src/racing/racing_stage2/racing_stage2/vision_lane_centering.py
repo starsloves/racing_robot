@@ -22,6 +22,7 @@ from socketserver import ThreadingTCPServer
 
 import cv2
 import numpy as np
+from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -1093,8 +1094,9 @@ class VisionLaneCentering:
                     
                     def do_GET(self):
                         if self.path in ('/', '/index.html', '/seg.html'):
-                            viewer_path = os.path.abspath(
-                                os.path.join(os.path.dirname(__file__), '../../../../vision_viewer.html')
+                            viewer_path = os.path.join(
+                                get_package_share_directory('racing_tools'),
+                                'web', 'vision_viewer.html',
                             )
                             try:
                                 with open(viewer_path, 'rb') as viewer_file:

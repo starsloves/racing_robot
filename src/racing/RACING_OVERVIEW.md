@@ -70,7 +70,9 @@ S1 启动 `competition_controller`、`qr_scanner` 与只读的 `start_corner_pos
 
 `start_corner_pose_diagnostic` 仅在 S1 standby/前段运行：车辆静止时从后方 `(0,0)` 墙角的两条正交雷达墙线推算 Map 起点、Map 航向、建议的 `map -> odom_combined` 静态变换和 IMU 航向偏移。它只向 `start_corner_pose_diagnostic` 发布诊断 JSON，绝不发布 TF 或运动命令，也不修改 YAML。S1 在诊断有效或 `3s` 等待超时后才发布 `ready`，保证采样发生在取得运动权前；二维码锁存为 `competition_qr_task` 后，该节点自行退出。结果由 S1 日志记录，待人工确认后才可写入启动参数。
 
-控制器初始为 `standby/ready`，只有 `/competition/stage1/activate` 后才会发布 `/cmd_vel`。扫码完成时发布 `competition_qr_task`；到通报口时发布 `stage1_state=handoff_ready` 和 `stage2_entry_pose`，并进入 `handoff_wait`，保持最后的有效非零命令。
+控制器初始为 `standby/ready`，只有 `/competition/stage1/activate` 后才会发布 `/cmd_vel`。S1 的生产运动链采用三层约束：`map_restricted` footprint 膨胀后的航向感知全局搜索（允许前进/倒车，带最小转弯半径、倒车和换挡惩罚）、基于 `/scan` 临时障碍的短时域 MPPI 风格轨迹采样，以及独立 TTC/footprint 硬安全层。地图外、未知格和黑色区域都是硬障碍；扫描障碍不写回永久地图；没有安全轨迹时才安全保持零速。定位质量门控要求 IMU、`/odom_combined`、`/scan`、`/map` 和 `map -> base_footprint` 可用，航向只取 IMU，绝不使用里程计 orientation，也不再自动拟合墙体修改 `map -> odom_combined`。
+
+扫码完成时立即清空当前全局路径并发布 `competition_qr_task`；S1 先从实时位姿规划到二维码目标，二维码到位后再次从实时位姿规划到通道入口 `(2.50,2.50)`，对齐名义 `90°` 后发布 `stage1_state=handoff_ready` 和 `stage2_entry_pose`，进入 `handoff_wait` 并保持最后的有效非零命令。生产路径不再使用盲开中线、固定 `back_target_x` 倒车或墙体 map-X 自动校正。
 
 ### S2
 

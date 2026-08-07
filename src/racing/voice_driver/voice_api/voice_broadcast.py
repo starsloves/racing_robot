@@ -47,7 +47,7 @@ class VoiceBroadcastService:
             logger=logger,
         )
         self._module = ModuleVoicePlayer.from_config(
-            self._config, logger=logger, print_wake_hint=False
+            self._config, logger=logger
         )
 
     @property
@@ -55,10 +55,7 @@ class VoiceBroadcastService:
         return self._config
 
     def speak_text(self, text: str) -> bool:
-        """Speak API/LLM text - 优先使用本地 CN-TTS 模块直接播报。
-
-        CN-TTS 支持自定义文本播报（GBK 编码），无需云端 API 和音箱。
-        """
+        """Speak API/LLM text through the configured local/cloud outputs."""
         cleaned = text.strip()
         if not cleaned:
             self._log_error('[VOICE] Empty text')
@@ -88,8 +85,7 @@ class VoiceBroadcastService:
 
         if mode == 'mae01':
             self._log_error(
-                'MAE01 无法朗读任意 API 长文本（固件限制）。'
-                '可先喊「小亚小亚」再试预设：ros2 run voice_driver voice_speak forward；'
+                '本地语音模块播报失败；请检查串口、波特率和模块供电，'
                 '或外接 USB 音箱并改 .env AUDIO_OUTPUT=alsa（或 both）'
             )
         else:
@@ -116,7 +112,7 @@ class VoiceBroadcastService:
             )
             print(
                 f'>>> TTS 已从 {self._config.audio_device} 播放 '
-                f'（需板载/USB 音箱；不是 MAE01 模块喇叭）'
+                f'（需板载/USB 音箱）'
             )
             return True
 

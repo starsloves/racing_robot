@@ -1,6 +1,6 @@
 """CN-TTS UART 语音合成模块驱动
 
-支持自定义文本朗读的 CN-TTS 语音模块（GBK 编码，9600 bps）
+支持自定义文本朗读的 CN-TTS 语音模块（GBK 编码）
 硬件接线：
   - 5V (红) -> RDK X5 Pin 2/4
   - GND (黑) -> RDK X5 Pin 6
@@ -20,7 +20,7 @@ except ImportError:
 
 
 class CnTtsPlayer:
-    """CN-TTS 语音合成模块驱动（GBK 编码，9600 bps）"""
+    """CN-TTS 语音合成模块驱动（GBK 编码）。"""
 
     MOTOR_PORTS = frozenset({'/dev/ttyACM0', '/dev/ttyACM1'})
 
@@ -36,7 +36,7 @@ class CnTtsPlayer:
         
         Args:
             port: 串口设备路径，默认 /dev/ttyS1 (RDK X5 UART1)
-            baudrate: 波特率，默认 9600（CN-TTS 标准）
+            baudrate: 波特率，默认 9600（CN-TTS 8N1）
             logger: ROS 2 logger 或 None
         """
         self._port = port
@@ -88,71 +88,6 @@ class CnTtsPlayer:
         else:
             self._log_error('播报发送失败')
         return ok
-
-    def set_volume(self, level: int) -> bool:
-        """
-        设置音量等级
-        
-        Args:
-            level: 音量等级 1-4，默认 4
-            
-        Returns:
-            bool: 设置是否成功
-        """
-        if not 1 <= level <= 4:
-            self._log_error(f'音量等级必须在 1-4 之间，收到: {level}')
-            return False
-
-        cmd = f'<V>{level}'
-        return self._write_serial(cmd.encode('ascii'), label=f'音量设置={level}')
-
-    def set_speed(self, level: int) -> bool:
-        """
-        设置语速等级
-        
-        Args:
-            level: 语速等级 1-3，默认 2
-            
-        Returns:
-            bool: 设置是否成功
-        """
-        if not 1 <= level <= 3:
-            self._log_error(f'语速等级必须在 1-3 之间，收到: {level}')
-            return False
-
-        cmd = f'<S>{level}'
-        return self._write_serial(cmd.encode('ascii'), label=f'语速设置={level}')
-
-    def play_sound_effect(self, effect_id: int) -> bool:
-        """
-        播放音效
-        
-        Args:
-            effect_id: 音效编号 0-7
-            
-        Returns:
-            bool: 播放是否成功
-        """
-        if not 0 <= effect_id <= 7:
-            self._log_error(f'音效编号必须在 0-7 之间，收到: {effect_id}')
-            return False
-
-        cmd = f'<Z>{effect_id}'
-        return self._write_serial(cmd.encode('ascii'), label=f'音效播放 id={effect_id}')
-
-    def enable_power_on_prompt(self, enable: bool) -> bool:
-        """
-        设置上电提示音
-        
-        Args:
-            enable: True 开启，False 关闭
-            
-        Returns:
-            bool: 设置是否成功
-        """
-        value = 1 if enable else 0
-        cmd = f'<I>{value}'
-        return self._write_serial(cmd.encode('ascii'), label=f'上电提示={enable}')
 
     def _write_serial(self, payload: bytes, *, label: str) -> bool:
         """写入串口数据"""

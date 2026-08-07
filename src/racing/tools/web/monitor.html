@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>竞速机器人实时位置</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #111827; color: #e5e7eb; }
+    header { padding: 12px 18px; background: #1f2937; display:flex; gap:24px; align-items:center; flex-wrap:wrap; }
+    header h1 { margin:0; font-size:18px; }
+    .metric { color:#93c5fd; font-variant-numeric:tabular-nums; }
+    main { padding: 14px; display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
+    #map { background:#fff; border:1px solid #374151; max-width:min(78vw,760px); max-height:78vh; width:auto; height:auto; image-rendering:auto; }
+    .panel { min-width:280px; max-width:430px; background:#1f2937; border-radius:8px; padding:14px; line-height:1.7; }
+    .panel h2 { margin:0 0 6px; font-size:15px; color:#f9fafb; }
+    .panel hr { border:0; border-top:1px solid #374151; margin:10px 0; }
+    .value { color:#93c5fd; font-variant-numeric:tabular-nums; }
+    #events { max-height:220px; overflow:auto; font:12px/1.45 ui-monospace,monospace; white-space:pre-wrap; color:#d1d5db; }
+    #debugImage { display:block; margin-top:12px; max-width:100%; border:1px solid #374151; background:#fff; }
+    a { color:#93c5fd; }
+    .ok { color:#86efac; } .bad { color:#fca5a5; }
+    .hint { color:#9ca3af; font-size:13px; margin-top:10px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>竞速机器人实时位置</h1>
+  <span>连接：<b id="connection" class="bad">未连接</b></span>
+  <span>阶段：<b id="phase" class="metric">0</b></span>
+  <span>S1：<b id="s1" class="metric">-</b></span>
+  <span>QR：<b id="qr" class="metric">-</b></span>
+</header>
+<main>
+  <canvas id="map"></canvas>
+  <section class="panel">
+    <h2>实时位姿 / 实际输出</h2>
+    <div>Map X：<span id="x" class="value">-</span> m</div>
+    <div>Map Y：<span id="y" class="value">-</span> m</div>
+    <div>IMU 航向：<span id="yaw" class="value">-</span>°</div>
+    <div>/cmd_vel 线速度：<span id="cmdv" class="value">-</span> m/s</div>
+    <div>/cmd_vel 角速度：<span id="cmdw" class="value">-</span> rad/s</div>
+    <div>目标：<span id="target" class="value">-</span></div>
+    <hr>
+    <h2>传感器与碰撞前沿</h2>
+    <div>TF：<span id="tf">-</span></div>
+    <div>IMU：<span id="imu">-</span></div>
+    <div>Scan：<span id="scan">-</span></div>
+    <div>Odom：<span id="odom">-</span></div>
+    <div>有效激光点：<span id="scanCount" class="value">-</span></div>
+    <div>最近激光：<span id="scanNear" class="value">-</span> m</div>
+    <div>前方 38° 动态最近：<span id="scanFront" class="value">-</span> m</div>
+    <div>前方 38° 原始最近：<span id="scanFrontRaw" class="value">-</span> m</div>
+    <div>静态墙体回波：<span id="scanStatic" class="value">-</span></div>
+    <hr>
+    <h2>规划器最近事件</h2>
+    <div id="events">等待 Stage1 日志…</div>
+    <div class="hint">蓝线为网页端历史轨迹，红点为实时激光点，紫色十字为日志中的目标点。页面只读，不会向小车发送速度指令。</div>
+    <a href="/snapshot.png" target="_blank">打开当前调试图</a>
+    <img id="debugImage" alt="实时调试快照">
+</section>
+</main>
+<script>
+const canvas = document.getElementById('map'), ctx = canvas.getContext('2d');
+const image = new Image(); image.src = '/map.png';
+let meta = null, history = [], lastImageRefresh = 0;
+function el(id){ return document.getElementById(id); }
+function px(x,y){ return [(x-meta.origin_x)/meta.resolution, canvas.height-(y-meta.origin_y)/meta.resolution]; }
+function draw(s){
+  if (!s.map || !s.pose) return;
+  meta=s.map; canvas.width=meta.width; canvas.height=meta.height;
+  ctx.clearRect(0,0,canvas.width,canvas.height); if(image.complete) ctx.drawImage(image,0,0,canvas.width,canvas.height);
+  const p=s.pose; history.push([p.x,p.y]); if(history.length>800) history.shift();
+  ctx.fillStyle='#ef4444'; for(const q of s.scan){ const [x,y]=px(q.x,q.y); ctx.fillRect(x-1,y-1,2,2); }
+  ctx.strokeStyle='#38bdf8'; ctx.lineWidth=2; ctx.beginPath(); history.forEach((q,i)=>{const [x,y]=px(q[0],q[1]); if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);}); ctx.stroke();
+  const [x,y]=px(p.x,p.y), a=-p.yaw; ctx.save(); ctx.translate(x,y); ctx.rotate(a); ctx.fillStyle='#22c55e'; ctx.beginPath(); ctx.moveTo(15,0);ctx.lineTo(-10,-8);ctx.lineTo(-7,8);ctx.closePath();ctx.fill();ctx.restore();
+  el('x').textContent=p.x.toFixed(3); el('y').textContent=p.y.toFixed(3); el('yaw').textContent=(p.yaw*180/Math.PI).toFixed(1);
+}
+function status(id,ok){ el(id).textContent=ok?'正常':'无'; el(id).className=ok?'ok':'bad'; }
+function update(s){
+  el('connection').textContent='已连接'; el('connection').className='ok'; el('phase').textContent=s.phase;
+  el('s1').textContent=(s.stage_states||{}).stage1||'-'; el('qr').textContent=s.qr_task||'-';
+  status('tf',s.health.tf); status('imu',s.health.imu); status('scan',s.health.scan); status('odom',s.health.odom); draw(s);
+  const cmd=s.cmd||{}; el('cmdv').textContent=Number(cmd.linear_x||0).toFixed(3); el('cmdw').textContent=Number(cmd.angular_z||0).toFixed(3);
+  const target=s.target; el('target').textContent=target?`${target.name} (${target.x.toFixed(2)}, ${target.y.toFixed(2)})`:'-';
+  const stats=s.scan_stats||{}; el('scanCount').textContent=stats.points??'-';
+  el('scanNear').textContent=stats.nearest_m==null?'-':Number(stats.nearest_m).toFixed(2);
+  el('scanFront').textContent=stats.nearest_forward_dynamic_m==null?'-':Number(stats.nearest_forward_dynamic_m).toFixed(2);
+  el('scanFrontRaw').textContent=stats.nearest_forward_m==null?'-':Number(stats.nearest_forward_m).toFixed(2);
+  el('scanStatic').textContent=stats.static_points??'-';
+  const events=(s.events||[]).slice(-12).reverse(); el('events').textContent=events.length?events.map(e=>`[${e.tag}] ${e.message}`).join('\n'):'等待 Stage1 日志…';
+  if (Date.now()-lastImageRefresh > 900) { lastImageRefresh=Date.now(); el('debugImage').src='/snapshot.png?t='+lastImageRefresh; }
+}
+image.onload=()=>{};
+const events=new EventSource('/events'); events.onmessage=e=>{try{update(JSON.parse(e.data));}catch(_){}}; events.onerror=()=>{el('connection').textContent='断开重连中';el('connection').className='bad';};
+</script>
+</body>
+</html>

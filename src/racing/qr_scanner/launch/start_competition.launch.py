@@ -23,7 +23,10 @@ def generate_launch_description():
         namespace='aurora',
         parameters=[{
             'rgb_enable': True,
-            'ir_enable': False,
+            # Aurora RGB streaming is paired with the IR timing stream; the
+            # vendor driver requires IR FPS to be at least the RGB FPS.
+            'ir_enable': True,
+            'ir_fps': LaunchConfiguration('rgb_fps'),
             'depth_enable': LaunchConfiguration('include_depth'),
             'rgbd_enable': False,
             'point_cloud_enable': False,
@@ -33,7 +36,10 @@ def generate_launch_description():
             'align_mode': LaunchConfiguration('include_depth'),
             'log_dir': '/tmp/',
             'stream_sdk_log_enable': False,
-            'heart_enable': False,
+            # Keep the device heartbeat/watchdog enabled so a stalled USB
+            # frame stream can recover instead of leaving a live node with no
+            # camera messages.
+            'heart_enable': True,
         }],
         output='log',
         condition=IfCondition(LaunchConfiguration('include_camera')),

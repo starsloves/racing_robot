@@ -80,9 +80,6 @@ class VoiceEnvConfig:
     audio_output: str
     voice_serial_port: str
     voice_serial_baud: int
-    mae01_protocol: str
-    voice_i2c_bus: int
-    voice_i2c_addr: int
     target_sign: int
     sign_topic: str
     image_topic: str
@@ -125,10 +122,7 @@ class VoiceEnvConfig:
             audio_device=_get('AUDIO_DEVICE', 'plughw:0,0'),
             audio_output=_get('AUDIO_OUTPUT', 'mae01'),
             voice_serial_port=_get('VOICE_SERIAL_PORT', '/dev/ttyS1'),
-            voice_serial_baud=int(_get('VOICE_SERIAL_BAUD', '115200') or '115200'),
-            mae01_protocol=_get('MAE01_PROTOCOL', 'auto'),
-            voice_i2c_bus=int(_get('VOICE_I2C_BUS', '5') or '5'),
-            voice_i2c_addr=int(_get('VOICE_I2C_ADDR', '43') or '43', 0),
+            voice_serial_baud=int(_get('VOICE_SERIAL_BAUD', '9600') or '9600'),
             target_sign=int(_get('TARGET_SIGN', '9') or '9'),
             sign_topic=_get('SIGN_TOPIC', 'sign4return'),
             image_topic=_get('IMAGE_TOPIC', '/image'),

@@ -1,4 +1,4 @@
-"""Yahboom voice module broadcast IDs (I2C register 0x03 / void_write)."""
+"""Preset IDs used by the serial voice-module command interface."""
 
 from __future__ import annotations
 

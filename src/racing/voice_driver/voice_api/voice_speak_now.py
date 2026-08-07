@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Play Yahboom voice preset on module speaker (I2C + UART)."""
+"""Play a preset phrase on the serial voice module."""
 
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 
 from voice_api.env_config import VoiceEnvConfig
-from voice_api.i2c_player import build_ci13_play_packet
 from voice_api.module_player import ModuleVoicePlayer
 
 PRESETS: dict[str, int] = {
@@ -22,7 +20,7 @@ PRESETS: dict[str, int] = {
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description='Play Yahboom voice preset on MAE01 module',
+        description='Play a preset phrase on the serial voice module',
     )
     parser.add_argument(
         'preset',
@@ -37,8 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     voice_id = args.id if args.id >= 0 else PRESETS[args.preset]
-    pkt = build_ci13_play_packet(voice_id)
-    print(f'播报: {args.preset} id=0x{voice_id:02X} CI13包={pkt}')
+    print(f'播报: {args.preset} id=0x{voice_id:02X}')
 
     player = ModuleVoicePlayer.from_config(VoiceEnvConfig.from_env())
     for i in range(args.repeat):
