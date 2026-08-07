@@ -65,6 +65,12 @@ class CompetitionController(Node):
         self.declare_parameter('blind_qr_slowdown_linear_speed', 0.4)
         self.declare_parameter('blind_angular_speed', 0.0)
         self.declare_parameter('blind_scan_centerline_json', '[]')
+        # QR recognition can happen before the chassis reaches the marked
+        # position.  Keep the task latched, continue on the map route, and
+        # only start the return leg inside this goal gate.
+        self.declare_parameter('qr_goal_x_m', 4.50)
+        self.declare_parameter('qr_goal_y_m', 1.60)
+        self.declare_parameter('qr_goal_tolerance_m', 0.35)
         self.declare_parameter('blind_scan_corridor_half_width_m', 0.35)
         self.declare_parameter('blind_scan_capture_start_map_x_m', 1.0)
         self.declare_parameter('blind_scan_guidance_start_map_x_m', 3.0)
@@ -324,6 +330,8 @@ class CompetitionController(Node):
         # map 仅保留沿程交权门线与越界保护，不再参与转向。
         self.declare_parameter('corridor_wall_follow_enabled', True)
         self.declare_parameter('corridor_wall_follow_require_lock', True)
+        self.declare_parameter('corridor_wall_follow_turn_start_angle_deg', 18.0)
+        self.declare_parameter('corridor_wall_follow_dual_lock_hold_sec', 0.30)
         self.declare_parameter('corridor_wall_follow_linear_speed_mps', 0.36)
         self.declare_parameter('corridor_wall_follow_correction_speed_mps', 0.22)
         self.declare_parameter('corridor_wall_follow_slow_center_error_m', 0.12)
@@ -385,6 +393,11 @@ class CompetitionController(Node):
         self.blind_angular_speed = float(self.get_parameter('blind_angular_speed').value)
         self.blind_scan_centerline = self._parse_corridor_waypoints(
             str(self.get_parameter('blind_scan_centerline_json').value)
+        )
+        self.qr_goal_x_m = float(self.get_parameter('qr_goal_x_m').value)
+        self.qr_goal_y_m = float(self.get_parameter('qr_goal_y_m').value)
+        self.qr_goal_tolerance_m = max(
+            0.05, float(self.get_parameter('qr_goal_tolerance_m').value)
         )
         self.blind_scan_corridor_half_width = max(
             0.05, float(self.get_parameter('blind_scan_corridor_half_width_m').value)
@@ -980,6 +993,14 @@ class CompetitionController(Node):
         self.corridor_wall_follow_require_lock = bool(
             self.get_parameter('corridor_wall_follow_require_lock').value
         )
+        self.corridor_wall_follow_turn_start_angle = math.radians(max(
+            1.0,
+            float(self.get_parameter('corridor_wall_follow_turn_start_angle_deg').value),
+        ))
+        self.corridor_wall_follow_dual_lock_hold = max(
+            0.0,
+            float(self.get_parameter('corridor_wall_follow_dual_lock_hold_sec').value),
+        )
         self.corridor_wall_follow_linear_speed = max(
             0.01, float(self.get_parameter('corridor_wall_follow_linear_speed_mps').value)
         )
@@ -1210,8 +1231,17 @@ class CompetitionController(Node):
         self._map_to_odom_yaw_rad = None
         self._map_to_odom_yaw_source = 'parameter'
         self.qr_processed = False  # 二维码去重标志：防止重复扫码播报
+        self.qr_task = ''
+        self.qr_approach_started_at = None
+        self.qr_approach_last_log_time = 0.0
         self._map_pose_warned = False
         self.corridor_active = False
+        # Wall control is deliberately disabled until the open-area turn has
+        # started and a fresh dual-wall lock has remained valid continuously.
+        self.corridor_walls_active = False
+        self.corridor_turn_reference_yaw = None
+        self.corridor_turn_started_at = None
+        self.corridor_dual_wall_valid_since = None
         self.corridor_nav_mode = 'idle'  # path_follow | left_recover | idle
         self.corridor_terminal_active = False
         self.corridor_terminal_reverse_align_active = False
@@ -1549,7 +1579,9 @@ class CompetitionController(Node):
         
         # Phase 1 前进时记录路径（只在 forward/avoiding/countersteering/recovering 时记录）
         # 位置用 odom (x, y)，角度用 IMU (self.current_yaw)
-        if self.phase == 1 and self.enable_backing and self.phase1_motion_state in ('forward', 'avoiding', 'countersteering', 'recovering'):
+        if self.phase == 1 and self.enable_backing and self.phase1_motion_state in (
+            'forward', 'qr_approach', 'avoiding', 'countersteering', 'recovering'
+        ):
             x = msg.pose.pose.position.x
             y = msg.pose.pose.position.y
             # 使用纯 IMU 角度，而不是 odom 的 orientation（避免融合后角度不一致）
@@ -1758,7 +1790,7 @@ class CompetitionController(Node):
         if (
             self.corridor_wall_map_x_correction_enabled
             and self.phase == 1
-            and (self.corridor_active or self.phase1_motion_state == 'corridor')
+            and self.corridor_walls_active
             and abs(self._corridor_map_x_offset) > 1e-6
         ):
             return (
@@ -1787,7 +1819,7 @@ class CompetitionController(Node):
         self.blind_scan_escape_direction = 0.0
 
     def begin_backing_align(self, reason):
-        """Restore the fixed channel-entry yaw before wall centering takes over."""
+        """Restore the fixed channel-entry yaw before open-area path tracking."""
         if self.current_yaw is None:
             self.log.warn('ALIGN', f'no IMU yaw for backing align, starting corridor directly: {reason}')
             self.start_corridor_navigation(reason)
@@ -1799,7 +1831,7 @@ class CompetitionController(Node):
         self.stop_robot()
         yaw_error = self.angle_error(self.back_align_yaw_rad, self.current_yaw)
         self.log.mission(
-            f'backing complete, align to corridor yaw before wall centering: '
+            f'backing complete, align to corridor entry yaw before open-area path: '
             f'yaw={math.degrees(self.current_yaw):.1f}deg '
             f'target={math.degrees(self.back_align_yaw_rad):.1f}deg '
             f'err={math.degrees(yaw_error):.1f}deg reason={reason}'
@@ -1850,6 +1882,10 @@ class CompetitionController(Node):
             return
         self.reset_phase1_avoidance_runtime()
         self.corridor_active = True
+        self.corridor_walls_active = False
+        self.corridor_turn_reference_yaw = self.current_yaw
+        self.corridor_turn_started_at = None
+        self.corridor_dual_wall_valid_since = None
         self.corridor_nav_mode = 'path_follow'
         self.corridor_terminal_active = False
         self.corridor_terminal_reverse_align_active = False
@@ -1895,7 +1931,7 @@ class CompetitionController(Node):
         self.phase1_motion_state = 'corridor'
 
         mode_text = (
-            '两侧围墙中心线直接接管方向，map 仅作交权门线'
+            '先走开放区地图路径；转弯并连续锁定双墙后再由围墙中心线接管'
             if self.corridor_wall_follow_enabled
             else '地图中心线路径跟踪'
         )
@@ -2472,7 +2508,7 @@ class CompetitionController(Node):
         """二维码尚未锁存时，判断扫码带约束是否已武装。"""
         if (
             self.phase != 1
-            or self.qr_processed
+            or (self.qr_processed and self.phase1_motion_state != 'qr_approach')
             or self.phase1_motion_state in ('backing', 'corridor')
             or len(self.blind_scan_centerline) < 2
         ):
@@ -2727,7 +2763,11 @@ class CompetitionController(Node):
 
     def _terminal_wall_lock_fresh(self, now_ts):
         lock = self._terminal_wall_lock
-        if lock is None or now_ts - lock['stamp'] > self.corridor_terminal_wall_max_age:
+        if (
+            not self.corridor_walls_active
+            or lock is None
+            or now_ts - lock['stamp'] > self.corridor_terminal_wall_max_age
+        ):
             return None
         return lock
 
@@ -2741,6 +2781,8 @@ class CompetitionController(Node):
         return self._corridor_front_wall_latch
 
     def _corridor_front_wall_within(self, threshold_m, now_ts):
+        if not self.corridor_walls_active:
+            return False
         latch = self._corridor_front_wall_latch_fresh()
         if latch is not None:
             return True
@@ -2760,7 +2802,8 @@ class CompetitionController(Node):
         """Return a recent dual-wall lock for continuous steering only."""
         lock = self._terminal_wall_lock
         if (
-            lock is None
+            not self.corridor_walls_active
+            or lock is None
             or now_ts - lock['stamp'] > self.corridor_terminal_wall_control_hold
         ):
             return None
@@ -2768,7 +2811,60 @@ class CompetitionController(Node):
 
     def _terminal_wall_latch_fresh(self, now_ts):
         """Return this attempt's fixed qualified dual-wall geometry."""
-        return self._terminal_wall_geometry_latch
+        return self._terminal_wall_geometry_latch if self.corridor_walls_active else None
+
+    def _maybe_activate_corridor_wall_follow(self, yaw, now_ts):
+        """Enable wall control only after the open-area turn and dual-wall hold."""
+        if not self.corridor_wall_follow_enabled or self.corridor_walls_active:
+            return self.corridor_walls_active
+        if self.corridor_turn_reference_yaw is None:
+            self.corridor_turn_reference_yaw = float(yaw)
+
+        turn_delta = abs(self.angle_error(float(yaw), self.corridor_turn_reference_yaw))
+        if turn_delta < self.corridor_wall_follow_turn_start_angle:
+            self.corridor_turn_started_at = None
+            self.corridor_dual_wall_valid_since = None
+            return False
+
+        if self.corridor_turn_started_at is None:
+            self.corridor_turn_started_at = now_ts
+            self.corridor_dual_wall_valid_since = None
+            # Do not let a pre-turn false fit satisfy the post-turn dual-wall
+            # gate or constrain cluster selection after the physical turn.
+            self._terminal_wall_lock = None
+            self._terminal_wall_filter_time = None
+            self._terminal_wall_sources = {'left': None, 'right': None}
+            self._corridor_single_wall_lock = None
+            self._corridor_front_wall_lock = None
+            self._corridor_front_wall_latch = None
+            self._corridor_front_wall_filter_time = None
+            self.log.mission(
+                f'CORRIDOR_TURN_STARTED delta={math.degrees(turn_delta):.1f}deg '
+                f'threshold={math.degrees(self.corridor_wall_follow_turn_start_angle):.1f}deg'
+            )
+
+        lock = self._terminal_wall_lock
+        lock_fresh_after_turn = (
+            lock is not None
+            and lock['stamp'] >= self.corridor_turn_started_at
+            and now_ts - lock['stamp'] <= self.corridor_terminal_wall_max_age
+        )
+        if not lock_fresh_after_turn:
+            self.corridor_dual_wall_valid_since = None
+            return False
+
+        if self.corridor_dual_wall_valid_since is None:
+            self.corridor_dual_wall_valid_since = now_ts
+        if now_ts - self.corridor_dual_wall_valid_since < self.corridor_wall_follow_dual_lock_hold:
+            return False
+
+        self.corridor_walls_active = True
+        self.log.mission(
+            f'CORRIDOR_WALL_FOLLOW_ACTIVATED delta={math.degrees(turn_delta):.1f}deg '
+            f'wall_hold={now_ts - self.corridor_dual_wall_valid_since:.2f}s '
+            f'width={lock["width"]:.2f}m center={lock["center_error"]:+.3f}m'
+        )
+        return True
 
     def _cluster_corridor_front_wall_points(self, scan_msg):
         clusters = []
@@ -3143,6 +3239,7 @@ class CompetitionController(Node):
         x_ok = (
             self.corridor_wall_map_x_correction_enabled
             and self.corridor_wall_follow_enabled
+            and self.corridor_walls_active
             and wall_reference is not None
             and self._corridor_wall_handoff_x_ok(pose_xy[0])
         )
@@ -3450,21 +3547,22 @@ class CompetitionController(Node):
         wall_axis_error = self._terminal_wall_heading_axis_error(
             raw_heading_error, self.current_yaw
         )
-        self._maybe_rebase_corridor_yaw_from_wall(raw_heading_error, now_ts)
-        self._update_corridor_wall_map_x_correction(raw_center_error, now_ts)
-        if (
-            abs(raw_center_error) <= self.corridor_terminal_wall_release_center_tolerance
-            and wall_axis_error <= self.corridor_terminal_wall_axis_tolerance
-            # Entering terminal freezes the last qualified dual-wall geometry.
-            # Subsequent scan variation must not replace the handoff reference.
-            and not self.corridor_terminal_active
-        ):
-            self._terminal_wall_geometry_latch = {
-                'stamp': now_ts,
-                'center_error': raw_center_error,
-                'axis_error': wall_axis_error,
-                'width': width,
-            }
+        if self.corridor_walls_active:
+            self._maybe_rebase_corridor_yaw_from_wall(raw_heading_error, now_ts)
+            self._update_corridor_wall_map_x_correction(raw_center_error, now_ts)
+            if (
+                abs(raw_center_error) <= self.corridor_terminal_wall_release_center_tolerance
+                and wall_axis_error <= self.corridor_terminal_wall_axis_tolerance
+                # Entering terminal freezes the last qualified dual-wall geometry.
+                # Subsequent scan variation must not replace the handoff reference.
+                and not self.corridor_terminal_active
+            ):
+                self._terminal_wall_geometry_latch = {
+                    'stamp': now_ts,
+                    'center_error': raw_center_error,
+                    'axis_error': wall_axis_error,
+                    'width': width,
+                }
         self._corridor_single_wall_lock = None
         self._terminal_wall_last_quality = {
             'stamp': now_ts,
@@ -3646,8 +3744,11 @@ class CompetitionController(Node):
         wall_latch = self._terminal_wall_latch_fresh(now_ts)
         wall_ok = (
             not self.corridor_terminal_wall_lock_enabled
+            or not self.corridor_wall_follow_enabled
             or self.corridor_terminal_offset_handoff_active
         )
+        if self.corridor_wall_follow_enabled and not self.corridor_walls_active:
+            wall_ok = False
         use_commit_latch = self.corridor_terminal_commit_active and wall_latch is not None
         if self.corridor_terminal_offset_handoff_active:
             pass
@@ -3688,6 +3789,11 @@ class CompetitionController(Node):
             )
             candidate = (
                 self.corridor_terminal_active
+                and (
+                    self.corridor_walls_active
+                    if self.corridor_wall_follow_enabled
+                    else True
+                )
                 and pos_ok
                 and (yaw_ok or not yaw_gate_required)
                 and wall_ok
@@ -3812,6 +3918,10 @@ class CompetitionController(Node):
 
         pose_xy = (float(map_xy[0]), float(map_xy[1]))
         yaw = float(self.current_yaw)
+        # Open-area path tracking owns this segment.  Wall fitting may run in
+        # the scan callback, but it cannot affect commands or handoff gates
+        # until the IMU shows the turn has started and a dual-wall lock holds.
+        self._maybe_activate_corridor_wall_follow(yaw, now_ts)
         if self.maybe_advance_corridor_waypoint(pose_xy):
             # 切换中继点后本周期重新以新目标规划，避免沿旧路径继续走。
             goal_xy = self.corridor_goal_point()
@@ -3828,12 +3938,17 @@ class CompetitionController(Node):
 
         front_wall_trigger = (
             final_waypoint
+            and self.corridor_walls_active
             and self.corridor_front_wall_handoff_enabled
             and self._corridor_front_wall_within(
                 self.corridor_front_wall_handoff_distance, now_ts
             )
         )
-        y_gate_trigger = final_waypoint and pose_xy[1] >= self.corridor_release_max_y
+        y_gate_trigger = (
+            final_waypoint
+            and self.corridor_walls_active
+            and pose_xy[1] >= self.corridor_release_max_y
+        )
         if final_waypoint and (front_wall_trigger or y_gate_trigger):
             gate_status = self._corridor_handoff_gate_status(pose_xy, yaw, now_ts)
             if gate_status['ready']:
@@ -3980,7 +4095,7 @@ class CompetitionController(Node):
         wall_capture_latch = self._terminal_wall_latch_fresh(now_ts)
         wall_capture_geometry = wall_capture_lock or wall_capture_latch
         wall_capture_ok = (
-            self.corridor_wall_follow_enabled
+            self.corridor_walls_active
             and wall_capture_geometry is not None
             and abs(wall_capture_geometry['center_error'])
             <= self.corridor_terminal_capture_max_center_error
@@ -3988,6 +4103,7 @@ class CompetitionController(Node):
         terminal_geometry_ready = (
             final_waypoint
             and self.corridor_terminal_enabled
+            and self.corridor_walls_active
             # Start the wall-based capture before the release gate so the
             # vehicle has real distance to converge rather than correcting at
             # the gate itself.
@@ -4788,7 +4904,10 @@ class CompetitionController(Node):
         self.corridor_reverse_last_obstacle = None
         self.corridor_reverse_return_logged = False
         self.avoid_cmd = Twist()
-        self.log.feedback(f'CORRIDOR_REVERSE_AVOID complete: {reason}; resume wall follow')
+        self.log.feedback(
+            f'CORRIDOR_REVERSE_AVOID complete: {reason}; '
+            f'resume {"wall follow" if self.corridor_walls_active else "open-area path"}'
+        )
 
     def begin_counter_steer(self):
         if self.phase1_motion_state != 'avoiding':
@@ -5389,48 +5508,90 @@ class CompetitionController(Node):
         self.stage1_state_pub.publish(String(data='qr_detected'))
         self.log.task(f'Stage1 二维码识别完成，方向={task}')
 
-        # 立即启动后退，不等待播报完成
-        if self.enable_backing and len(self.path_record) > 0:
-            now = self.get_clock().now()
-            self.phase1_motion_state = 'backing_engage'
-            # One timestamp owns the complete QR-to-corridor backing action.
-            # The engage and path-following phases use different timeout limits
-            # but must share this start time.
-            self.backing_started_time = now
-            self.backing_last_angular_z = 0.0
-            self.backing_last_command_time = now
-            self.backing_filtered_cross_track = None
-            # 反向 Pure Pursuit 会投影当前位置，不依赖固定离散点。
-            self.backing_path_index = max(0, len(self.path_record) - 2)
-            self._rebuild_backing_path_metrics()
-            if self.current_odom is not None:
-                start_x = float(self.current_odom.pose.pose.position.x)
-                start_y = float(self.current_odom.pose.pose.position.y)
-                self.backing_engage_start_xy = (start_x, start_y)
-                target_x, target_y, _ = self.path_record[self.backing_path_index]
-                direction_x = target_x - start_x
-                direction_y = target_y - start_y
-                direction_norm = math.hypot(direction_x, direction_y)
-                if direction_norm > 1e-3:
-                    self.backing_engage_direction_xy = (
-                        direction_x / direction_norm,
-                        direction_y / direction_norm,
-                    )
-                else:
-                    self.backing_engage_direction_xy = None
-            else:
-                self.backing_engage_start_xy = None
-                self.backing_engage_direction_xy = None
-            self.log.mission(
-                f'qr detected: {task}, backing engage straight, '
-                f'{len(self.path_record)} waypoints recorded'
-            )
-        else:
-            self.log.mission(f'qr detected: {task}, starting corridor navigation without backing')
-            self.start_corridor_navigation(f'qr detected: {task}, no backing path')
+        # Vision detection is an early trigger, not the physical QR pose.
+        # Keep driving on the map route until the configured red-box position
+        # is reached; this prevents a long premature reverse from a distant
+        # camera decode.
+        self.phase1_motion_state = 'qr_approach'
+        self.qr_approach_started_at = self.get_clock().now()
+        self.qr_approach_last_log_time = 0.0
+        self.log.mission(
+            f'qr detected: {task}, latched; approach map QR goal '
+            f'({self.qr_goal_x_m:.2f},{self.qr_goal_y_m:.2f}) '
+            f'tol={self.qr_goal_tolerance_m:.2f}m before backing'
+        )
 
         # 异步播报识别结果（后台线程执行，不阻塞后退）
         self._speak_qr_result_async(task)
+
+    def _begin_qr_backing(self):
+        """Start the recorded-path return only after reaching the QR goal."""
+        if not self.enable_backing or len(self.path_record) < 2:
+            self.log.mission(
+                f'qr goal reached for task={self.qr_task}; '
+                'no backing path, starting corridor navigation'
+            )
+            self.start_corridor_navigation('qr goal reached; no backing path')
+            return
+
+        now = self.get_clock().now()
+        self.phase1_motion_state = 'backing_engage'
+        self.backing_started_time = now
+        self.backing_last_angular_z = 0.0
+        self.backing_last_command_time = now
+        self.backing_filtered_cross_track = None
+        self.backing_path_index = max(0, len(self.path_record) - 2)
+        self._rebuild_backing_path_metrics()
+        if self.current_odom is not None:
+            start_x = float(self.current_odom.pose.pose.position.x)
+            start_y = float(self.current_odom.pose.pose.position.y)
+            self.backing_engage_start_xy = (start_x, start_y)
+            target_x, target_y, _ = self.path_record[self.backing_path_index]
+            direction_x = target_x - start_x
+            direction_y = target_y - start_y
+            direction_norm = math.hypot(direction_x, direction_y)
+            if direction_norm > 1e-3:
+                self.backing_engage_direction_xy = (
+                    direction_x / direction_norm,
+                    direction_y / direction_norm,
+                )
+            else:
+                self.backing_engage_direction_xy = None
+        else:
+            self.backing_engage_start_xy = None
+            self.backing_engage_direction_xy = None
+        self.log.mission(
+            f'qr goal reached map=({self.qr_goal_x_m:.2f},{self.qr_goal_y_m:.2f}); '
+            f'backing engage, {len(self.path_record)} waypoints recorded'
+        )
+
+    def handle_qr_approach(self):
+        """Follow the map centerline from early QR detection to its red-box pose."""
+        pose_xy = self.get_map_position()
+        if pose_xy is None:
+            self.cmd_pub.publish(self.create_twist(self.blind_forward_speed(), 0.0))
+            return
+
+        distance = math.hypot(
+            float(pose_xy[0]) - self.qr_goal_x_m,
+            float(pose_xy[1]) - self.qr_goal_y_m,
+        )
+        if distance <= self.qr_goal_tolerance_m:
+            self._begin_qr_backing()
+            return
+
+        scan_cmd = self.blind_scan_guidance_cmd()
+        if scan_cmd is None:
+            scan_cmd = self.create_twist(self.blind_forward_speed(), self.blind_angular_speed)
+        self.cmd_pub.publish(scan_cmd)
+        now_ts = self.get_clock().now().nanoseconds / 1e9
+        if now_ts - self.qr_approach_last_log_time >= 0.5:
+            self.qr_approach_last_log_time = now_ts
+            self.log.progress(
+                f'qr approach map=({pose_xy[0]:.3f},{pose_xy[1]:.3f}) '
+                f'goal=({self.qr_goal_x_m:.2f},{self.qr_goal_y_m:.2f}) '
+                f'distance={distance:.3f}m cmd=({scan_cmd.linear.x:.2f},{scan_cmd.angular.z:.2f})'
+            )
 
 
     def blind_forward_speed(self):
@@ -5473,6 +5634,9 @@ class CompetitionController(Node):
                 self._stage1_running_reported = True
             if self.phase1_motion_state == 'backing_engage':
                 self.handle_backing_engage()
+                return
+            if self.phase1_motion_state == 'qr_approach':
+                self.handle_qr_approach()
                 return
             # backing 状态优先处理
             if self.phase1_motion_state == 'backing':
@@ -5864,7 +6028,7 @@ class CompetitionController(Node):
         if abs(heading_error) <= self.back_align_tolerance_rad:
             self.log.mission(
                 f'backing align done at yaw={math.degrees(self.current_yaw):.1f}°, '
-                f'starting corridor wall centering'
+                f'starting open-area corridor path; wall follow remains gated'
             )
             reason = self.backing_align_reason or f'qr task={self.qr_task}, backing complete'
             self.start_corridor_navigation(f'{reason}; backing+align complete')

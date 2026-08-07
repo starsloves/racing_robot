@@ -287,6 +287,10 @@ competition_controller:
     # Impact: 跟随速度或增益增大，纠偏更快但更易蛇形；acquire 速度降低，重获墙体更稳但耗时更长；关闭 require_lock 只用于排障，正式比赛会失去墙体保护。
     corridor_wall_follow_enabled: true
     corridor_wall_follow_require_lock: true
+    # What: turn_start_angle 是从后退对齐完成后的 IMU 航向变化门槛；dual_lock_hold 要求双墙连续有效后才接管。
+    # Why: 起点、二维码和倒车结束后的开放区没有可依赖的双墙，避免墙体误拟合提前修正。
+    corridor_wall_follow_turn_start_angle_deg: 18.0
+    corridor_wall_follow_dual_lock_hold_sec: 0.30
     # corridor_wall_follow_linear_speed_mps: 双墙锁定后的通道巡航速度；Why=交权前保持连续前进；Range=0.25-0.60m/s；Impact=调大更快但横向纠偏余量变小。
     corridor_wall_follow_linear_speed_mps: 0.48
     # corridor_wall_follow_correction_speed_mps: 有横向误差时的修正速度；Why=避免高速修正过冲；Range=0.15-0.45m/s；Impact=调大回中快但摆动增大。
