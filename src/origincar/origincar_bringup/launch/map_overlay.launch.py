@@ -3,6 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch.event_handlers import OnProcessStart
@@ -20,6 +21,10 @@ def generate_launch_description():
     map_to_odom_x_arg = DeclareLaunchArgument('map_to_odom_x', default_value='0.50')
     map_to_odom_y_arg = DeclareLaunchArgument('map_to_odom_y', default_value='0.20')
     map_to_odom_yaw_arg = DeclareLaunchArgument('map_to_odom_yaw', default_value='0.1745329252')
+    publish_map_to_odom_arg = DeclareLaunchArgument(
+        'publish_map_to_odom', default_value='true',
+        description='Publish fixed map->odom TF; production startup localization disables this'
+    )
 
     map_server = Node(
         package='nav2_map_server',
@@ -65,6 +70,7 @@ def generate_launch_description():
             LaunchConfiguration('odom_frame'),
         ],
         output='screen',
+        condition=IfCondition(LaunchConfiguration('publish_map_to_odom')),
     )
 
     return LaunchDescription([
@@ -75,6 +81,7 @@ def generate_launch_description():
         map_to_odom_x_arg,
         map_to_odom_y_arg,
         map_to_odom_yaw_arg,
+        publish_map_to_odom_arg,
         map_server,
         RegisterEventHandler(OnProcessStart(
             target_action=map_server,

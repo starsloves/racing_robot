@@ -1,8 +1,5 @@
 import os
-import math
 import logging
-
-import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -10,7 +7,7 @@ from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchD
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessStart, OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import launch.logging as launch_logging
 from racing_common.launch_status import startup_status
@@ -45,18 +42,6 @@ def _operator_tty():
     return '/dev/tty'
 
 
-def _stage1_map_to_odom_defaults(config_path):
-    """Read the Stage1-owned map-to-odom transform from its ROS parameter YAML."""
-    with open(config_path, 'r', encoding='utf-8') as config_file:
-        params = yaml.safe_load(config_file)['competition_controller']['ros__parameters']
-    return (
-        str(params['map_to_odom_x']),
-        str(params['map_to_odom_y']),
-        str(math.radians(float(params['map_to_odom_yaw_deg']))),
-        float(params['initial_map_heading_deg']),
-    )
-
-
 def generate_launch_description():
     launch_logging.launch_config.level = logging.ERROR
     lidar_dir = get_package_share_directory('lslidar_driver')
@@ -69,13 +54,6 @@ def generate_launch_description():
     stage1_config_path = os.path.join(stage1_config_dir, 'stage1_controller.yaml')
     bringup_launch_dir = os.path.join(bringup_dir, 'launch')
     map_overlay_launch_path = os.path.join(bringup_dir, 'launch', 'map_overlay.launch.py')
-    (
-        map_to_odom_x_default,
-        map_to_odom_y_default,
-        map_to_odom_yaw_default,
-        initial_map_heading_default,
-    ) = _stage1_map_to_odom_defaults(stage1_config_path)
-
     device_arg = DeclareLaunchArgument('device', default_value='/dev/video0')
     include_camera_arg = DeclareLaunchArgument('include_camera', default_value='true')
     include_depth_arg = DeclareLaunchArgument('include_depth', default_value='false')
@@ -100,21 +78,6 @@ def generate_launch_description():
         default_value='false',
         description='Publish fixed phase and direction topics for standalone testing'
     )
-    map_to_odom_x_arg = DeclareLaunchArgument(
-        'map_to_odom_x',
-        default_value=map_to_odom_x_default,
-        description='Static map->odom translation X (m)'
-    )
-    map_to_odom_y_arg = DeclareLaunchArgument(
-        'map_to_odom_y',
-        default_value=map_to_odom_y_default,
-        description='Static map->odom translation Y (m)'
-    )
-    map_to_odom_yaw_arg = DeclareLaunchArgument(
-        'map_to_odom_yaw',
-        default_value=map_to_odom_yaw_default,
-        description='Static map->odom rotation (rad, derived from map_to_odom_yaw_deg)'
-    )
     test_direction_arg = DeclareLaunchArgument(
         'test_direction',
         default_value='clockwise',
@@ -133,10 +96,8 @@ def generate_launch_description():
     map_overlay_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(map_overlay_launch_path),
         launch_arguments={
-            'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
-            'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
-            'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
             'odom_frame': 'odom_combined',
+            'publish_map_to_odom': 'false',
         }.items(),
         condition=IfCondition(LaunchConfiguration('standalone_map_overlay')),
     )
@@ -184,8 +145,8 @@ def generate_launch_description():
         output='log',
     )
 
-    # Runs only with S1, publishes diagnostics only, and self-terminates when
-    # the controller latches competition_qr_task after a successful QR scan.
+    # Standalone S1 tests run the startup localizer here.  Production runs it
+    # once in competition_total.launch.py so the TF survives S1 release.
     corner_diagnostic_node = Node(
         package='racing_tools',
         executable='start_corner_pose_diagnostic',
@@ -195,16 +156,9 @@ def generate_launch_description():
                 get_package_share_directory('racing_tools'),
                 'config', 'start_corner_pose_diagnostic.yaml',
             ),
-            {
-                'configured_map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
-                'configured_map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
-                'configured_map_to_odom_yaw_deg': PythonExpression([
-                    'float(', LaunchConfiguration('map_to_odom_yaw'), ') * 180.0 / ', str(math.pi),
-                ]),
-                'configured_initial_map_heading_deg': initial_map_heading_default,
-            },
         ],
         output='log',
+        condition=IfCondition(LaunchConfiguration('standalone_map_overlay')),
     )
 
     # Process output remains off the terminal, while ROS keeps complete
@@ -232,9 +186,6 @@ def generate_launch_description():
         standalone_map_overlay_arg,
         include_map_overlay_arg,
         enable_test_publisher_arg,
-        map_to_odom_x_arg,
-        map_to_odom_y_arg,
-        map_to_odom_yaw_arg,
         test_direction_arg,
         standby_arg,
         bringup_launch,

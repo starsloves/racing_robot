@@ -1,10 +1,8 @@
 """Single production entry point: common base layer plus Supervisor."""
 
-import math
 import os
 import socket
 import threading
-import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -20,17 +18,6 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration
-
-
-def _map_defaults(config_path):
-    with open(config_path, 'r', encoding='utf-8') as stream:
-        params = yaml.safe_load(stream)['competition_controller']['ros__parameters']
-    return (
-        str(params['map_to_odom_x']),
-        str(params['map_to_odom_y']),
-        str(math.radians(float(params['map_to_odom_yaw_deg']))),
-        float(params['initial_map_heading_deg']),
-    )
 
 
 def _operator_tty():
@@ -74,12 +61,9 @@ _SUPERVISOR_SHUTDOWN_REQUESTED = False
 
 def generate_launch_description():
     bringup_dir = get_package_share_directory('origincar_bringup')
-    stage1_dir = get_package_share_directory('racing_stage1')
     voice_dir = get_package_share_directory('voice_driver')
     qr_dir = get_package_share_directory('qr_scanner')
-    x_default, y_default, yaw_default, initial_heading_default = _map_defaults(
-        os.path.join(stage1_dir, 'config', 'stage1_controller.yaml')
-    )
+    tools_dir = get_package_share_directory('racing_tools')
 
     map_yaml = DeclareLaunchArgument(
         'map_yaml', default_value=os.path.join(bringup_dir, 'map', 'map_restricted.yaml')
@@ -89,10 +73,6 @@ def generate_launch_description():
     enable_web_monitor = DeclareLaunchArgument('enable_web_monitor', default_value='true')
     web_monitor_host = DeclareLaunchArgument('web_monitor_host', default_value='0.0.0.0')
     web_monitor_port = DeclareLaunchArgument('web_monitor_port', default_value='8081')
-    map_x = DeclareLaunchArgument('map_to_odom_x', default_value=x_default)
-    map_y = DeclareLaunchArgument('map_to_odom_y', default_value=y_default)
-    map_yaw = DeclareLaunchArgument('map_to_odom_yaw', default_value=yaw_default)
-
     base = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(bringup_dir, 'launch', 'origincar_bringup.launch.py')),
         launch_arguments={'carto_slam': 'false'}.items(),
@@ -102,10 +82,18 @@ def generate_launch_description():
         launch_arguments={
             'map_yaml': LaunchConfiguration('map_yaml'),
             'odom_frame': 'odom_combined',
-            'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
-            'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
-            'map_to_odom_yaw': LaunchConfiguration('map_to_odom_yaw'),
+            'publish_map_to_odom': 'false',
         }.items(),
+    )
+    start_localizer = Node(
+        package='racing_tools',
+        executable='start_corner_pose_diagnostic',
+        name='start_corner_pose_localizer',
+        parameters=[
+            os.path.join(tools_dir, 'config', 'start_corner_pose_diagnostic.yaml'),
+            {'odom_frame': 'odom_combined'},
+        ],
+        output='log',
     )
     camera = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(qr_dir, 'launch', 'start_competition.launch.py')),
@@ -156,7 +144,11 @@ def generate_launch_description():
         parameters=[{
             'host': LaunchConfiguration('web_monitor_host'),
             'port': LaunchConfiguration('web_monitor_port'),
-            'initial_map_heading_deg': initial_heading_default,
+            'map_heading_topic': 'map_heading',
+            'route_topic': 'stage1_route',
+            'mission_route_topic': 'stage1_mission_route',
+            'heading_motion_linear_threshold_mps': 0.015,
+            'heading_motion_angular_threshold_rad_s': 0.03,
         }],
         condition=IfCondition(LaunchConfiguration('enable_web_monitor')),
     )
@@ -177,8 +169,7 @@ def generate_launch_description():
         SetEnvironmentVariable('RACING_OPERATOR_TTY', _operator_tty()),
         map_yaml, include_depth, include_voice,
         enable_web_monitor, web_monitor_host, web_monitor_port,
-        map_x, map_y, map_yaw,
-        base, map_stack, camera, lidar,
+        base, map_stack, camera, lidar, start_localizer,
         voice,
         web_monitor,
         web_monitor_hint,

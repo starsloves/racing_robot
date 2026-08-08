@@ -10,9 +10,9 @@
     header { padding: 12px 18px; background: #1f2937; display:flex; gap:24px; align-items:center; flex-wrap:wrap; }
     header h1 { margin:0; font-size:18px; }
     .metric { color:#93c5fd; font-variant-numeric:tabular-nums; }
-    main { padding: 14px; display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
-    #map { background:#fff; border:1px solid #374151; max-width:min(78vw,760px); max-height:78vh; width:auto; height:auto; image-rendering:auto; }
-    .panel { min-width:280px; max-width:430px; background:#1f2937; border-radius:8px; padding:14px; line-height:1.7; }
+    main { padding:14px; display:grid; grid-template-columns:minmax(0,1fr) minmax(300px,430px); gap:16px; align-items:start; }
+    #map { display:block; background:#fff; border:1px solid #374151; width:min(78vw,1100px); max-width:100%; max-height:calc(100vh - 92px); height:auto; object-fit:contain; image-rendering:auto; }
+    .panel { min-width:0; width:100%; max-width:430px; box-sizing:border-box; background:#1f2937; border-radius:8px; padding:14px; line-height:1.7; }
     .panel h2 { margin:0 0 6px; font-size:15px; color:#f9fafb; }
     .panel hr { border:0; border-top:1px solid #374151; margin:10px 0; }
     .value { color:#93c5fd; font-variant-numeric:tabular-nums; }
@@ -21,6 +21,11 @@
     a { color:#93c5fd; }
     .ok { color:#86efac; } .bad { color:#fca5a5; }
     .hint { color:#9ca3af; font-size:13px; margin-top:10px; }
+    @media (max-width:1100px) {
+      main { grid-template-columns:minmax(0,1fr); }
+      #map { width:min(92vw,900px); max-height:70vh; }
+      .panel { max-width:none; }
+    }
   </style>
 </head>
 <body>
@@ -37,7 +42,7 @@
     <h2>实时位姿 / 实际输出</h2>
     <div>Map X：<span id="x" class="value">-</span> m</div>
     <div>Map Y：<span id="y" class="value">-</span> m</div>
-    <div>IMU 航向：<span id="yaw" class="value">-</span>°</div>
+    <div>地图校正航向：<span id="yaw" class="value">-</span>°</div>
     <div>/cmd_vel 线速度：<span id="cmdv" class="value">-</span> m/s</div>
     <div>/cmd_vel 角速度：<span id="cmdw" class="value">-</span> rad/s</div>
     <div>目标：<span id="target" class="value">-</span></div>
@@ -55,7 +60,7 @@
     <hr>
     <h2>规划器最近事件</h2>
     <div id="events">等待 Stage1 日志…</div>
-    <div class="hint">蓝线为网页端历史轨迹，红点为实时激光点，紫色十字为日志中的目标点。页面只读，不会向小车发送速度指令。</div>
+    <div class="hint">橙色实线为当前安全规划路线，紫色虚线为任务目标线，蓝线为历史轨迹，红点为实时激光点，紫色十字为当前目标。页面只读，不会向小车发送速度指令。</div>
     <a href="/snapshot.png" target="_blank">打开当前调试图</a>
     <img id="debugImage" alt="实时调试快照">
 </section>
@@ -71,6 +76,17 @@ function draw(s){
   meta=s.map; canvas.width=meta.width; canvas.height=meta.height;
   ctx.clearRect(0,0,canvas.width,canvas.height); if(image.complete) ctx.drawImage(image,0,0,canvas.width,canvas.height);
   const p=s.pose; history.push([p.x,p.y]); if(history.length>800) history.shift();
+  function line(points,color,width,dash){
+    if(!points || points.length<2) return;
+    ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=width; ctx.setLineDash(dash||[]); ctx.beginPath();
+    points.forEach((q,i)=>{const [x,y]=px(q.x,q.y); if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);}); ctx.stroke(); ctx.restore();
+  }
+  line(s.mission_route,'#c084fc',2,[8,6]);
+  line(s.route,'#f59e0b',3,[]);
+  if(s.target){
+    const [tx,ty]=px(s.target.x,s.target.y); ctx.save(); ctx.strokeStyle='#e879f9'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(tx-9,ty-9); ctx.lineTo(tx+9,ty+9); ctx.moveTo(tx+9,ty-9); ctx.lineTo(tx-9,ty+9); ctx.stroke(); ctx.restore();
+  }
   ctx.fillStyle='#ef4444'; for(const q of s.scan){ const [x,y]=px(q.x,q.y); ctx.fillRect(x-1,y-1,2,2); }
   ctx.strokeStyle='#38bdf8'; ctx.lineWidth=2; ctx.beginPath(); history.forEach((q,i)=>{const [x,y]=px(q[0],q[1]); if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);}); ctx.stroke();
   const [x,y]=px(p.x,p.y), a=-p.yaw; ctx.save(); ctx.translate(x,y); ctx.rotate(a); ctx.fillStyle='#22c55e'; ctx.beginPath(); ctx.moveTo(15,0);ctx.lineTo(-10,-8);ctx.lineTo(-7,8);ctx.closePath();ctx.fill();ctx.restore();

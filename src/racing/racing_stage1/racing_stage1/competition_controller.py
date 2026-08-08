@@ -8,8 +8,9 @@ the board, but keeps the stage lifecycle in one process:
 * an MPPI-style short-horizon trajectory sampler using the live scan;
 * an independent TTC/footprint collision monitor applied to the final command.
 
-The static map is never modified by scan returns.  IMU is the only source of
-heading; odometry/TF provide position only.
+The static map is never modified by scan returns.  IMU gyro rate supplies the
+short-term heading delta, while lidar/map wall geometry supplies the absolute
+heading correction; odometry/TF provide position only.
 """
 
 import heapq
@@ -22,7 +23,7 @@ from collections import deque
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -40,6 +41,12 @@ from racing_common.racing_logger import RacingLogger, terminal_write
 class CompetitionController(Node):
     """Single S1 lifecycle node and single /cmd_vel publisher."""
 
+    MISSION_STANDBY = 'standby'
+    MISSION_SEARCH_QR = 'search_qr'
+    MISSION_QR_LOCKED = 'qr_locked'
+    MISSION_RETURN_TO_ENTRY = 'return_to_entry'
+    MISSION_HANDOFF_WAIT = 'handoff_wait'
+
     def __init__(self):
         super().__init__('competition_controller')
 
@@ -56,6 +63,9 @@ class CompetitionController(Node):
         self.task_pub = self.create_publisher(String, self.task_topic, latched)
         self.entry_pose_pub = self.create_publisher(PoseStamped, self.entry_pose_topic, latched)
         self.imu_offset_pub = self.create_publisher(Float64, self.imu_offset_topic, latched)
+        self.map_heading_pub = self.create_publisher(Float64, self.map_heading_topic, 10)
+        self.route_pub = self.create_publisher(Path, self.route_topic, latched)
+        self.mission_route_pub = self.create_publisher(Path, self.mission_route_topic, latched)
 
         prefix = self.lifecycle_service_prefix.rstrip('/')
         self._activate_srv = self.create_service(Trigger, f'{prefix}/activate', self._activate_cb)
@@ -63,6 +73,7 @@ class CompetitionController(Node):
 
         self.create_subscription(LaserScan, self.scan_topic, self._scan_cb, 10)
         self.create_subscription(Imu, self.imu_topic, self._imu_cb, 10)
+        self.create_subscription(Float64, self.lidar_heading_topic, self._lidar_heading_cb, 10)
         self.create_subscription(Odometry, self.odom_topic, self._odom_cb, 10)
         self.create_subscription(OccupancyGrid, self.map_topic, self._map_cb, latched)
         self.create_subscription(String, self.qr_result_topic, self._qr_cb, 10)
@@ -84,12 +95,24 @@ class CompetitionController(Node):
         self._last_odom_time = None
         self._last_map_time = None
         self._current_raw_yaw = None
+        self._gyro_relative_yaw = 0.0
+        self._gyro_anchor_relative_yaw = 0.0
+        self._last_imu_stamp = None
+        self._lidar_corrected_yaw = None
+        self._last_lidar_heading_time = None
         self._initial_raw_yaw = None
+        self._start_map_xy = None
+        self._start_map_yaw = None
+        self._start_odom_xy = None
         self.current_yaw = None
+        self._heading_anchor_yaw = None
+        self._heading_motion_active = False
         self._last_pose = None
         self._last_pose_time = 0.0
         self._last_cmd = Twist()
         self._last_cmd_time = 0.0
+        self._last_motion_cmd = Twist()
+        self._last_motion_cmd_time = 0.0
         self._last_plan_time = 0.0
         self._last_plan_pose = None
         self._plan_in_progress = False
@@ -111,6 +134,12 @@ class CompetitionController(Node):
         self._target_name = ''
         self._target_xy = None
         self._target_yaw = None
+        self._mission_state = self.MISSION_STANDBY
+        self._qr_pose_xy = None
+        self._qr_pose_yaw = None
+        self._qr_pose_odom_xy = None
+        self._qr_locked_at = None
+        self._entry_stable_since = None
         self._qr_task = ''
         self._qr_latched = False
         self._entry_announced = False
@@ -127,11 +156,15 @@ class CompetitionController(Node):
         self._scan_transform_time = 0.0
         self._base_link_tf_reported = False
         self._base_link_offset = (0.0, 0.0, 0.0)
+        self._footprint_samples_cache = None
+        self._footprint_samples_signature = None
         self._last_scan_diagnostic = None
         self._last_local_failure = None
         self._last_route_heading = None
         self._last_local_gear = 'F'
         self._diagnostic_state = 'waiting'
+        self._qr_search_waypoints = []
+        self._qr_search_index = 0
         self._control_timer = self.create_timer(1.0 / self.control_rate_hz, self._control_loop)
 
         self.log.startup(
@@ -152,34 +185,39 @@ class CompetitionController(Node):
             'qr_result_topic': 'qr_scan_result', 'task_topic': 'competition_qr_task',
             'stage2_entry_pose_topic': 'stage2_entry_pose',
             'imu_map_yaw_offset_topic': 'imu_map_yaw_offset',
+            'map_heading_topic': 'map_heading',
+            'lidar_heading_topic': 'map_heading_lidar',
+            'lidar_heading_max_age_sec': 0.80,
+            'route_topic': 'stage1_route',
+            'mission_route_topic': 'stage1_mission_route',
             'start_corner_diagnostic_topic': 'start_corner_pose_diagnostic',
+            'heading_motion_linear_threshold_mps': 0.015,
+            'heading_motion_angular_threshold_rad_s': 0.03,
             'lifecycle_service_prefix': '/competition/stage1', 'control_rate_hz': 20.0,
-            'initial_map_heading_deg': 20.0, 'start_delay_sec': 0.0,
-            'start_corner_diagnostic_wait_sec': 3.0,
-            # Compatibility parameters consumed by the existing launch file.
-            # They describe the static TF only; this node never recalibrates it.
-            'map_to_odom_x': 0.50, 'map_to_odom_y': 0.15,
-            'map_to_odom_yaw_deg': 20.0, 'imu_yaw_offset_deg': 0.0,
-            'standby': True,
-            'localization_max_age_sec': 0.40, 'map_max_age_sec': 5.0,
+            'start_delay_sec': 0.0,
+            'localization_max_age_sec': 0.40,
             'qr_goal_x_m': 4.50, 'qr_goal_y_m': 1.60,
-            'qr_goal_tolerance_m': 0.35,
+            'qr_search_radius_m': 0.45,
+            'qr_search_waypoint_offset_m': 0.28,
+            'qr_search_waypoint_tolerance_m': 0.16,
             'channel_entry_x_m': 2.50, 'channel_entry_y_m': 2.50,
             'channel_entry_yaw_deg': 90.0, 'channel_entry_tolerance_m': 0.16,
             'channel_entry_yaw_tolerance_deg': 12.0,
+            'entry_stable_sec': 0.25,
             'global_replan_period_sec': 1.50, 'global_replan_position_delta_m': 0.65,
-            'planner_grid_step_m': 0.08, 'planner_heading_bins': 24,
-            'planner_motion_step_m': 0.12, 'planner_max_expansions': 50000,
+            'planner_grid_step_m': 0.16, 'planner_heading_bins': 16,
+            'planner_motion_step_m': 0.20, 'planner_max_expansions': 30000,
+            'planner_fast_grid_step_m': 0.12,
+            'planner_fast_corridor_length_m': 0.70,
             'planner_occupied_threshold': 50, 'planner_unknown_is_occupied': True,
-            'planner_robot_radius_m': 0.26, 'planner_robot_front_m': 0.32,
-            'planner_robot_rear_m': 0.23, 'planner_min_turn_radius_m': 0.62,
+            'planner_robot_radius_m': 0.26, 'planner_min_turn_radius_m': 0.62,
             'planner_reverse_penalty': 2.8, 'planner_change_gear_penalty': 4.0,
             'planner_turn_penalty': 0.35, 'planner_steer_change_penalty': 0.40,
             'planner_goal_yaw_tolerance_deg': 18.0,
             'robot_body_length_m': 0.276, 'robot_body_width_m': 0.164,
             'robot_footprint_margin_m': 0.02, 'scan_self_filter_margin_m': 0.04,
-            'local_horizon_sec': 1.60, 'local_dt_sec': 0.10,
-            'local_samples_speed': 5, 'local_samples_steer': 9,
+            'local_horizon_sec': 1.00, 'local_dt_sec': 0.15,
+            'local_samples_speed': 3, 'local_samples_steer': 5,
             'local_nominal_speed_mps': 0.42, 'local_min_speed_mps': 0.12,
             'local_max_speed_mps': 0.55, 'local_min_turn_radius_m': 0.62,
             'local_max_angular_speed_rad_s': 0.75,
@@ -188,20 +226,19 @@ class CompetitionController(Node):
             'local_allow_reverse': True, 'local_reverse_speed_mps': -0.22,
             'local_reverse_only_when_forward_unsafe': True,
             'local_reverse_heading_threshold_deg': 105.0,
-            'local_scan_max_points': 96,
+            'local_scan_max_points': 32,
             'local_reverse_penalty': 3.0, 'local_steer_change_penalty': 0.25,
             'local_heading_control_weight': 60.0, 'local_angular_effort_weight': 5.0,
             'local_path_distance_weight': 12.0, 'local_heading_weight': 2.5,
             'local_goal_weight': 4.0, 'local_clearance_weight': 3.0,
             'local_obstacle_cost_weight': 1000.0,
-            'local_replan_period_sec': 0.10,
-            'local_command_hold_sec': 0.55,
+            'local_replan_period_sec': 0.20,
+            'local_command_hold_sec': 0.80,
             'local_max_linear_accel_mps2': 0.80,
             'local_max_angular_accel_rad_s2': 2.50,
             'collision_stop_distance_m': 0.24, 'collision_slow_distance_m': 0.62,
             'collision_stop_ttc_sec': 0.55, 'collision_slow_ttc_sec': 1.40,
             'collision_slow_scale': 0.35, 'collision_forward_half_angle_deg': 38.0,
-            'collision_static_lateral_margin_m': 0.04,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -221,30 +258,50 @@ class CompetitionController(Node):
         self.task_topic = str(get('task_topic'))
         self.entry_pose_topic = str(get('stage2_entry_pose_topic'))
         self.imu_offset_topic = str(get('imu_map_yaw_offset_topic'))
+        self.map_heading_topic = str(get('map_heading_topic'))
+        self.lidar_heading_topic = str(get('lidar_heading_topic'))
+        self.lidar_heading_max_age = max(0.2, float(get('lidar_heading_max_age_sec')))
+        self.route_topic = str(get('route_topic'))
+        self.mission_route_topic = str(get('mission_route_topic'))
         self.diagnostic_topic = str(get('start_corner_diagnostic_topic'))
+        self.heading_motion_linear_threshold = max(
+            0.0, float(get('heading_motion_linear_threshold_mps'))
+        )
+        self.heading_motion_angular_threshold = max(
+            0.0, float(get('heading_motion_angular_threshold_rad_s'))
+        )
         self.lifecycle_service_prefix = str(get('lifecycle_service_prefix'))
         self.control_rate_hz = max(5.0, float(get('control_rate_hz')))
-        self.initial_heading = math.radians(float(get('initial_map_heading_deg')))
         self.start_delay_sec = max(0.0, float(get('start_delay_sec')))
         self.localization_max_age = max(0.1, float(get('localization_max_age_sec')))
-        self.map_max_age = max(1.0, float(get('map_max_age_sec')))
         self.qr_goal = (float(get('qr_goal_x_m')), float(get('qr_goal_y_m')))
-        self.qr_tolerance = max(0.05, float(get('qr_goal_tolerance_m')))
+        self.qr_search_radius = max(0.05, float(get('qr_search_radius_m')))
+        self.qr_search_waypoint_offset = min(
+            max(0.05, float(get('qr_search_waypoint_offset_m'))),
+            max(0.05, self.qr_search_radius * 0.80),
+        )
+        self.qr_search_waypoint_tolerance = min(
+            max(0.08, float(get('qr_search_waypoint_tolerance_m'))),
+            max(0.08, self.qr_search_waypoint_offset * 0.70),
+        )
         self.entry_goal = (float(get('channel_entry_x_m')), float(get('channel_entry_y_m')))
         self.entry_yaw = math.radians(float(get('channel_entry_yaw_deg')))
         self.entry_tolerance = max(0.05, float(get('channel_entry_tolerance_m')))
         self.entry_yaw_tolerance = math.radians(float(get('channel_entry_yaw_tolerance_deg')))
+        self.entry_stable_sec = max(0.0, float(get('entry_stable_sec')))
         self.replan_period = max(0.2, float(get('global_replan_period_sec')))
         self.replan_delta = max(0.05, float(get('global_replan_position_delta_m')))
         self.grid_step = max(0.03, float(get('planner_grid_step_m')))
         self.heading_bins = max(8, int(get('planner_heading_bins')))
         self.motion_step = max(0.05, float(get('planner_motion_step_m')))
         self.max_expansions = max(1000, int(get('planner_max_expansions')))
+        self.fast_grid_step = max(0.05, float(get('planner_fast_grid_step_m')))
+        self.fast_corridor_length = max(
+            self.fast_grid_step, float(get('planner_fast_corridor_length_m'))
+        )
         self.occupied_threshold = int(get('planner_occupied_threshold'))
         self.unknown_occupied = bool(get('planner_unknown_is_occupied'))
         self.robot_radius = max(0.10, float(get('planner_robot_radius_m')))
-        self.robot_front = max(self.robot_radius, float(get('planner_robot_front_m')))
-        self.robot_rear = max(self.robot_radius, float(get('planner_robot_rear_m')))
         self.min_turn_radius = max(0.20, float(get('planner_min_turn_radius_m')))
         self.reverse_penalty = float(get('planner_reverse_penalty'))
         self.change_gear_penalty = float(get('planner_change_gear_penalty'))
@@ -292,7 +349,6 @@ class CompetitionController(Node):
         self.slow_ttc = max(self.stop_ttc + 0.1, float(get('collision_slow_ttc_sec')))
         self.slow_scale = min(1.0, max(0.05, float(get('collision_slow_scale'))))
         self.forward_half_angle = math.radians(float(get('collision_forward_half_angle_deg')))
-        self.static_lateral_margin = max(0.0, float(get('collision_static_lateral_margin_m')))
 
     # ------------------------------------------------------------------
     # Sensor and lifecycle callbacks
@@ -313,14 +369,64 @@ class CompetitionController(Node):
         with self._lock:
             raw = self._yaw_from_quaternion(msg.orientation)
             self._current_raw_yaw = raw
-            if self._initial_raw_yaw is None:
+            stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+            if self._last_imu_stamp is None:
+                self._last_imu_stamp = stamp
+            else:
+                dt = stamp - self._last_imu_stamp
+                if 1e-4 <= dt <= 0.25:
+                    self._gyro_relative_yaw += float(msg.angular_velocity.z) * dt
+                self._last_imu_stamp = stamp
+            if self._start_map_yaw is None:
+                self.current_yaw = None
+            elif self._initial_raw_yaw is None:
                 self._initial_raw_yaw = raw
-                offset = self._norm(self.initial_heading - raw)
+                self._heading_anchor_yaw = self._start_map_yaw
+                offset = self._norm(self._start_map_yaw - raw)
                 self.imu_offset_pub.publish(Float64(data=offset))
-                self.log.config(f'IMU heading anchored to map={math.degrees(self.initial_heading):.1f}deg; '
-                                f'offset={math.degrees(offset):+.1f}deg')
-            self.current_yaw = self._norm(self.initial_heading + self._norm(raw - self._initial_raw_yaw))
+                self.log.config(
+                    f'IMU heading anchored to radar map={math.degrees(self._start_map_yaw):.1f}deg; '
+                    f'offset={math.degrees(offset):+.1f}deg'
+                )
+                self.current_yaw = self._start_map_yaw
+            else:
+                if self._heading_motion_active:
+                    self.current_yaw = self._norm(
+                        self._heading_anchor_yaw + self._norm(
+                            self._gyro_relative_yaw - self._gyro_anchor_relative_yaw
+                        )
+                    )
+                else:
+                    # A stationary IMU can drift substantially.  Keep the
+                    # last radar/IMU-corrected map heading and continuously
+                    # re-anchor the raw yaw while no motion command is being
+                    # issued, so startup drift never becomes a fake turn.
+                    self._initial_raw_yaw = raw
+                    self._gyro_anchor_relative_yaw = self._gyro_relative_yaw
+                    if self._heading_anchor_yaw is None:
+                        self._heading_anchor_yaw = (
+                            self.current_yaw if self.current_yaw is not None else self._start_map_yaw
+                        )
+                    self.current_yaw = self._heading_anchor_yaw
+            self._publish_map_heading_locked()
             self._last_imu_time = self._now()
+
+    def _lidar_heading_cb(self, msg):
+        try:
+            corrected = self._norm(float(msg.data))
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            if self._start_map_yaw is None:
+                return
+            self._lidar_corrected_yaw = corrected
+            self._last_lidar_heading_time = self._now()
+            self._heading_anchor_yaw = corrected
+            if self._current_raw_yaw is not None:
+                self._initial_raw_yaw = self._current_raw_yaw
+            self._gyro_anchor_relative_yaw = self._gyro_relative_yaw
+            self.current_yaw = corrected
+            self._publish_map_heading_locked()
 
     def _odom_cb(self, msg):
         with self._lock:
@@ -346,6 +452,7 @@ class CompetitionController(Node):
                 self._path_headings = []
                 self._path_gears = []
                 self._path_progress_index = 0
+                self._publish_route_locked()
                 self._plan_generation += 1
                 self._plan_in_progress = False
                 self._local_plan_generation += 1
@@ -357,49 +464,73 @@ class CompetitionController(Node):
     def _diagnostic_cb(self, msg):
         try:
             payload = json.loads(msg.data)
-            self._diagnostic_state = str(payload.get('state', 'unknown'))
-            self.log.config(f'START_CORNER_DIAG state={self._diagnostic_state} '
+            state = str(payload.get('state', 'unknown'))
+            with self._lock:
+                self._diagnostic_state = state
+                if state == 'valid' and self._start_map_xy is None:
+                    self._start_map_xy = (
+                        float(payload['map_x']), float(payload['map_y'])
+                    )
+                    self._start_map_yaw = math.radians(float(payload['map_yaw_deg']))
+                    self._start_odom_xy = (
+                        float(payload['odom_x']), float(payload['odom_y'])
+                    )
+                    anchor_raw = self._current_raw_yaw
+                    if anchor_raw is None:
+                        anchor_raw = math.radians(float(payload['imu_raw_yaw_deg']))
+                    self._initial_raw_yaw = anchor_raw
+                    self._gyro_anchor_relative_yaw = self._gyro_relative_yaw
+                    self._heading_anchor_yaw = self._start_map_yaw
+                    self._heading_motion_active = False
+                    self.current_yaw = self._start_map_yaw
+                    self._lidar_corrected_yaw = self._start_map_yaw
+                    self._last_lidar_heading_time = self._now()
+                    offset = self._norm(self._start_map_yaw - anchor_raw)
+                    self.imu_offset_pub.publish(Float64(data=offset))
+                    self._publish_map_heading_locked()
+                    self._publish_mission_route_locked()
+                    self.log.config(
+                        f'RADAR_START locked map=({self._start_map_xy[0]:.3f},'
+                        f'{self._start_map_xy[1]:.3f}) '
+                        f'yaw={math.degrees(self._start_map_yaw):.1f}deg '
+                        f'odom_anchor=({self._start_odom_xy[0]:.3f},'
+                        f'{self._start_odom_xy[1]:.3f}) '
+                        f'imu_offset={math.degrees(offset):+.1f}deg'
+                    )
+            self.log.config(f'START_CORNER_DIAG state={state} '
                             f'reason={payload.get("reason", "log-only")}')
         except (TypeError, json.JSONDecodeError):
             self.log.warn('START_CORNER_DIAG', 'invalid diagnostic payload; ignored')
+        except (KeyError, TypeError, ValueError):
+            self.log.warn('START_CORNER_DIAG', 'valid payload missing startup pose fields; ignored')
 
     def _qr_cb(self, msg):
         task = msg.data.strip()
-        if not task or self._qr_latched or self._released:
+        if (not task or self._qr_latched or self._released or
+                self._mission_state != self.MISSION_SEARCH_QR):
             return
         with self._lock:
+            pose_xy = self._last_pose or self._lookup_map_pose_xy()
+            if pose_xy is None or self.current_yaw is None:
+                self.log.warn('QR', 'QR result received before a valid realtime pose; ignored')
+                return
             self._qr_latched = True
             self._qr_task = task
+            self._qr_pose_xy = tuple(pose_xy)
+            self._qr_pose_yaw = float(self.current_yaw)
+            self._qr_pose_odom_xy = None if self._odom_xy is None else tuple(self._odom_xy)
+            self._qr_locked_at = self._now()
             self.task_pub.publish(String(data=task))
-            self.state_pub.publish(String(data='qr_detected'))
-            # QR recognition immediately changes the mission target to the
-            # channel entry.  The QR marker is an event/direction cue, not a
-            # second fixed navigation waypoint; planning starts at the live
-            # pose and heads directly to the handoff pose.
-            self._target_name = 'qr'
-            self._target_name = 'channel_entry'
-            self._target_xy = self.entry_goal
-            self._target_yaw = self.entry_yaw
-            self._path = []
-            self._path_headings = []
-            self._path_gears = []
-            self._path_progress_index = 0
-            # Invalidate the old local result, but keep refreshing the last
-            # validated command for the short global-planning handover window.
-            # A synchronous zero here made QR recognition look like a hard
-            # stop whenever the replacement route took longer than one tick.
-            self._local_plan_generation += 1
-            self._local_result = None
-            self._local_result_time = self._now()
-            self._last_plan_pose = None
-            self._plan_generation += 1
-            self._plan_in_progress = False
-            if self._last_pose is not None and self.current_yaw is not None:
-                self._start_global_plan_locked(self._last_pose)
-            self.log.task(f'S1 QR locked direction={task}; current global goal cancelled; '
-                          f'planning directly from live pose to channel entry '
-                          f'({self.entry_goal[0]:.2f},{self.entry_goal[1]:.2f}) '
-                          f'yaw={math.degrees(self.entry_yaw):.1f}deg')
+            self._publish_mission_event_locked(self.MISSION_QR_LOCKED)
+            self._start_entry_route(pose_xy)
+            self.log.task(
+                f'S1 QR locked direction={task}; '
+                f'qr_pose=({pose_xy[0]:.3f},{pose_xy[1]:.3f}) '
+                f'yaw={math.degrees(self.current_yaw):.1f}deg; '
+                f'replanning from scan pose to entry '
+                f'({self.entry_goal[0]:.2f},{self.entry_goal[1]:.2f}) '
+                f'target_yaw={math.degrees(self.entry_yaw):.1f}deg'
+            )
 
     def _activate_cb(self, _request, response):
         if self._released:
@@ -425,6 +556,7 @@ class CompetitionController(Node):
         self._plan_in_progress = False
         self._handoff_wait = False
         self._publish_zero()
+        self._mission_state = 'complete'
         self.state_pub.publish(String(data='complete'))
         response.success = True
         response.message = 'stage1 released; process will exit'
@@ -439,28 +571,226 @@ class CompetitionController(Node):
     # ------------------------------------------------------------------
     # Localization and map model
     # ------------------------------------------------------------------
+    def _publish_mission_event_locked(self, state):
+        self._mission_state = state
+        self.state_pub.publish(String(data=state))
+
+    def _enter_search_qr_locked(self):
+        if self._mission_state == self.MISSION_SEARCH_QR:
+            return
+        self._publish_mission_event_locked(self.MISSION_SEARCH_QR)
+        x, y = self.qr_goal
+        d = self.qr_search_waypoint_offset
+        # The first point is the map reference supplied by the course setup.
+        # If the code is not visible there, the remaining points form a small
+        # bounded lawn-mower loop instead of waiting forever at a zero-speed
+        # endpoint.  The QR event, not completion of this loop, ends S1's
+        # first mission segment.
+        self._qr_search_waypoints = [
+            (x, y), (x + d, y), (x + d, y + d), (x, y + d),
+            (x - d, y + d), (x - d, y), (x - d, y - d),
+            (x, y - d), (x + d, y - d),
+        ]
+        self._qr_search_index = 0
+        self._publish_mission_route_locked()
+        warmed_reference_path = bool(self._path) and self._target_xy == self.qr_goal
+        if warmed_reference_path:
+            self._target_name = 'qr_search_1'
+            self._target_yaw = None
+        else:
+            self._set_qr_search_target_locked(None)
+        self.log.task(
+            f'S1 mission SEARCH_QR: route reference=({self.qr_goal[0]:.2f},'
+            f'{self.qr_goal[1]:.2f}), radius={self.qr_search_radius:.2f}m; '
+            f'bounded search offset={d:.2f}m; QR event, not exact coordinate, '
+            'completes this phase'
+        )
+
+    def _set_qr_search_target_locked(self, pose_xy):
+        if not self._qr_search_waypoints:
+            self._target_name = 'qr_search'
+            self._target_xy = self.qr_goal
+            self._target_yaw = None
+            return
+        self._target_name = f'qr_search_{self._qr_search_index + 1}'
+        self._target_xy = self._qr_search_waypoints[self._qr_search_index]
+        self._target_yaw = None
+        self._invalidate_route_locked(pose_xy)
+
+    def _invalidate_route_locked(self, pose_xy=None):
+        """Cancel stale planning work and install an optional safe connector."""
+        self._last_plan_pose = None
+        self._plan_generation += 1
+        self._plan_in_progress = False
+        self._local_plan_generation += 1
+        self._local_result = None
+        self._local_result_time = 0.0
+        connector = []
+        if pose_xy is not None and self._target_xy is not None:
+            connector = self._build_connector_path(pose_xy, self._target_xy)
+        if connector:
+            self._path, self._path_headings, self._path_gears = connector
+            self._path_progress_index = 0
+            now = self._now()
+            if abs(self._last_cmd.linear.x) > 1e-6:
+                self._last_safe_result_time = now
+        else:
+            self._path = []
+            self._path_headings = []
+            self._path_gears = []
+            self._path_progress_index = 0
+        self._publish_route_locked()
+
+    def _build_connector_path(self, start_xy, goal_xy):
+        """Build a short, statically validated bridge while A* replans.
+
+        This is deliberately only a straight local bridge.  If any sampled
+        footprint touches a static occupied cell, no bridge is returned and the
+        controller waits for the full global planner; it never drives through
+        an unvalidated wall just to avoid a pause.
+        """
+        dx = float(goal_xy[0]) - float(start_xy[0])
+        dy = float(goal_xy[1]) - float(start_xy[1])
+        distance = math.hypot(dx, dy)
+        if distance < 0.04:
+            return [], [], []
+        heading = math.atan2(dy, dx)
+        count = max(1, int(math.ceil(distance / 0.10)))
+        path = [(float(start_xy[0]), float(start_xy[1]))]
+        for index in range(1, count + 1):
+            ratio = index / count
+            point = (float(start_xy[0]) + ratio * dx,
+                     float(start_xy[1]) + ratio * dy)
+            if self._is_blocked_world(point[0], point[1], heading):
+                return [], [], []
+            path.append(point)
+        return path, [heading] * len(path), [1] * len(path)
+
+    def _advance_qr_search_waypoint_locked(self, pose_xy):
+        if (self._mission_state != self.MISSION_SEARCH_QR or
+                not self._qr_search_waypoints or self._qr_latched):
+            return False
+        target = self._qr_search_waypoints[self._qr_search_index]
+        tolerance = (self.qr_search_radius if self._qr_search_index == 0
+                     else self.qr_search_waypoint_tolerance)
+        if math.hypot(pose_xy[0] - target[0], pose_xy[1] - target[1]) > tolerance:
+            return False
+        previous = self._qr_search_index
+        self._qr_search_index = (self._qr_search_index + 1) % len(self._qr_search_waypoints)
+        self._set_qr_search_target_locked(pose_xy)
+        self.log.task(
+            f'QR search waypoint reached index={previous + 1}; '
+            f'next={self._qr_search_index + 1} '
+            f'target=({self._target_xy[0]:.2f},{self._target_xy[1]:.2f})'
+        )
+        return True
+
+    def _publish_map_heading_locked(self):
+        if self.current_yaw is not None:
+            self.map_heading_pub.publish(Float64(data=float(self.current_yaw)))
+
+    def _publish_route_locked(self):
+        """Publish the currently validated planner route for diagnostics/UI."""
+        message = Path()
+        message.header.frame_id = self.map_frame
+        message.header.stamp = self.get_clock().now().to_msg()
+        for index, (x, y) in enumerate(self._path):
+            pose = PoseStamped()
+            pose.header = message.header
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
+            heading = (
+                self._path_headings[index]
+                if index < len(self._path_headings) else self.current_yaw
+            )
+            if heading is not None:
+                pose.pose.orientation.z = math.sin(float(heading) * 0.5)
+                pose.pose.orientation.w = math.cos(float(heading) * 0.5)
+            message.poses.append(pose)
+        self.route_pub.publish(message)
+
+    def _publish_mission_route_locked(self):
+        """Publish logical task targets separately from the active safe route."""
+        message = Path()
+        message.header.frame_id = self.map_frame
+        message.header.stamp = self.get_clock().now().to_msg()
+        points = []
+        if self._start_map_xy is not None:
+            points.append(self._start_map_xy)
+        points.append(self.qr_goal)
+        if self._qr_search_waypoints:
+            points.extend(self._qr_search_waypoints[1:])
+        points.append(self.entry_goal)
+        for index, point in enumerate(points):
+            pose = PoseStamped()
+            pose.header = message.header
+            pose.pose.position.x = float(point[0])
+            pose.pose.position.y = float(point[1])
+            if index + 1 < len(points):
+                heading = math.atan2(
+                    points[index + 1][1] - point[1],
+                    points[index + 1][0] - point[0],
+                )
+            else:
+                heading = self.entry_yaw
+            pose.pose.orientation.z = math.sin(heading * 0.5)
+            pose.pose.orientation.w = math.cos(heading * 0.5)
+            message.poses.append(pose)
+        self.mission_route_pub.publish(message)
+
+    def _command_is_motion(self, command):
+        return (
+            abs(float(command.linear.x)) >= self.heading_motion_linear_threshold
+            or abs(float(command.angular.z)) >= self.heading_motion_angular_threshold
+        )
+
+    def _update_heading_motion_state(self, command):
+        """Gate IMU integration on actual commanded motion.
+
+        The radar heading is the absolute map anchor.  IMU deltas are used
+        only while a non-zero command is really being sent.  When the command
+        becomes zero, preserve the last corrected heading and reset the raw
+        IMU baseline before the next movement segment.
+        """
+        moving = self._command_is_motion(command)
+        if moving and not self._heading_motion_active:
+            self._heading_anchor_yaw = (
+                self.current_yaw if self.current_yaw is not None else self._start_map_yaw
+            )
+            if self._heading_anchor_yaw is None or self._last_imu_stamp is None:
+                return
+            self._gyro_anchor_relative_yaw = self._gyro_relative_yaw
+            self._heading_motion_active = True
+            self.log.config(
+                f'IMU dynamic heading enabled from radar anchor '
+                f'{math.degrees(self._heading_anchor_yaw):.1f}deg'
+            )
+        elif not moving and self._heading_motion_active:
+            if self.current_yaw is not None:
+                self._heading_anchor_yaw = self.current_yaw
+            if self._current_raw_yaw is not None:
+                self._initial_raw_yaw = self._current_raw_yaw
+            self._gyro_anchor_relative_yaw = self._gyro_relative_yaw
+            self._heading_motion_active = False
+            self.current_yaw = self._heading_anchor_yaw
+            self._publish_map_heading_locked()
+
     def _lookup_map_pose_xy(self):
-        for frame in (self.base_frame, 'base_footprint', 'base_link'):
-            try:
-                transform = self.tf_buffer.lookup_transform(
-                    self.map_frame, frame, Time(), timeout=Duration(seconds=0.03))
-                t = transform.transform.translation
-                return float(t.x), float(t.y)
-            except TransformException:
-                continue
-        if self._odom_xy is None:
+        if (
+            self._start_map_xy is None
+            or self._start_map_yaw is None
+            or self._start_odom_xy is None
+            or self._odom_xy is None
+        ):
             return None
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                self.map_frame, self.odom_frame, Time(), timeout=Duration(seconds=0.03))
-            t = transform.transform.translation
-            q = transform.transform.rotation
-            tf_yaw = self._yaw_from_quaternion(q)
-            x, y = self._odom_xy
-            return (float(t.x) + math.cos(tf_yaw) * x - math.sin(tf_yaw) * y,
-                    float(t.y) + math.sin(tf_yaw) * x + math.cos(tf_yaw) * y)
-        except TransformException:
-            return self._odom_xy
+        dx = self._odom_xy[0] - self._start_odom_xy[0]
+        dy = self._odom_xy[1] - self._start_odom_xy[1]
+        cos_yaw = math.cos(self._start_map_yaw)
+        sin_yaw = math.sin(self._start_map_yaw)
+        return (
+            self._start_map_xy[0] + cos_yaw * dx - sin_yaw * dy,
+            self._start_map_xy[1] + sin_yaw * dx + cos_yaw * dy,
+        )
 
     def _localization_ok(self, now):
         ages = (self._last_scan_time, self._last_imu_time, self._last_odom_time)
@@ -565,6 +895,43 @@ class CompetitionController(Node):
                       oy + math.sin(body_yaw) * x + math.cos(body_yaw) * y)
                      for x, y in local)
 
+    def _footprint_samples_base(self):
+        """Return a cached perimeter sample set for the rectangular body.
+
+        The global planner evaluates thousands of poses.  Rebuilding the TF
+        geometry and trigonometric values for every pose made the Python
+        worker spend seconds in collision checks and starved the ROS executor.
+        The static base_link transform and body dimensions only change when a
+        robot model is reloaded, so cache the same conservative corner/edge
+        samples used by the previous raw-map check.
+        """
+        ox, oy, body_yaw = self._lookup_base_link_offset()
+        signature = (
+            ox, oy, body_yaw, self.body_length, self.body_width,
+            self.footprint_margin,
+        )
+        if signature == self._footprint_samples_signature and self._footprint_samples_cache:
+            return self._footprint_samples_cache
+        half_length = 0.5 * self.body_length + self.footprint_margin
+        half_width = 0.5 * self.body_width + self.footprint_margin
+        local = ((-half_length, -half_width), (-half_length, half_width),
+                 (half_length, half_width), (half_length, -half_width))
+        corners = tuple(
+            (ox + math.cos(body_yaw) * x - math.sin(body_yaw) * y,
+             oy + math.sin(body_yaw) * x + math.cos(body_yaw) * y)
+            for x, y in local
+        )
+        samples = list(corners)
+        for index in range(4):
+            ax, ay = corners[index]
+            bx, by = corners[(index + 1) % 4]
+            for fraction in (0.25, 0.50, 0.75):
+                samples.append((ax + fraction * (bx - ax),
+                                ay + fraction * (by - ay)))
+        self._footprint_samples_signature = signature
+        self._footprint_samples_cache = tuple(samples)
+        return self._footprint_samples_cache
+
     def _point_in_body_base(self, base_x, base_y, extra=0.0):
         ox, oy, body_yaw = self._lookup_base_link_offset()
         dx, dy = base_x - ox, base_y - oy
@@ -605,18 +972,25 @@ class CompetitionController(Node):
 
     def _footprint_collision_world(self, x, y, yaw):
         """Collision test for the real rectangular body, not a laser-centered disk."""
-        corners = self._body_corners_base()
-        samples = list(corners)
-        for index in range(4):
-            ax, ay = corners[index]
-            bx, by = corners[(index + 1) % 4]
-            for fraction in (0.25, 0.5, 0.75):
-                samples.append((ax + fraction * (bx - ax), ay + fraction * (by - ay)))
+        if self._map is None or self._map_blocked is None:
+            return True
+        info = self._map.info
+        samples = self._footprint_samples_base()
         cy, sy = math.cos(yaw), math.sin(yaw)
         for base_x, base_y in samples:
             map_x = x + cy * base_x - sy * base_y
             map_y = y + sy * base_x + cy * base_y
-            if self._raw_occupied_world(map_x, map_y):
+            gx = int(math.floor((map_x - info.origin.position.x) / info.resolution))
+            gy = int(math.floor((map_y - info.origin.position.y) / info.resolution))
+            if gx < 0 or gy < 0 or gx >= info.width or gy >= info.height:
+                return True
+            # The full footprint is already sampled here.  Use the raw map
+            # rather than the radius-inflated map: applying both would add
+            # the robot radius twice and close the real corridor entrance.
+            value = self._map.data[gy * info.width + gx]
+            if value < 0:
+                return self.unknown_occupied
+            if value >= self.occupied_threshold:
                 return True
         return False
 
@@ -708,7 +1082,121 @@ class CompetitionController(Node):
     # ------------------------------------------------------------------
     # Heading-aware global route search
     # ------------------------------------------------------------------
-    def _plan_global(self, start_xy, start_yaw, goal_xy, goal_yaw):
+    def _plan_fast_corridor(self, start_xy, goal_xy, goal_tolerance):
+        """Return a fast footprint-checked corridor while Hybrid-A* refines.
+
+        This planner intentionally has no heading state.  Its job is limited
+        to avoiding a zero-command gap when the QR callback changes the route:
+        it gives the local controller a statically validated first corridor in
+        a few milliseconds.  The regular heading-aware planner is still
+        launched immediately afterwards and replaces this temporary route
+        before a tight corner needs to be negotiated.
+        """
+        if self._map is None:
+            return [], [], []
+        step = max(self.fast_grid_step, float(self._map.info.resolution))
+        start = self._world_to_grid(start_xy[0], start_xy[1], step)
+        goal = self._world_to_grid(goal_xy[0], goal_xy[1], step)
+        if start is None or goal is None:
+            return [], [], []
+        max_x = int(math.ceil(self._map.info.width * self._map.info.resolution / step))
+        max_y = int(math.ceil(self._map.info.height * self._map.info.resolution / step))
+        if not (0 <= start[0] < max_x and 0 <= start[1] < max_y and
+                0 <= goal[0] < max_x and 0 <= goal[1] < max_y):
+            return [], [], []
+        open_heap = [(0.0, 0.0, start)]
+        g_score = {start: 0.0}
+        parent = {}
+        directions = ((-1, -1), (-1, 0), (-1, 1), (0, -1),
+                      (0, 1), (1, -1), (1, 0), (1, 1))
+        goal_state = None
+        while open_heap:
+            _, cost, state = heapq.heappop(open_heap)
+            if cost > g_score.get(state, float('inf')) + 1e-9:
+                continue
+            wx, wy = self._grid_to_world(state[0], state[1], step)
+            if math.hypot(wx - goal_xy[0], wy - goal_xy[1]) <= goal_tolerance:
+                goal_state = state
+                break
+            for dx, dy in directions:
+                nx, ny = state[0] + dx, state[1] + dy
+                if nx < 0 or ny < 0 or nx >= max_x or ny >= max_y:
+                    continue
+                next_xy = self._grid_to_world(nx, ny, step)
+                heading = math.atan2(dy, dx)
+                # Checking both the successor and segment midpoint prevents
+                # the temporary grid corridor from cutting a wall corner.
+                midpoint = ((wx + next_xy[0]) * 0.5, (wy + next_xy[1]) * 0.5)
+                if (self._is_blocked_world(next_xy[0], next_xy[1], heading) or
+                        self._is_blocked_world(midpoint[0], midpoint[1], heading)):
+                    continue
+                next_state = (nx, ny)
+                step_cost = math.hypot(dx, dy)
+                tentative = cost + step_cost
+                if tentative >= g_score.get(next_state, float('inf')):
+                    continue
+                g_score[next_state] = tentative
+                parent[next_state] = state
+                heuristic = math.hypot(nx - goal[0], ny - goal[1])
+                heapq.heappush(open_heap, (tentative + heuristic, tentative, next_state))
+        if goal_state is None:
+            return [], [], []
+        states = []
+        cursor = goal_state
+        while cursor != start:
+            states.append(cursor)
+            cursor = parent[cursor]
+        states.append(start)
+        states.reverse()
+        path = [self._grid_to_world(gx, gy, step) for gx, gy in states]
+        if path:
+            path[0] = (float(start_xy[0]), float(start_xy[1]))
+            # Only expose the first straight run.  The remainder of a grid
+            # route can contain 90-degree corners that violate the chassis
+            # turn radius; Hybrid-A* will replace this prefix asynchronously.
+            prefix = [path[0]]
+            first_heading = None
+            travelled = 0.0
+            for index in range(len(path) - 1):
+                ax, ay = path[index]
+                bx, by = path[index + 1]
+                segment_heading = math.atan2(by - ay, bx - ax)
+                if first_heading is None:
+                    first_heading = segment_heading
+                elif abs(self._norm(segment_heading - first_heading)) > math.radians(35.0):
+                    break
+                segment_length = math.hypot(bx - ax, by - ay)
+                prefix.append(path[index + 1])
+                travelled += segment_length
+                if travelled >= self.fast_corridor_length:
+                    break
+            path = prefix
+            if len(path) < 2:
+                return [], [], []
+            for index in range(len(path) - 1):
+                ax, ay = path[index]
+                bx, by = path[index + 1]
+                segment_heading = math.atan2(by - ay, bx - ax)
+                samples = max(1, int(math.ceil(math.hypot(bx - ax, by - ay) / 0.05)))
+                for sample_index in range(1, samples + 1):
+                    ratio = sample_index / samples
+                    sx = ax + ratio * (bx - ax)
+                    sy = ay + ratio * (by - ay)
+                    if self._is_blocked_world(sx, sy, segment_heading):
+                        return [], [], []
+        headings = []
+        for index in range(len(path)):
+            if index + 1 < len(path):
+                a, b = path[index], path[index + 1]
+            elif index > 0:
+                a, b = path[index - 1], path[index]
+            else:
+                headings.append(self.current_yaw)
+                continue
+            headings.append(math.atan2(b[1] - a[1], b[0] - a[0]))
+        return path, headings, [1] * len(path)
+
+    def _plan_global(self, start_xy, start_yaw, goal_xy, goal_yaw, goal_tolerance=None):
         if self._map is None or self._map_blocked is None:
             return [], [], []
         step = max(self.grid_step, float(self._map.info.resolution))
@@ -718,6 +1206,8 @@ class CompetitionController(Node):
             return [], [], []
         start_bin = int(round(self._norm(start_yaw) / (2.0 * math.pi) * self.heading_bins)) % self.heading_bins
         goal_bin = None if goal_yaw is None else int(round(self._norm(goal_yaw) / (2.0 * math.pi) * self.heading_bins)) % self.heading_bins
+        if goal_tolerance is None:
+            goal_tolerance = self.entry_tolerance if goal_yaw is not None else self.qr_search_radius
         # Keep the previous steering primitive in the search state.  Without
         # it, equal-cost grid successors can alternate left/straight/right
         # on every expansion, producing a route whose tangent flips while the
@@ -737,7 +1227,7 @@ class CompetitionController(Node):
             gx, gy, hbin, gear, previous_steer = state
             wx, wy = self._grid_to_world(gx, gy, step)
             yaw = (hbin / self.heading_bins) * 2.0 * math.pi
-            if math.hypot(wx - goal_xy[0], wy - goal_xy[1]) <= max(self.qr_tolerance, self.entry_tolerance):
+            if math.hypot(wx - goal_xy[0], wy - goal_xy[1]) <= goal_tolerance:
                 if goal_bin is None or abs((hbin - goal_bin + self.heading_bins // 2) % self.heading_bins - self.heading_bins // 2) <= max(1, int(self.goal_yaw_tolerance * self.heading_bins / (2.0 * math.pi))):
                     goal_state = state
                     break
@@ -981,23 +1471,37 @@ class CompetitionController(Node):
             distance = math.hypot(self._target_xy[0] - pose_xy[0], self._target_xy[1] - pose_xy[1])
             speed = min(speed, max(self.min_speed, 0.18 + 0.30 * min(1.0, distance)))
         speeds = [speed * (0.55 + 0.45 * i / max(1, self.speed_samples - 1)) for i in range(self.speed_samples)]
-        candidates = []
-        for v in speeds + ([self.reverse_speed] if self.allow_reverse else []):
+        forward_candidates = []
+        for v in speeds:
             max_w = min(self.max_angular, abs(v) / self.local_min_turn_radius)
             for j in range(self.steer_samples):
                 ratio = 0.0 if self.steer_samples == 1 else (2.0 * j / (self.steer_samples - 1) - 1.0)
-                candidates.append((v, ratio * max_w))
+                forward_candidates.append((v, ratio * max_w))
         scan_points = self._scan_points_map(pose_xy, self.current_yaw)
         scored = [(self._trajectory_cost(pose_xy, self.current_yaw, v, w, scan_points), v, w)
-                  for v, w in candidates]
+                  for v, w in forward_candidates]
         safe_forward = [item for item in scored if item[1] >= 0.0 and math.isfinite(item[0])]
-        safe_reverse = [item for item in scored if item[1] < 0.0 and math.isfinite(item[0])]
+        safe_reverse = []
+        prefer_reverse = abs(heading_error) > self.reverse_heading_threshold
+        # Reverse is a recovery gear.  Do not spend half of every local
+        # planning cycle scoring it when the forward set is already safe.
+        if self.allow_reverse and (not safe_forward or prefer_reverse):
+            reverse_candidates = []
+            max_w = min(self.max_angular, abs(self.reverse_speed) / self.local_min_turn_radius)
+            for j in range(self.steer_samples):
+                ratio = 0.0 if self.steer_samples == 1 else (2.0 * j / (self.steer_samples - 1) - 1.0)
+                reverse_candidates.append((self.reverse_speed, ratio * max_w))
+            reverse_scored = [
+                (self._trajectory_cost(pose_xy, self.current_yaw, v, w, scan_points), v, w)
+                for v, w in reverse_candidates
+            ]
+            safe_reverse = [item for item in reverse_scored
+                            if item[1] < 0.0 and math.isfinite(item[0])]
         # Reverse remains available, but it is a recovery gear.  It may not
         # win merely because its endpoint is closer to the goal: first use a
         # safe forward candidate, except when the route tangent is genuinely
         # behind the current chassis and backing along that tangent is the
         # intended reconnection.
-        prefer_reverse = abs(heading_error) > self.reverse_heading_threshold
         if self.reverse_only_when_forward_unsafe and safe_forward and not prefer_reverse:
             safe = safe_forward
         elif self.reverse_only_when_forward_unsafe and safe_forward and prefer_reverse:
@@ -1080,9 +1584,11 @@ class CompetitionController(Node):
     # Control state machine
     # ------------------------------------------------------------------
     def _publish_zero(self):
-        self.cmd_pub.publish(Twist())
-        self._last_cmd = Twist()
+        zero = Twist()
+        self.cmd_pub.publish(zero)
+        self._last_cmd = zero
         self._last_cmd_time = self._now()
+        self._update_heading_motion_state(zero)
 
     def _rate_limit_command(self, v, w):
         """Bound command jumps so replans do not become steering jolts."""
@@ -1106,20 +1612,30 @@ class CompetitionController(Node):
         self.cmd_pub.publish(msg)
         self._last_cmd = msg
         self._last_cmd_time = self._now()
+        if self._command_is_motion(msg):
+            self._last_motion_cmd = msg
+            self._last_motion_cmd_time = self._last_cmd_time
+        self._update_heading_motion_state(msg)
         return msg
 
     def _ensure_target(self):
         if self._target_xy is not None:
             return
+        if self._mission_state == self.MISSION_SEARCH_QR and self._qr_search_waypoints:
+            self._set_qr_search_target_locked(None)
+            return
         self._target_name = 'qr_search'
         self._target_xy = self.qr_goal
         self._target_yaw = None
 
-    def _plan_worker(self, generation, start_xy, start_yaw, goal_xy, goal_yaw):
+    def _plan_worker(self, generation, start_xy, start_yaw, goal_xy, goal_yaw,
+                     goal_tolerance):
         """Compute a global route away from the 20 Hz command publisher."""
         started = time.perf_counter()
         try:
-            new_path, new_headings, new_gears = self._plan_global(start_xy, start_yaw, goal_xy, goal_yaw)
+            new_path, new_headings, new_gears = self._plan_global(
+                start_xy, start_yaw, goal_xy, goal_yaw, goal_tolerance
+            )
         except Exception as exc:  # keep a planner fault from killing S1
             self.log.warn('PLAN', f'global worker exception: {exc}')
             new_path, new_headings, new_gears = [], [], []
@@ -1135,6 +1651,7 @@ class CompetitionController(Node):
                 self._local_plan_generation += 1
                 self._local_result = None
                 self._local_result_time = 0.0
+                self._publish_route_locked()
                 self.log.target_pose(self._target_xy[0], self._target_xy[1], self._target_name)
             self.log.plan(f'global plan worker elapsed={time.perf_counter() - started:.3f}s '
                           f'path_points={len(new_path)}')
@@ -1148,10 +1665,16 @@ class CompetitionController(Node):
         self._plan_generation += 1
         generation = self._plan_generation
         self._plan_in_progress = True
+        if self._target_yaw is not None:
+            goal_tolerance = self.entry_tolerance
+        elif self._mission_state == self.MISSION_SEARCH_QR and self._qr_search_index > 0:
+            goal_tolerance = self.qr_search_waypoint_tolerance
+        else:
+            goal_tolerance = self.qr_search_radius
         self._plan_thread = threading.Thread(
             target=self._plan_worker,
             args=(generation, tuple(pose_xy), float(self.current_yaw),
-                  tuple(self._target_xy), self._target_yaw),
+                  tuple(self._target_xy), self._target_yaw, goal_tolerance),
             name='s1_global_planner', daemon=True)
         self._plan_thread.start()
 
@@ -1216,31 +1739,57 @@ class CompetitionController(Node):
         self._publish_zero()
         return False
 
-    def _at_target(self, pose_xy):
-        if self._target_xy is None:
+    def _entry_ready(self, pose_xy, now):
+        """Return true only after the live pose has settled at the handoff pose."""
+        if self._mission_state != self.MISSION_RETURN_TO_ENTRY:
+            self._entry_stable_since = None
             return False
-        tolerance = self.qr_tolerance if self._target_name.startswith('qr') else self.entry_tolerance
-        if math.hypot(pose_xy[0] - self._target_xy[0], pose_xy[1] - self._target_xy[1]) > tolerance:
+        distance = math.hypot(
+            pose_xy[0] - self.entry_goal[0], pose_xy[1] - self.entry_goal[1]
+        )
+        yaw_error = abs(self._norm(self.current_yaw - self.entry_yaw))
+        if distance > self.entry_tolerance or yaw_error > self.entry_yaw_tolerance:
+            self._entry_stable_since = None
             return False
-        return self._target_yaw is None or abs(self._norm(self.current_yaw - self._target_yaw)) <= self.entry_yaw_tolerance
+        if self._entry_stable_since is None:
+            self._entry_stable_since = now
+            self.log.task(
+                f'S1 entry gate entered distance={distance:.3f}m '
+                f'yaw_error={math.degrees(yaw_error):.1f}deg; '
+                f'settling={self.entry_stable_sec:.2f}s'
+            )
+            return self.entry_stable_sec <= 0.0
+        return now - self._entry_stable_since >= self.entry_stable_sec
 
     def _start_entry_route(self, pose_xy):
+        self._publish_mission_event_locked(self.MISSION_RETURN_TO_ENTRY)
         self._target_name = 'channel_entry'
         self._target_xy = self.entry_goal
         self._target_yaw = self.entry_yaw
-        self._path = []
-        self._path_headings = []
-        self._path_gears = []
-        self._path_progress_index = 0
-        self._last_plan_pose = None
-        self._plan_generation += 1
-        self._plan_in_progress = False
-        self._local_plan_generation += 1
-        self._local_result = None
-        self._local_result_time = self._now()
-        self.log.task(f'QR goal reached at ({pose_xy[0]:.2f},{pose_xy[1]:.2f}); '
-                      f'QR route cancelled; replanning from realtime pose to channel entry '
-                      f'({self.entry_goal[0]:.2f},{self.entry_goal[1]:.2f})')
+        self._qr_search_waypoints = []
+        self._qr_search_index = 0
+        self._publish_mission_route_locked()
+        self._invalidate_route_locked(pose_xy)
+        fast_path, fast_headings, fast_gears = self._plan_fast_corridor(
+            pose_xy, self.entry_goal, self.entry_tolerance
+        )
+        if fast_path:
+            self._path = fast_path
+            self._path_headings = fast_headings
+            self._path_gears = fast_gears
+            self._path_progress_index = 0
+            self._publish_route_locked()
+            self.log.plan(
+                f'entry fast corridor points={len(fast_path)}; '
+                'heading-aware global refinement queued'
+            )
+        self._entry_stable_since = None
+        self.log.task(
+            f'QR route interrupted at realtime pose=({pose_xy[0]:.3f},'
+            f'{pose_xy[1]:.3f}); return route target='
+            f'({self.entry_goal[0]:.2f},{self.entry_goal[1]:.2f},'
+            f'{math.degrees(self.entry_yaw):.1f}deg)'
+        )
 
     def _publish_entry_pose_and_handoff(self, pose_xy):
         if not self._entry_announced:
@@ -1252,11 +1801,17 @@ class CompetitionController(Node):
             msg.pose.orientation.z = math.sin(self.current_yaw / 2.0)
             msg.pose.orientation.w = math.cos(self.current_yaw / 2.0)
             self.entry_pose_pub.publish(msg)
+            self._publish_mission_event_locked(self.MISSION_HANDOFF_WAIT)
             self.state_pub.publish(String(data='handoff_ready'))
             self._entry_announced = True
             self._handoff_wait = True
+            handoff_cmd = self._last_motion_cmd if self._command_is_motion(self._last_motion_cmd) else self._last_cmd
+            self._last_cmd = handoff_cmd
+            self._last_cmd_time = self._now()
             self.log.task(f'S1 handoff_ready entry=({pose_xy[0]:.3f},{pose_xy[1]:.3f}) '
-                          f'imu_yaw={math.degrees(self.current_yaw):.1f}deg; holding last valid motion')
+                          f'map_yaw={math.degrees(self.current_yaw):.1f}deg '
+                          f'target_yaw={math.degrees(self.entry_yaw):.1f}deg; '
+                          'holding last valid motion')
 
     def _control_loop(self):
         if self._released:
@@ -1271,7 +1826,7 @@ class CompetitionController(Node):
             if pose_xy is not None and self._ready_published:
                 self._last_pose = pose_xy
                 self._last_pose_time = now
-                self.log.real_pose(pose_xy[0], pose_xy[1], source='map_tf')
+                self.log.real_pose(pose_xy[0], pose_xy[1], source='radar_odom')
             if not self._ready_published or pose_xy is None or self.current_yaw is None:
                 return
             if not self._localization_ok(now):
@@ -1290,12 +1845,18 @@ class CompetitionController(Node):
             if not self._running_published:
                 self._running_published = True
                 self.state_pub.publish(String(data='running'))
+                self._enter_search_qr_locked()
             if self._handoff_wait:
-                self.cmd_pub.publish(self._last_cmd)
+                handoff_cmd = self._last_motion_cmd if self._command_is_motion(self._last_motion_cmd) else self._last_cmd
+                self.cmd_pub.publish(handoff_cmd)
+                self._last_cmd = handoff_cmd
+                self._last_cmd_time = now
                 return
-            if self._target_name == 'channel_entry' and self._at_target(pose_xy):
+            self._advance_qr_search_waypoint_locked(pose_xy)
+            if self._entry_ready(pose_xy, now):
                 self._publish_entry_pose_and_handoff(pose_xy)
-                self.cmd_pub.publish(self._last_cmd)
+                handoff_cmd = self._last_motion_cmd if self._command_is_motion(self._last_motion_cmd) else self._last_cmd
+                self.cmd_pub.publish(handoff_cmd)
                 return
             if not self._refresh_plan(pose_xy):
                 self._publish_held_command(now)

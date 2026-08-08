@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Passive startup pose diagnostic from the rear map-origin corner.
+"""Startup localization from the rear map-origin corner.
 
-This node is intentionally diagnostic-only.  It never publishes TF or motion
-commands.  A stable rear L-corner is matched to the known map corner (0, 0),
-then the corresponding static map->odom transform is reported for review.
+A stable rear L-corner is matched to the known map corner (0, 0).  The locked
+map->odom transform is then published continuously for the competition.  This
+node never publishes motion commands.
 """
 
 import json
@@ -12,14 +12,15 @@ from collections import deque
 
 import numpy as np
 import rclpy
+from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import Imu, LaserScan
-from std_msgs.msg import String
-from tf2_ros import Buffer, TransformException, TransformListener
+from std_msgs.msg import Float64, String
+from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 
 
 def normalize_angle(angle):
@@ -45,12 +46,23 @@ class StartCornerPoseDiagnostic(Node):
         self.latest_imu = None
         self.latest_odom = None
         self._last_scan_stamp_ns = None
-        self._imu_samples = deque(maxlen=self.imu_stable_samples)
+        self._gyro_samples = deque(maxlen=self.imu_stable_samples)
         self._pose_samples = deque(maxlen=self.stable_frame_count)
         self._locked = False
-        self._shutdown_requested = False
+        self._map_to_odom = None
+        self._locked_map_xy = None
+        self._locked_odom_xy = None
+        self._locked_map_yaw = None
+        self._locked_raw_imu_yaw = None
+        self._gyro_relative_yaw = 0.0
+        self._locked_gyro_relative_yaw = 0.0
+        self._last_imu_stamp = None
+        self._live_heading = None
+        self._last_live_scan_stamp_ns = None
+        self._last_live_heading_time = 0.0
         self._last_status = None
         self._last_status_time = 0.0
+        self._tf_broadcaster = TransformBroadcaster(self)
 
         durable_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -59,14 +71,14 @@ class StartCornerPoseDiagnostic(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self.diagnostic_pub = self.create_publisher(String, self.diagnostic_topic, durable_qos)
+        self.heading_pub = self.create_publisher(Float64, self.live_heading_topic, 10)
         self.create_subscription(LaserScan, self.scan_topic, self._scan_callback, qos_profile_sensor_data)
         self.create_subscription(Imu, self.imu_topic, self._imu_callback, qos_profile_sensor_data)
         self.create_subscription(Odometry, self.odom_topic, self._odom_callback, qos_profile_sensor_data)
-        self.create_subscription(String, self.qr_task_topic, self._qr_task_callback, durable_qos)
         self._timer = self.create_timer(0.1, self._process_latest_scan)
 
         self.get_logger().info(
-            'START_CORNER_DIAG ready: passive only; rear corner=(%.2f,%.2f), yaw=[%.1f,%.1f]deg' % (
+            'START_CORNER_LOCALIZER ready: rear corner=(%.2f,%.2f), yaw=[%.1f,%.1f]deg' % (
                 self.corner_map_x,
                 self.corner_map_y,
                 math.degrees(self.yaw_min),
@@ -78,9 +90,10 @@ class StartCornerPoseDiagnostic(Node):
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('imu_topic', '/imu/data')
         self.declare_parameter('odom_topic', '/odom_combined')
-        self.declare_parameter('qr_task_topic', 'competition_qr_task')
         self.declare_parameter('diagnostic_topic', 'start_corner_pose_diagnostic')
+        self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'base_footprint')
+        self.declare_parameter('odom_frame', 'odom_combined')
         self.declare_parameter('corner_map_x', 0.0)
         self.declare_parameter('corner_map_y', 0.0)
         self.declare_parameter('yaw_min_deg', 0.0)
@@ -94,26 +107,35 @@ class StartCornerPoseDiagnostic(Node):
         self.declare_parameter('line_fit_rms_max_m', 0.03)
         self.declare_parameter('line_min_span_m', 0.35)
         self.declare_parameter('line_min_points', 12)
+        self.declare_parameter('corner_min_distance_m', 0.35)
+        self.declare_parameter('corner_max_distance_m', 1.20)
+        self.declare_parameter('corner_lateral_abs_max_m', 0.25)
         self.declare_parameter('orthogonal_tolerance_deg', 5.0)
         self.declare_parameter('stable_frame_count', 5)
         self.declare_parameter('stable_xy_spread_m', 0.03)
         self.declare_parameter('stable_yaw_spread_deg', 2.0)
         self.declare_parameter('stationary_speed_mps', 0.02)
         self.declare_parameter('imu_stable_samples', 8)
-        self.declare_parameter('imu_stable_yaw_deg', 1.0)
-        self.declare_parameter('configured_map_to_odom_x', 0.50)
-        self.declare_parameter('configured_map_to_odom_y', 0.15)
-        self.declare_parameter('configured_map_to_odom_yaw_deg', 20.0)
-        self.declare_parameter('configured_initial_map_heading_deg', 20.0)
+        self.declare_parameter('imu_stable_gyro_rad_s', 0.08)
+        self.declare_parameter('live_heading_topic', 'map_heading_lidar')
+        self.declare_parameter('live_heading_enabled', True)
+        self.declare_parameter('live_heading_period_sec', 0.20)
+        self.declare_parameter('live_heading_max_correction_deg', 35.0)
+        self.declare_parameter('live_heading_step_deg', 6.0)
+        self.declare_parameter('live_heading_orthogonal_tolerance_deg', 10.0)
+        self.declare_parameter('live_heading_min_span_m', 0.45)
+        self.declare_parameter('live_heading_min_points', 14)
+        self.declare_parameter('live_heading_max_line_rms_m', 0.035)
 
     def _read_parameters(self):
         get = lambda name: self.get_parameter(name).value
         self.scan_topic = str(get('scan_topic'))
         self.imu_topic = str(get('imu_topic'))
         self.odom_topic = str(get('odom_topic'))
-        self.qr_task_topic = str(get('qr_task_topic'))
         self.diagnostic_topic = str(get('diagnostic_topic'))
+        self.map_frame = str(get('map_frame'))
         self.base_frame = str(get('base_frame'))
+        self.odom_frame = str(get('odom_frame'))
         self.corner_map_x = float(get('corner_map_x'))
         self.corner_map_y = float(get('corner_map_y'))
         self.yaw_min = math.radians(float(get('yaw_min_deg')))
@@ -127,39 +149,59 @@ class StartCornerPoseDiagnostic(Node):
         self.line_fit_rms_max = float(get('line_fit_rms_max_m'))
         self.line_min_span = float(get('line_min_span_m'))
         self.line_min_points = int(get('line_min_points'))
+        self.corner_min_distance = max(0.05, float(get('corner_min_distance_m')))
+        self.corner_max_distance = max(self.corner_min_distance, float(get('corner_max_distance_m')))
+        self.corner_lateral_abs_max = max(0.05, float(get('corner_lateral_abs_max_m')))
         self.orthogonal_tolerance = math.radians(float(get('orthogonal_tolerance_deg')))
         self.stable_frame_count = int(get('stable_frame_count'))
         self.stable_xy_spread = float(get('stable_xy_spread_m'))
         self.stable_yaw_spread = math.radians(float(get('stable_yaw_spread_deg')))
         self.stationary_speed = float(get('stationary_speed_mps'))
         self.imu_stable_samples = int(get('imu_stable_samples'))
-        self.imu_stable_yaw = math.radians(float(get('imu_stable_yaw_deg')))
-        self.configured_transform = (
-            float(get('configured_map_to_odom_x')),
-            float(get('configured_map_to_odom_y')),
-            math.radians(float(get('configured_map_to_odom_yaw_deg'))),
+        self.imu_stable_gyro = max(0.01, float(get('imu_stable_gyro_rad_s')))
+        self.live_heading_topic = str(get('live_heading_topic'))
+        self.live_heading_enabled = bool(get('live_heading_enabled'))
+        self.live_heading_period = max(0.05, float(get('live_heading_period_sec')))
+        self.live_heading_max_correction = math.radians(max(5.0, float(get('live_heading_max_correction_deg'))))
+        self.live_heading_step = math.radians(max(0.5, float(get('live_heading_step_deg'))))
+        self.live_heading_orthogonal_tolerance = math.radians(
+            max(3.0, float(get('live_heading_orthogonal_tolerance_deg')))
         )
-        self.configured_heading = math.radians(float(get('configured_initial_map_heading_deg')))
+        self.live_heading_min_span = max(0.20, float(get('live_heading_min_span_m')))
+        self.live_heading_min_points = max(8, int(get('live_heading_min_points')))
+        self.live_heading_max_line_rms = max(0.01, float(get('live_heading_max_line_rms_m')))
 
     def _scan_callback(self, msg):
         self.latest_scan = msg
 
     def _imu_callback(self, msg):
         self.latest_imu = msg
-        self._imu_samples.append(quaternion_to_yaw(msg.orientation))
+        self._gyro_samples.append(float(msg.angular_velocity.z))
+        stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+        if self._last_imu_stamp is None:
+            self._last_imu_stamp = stamp
+        else:
+            dt = stamp - self._last_imu_stamp
+            if 1e-4 <= dt <= 0.25:
+                self._gyro_relative_yaw += float(msg.angular_velocity.z) * dt
+            self._last_imu_stamp = stamp
 
     def _odom_callback(self, msg):
         self.latest_odom = msg
 
-    def _qr_task_callback(self, msg):
-        if not msg.data.strip() or self._shutdown_requested:
-            return
-        self.get_logger().info('START_CORNER_DIAG stopping after QR task was locked')
-        self._shutdown_requested = True
-        self.destroy_timer(self._timer)
-
     def _process_latest_scan(self):
-        if self._locked or self.latest_scan is None:
+        if self.latest_scan is None:
+            return
+        if self._locked:
+            now = self.get_clock().now().nanoseconds / 1e9
+            stamp_ns = int(self.latest_scan.header.stamp.sec) * 1_000_000_000 + int(self.latest_scan.header.stamp.nanosec)
+            if (self.live_heading_enabled and stamp_ns != self._last_live_scan_stamp_ns
+                    and now - self._last_live_heading_time >= self.live_heading_period):
+                self._last_live_scan_stamp_ns = stamp_ns
+                points = self._scan_points_in_base(self.latest_scan)
+                if points is not None:
+                    self._update_live_heading(points, now)
+            self._publish_tf()
             return
         stamp = self.latest_scan.header.stamp
         stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
@@ -199,17 +241,111 @@ class StartCornerPoseDiagnostic(Node):
 
         final = self._average_samples()
         self._locked = True
+        self._map_to_odom = (
+            final['map_to_odom_x'], final['map_to_odom_y'], final['map_to_odom_yaw']
+        )
+        self._locked_map_xy = (final['map_x'], final['map_y'])
+        self._locked_odom_xy = (final['odom_x'], final['odom_y'])
+        self._locked_map_yaw = final['map_yaw']
+        self._locked_raw_imu_yaw = final['imu_raw_yaw']
+        self._locked_gyro_relative_yaw = self._gyro_relative_yaw
+        self._live_heading = final['map_yaw']
+        self.heading_pub.publish(Float64(data=float(self._live_heading)))
         self._publish_valid(final)
+        self._publish_tf()
+
+    @staticmethod
+    def _orientation_error(first, second):
+        """Smallest error between unoriented line angles (period pi)."""
+        return abs((first - second + math.pi * 0.5) % math.pi - math.pi * 0.5)
+
+    @staticmethod
+    def _nearest_heading_equivalent(angle, reference):
+        """Resolve the 180-degree wall ambiguity using the IMU prior."""
+        candidates = [angle + index * math.pi for index in range(-2, 3)]
+        return min(candidates, key=lambda item: abs(normalize_angle(item - reference)))
+
+    def _estimate_live_heading(self, points, prior):
+        if points is None or points.shape[0] < self.live_heading_min_points * 2:
+            return None
+        candidates = self._line_candidates(points)
+        candidates = [item for item in candidates
+                      if item['count'] >= self.live_heading_min_points
+                      and item['span'] >= self.live_heading_min_span
+                      and item['rms'] <= self.live_heading_max_line_rms]
+        if len(candidates) < 2:
+            return None
+        best = None
+        axes = ((0.0, math.pi / 2.0), (math.pi / 2.0, 0.0))
+        for first_index, first in enumerate(candidates[:-1]):
+            for second in candidates[first_index + 1:]:
+                observed_error = self._orientation_error(first['angle'], second['angle'])
+                if abs(observed_error - math.pi / 2.0) > self.live_heading_orthogonal_tolerance:
+                    continue
+                for first_axis, second_axis in axes:
+                    first_heading = first_axis - first['angle']
+                    second_heading = second_axis - second['angle']
+                    if self._orientation_error(first_heading, second_heading) > self.live_heading_orthogonal_tolerance:
+                        continue
+                    heading = self._nearest_heading_equivalent(first_heading, prior)
+                    second_equivalent = self._nearest_heading_equivalent(second_heading, heading)
+                    residual = abs(normalize_angle(heading - second_equivalent))
+                    if residual > self.live_heading_orthogonal_tolerance:
+                        continue
+                    prior_error = abs(normalize_angle(heading - prior))
+                    if prior_error > self.live_heading_max_correction:
+                        continue
+                    support = int(first['count']) + int(second['count'])
+                    span = min(float(first['span']), float(second['span']))
+                    score = support + 8.0 * span - 12.0 * prior_error
+                    if best is None or score > best[0]:
+                        best = (score, heading)
+        return None if best is None else normalize_angle(best[1])
+
+    def _update_live_heading(self, points, now):
+        if self._live_heading is None:
+            return
+        prior = self._live_heading
+        if self.latest_imu is not None:
+            # The relative IMU delta is only a prior; lidar is the absolute
+            # axis reference used to remove gyro drift.
+            prior = normalize_angle(
+                self._locked_map_yaw
+                + normalize_angle(self._gyro_relative_yaw - self._locked_gyro_relative_yaw)
+            )
+        estimate = self._estimate_live_heading(points, prior)
+        self._last_live_heading_time = now
+        if estimate is None:
+            return
+        delta = normalize_angle(estimate - self._live_heading)
+        delta = max(-self.live_heading_step, min(self.live_heading_step, delta))
+        self._live_heading = normalize_angle(self._live_heading + delta)
+        self.heading_pub.publish(Float64(data=float(self._live_heading)))
+        if self._locked_map_xy is not None and self._locked_odom_xy is not None and self.latest_odom is not None:
+            odom = self.latest_odom.pose.pose.position
+            dx = float(odom.x) - self._locked_odom_xy[0]
+            dy = float(odom.y) - self._locked_odom_xy[1]
+            start_x, start_y = self._locked_map_xy
+            start_yaw = self._locked_map_yaw
+            map_base_x = start_x + math.cos(start_yaw) * dx - math.sin(start_yaw) * dy
+            map_base_y = start_y + math.sin(start_yaw) * dx + math.cos(start_yaw) * dy
+            self._map_to_odom = (
+                map_base_x - (math.cos(self._live_heading) * float(odom.x)
+                              - math.sin(self._live_heading) * float(odom.y)),
+                map_base_y - (math.sin(self._live_heading) * float(odom.x)
+                              + math.cos(self._live_heading) * float(odom.y)),
+                self._live_heading,
+            )
 
     def _is_stationary(self):
         twist = self.latest_odom.twist.twist.linear
         return math.hypot(float(twist.x), float(twist.y)) <= self.stationary_speed
 
     def _imu_is_stable(self):
-        if len(self._imu_samples) < self.imu_stable_samples:
+        if len(self._gyro_samples) < self.imu_stable_samples:
             return False
-        reference = self._imu_samples[0]
-        return max(abs(normalize_angle(yaw - reference)) for yaw in self._imu_samples) <= self.imu_stable_yaw
+        reference = sum(self._gyro_samples) / len(self._gyro_samples)
+        return max(abs(rate - reference) for rate in self._gyro_samples) <= self.imu_stable_gyro
 
     def _scan_points_in_base(self, scan):
         source_frame = scan.header.frame_id or 'laser'
@@ -280,9 +416,16 @@ class StartCornerPoseDiagnostic(Node):
                 if yaw is None:
                     continue
                 saw_heading = True
-                # The physical startup corner is behind the base.  This gate
-                # rejects unrelated interior right angles.
-                if float(corner[0]) > 0.15:
+                # The physical startup corner is a known rear corner close to
+                # the chassis centreline.  These gates reject the recurring
+                # short interior right-angle false match.
+                corner_distance = float(np.linalg.norm(corner))
+                if (
+                    float(corner[0]) > -0.15
+                    or corner_distance < self.corner_min_distance
+                    or corner_distance > self.corner_max_distance
+                    or abs(float(corner[1])) > self.corner_lateral_abs_max
+                ):
                     continue
                 score = (
                     int(first['count']) + int(second['count']),
@@ -321,6 +464,8 @@ class StartCornerPoseDiagnostic(Node):
             'map_to_odom_x': float(map_to_odom_x),
             'map_to_odom_y': float(map_to_odom_y),
             'map_to_odom_yaw': float(yaw),
+            'odom_x': float(odom_x),
+            'odom_y': float(odom_y),
             'imu_raw_yaw': float(raw_imu_yaw),
             'imu_map_heading_offset': float(normalize_angle(yaw - raw_imu_yaw)),
             'line1_rms': float(first['rms']),
@@ -441,8 +586,22 @@ class StartCornerPoseDiagnostic(Node):
         self.diagnostic_pub.publish(String(data=json.dumps(payload, separators=(',', ':'))))
         self.get_logger().info(f'START_CORNER_DIAG state={state} reason={reason}')
 
+    def _publish_tf(self):
+        if self._map_to_odom is None:
+            return
+        x, y, yaw = self._map_to_odom
+        transform = TransformStamped()
+        transform.header.stamp = self.get_clock().now().to_msg()
+        transform.header.frame_id = self.map_frame
+        transform.child_frame_id = self.odom_frame
+        transform.transform.translation.x = float(x)
+        transform.transform.translation.y = float(y)
+        transform.transform.translation.z = 0.0
+        transform.transform.rotation.z = math.sin(yaw * 0.5)
+        transform.transform.rotation.w = math.cos(yaw * 0.5)
+        self._tf_broadcaster.sendTransform(transform)
+
     def _publish_valid(self, result):
-        configured_x, configured_y, configured_yaw = self.configured_transform
         payload = {
             'state': 'valid',
             'corner_base_x': round(result['corner_base_x'], 4),
@@ -453,19 +612,17 @@ class StartCornerPoseDiagnostic(Node):
             'map_to_odom_x': round(result['map_to_odom_x'], 4),
             'map_to_odom_y': round(result['map_to_odom_y'], 4),
             'map_to_odom_yaw_deg': round(math.degrees(result['map_to_odom_yaw']), 3),
+            'odom_x': round(result['odom_x'], 4),
+            'odom_y': round(result['odom_y'], 4),
             'imu_raw_yaw_deg': round(math.degrees(result['imu_raw_yaw']), 3),
             'imu_map_heading_offset_deg': round(math.degrees(result['imu_map_heading_offset']), 3),
-            'delta_map_to_odom_x': round(result['map_to_odom_x'] - configured_x, 4),
-            'delta_map_to_odom_y': round(result['map_to_odom_y'] - configured_y, 4),
-            'delta_map_to_odom_yaw_deg': round(math.degrees(normalize_angle(result['map_to_odom_yaw'] - configured_yaw)), 3),
-            'delta_initial_map_heading_deg': round(math.degrees(normalize_angle(result['map_yaw'] - self.configured_heading)), 3),
             'line_rms_m': round(max(result['line1_rms'], result['line2_rms']), 4),
             'orthogonal_error_deg': round(math.degrees(result['orthogonal_error']), 3),
         }
         self.diagnostic_pub.publish(String(data=json.dumps(payload, separators=(',', ':'))))
         self.get_logger().info(
-            'START_CORNER_DIAG valid corner_base=(%.3f,%.3f) map=(%.3f,%.3f,%.1fdeg) '
-            'suggested_map_to_odom=(%.3f,%.3f,%.1fdeg) imu_offset=%+.1fdeg' % (
+            'START_CORNER_LOCALIZER valid corner_base=(%.3f,%.3f) map=(%.3f,%.3f,%.1fdeg) '
+            'map_to_odom=(%.3f,%.3f,%.1fdeg) imu_offset=%+.1fdeg' % (
                 result['corner_base_x'], result['corner_base_y'], result['map_x'], result['map_y'],
                 math.degrees(result['map_yaw']), result['map_to_odom_x'], result['map_to_odom_y'],
                 math.degrees(result['map_to_odom_yaw']), math.degrees(result['imu_map_heading_offset']),
@@ -477,10 +634,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = StartCornerPoseDiagnostic()
     try:
-        # Do not call rclpy.shutdown() from a subscription callback.  It can
-        # leave the executor process alive after QR has been locked.  The main
-        # loop sees the request after the callback returns and closes cleanly.
-        while rclpy.ok() and not node._shutdown_requested:
+        while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.2)
     finally:
         node.destroy_node()

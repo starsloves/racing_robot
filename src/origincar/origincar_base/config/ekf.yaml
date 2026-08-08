@@ -128,8 +128,12 @@ ekf_filter_node:
 #         odom0_twist_rejection_threshold: 1.0
 
         imu0: /imu/data
+        # 不融合 Madgwick 的 orientation yaw：当前 IMU 没有磁力计，
+        # 该字段是无绝对参考的积分结果。只融合 angular_velocity.z，
+        # 让 odom_combined 保持连续短时运动；全局 yaw 由雷达墙线校正的
+        # map->odom_combined / map_heading_lidar 提供。
         imu0_config: [false, false, false,
-                      false, false, true,
+                      false, false, false,
                       false, false, false,
                       false, false, true,
                       false,  false, false]

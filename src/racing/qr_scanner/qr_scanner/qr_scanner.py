@@ -10,7 +10,7 @@ from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry
 from racing_common.process_lifecycle import install_parent_death_signal
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
@@ -25,7 +25,6 @@ class QRScannerNode(Node):
         self.declare_parameter('stage1_state_topic', 'stage1_state')
         self.declare_parameter('odom_topic', '/odom_combined')
         self.declare_parameter('scan_task_phase', 1)
-        self.declare_parameter('scan_start_x_m', 1.0)
         self.declare_parameter('crop_top_ratio', 0.25)
         self.declare_parameter('crop_top_px', 80)
         self.declare_parameter('upscale_factor', 1.0)
@@ -48,7 +47,6 @@ class QRScannerNode(Node):
         self.stage1_state_topic = self.get_parameter('stage1_state_topic').value
         self.odom_topic = self.get_parameter('odom_topic').value
         self.scan_task_phase = int(self.get_parameter('scan_task_phase').value)
-        self.scan_start_x_m = float(self.get_parameter('scan_start_x_m').value)
         self.crop_top_ratio = float(self.get_parameter('crop_top_ratio').value)
         self.crop_top_px = int(self.get_parameter('crop_top_px').value)
         self.upscale_factor = max(1.0, float(self.get_parameter('upscale_factor').value))
@@ -103,6 +101,7 @@ class QRScannerNode(Node):
         self.active_backend = self.initialize_backend()
         self.publisher_ = self.create_publisher(String, self.result_topic, 10)
         self._activated = False
+        self._mission_search_enabled = False
         self._released = False
         self.current_x = None
         self.latest_image_msg = None
@@ -127,7 +126,14 @@ class QRScannerNode(Node):
         self.frame_event = threading.Event()
         self.shutdown_event = threading.Event()
 
-        self.create_subscription(String, self.stage1_state_topic, self.stage1_state_callback, 10)
+        state_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            String, self.stage1_state_topic, self.stage1_state_callback, state_qos
+        )
         self._activate_srv = self.create_service(
             Trigger, '/competition/stage1/qr_activate', self._activate_cb
         )
@@ -161,7 +167,7 @@ class QRScannerNode(Node):
         image_mode = 'compressed' if self.use_compressed else 'raw'
         self.get_logger().info(
             f'qr scanner ready, topic={self.camera_topic}, mode={image_mode}, result={self.result_topic}, '
-                f'backend={self.active_backend}, arm_x>{self.scan_start_x_m:.2f}m, '
+                f'backend={self.active_backend}, gate=stage1 SEARCH_QR, '
             f'crop_px={self.crop_top_px}, upscale={self.upscale_factor:.1f}x, '
             f'order={self.detection_order}, path={self.active_backend}_raw, '
             'latest_frame_worker=true'
@@ -170,7 +176,8 @@ class QRScannerNode(Node):
         self.write_diagnostic(
             'ready '
             f'backend={self.active_backend} topic={self.camera_topic} '
-            f'arm_x>{self.scan_start_x_m:.2f}m crop_px={self.crop_top_px} '
+            'gate=stage1 SEARCH_QR '
+            f'crop_px={self.crop_top_px} '
             f'upscale={self.upscale_factor:.1f}x order={self.detection_order} '
             f'path={self.active_backend}_raw latest_frame_worker=true '
             f'debug_image={self.debug_image_path() or "disabled"}'
@@ -389,17 +396,25 @@ class QRScannerNode(Node):
             self.active_backend != 'disabled'
             and not self.scan_completed
             and self._activated
-            and self.current_x is not None
-            and self.current_x > self.scan_start_x_m
+            and self._mission_search_enabled
         )
 
     def stage1_state_callback(self, msg):
         state = msg.data.strip()
-        if state == 'running' and not self._released:
-            self._activated = True
+        if state == 'search_qr' and not self._released:
+            self._mission_search_enabled = True
             self.scan_completed = False
             self.scan_activation_logged = False
-        elif state in ('complete', 'failed'):
+            self.scan_armed = self.should_scan()
+        elif state == 'running' and not self._released:
+            # Supervisor grants the service activation separately.  Running
+            # only announces motion ownership; SEARCH_QR is the actual QR
+            # capture gate.
+            self._mission_search_enabled = False
+            self.scan_armed = False
+        elif state in ('qr_locked', 'return_to_entry', 'handoff_wait',
+                       'handoff_ready', 'complete', 'failed'):
+            self._mission_search_enabled = False
             self._activated = False
             self.scan_armed = False
             self.clear_latest_frame()
@@ -413,6 +428,7 @@ class QRScannerNode(Node):
             response.message = 'QR scanner already released'
             return response
         self._activated = True
+        self.scan_armed = self.should_scan()
         response.success = True
         response.message = 'QR scanner activated'
         return response

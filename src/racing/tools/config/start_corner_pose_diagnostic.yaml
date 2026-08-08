@@ -1,12 +1,17 @@
-start_corner_pose_diagnostic:
+# The production launch names the node ``start_corner_pose_localizer`` while
+# standalone diagnostics may keep ``start_corner_pose_diagnostic``.  Apply the
+# same localization contract to either entry point.
+/**:
   ros__parameters:
-    # 只读启动标定：后方已知墙角为 map (0,0)，两面墙分别沿 +X 和 +Y。
+    # 启动定位：后方已知墙角为 map (0,0)，两面墙分别沿 +X 和 +Y；
+    # 有效结果会锁存并持续发布 map->odom_combined。
     scan_topic: /scan
     imu_topic: /imu/data
     odom_topic: /odom_combined
-    qr_task_topic: competition_qr_task
     diagnostic_topic: start_corner_pose_diagnostic
+    map_frame: map
     base_frame: base_footprint
+    odom_frame: odom_combined
     corner_map_x: 0.0
     corner_map_y: 0.0
     yaw_min_deg: 0.0
@@ -22,10 +27,28 @@ start_corner_pose_diagnostic:
     line_fit_rms_max_m: 0.03
     line_min_span_m: 0.35
     line_min_points: 12
-    orthogonal_tolerance_deg: 5.0
+    # 起点墙角在车体后方约 0.57m、接近车体中线；用于拒绝场内短直角误匹配。
+    corner_min_distance_m: 0.35
+    corner_max_distance_m: 1.20
+    corner_lateral_abs_max_m: 0.25
+    # 现场雷达墙线受端点遮挡和栅格采样影响，实测正交墙线角差约 84~86°；
+    # 仍保持较窄门限以拒绝场内误匹配，同时覆盖真实墙角拟合残差。
+    orthogonal_tolerance_deg: 8.0
     stable_frame_count: 5
     stable_xy_spread_m: 0.03
     stable_yaw_spread_deg: 2.0
     stationary_speed_mps: 0.02
     imu_stable_samples: 8
-    imu_stable_yaw_deg: 1.0
+    # 允许固定零偏，只要求连续样本的角速度波动小。
+    imu_stable_gyro_rad_s: 0.08
+    # 在线航向校正：匹配当前扫描中的正交墙线与地图的水平/竖直轴。
+    # 这只修正 yaw，不会在缺少足够墙线时强行改写定位。
+    live_heading_topic: map_heading_lidar
+    live_heading_enabled: true
+    live_heading_period_sec: 0.20
+    live_heading_max_correction_deg: 35.0
+    live_heading_step_deg: 6.0
+    live_heading_orthogonal_tolerance_deg: 10.0
+    live_heading_min_span_m: 0.45
+    live_heading_min_points: 14
+    live_heading_max_line_rms_m: 0.035

@@ -16,6 +16,9 @@ def generate_launch_description():
             parameters=[{
                 'host': LaunchConfiguration('host'),
                 'port': LaunchConfiguration('port'),
+                'map_heading_topic': 'map_heading',
+                'heading_motion_linear_threshold_mps': 0.015,
+                'heading_motion_angular_threshold_rad_s': 0.03,
             }],
         ),
     ])

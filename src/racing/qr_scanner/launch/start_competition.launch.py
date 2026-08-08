@@ -59,7 +59,6 @@ def generate_launch_description():
             # session, which truncates latest.log when it starts.
             {'diagnostics_log_subdir': 'competition_stage1'},
             {'diagnostics_log_filename': 'qr_scanner.log'},
-            {'scan_start_x_m': 1.0},
             {'crop_top_ratio': 0.25},
             {'crop_top_px': 80},
             {'upscale_factor': 1.0},

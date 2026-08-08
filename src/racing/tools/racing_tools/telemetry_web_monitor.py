@@ -24,14 +24,14 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import Imu, LaserScan
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Float64, Int32, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -48,6 +48,8 @@ class _MonitorState:
         self.phase = 0
         self.qr_task = ''
         self.target = None
+        self.route = []
+        self.mission_route = []
         self.history = deque(maxlen=1600)
         self.events = deque(maxlen=40)
         self.last_update = 0.0
@@ -169,10 +171,15 @@ class TelemetryWebMonitor(Node):
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('odom_topic', '/odom_combined')
         self.declare_parameter('imu_topic', '/imu/data')
+        self.declare_parameter('map_heading_topic', 'map_heading')
+        self.declare_parameter('route_topic', 'stage1_route')
+        self.declare_parameter('mission_route_topic', 'stage1_mission_route')
+        self.declare_parameter('heading_motion_linear_threshold_mps', 0.015)
+        self.declare_parameter('heading_motion_angular_threshold_rad_s', 0.03)
         self.declare_parameter('cmd_topic', '/cmd_vel')
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'base_footprint')
-        self.declare_parameter('initial_map_heading_deg', 20.0)
+        self.declare_parameter('start_corner_diagnostic_topic', 'start_corner_pose_diagnostic')
         self.declare_parameter('stage1_log_path', '/home/sunrise/dev_ws/log/competition_stage1/latest.log')
         self.declare_parameter('snapshot_dir', '/home/sunrise/dev_ws/log/telemetry_web_monitor')
         self.declare_parameter('snapshot_period_sec', 0.50)
@@ -180,7 +187,18 @@ class TelemetryWebMonitor(Node):
         self.state = _MonitorState()
         self.map_frame = str(self.get_parameter('map_frame').value)
         self.base_frame = str(self.get_parameter('base_frame').value)
-        self.initial_heading = math.radians(float(self.get_parameter('initial_map_heading_deg').value))
+        self.start_corner_diagnostic_topic = str(
+            self.get_parameter('start_corner_diagnostic_topic').value
+        )
+        self.map_heading_topic = str(self.get_parameter('map_heading_topic').value)
+        self.route_topic = str(self.get_parameter('route_topic').value)
+        self.mission_route_topic = str(self.get_parameter('mission_route_topic').value)
+        self.heading_motion_linear_threshold = max(
+            0.0, float(self.get_parameter('heading_motion_linear_threshold_mps').value)
+        )
+        self.heading_motion_angular_threshold = max(
+            0.0, float(self.get_parameter('heading_motion_angular_threshold_rad_s').value)
+        )
         self._map_grid = None
         package_dir = get_package_share_directory('racing_tools')
         bringup_dir = get_package_share_directory('origincar_bringup')
@@ -199,7 +217,11 @@ class TelemetryWebMonitor(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.raw_imu_yaw = None
-        self.initial_raw_yaw = None
+        self.start_map_yaw = None
+        self._map_heading_received_at = None
+        self._fallback_heading_anchor = None
+        self._fallback_raw_anchor = None
+        self._fallback_motion_active = False
         self.last_imu_at = None
         self.last_scan_at = None
         self.last_odom_at = None
@@ -210,12 +232,18 @@ class TelemetryWebMonitor(Node):
         self.create_subscription(LaserScan, str(self.get_parameter('scan_topic').value), self._scan_cb, 10)
         self.create_subscription(Odometry, str(self.get_parameter('odom_topic').value), self._odom_cb, 10)
         self.create_subscription(Imu, str(self.get_parameter('imu_topic').value), self._imu_cb, 10)
+        self.create_subscription(Float64, self.map_heading_topic, self._map_heading_cb, 10)
+        self.create_subscription(Path, self.route_topic, self._route_cb, latched)
+        self.create_subscription(Path, self.mission_route_topic, self._mission_route_cb, latched)
         self.create_subscription(Twist, str(self.get_parameter('cmd_topic').value), self._cmd_cb, 10)
         self.create_subscription(String, 'stage1_state', lambda m: self._stage_cb('stage1', m), latched)
         self.create_subscription(String, 'stage2_state', lambda m: self._stage_cb('stage2', m), latched)
         self.create_subscription(String, 'stage3_state', lambda m: self._stage_cb('stage3', m), latched)
         self.create_subscription(Int32, 'competition_phase', self._phase_cb, latched)
         self.create_subscription(String, 'competition_qr_task', self._qr_cb, latched)
+        self.create_subscription(
+            String, self.start_corner_diagnostic_topic, self._start_pose_cb, latched
+        )
         self.create_timer(0.10, self._publish_state)
 
         requested_host = str(self.get_parameter('host').value)
@@ -315,12 +343,86 @@ class TelemetryWebMonitor(Node):
 
     def _imu_cb(self, msg):
         raw = self._yaw(msg.orientation)
-        if self.initial_raw_yaw is None:
-            self.initial_raw_yaw = raw
         self.raw_imu_yaw = raw
-        self.last_imu_at = self._now()
+        now = self._now()
+        self.last_imu_at = now
         with self.state.lock:
-            self.state.imu_yaw = self._norm(self.initial_heading + self._norm(raw - self.initial_raw_yaw))
+            # While S1 is alive, use the controller's single corrected
+            # heading source.  The fallback is only for the later stages,
+            # after S1 has released and stopped publishing map_heading.
+            if (self._map_heading_received_at is not None and
+                    now - self._map_heading_received_at <= 0.50):
+                return
+            if self._fallback_heading_anchor is None:
+                self._fallback_heading_anchor = (
+                    self.state.imu_yaw if self.state.imu_yaw is not None
+                    else self.start_map_yaw
+                )
+            if self._fallback_heading_anchor is None:
+                self.state.imu_yaw = None
+                return
+            moving = (
+                abs(float(self.state.cmd.get('linear_x', 0.0))) >= self.heading_motion_linear_threshold
+                or abs(float(self.state.cmd.get('angular_z', 0.0))) >= self.heading_motion_angular_threshold
+            )
+            if moving and not self._fallback_motion_active:
+                if self.state.imu_yaw is not None:
+                    self._fallback_heading_anchor = self.state.imu_yaw
+                self._fallback_raw_anchor = raw
+                self._fallback_motion_active = True
+            elif not moving:
+                if self._fallback_motion_active and self.state.imu_yaw is not None:
+                    self._fallback_heading_anchor = self.state.imu_yaw
+                self._fallback_raw_anchor = raw
+                self._fallback_motion_active = False
+            if self._fallback_motion_active and self._fallback_raw_anchor is not None:
+                self.state.imu_yaw = self._norm(
+                    self._fallback_heading_anchor + self._norm(raw - self._fallback_raw_anchor)
+                )
+            else:
+                self.state.imu_yaw = self._fallback_heading_anchor
+
+    def _map_heading_cb(self, msg):
+        try:
+            heading = self._norm(float(msg.data))
+        except (TypeError, ValueError):
+            return
+        now = self._now()
+        with self.state.lock:
+            self.state.imu_yaw = heading
+            self._map_heading_received_at = now
+            self._fallback_heading_anchor = heading
+            self._fallback_raw_anchor = self.raw_imu_yaw
+            self._fallback_motion_active = False
+
+    @staticmethod
+    def _path_points(msg):
+        return [
+            {'x': float(pose.pose.position.x), 'y': float(pose.pose.position.y)}
+            for pose in msg.poses
+        ]
+
+    def _route_cb(self, msg):
+        with self.state.lock:
+            self.state.route = self._path_points(msg)
+
+    def _mission_route_cb(self, msg):
+        with self.state.lock:
+            self.state.mission_route = self._path_points(msg)
+
+    def _start_pose_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            if str(payload.get('state', '')) != 'valid':
+                return
+            self.start_map_yaw = math.radians(float(payload['map_yaw_deg']))
+            with self.state.lock:
+                self.state.imu_yaw = self.start_map_yaw
+                self._fallback_heading_anchor = self.start_map_yaw
+                self._fallback_raw_anchor = self.raw_imu_yaw
+                self._fallback_motion_active = False
+        except (TypeError, json.JSONDecodeError, KeyError, ValueError):
+            return
 
     def _scan_cb(self, msg):
         self.last_scan_at = self._now()
@@ -529,6 +631,8 @@ class TelemetryWebMonitor(Node):
                 'phase': self.state.phase, 'stage_states': dict(self.state.stage_states),
                 'qr_task': self.state.qr_task,
                 'cmd': dict(self.state.cmd), 'target': self.state.target,
+                'route': list(self.state.route),
+                'mission_route': list(self.state.mission_route),
                 'history': list(self.state.history), 'events': list(self.state.events),
                 'health': {
                     'tf': pose is not None,
@@ -558,6 +662,16 @@ class TelemetryWebMonitor(Node):
             if image is None:
                 image = np.full((meta['height'], meta['width'], 3), 245, dtype=np.uint8)
             height, width = image.shape[:2]
+            mission_route = snapshot.get('mission_route', [])
+            if len(mission_route) >= 2:
+                points = [self._map_pixel(meta, p['x'], p['y'], width, height) for p in mission_route]
+                for first, second in zip(points, points[1:]):
+                    cv2.line(image, first, second, (180, 80, 220), 2, cv2.LINE_AA)
+            route = snapshot.get('route', [])
+            if len(route) >= 2:
+                points = [self._map_pixel(meta, p['x'], p['y'], width, height) for p in route]
+                for first, second in zip(points, points[1:]):
+                    cv2.line(image, first, second, (0, 165, 255), 3, cv2.LINE_AA)
             for point in snapshot.get('scan', []):
                 x, y = self._map_pixel(meta, point['x'], point['y'], width, height)
                 if 0 <= x < width and 0 <= y < height:

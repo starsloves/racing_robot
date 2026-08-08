@@ -18,13 +18,13 @@ ros2 launch racing_bringup competition_total.launch.py
 - 雷达驱动，发布 `/scan`；
 - Aurora RGB/Depth 相机，发布 `/aurora/rgb/image_raw` 和深度图；
 - 机器人和传感器 TF；
-- map server、lifecycle manager、`map -> odom_combined` TF；
+- map server、lifecycle manager、启动雷达定位节点发布的 `map -> odom_combined` TF；
 - 语音节点；
 - `competition_supervisor`。
 
 生产环境没有 BNO055。`/imu/data` 的来源固定为底盘 IMU 经 Madgwick 过滤后的链路。
 
-Supervisor 只有在下列条件连续稳定后才开始 S1：`/cmd_vel` 有底盘订阅者、IMU、EKF 里程计、雷达、相机和 `/map` 都持续有新消息，且 `map -> base_footprint` 可以查询。发现上一轮残留的阶段节点会拒绝本轮会话。
+Supervisor 只有在下列条件连续稳定后才开始 S1：`/cmd_vel` 有底盘订阅者、IMU、EKF 里程计、雷达、相机和 `/map` 都持续有新消息，且启动雷达定位已经锁定并发布 `map -> base_footprint`。发现上一轮残留的阶段节点会拒绝本轮会话。
 
 Supervisor 也是 `competition_phase` 的唯一 transient-local 发布者：待命/结束为 `0`，取得运动权的 S1/S2/S3 分别为 `1/2/3`。阶段专属 AI 只能以该话题判断是否允许执行任务，不能从其他阶段状态推断运动权。
 
@@ -66,11 +66,11 @@ session_id, base_state, active_stage, prewarming_stage, lifecycle_state, reason
 
 ### S1
 
-S1 启动 `competition_controller`、`qr_scanner` 与只读的 `start_corner_pose_diagnostic`。相机属于公共基础层；S1 不加载视觉 AI，也不加载 BNO055。
+公共基础层启动 `start_corner_pose_diagnostic` 作为启动定位器；S1 启动 `competition_controller` 与 `qr_scanner`。相机属于公共基础层；S1 不加载视觉 AI，也不加载 BNO055。
 
-`start_corner_pose_diagnostic` 仅在 S1 standby/前段运行：车辆静止时从后方 `(0,0)` 墙角的两条正交雷达墙线推算 Map 起点、Map 航向、建议的 `map -> odom_combined` 静态变换和 IMU 航向偏移。它只向 `start_corner_pose_diagnostic` 发布诊断 JSON，绝不发布 TF 或运动命令，也不修改 YAML。S1 在诊断有效或 `3s` 等待超时后才发布 `ready`，保证采样发生在取得运动权前；二维码锁存为 `competition_qr_task` 后，该节点自行退出。结果由 S1 日志记录，待人工确认后才可写入启动参数。
+`start_corner_pose_diagnostic` 在车辆静止时从后方 `(0,0)` 墙角的两条正交雷达墙线推算 Map 起点和 Map 航向。通过稳定门限后锁存起点，持续发布由雷达结果计算出的 `map -> odom_combined`，并以 transient-local JSON 发布 `map_x/map_y/map_yaw_deg` 与里程计锚点。运动期间它继续用扫描中的正交地图墙线做可拒绝的绝对航向校正，发布 `map_heading_lidar` 并更新同一条地图 TF；没有足够墙线时保持上一有效结果，不强行跳变。它不发布运动命令，也不再依赖旧的 `map_to_odom_*` 或 `initial_map_heading_deg` 参数。S1 只有在收到有效雷达起点并完成 IMU 陀螺角速度时间积分锚定后才发布 `ready`；二维码锁存后定位器继续运行，保证 S2/S3 交接期间地图 TF 不丢失。
 
-控制器初始为 `standby/ready`，只有 `/competition/stage1/activate` 后才会发布 `/cmd_vel`。S1 的生产运动链采用三层约束：`map_restricted` footprint 膨胀后的航向感知全局搜索（允许前进/倒车，带最小转弯半径、倒车和换挡惩罚）、基于 `/scan` 临时障碍的短时域 MPPI 风格轨迹采样，以及独立 TTC/footprint 硬安全层。地图外、未知格和黑色区域都是硬障碍；扫描障碍不写回永久地图；没有安全轨迹时才安全保持零速。定位质量门控要求 IMU、`/odom_combined`、`/scan`、`/map` 和 `map -> base_footprint` 可用，航向只取 IMU，绝不使用里程计 orientation，也不再自动拟合墙体修改 `map -> odom_combined`。
+控制器初始为 `standby/ready`，只有 `/competition/stage1/activate` 后才会发布 `/cmd_vel`。S1 的生产运动链采用三层约束：`map_restricted` footprint 膨胀后的航向感知全局搜索（允许前进/倒车，带最小转弯半径、倒车和换挡惩罚）、基于 `/scan` 临时障碍的短时域 MPPI 风格轨迹采样，以及独立 TTC/footprint 硬安全层。地图外、未知格和黑色区域都是硬障碍；扫描障碍不写回永久地图；没有安全轨迹时才安全保持零速。S1 起点直接采用雷达锁定的 Map 位姿，后续位置只叠加 `/odom_combined` XY 增量，短时航向由带消息时间戳的 `/imu/data.angular_velocity.z` 积分，绝对方向由 `map_heading_lidar` 的雷达墙线校正；绝不使用 Madgwick 的 orientation yaw，也绝不使用里程计 orientation。
 
 扫码完成时立即清空当前全局路径并发布 `competition_qr_task`；S1 先从实时位姿规划到二维码目标，二维码到位后再次从实时位姿规划到通道入口 `(2.50,2.50)`，对齐名义 `90°` 后发布 `stage1_state=handoff_ready` 和 `stage2_entry_pose`，进入 `handoff_wait` 并保持最后的有效非零命令。生产路径不再使用盲开中线、固定 `back_target_x` 倒车或墙体 map-X 自动校正。
 
