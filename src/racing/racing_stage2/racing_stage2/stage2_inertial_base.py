@@ -165,6 +165,10 @@ class Stage2InertialBase(Node):
         self.direction = None
         self.current_yaw = None
         self.current_raw_imu_yaw = None
+        self._gyro_relative_yaw = 0.0
+        self._gyro_anchor_relative_yaw = 0.0
+        self._last_imu_stamp = None
+        self._heading_anchor_yaw = None
         self.imu_map_yaw_offset_rad = None
         self.current_position = None
         self.latest_map = None
@@ -849,6 +853,14 @@ class Stage2InertialBase(Node):
         self.try_start_mission()
 
     def imu_callback(self, msg):
+        stamp = float(msg.header.stamp.sec) + 1e-9 * float(msg.header.stamp.nanosec)
+        if self._last_imu_stamp is None:
+            self._last_imu_stamp = stamp
+        else:
+            dt = stamp - self._last_imu_stamp
+            if 1e-4 <= dt <= 0.25:
+                self._gyro_relative_yaw += float(msg.angular_velocity.z) * dt
+            self._last_imu_stamp = stamp
         self.current_raw_imu_yaw = self.quaternion_to_yaw(msg.orientation)
         if (
             self.imu_map_yaw_offset_rad is None
@@ -861,23 +873,41 @@ class Stage2InertialBase(Node):
                 '[IMU] Stage1 map yaw calibration unavailable; using standalone fallback: '
                 f'offset={math.degrees(self.imu_map_yaw_offset_rad):+.1f}deg'
             )
-        if self.imu_map_yaw_offset_rad is not None:
-            self.current_yaw = self.normalize_angle(
+        if self._heading_anchor_yaw is None and self.imu_map_yaw_offset_rad is not None:
+            self._heading_anchor_yaw = self.normalize_angle(
                 self.current_raw_imu_yaw + self.imu_map_yaw_offset_rad
+            )
+            self._gyro_anchor_relative_yaw = self._gyro_relative_yaw
+        if self._heading_anchor_yaw is not None:
+            self.current_yaw = self.normalize_angle(
+                self._heading_anchor_yaw +
+                (self._gyro_relative_yaw - self._gyro_anchor_relative_yaw)
             )
         self.try_start_mission()
 
     def imu_map_yaw_offset_callback(self, msg):
         self.imu_map_yaw_offset_rad = self.normalize_angle(float(msg.data))
-        if self.current_raw_imu_yaw is not None:
-            self.current_yaw = self.normalize_angle(
+        if self.current_raw_imu_yaw is not None and self._heading_anchor_yaw is None:
+            self._heading_anchor_yaw = self.normalize_angle(
                 self.current_raw_imu_yaw + self.imu_map_yaw_offset_rad
+            )
+            self._gyro_anchor_relative_yaw = self._gyro_relative_yaw
+        if self._heading_anchor_yaw is not None:
+            self.current_yaw = self.normalize_angle(
+                self._heading_anchor_yaw +
+                (self._gyro_relative_yaw - self._gyro_anchor_relative_yaw)
             )
         self.get_logger().info(
             '[IMU] map yaw calibration received: '
             f'offset={math.degrees(self.imu_map_yaw_offset_rad):+.1f}deg'
         )
         self.try_start_mission()
+
+    def set_imu_map_heading_anchor(self, yaw):
+        """Anchor the rate-integrated heading to a trusted map pose."""
+        self._heading_anchor_yaw = self.normalize_angle(float(yaw))
+        self._gyro_anchor_relative_yaw = self._gyro_relative_yaw
+        self.current_yaw = self._heading_anchor_yaw
 
     def odom_callback(self, msg):
         position = msg.pose.pose.position

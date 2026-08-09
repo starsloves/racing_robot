@@ -1306,6 +1306,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             'frame_id': msg.header.frame_id or self.global_frame_id,
         }
         self._stage2_entry_raw_map_xy = self._lookup_raw_map_xy_from_tf()
+        self.set_imu_map_heading_anchor(yaw)
         self._log_session(
             'STAGE2_ENTRY_POSE_RX',
             f'map=({self._stage2_entry_pose["x"]:.3f},'

@@ -1,3 +1,5 @@
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler
 from launch.event_handlers import OnProcessStart
@@ -8,6 +10,7 @@ from racing_common.launch_status import startup_status
 
 def generate_launch_description():
     akmcar = LaunchConfiguration('akmcar', default='false')
+    base_config = Path(get_package_share_directory('origincar_base'), 'config', 'base.yaml')
 
     robot_parameters = [
         {'usart_port_name': '/dev/ttyACM0',
@@ -24,7 +27,7 @@ def generate_launch_description():
         condition=UnlessCondition(akmcar),
         package='origincar_base',
         executable='origincar_base_node',
-        parameters=robot_parameters + [{'akm_cmd_vel': 'none'}],
+        parameters=[base_config] + robot_parameters + [{'akm_cmd_vel': 'none'}],
     )
 
     return LaunchDescription([
@@ -38,7 +41,7 @@ def generate_launch_description():
             condition=IfCondition(akmcar),
             package='origincar_base',
             executable='origincar_base_node',
-            parameters=robot_parameters + [{'akm_cmd_vel': 'ackermann_cmd'}],
+            parameters=[base_config] + robot_parameters + [{'akm_cmd_vel': 'ackermann_cmd'}],
             remappings=[('/cmd_vel', 'cmd_vel')],
         ),
 

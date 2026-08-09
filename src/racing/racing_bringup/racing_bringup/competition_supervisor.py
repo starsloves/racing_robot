@@ -18,6 +18,8 @@ from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 from racing_common.racing_logger import terminal_write
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Imu, LaserScan
@@ -30,6 +32,14 @@ _LIBC = ctypes.CDLL(None)
 
 
 class CompetitionSupervisor(Node):
+    COMMON_UNIQUE_NODES = (
+        'origincar_base', 'imu_filter_madgwick', 'ekf_filter_node',
+        'lslidar_driver_node', 'aurora930_node', 'map_server',
+        'lifecycle_manager_map_overlay', 'start_corner_pose_localizer',
+        'telemetry_web_monitor', 'competition_supervisor', 'base_to_link',
+        'base_to_gyro', 'link_to_laser', 'robot_state_publisher',
+        'joint_state_publisher', 'voice_broadcast_node',
+    )
     STAGE_NODES = {
         'stage1': ('competition_controller', 'qr_scanner'),
         'stage2': ('stage2_inertial_navigator',),
@@ -39,7 +49,9 @@ class CompetitionSupervisor(Node):
     def __init__(self):
         super().__init__('competition_supervisor')
         self.declare_parameter('base_ready_stable_sec', 1.5)
-        self.declare_parameter('base_message_max_age_sec', 1.5)
+        self.declare_parameter('base_message_max_age_sec', 2.0)
+        self.declare_parameter('base_localizer_topic', 'start_corner_pose_diagnostic')
+        self.declare_parameter('base_loss_grace_sec', 3.0)
         self.declare_parameter('stage_start_timeout_sec', 20.0)
         self.declare_parameter('handoff_timeout_sec', 12.0)
         self.declare_parameter('shutdown_grace_sec', 3.0)
@@ -59,15 +71,35 @@ class CompetitionSupervisor(Node):
         self.create_subscription(String, 'stage2_state', self._stage2_cb, latched)
         self.create_subscription(String, 'stage3_state', self._stage3_cb, latched)
         self.create_subscription(String, 'stage3_prewarm', self._stage3_prewarm_cb, latched)
-        # Sensor streams use the ROS sensor-data QoS.  In particular, do not
-        # deserialize the high-bandwidth raw RGB Image in this single-threaded
-        # lifecycle supervisor: camera_info is the driver's lightweight frame
-        # heartbeat and is emitted alongside every RGB frame.
-        self.create_subscription(Imu, '/imu/data', lambda _: self._mark('imu'), qos_profile_sensor_data)
-        self.create_subscription(Odometry, '/odom_combined', lambda _: self._mark('odom'), qos_profile_sensor_data)
-        self.create_subscription(LaserScan, '/scan', lambda _: self._mark('scan'), qos_profile_sensor_data)
-        self.create_subscription(CameraInfo, '/aurora/rgb/camera_info', lambda _: self._mark('camera'), qos_profile_sensor_data)
-        self.create_subscription(OccupancyGrid, '/map', lambda _: self._mark('map'), latched)
+        # Sensor callbacks must not wait behind process discovery, TF checks,
+        # or a child launch.  The old single-threaded executor made a short
+        # supervisor callback gap look like a dead IMU and killed startup.
+        self._sensor_group = ReentrantCallbackGroup()
+        self._base_localizer_topic = str(self.get_parameter('base_localizer_topic').value)
+        self.create_subscription(
+            Imu, '/imu/data', lambda _: self._mark('imu'), qos_profile_sensor_data,
+            callback_group=self._sensor_group,
+        )
+        self.create_subscription(
+            Odometry, '/odom_combined', lambda _: self._mark('odom'), qos_profile_sensor_data,
+            callback_group=self._sensor_group,
+        )
+        self.create_subscription(
+            LaserScan, '/scan', lambda _: self._mark('scan'), qos_profile_sensor_data,
+            callback_group=self._sensor_group,
+        )
+        self.create_subscription(
+            CameraInfo, '/aurora/rgb/camera_info', lambda _: self._mark('camera'),
+            qos_profile_sensor_data, callback_group=self._sensor_group,
+        )
+        self.create_subscription(
+            OccupancyGrid, '/map', lambda _: self._mark('map'), latched,
+            callback_group=self._sensor_group,
+        )
+        self.create_subscription(
+            String, self._base_localizer_topic, self._localizer_cb, latched,
+            callback_group=self._sensor_group,
+        )
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
@@ -78,6 +110,8 @@ class CompetitionSupervisor(Node):
         self.lifecycle_state = 'base_starting'
         self.reason = 'waiting for common base layer'
         self._seen = {name: None for name in ('imu', 'odom', 'scan', 'camera', 'map')}
+        self._localizer_valid = False
+        self._localizer_seen = None
         self._map_ready_reported = False
         self._base_ready_since = None
         self._processes = {'stage1': None, 'stage2': None, 'stage3': None, 'vision_ai': None}
@@ -96,6 +130,7 @@ class CompetitionSupervisor(Node):
         self._async_cleanup_threads = set()
         self._last_monitor_finished = time.monotonic()
         self._last_wait_log = 0.0
+        self._base_loss_since = None
         self._competition_phase = None
         # Top-level launch can shut down the ROS context before executor spin
         # unwinds.  Register cleanup at the context boundary so independently
@@ -115,6 +150,16 @@ class CompetitionSupervisor(Node):
             self._map_ready_reported = True
             terminal_write('[STARTUP] 地图 lifecycle active; /map received')
             self.get_logger().info('map lifecycle active; /map received')
+
+    def _localizer_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except (TypeError, ValueError):
+            return
+        if str(payload.get('state', '')).strip().lower() != 'valid':
+            return
+        self._localizer_valid = True
+        self._localizer_seen = time.monotonic()
 
     def _publish_state(self):
         payload = {
@@ -167,6 +212,7 @@ class CompetitionSupervisor(Node):
                 transforms[label] = False
         return {
             'stale_messages': stale_messages,
+            'localizer_valid': self._localizer_valid,
             'cmd_subscribers': cmd_subscribers,
             'transforms': transforms,
         }
@@ -176,6 +222,7 @@ class CompetitionSupervisor(Node):
         health = self._base_health()
         ready = (
             not health['stale_messages']
+            and health['localizer_valid']
             and health['cmd_subscribers'] > 0
             and health['transforms']['map_to_base_footprint']
         )
@@ -191,6 +238,8 @@ class CompetitionSupervisor(Node):
         missing = list(health['stale_messages'])
         if health['cmd_subscribers'] == 0:
             missing.append('cmd_vel subscriber')
+        if not health['localizer_valid']:
+            missing.append('START_CORNER_LOCALIZER valid')
         for label, available in health['transforms'].items():
             if not available:
                 missing.append(f'TF {label}')
@@ -212,6 +261,8 @@ class CompetitionSupervisor(Node):
                 details.append('ages=' + ages)
         if health['cmd_subscribers'] == 0:
             details.append('cmd_vel_subscribers=0')
+        if not health['localizer_valid']:
+            details.append('start_corner_localizer_invalid')
         missing_tfs = [
             label for label, available in health['transforms'].items()
             if not available
@@ -223,6 +274,14 @@ class CompetitionSupervisor(Node):
     def _residual_stage_nodes(self):
         names = {name for name, _namespace in self.get_node_names_and_namespaces()}
         return sorted(name for nodes in self.STAGE_NODES.values() for name in nodes if name in names)
+
+    def _duplicate_common_nodes(self):
+        counts = {}
+        for name, _namespace in self.get_node_names_and_namespaces():
+            counts[name] = counts.get(name, 0) + 1
+        return sorted(
+            name for name in self.COMMON_UNIQUE_NODES if counts.get(name, 0) > 1
+        )
 
     @staticmethod
     def _command(package, launch_file, arguments):
@@ -451,10 +510,12 @@ class CompetitionSupervisor(Node):
             try:
                 response = result.result()
             except Exception as exc:
-                self._fail(f'S1 QR activate service failed: {exc}')
+                self._activation_requested.discard(marker)
+                self._task(f'S1 QR activate retry after service error: {exc}')
                 return
             if not response.success:
-                self._fail(f'S1 QR activate rejected: {response.message}')
+                self._activation_requested.discard(marker)
+                self._task(f'S1 QR activate retry: {response.message}')
                 return
             self._task(f'S1 QR activate: {response.message}')
         future.add_done_callback(done)
@@ -582,6 +643,10 @@ class CompetitionSupervisor(Node):
         if ('stage1', 'release') in self._release_requested and ('stage1_qr', 'release') not in self._release_requested:
             self._call_stage_qr_release()
         if self.lifecycle_state == 'base_starting':
+            duplicates = self._duplicate_common_nodes()
+            if duplicates:
+                self._fail('duplicate common nodes from previous launch: ' + ', '.join(duplicates))
+                return
             if self._base_ready():
                 residual = self._residual_stage_nodes()
                 if residual:
@@ -612,7 +677,7 @@ class CompetitionSupervisor(Node):
         if self.active_stage == 'stage1':
             if self._stage_states['stage1'] == 'ready':
                 self._activate('stage1')
-            elif self._stage_states['stage1'] == 'running':
+            elif self._stage_states['stage1'] in ('running', 'search_qr'):
                 self._call_stage_qr_activate()
         if self.active_stage == 'stage2' and self.lifecycle_state == 'stage2_handoff_wait':
             if self._stage_states['stage3'] == 'ready':
@@ -621,9 +686,21 @@ class CompetitionSupervisor(Node):
             if self._stage_states['stage2'] == 'ready':
                 self._activate('stage2')
 
-        if self.lifecycle_state not in ('finished', 'failed') and not self._base_ready():
-            self._fail('common base prerequisite lost: ' + self._base_loss_reason())
-            return
+        if self.lifecycle_state not in ('finished', 'failed'):
+            if self._base_ready():
+                self._base_loss_since = None
+            else:
+                # Before S1 owns motion, tolerate one short sensor/TF gap.
+                # A transient executor or serial hiccup must not tear down a
+                # fresh launch; once motion is active, fail closed immediately.
+                if self.lifecycle_state == 'stage1_starting':
+                    if self._base_loss_since is None:
+                        self._base_loss_since = time.monotonic()
+                    grace = float(self.get_parameter('base_loss_grace_sec').value)
+                    if time.monotonic() - self._base_loss_since < grace:
+                        return
+                self._fail('common base prerequisite lost: ' + self._base_loss_reason())
+                return
 
         if self._handoff_deadline is not None and time.monotonic() > self._handoff_deadline:
             self._fail(f'{self.lifecycle_state} timed out before new stage command')
@@ -748,11 +825,14 @@ class CompetitionSupervisor(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = CompetitionSupervisor()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

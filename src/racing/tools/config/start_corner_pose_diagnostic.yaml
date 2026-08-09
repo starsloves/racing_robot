@@ -15,7 +15,9 @@
     corner_map_x: 0.0
     corner_map_y: 0.0
     yaw_min_deg: 0.0
-    yaw_max_deg: 90.0
+    # 现场发车姿态只允许沿 map +X 方向小角度偏转。该上限同时消除
+    # 后方正交墙把 map X/Y 互换时得到的互补角（例如 70deg）歧义。
+    yaw_max_deg: 35.0
     # 墙角本身在车后，但两条墙从墙角向场地内部延伸时可落在车侧或前方。
     # 保留全扫描，由后续双墙正交、残差、长度和稳定性门限判定，不能裁掉真墙。
     rear_half_angle_deg: 180.0
@@ -31,6 +33,9 @@
     corner_min_distance_m: 0.35
     corner_max_distance_m: 1.20
     corner_lateral_abs_max_m: 0.25
+    # 两条墙的有限线段优先从拟合角点向外延伸，作为墙对排序依据；
+    # 真实雷达端点被遮挡时会回退到原有物理门控，不能阻塞启动定位。
+    corner_ray_min_gap_m: -0.05
     # 现场雷达墙线受端点遮挡和栅格采样影响，实测正交墙线角差约 84~86°；
     # 仍保持较窄门限以拒绝场内误匹配，同时覆盖真实墙角拟合残差。
     orthogonal_tolerance_deg: 8.0
@@ -38,16 +43,27 @@
     stable_xy_spread_m: 0.03
     stable_yaw_spread_deg: 2.0
     stationary_speed_mps: 0.02
+    stationary_angular_speed_rad_s: 0.04
     imu_stable_samples: 8
     # 允许固定零偏，只要求连续样本的角速度波动小。
     imu_stable_gyro_rad_s: 0.08
-    # 在线航向校正：匹配当前扫描中的正交墙线与地图的水平/竖直轴。
-    # 这只修正 yaw，不会在缺少足够墙线时强行改写定位。
+    # 墙角只用于启动时的一次绝对锚定。行进中的扫描会有遮挡、动态点和
+    # 错误墙对，禁止用它在线改写地图航向；行进航向由校准后的 IMU 陀螺积分。
     live_heading_topic: map_heading_lidar
-    live_heading_enabled: true
+    # S1 supplies the unified IMU-distance Map position after startup lock.
+    map_pose_topic: stage1_map_pose
+    # S1 stops publishing after handoff; continue the same TF from its last pose.
+    map_pose_timeout_sec: 1.0
+    live_heading_enabled: false
     live_heading_period_sec: 0.20
-    live_heading_max_correction_deg: 35.0
-    live_heading_step_deg: 6.0
+    # 以下阈值仅保留给隔离诊断实验；生产配置关闭在线墙角校正，
+    # 起点首次锁定不受这些阈值影响，任意合法实测起点角度都能直接接受。
+    live_heading_max_correction_deg: 8.0
+    live_heading_step_deg: 2.0
+    live_heading_stable_frames: 4
+    live_heading_consistency_deg: 3.0
+    live_heading_stationary_speed_mps: 0.02
+    live_heading_stationary_angular_speed_rad_s: 0.04
     live_heading_orthogonal_tolerance_deg: 10.0
     live_heading_min_span_m: 0.45
     live_heading_min_points: 14

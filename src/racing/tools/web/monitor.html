@@ -60,7 +60,7 @@
     <hr>
     <h2>规划器最近事件</h2>
     <div id="events">等待 Stage1 日志…</div>
-    <div class="hint">橙色实线为当前安全规划路线，紫色虚线为任务目标线，蓝线为历史轨迹，红点为实时激光点，紫色十字为当前目标。页面只读，不会向小车发送速度指令。</div>
+    <div class="hint">橙色实线是当前锁定的安全规划路线，紫色圆点是任务目标/二维码搜索区域，蓝线是去抖后的历史轨迹，红点是实时激光点，紫色十字是当前目标。页面只读，不会向小车发送速度指令。</div>
     <a href="/snapshot.png" target="_blank">打开当前调试图</a>
     <img id="debugImage" alt="实时调试快照">
 </section>
@@ -68,21 +68,28 @@
 <script>
 const canvas = document.getElementById('map'), ctx = canvas.getContext('2d');
 const image = new Image(); image.src = '/map.png';
-let meta = null, history = [], lastImageRefresh = 0;
+let meta = null, history = [], lastHistoryPose = null, lastImageRefresh = 0;
 function el(id){ return document.getElementById(id); }
 function px(x,y){ return [(x-meta.origin_x)/meta.resolution, canvas.height-(y-meta.origin_y)/meta.resolution]; }
 function draw(s){
   if (!s.map || !s.pose) return;
   meta=s.map; canvas.width=meta.width; canvas.height=meta.height;
   ctx.clearRect(0,0,canvas.width,canvas.height); if(image.complete) ctx.drawImage(image,0,0,canvas.width,canvas.height);
-  const p=s.pose; history.push([p.x,p.y]); if(history.length>800) history.shift();
+  const p=s.pose;
+  if(!lastHistoryPose || Math.hypot(p.x-lastHistoryPose[0],p.y-lastHistoryPose[1])>=0.06){
+    history.push([p.x,p.y]); lastHistoryPose=[p.x,p.y]; if(history.length>800) history.shift();
+  }
   function line(points,color,width,dash){
     if(!points || points.length<2) return;
     ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=width; ctx.setLineDash(dash||[]); ctx.beginPath();
     points.forEach((q,i)=>{const [x,y]=px(q.x,q.y); if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);}); ctx.stroke(); ctx.restore();
   }
-  line(s.mission_route,'#c084fc',2,[8,6]);
   line(s.route,'#f59e0b',3,[]);
+  if(s.mission_route){
+    ctx.save(); ctx.fillStyle='#c084fc'; ctx.font='12px system-ui';
+    s.mission_route.forEach((q,i)=>{const [mx,my]=px(q.x,q.y); ctx.beginPath(); ctx.arc(mx,my,5,0,Math.PI*2); ctx.fill(); ctx.fillText(String(i+1),mx+7,my-7);});
+    ctx.restore();
+  }
   if(s.target){
     const [tx,ty]=px(s.target.x,s.target.y); ctx.save(); ctx.strokeStyle='#e879f9'; ctx.lineWidth=3;
     ctx.beginPath(); ctx.moveTo(tx-9,ty-9); ctx.lineTo(tx+9,ty+9); ctx.moveTo(tx+9,ty-9); ctx.lineTo(tx-9,ty+9); ctx.stroke(); ctx.restore();

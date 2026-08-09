@@ -10,6 +10,8 @@ from dataclasses import dataclass, replace
 import math
 from typing import Dict, List, Optional, Tuple
 
+from racing_common.imu_distance_pose import ImuDistancePose
+
 
 def wrap_angle(value: float) -> float:
     return (value + math.pi) % (2.0 * math.pi) - math.pi
@@ -59,40 +61,6 @@ class TrackCommand:
     vision_lateral_error: float = 0.0
     vision_cross_angular: float = 0.0
     vision_confirm_frames: int = 0
-
-
-class ImuDistancePose:
-    """Integrate `/odom_combined` scalar travel in the IMU yaw frame."""
-
-    def __init__(self, max_step_m: float = 0.12):
-        self.max_step_m = max(0.02, max_step_m)
-        self.pose: Optional[Tuple[float, float]] = None
-        self.total_distance_m = 0.0
-        self._last_position: Optional[Tuple[float, float]] = None
-        self._last_yaw: Optional[float] = None
-
-    def reset(self, odom_position: Tuple[float, float], yaw: float) -> None:
-        self.pose = (0.0, 0.0)
-        self.total_distance_m = 0.0
-        self._last_position = odom_position
-        self._last_yaw = yaw
-
-    def update(self, odom_position: Tuple[float, float], yaw: float) -> Tuple[float, float]:
-        if self.pose is None or self._last_position is None or self._last_yaw is None:
-            self.reset(odom_position, yaw)
-            return self.pose
-        step = math.hypot(odom_position[0] - self._last_position[0],
-                          odom_position[1] - self._last_position[1])
-        mid_yaw = wrap_angle(self._last_yaw + 0.5 * wrap_angle(yaw - self._last_yaw))
-        self._last_position = odom_position
-        self._last_yaw = yaw
-        # A delayed EKF reset must not inject a false segment completion.
-        if step > self.max_step_m:
-            return self.pose
-        self.pose = (self.pose[0] + step * math.cos(mid_yaw),
-                     self.pose[1] + step * math.sin(mid_yaw))
-        self.total_distance_m += step
-        return self.pose
 
 
 class RoundedRectangleTrack:

@@ -64,7 +64,10 @@ class Stage3ReturnNavigator(Node):
         self.current_position = None
         self.current_yaw = None
         self._imu_yaw = None
-        self._imu_yaw_offset = 0.0
+        self._gyro_relative_yaw = 0.0
+        self._gyro_anchor_relative_yaw = 0.0
+        self._last_imu_stamp = None
+        self._heading_anchor_yaw = None
         self._awaiting_entry_yaw_alignment = False
         self._last_odom_xy = None
         self._entry_anchor_map = None
@@ -286,10 +289,19 @@ class Stage3ReturnNavigator(Node):
 
     def _imu_cb(self, msg):
         self._imu_yaw = self._quat_to_yaw(msg.orientation)
-        if self._awaiting_entry_yaw_alignment:
-            self._imu_yaw_offset = self._normalize_angle(self.entry_map_yaw - self._imu_yaw)
-            self._awaiting_entry_yaw_alignment = False
-        self.current_yaw = self._normalize_angle(self._imu_yaw + self._imu_yaw_offset)
+        stamp = float(msg.header.stamp.sec) + 1e-9 * float(msg.header.stamp.nanosec)
+        if self._last_imu_stamp is None:
+            self._last_imu_stamp = stamp
+        else:
+            dt = stamp - self._last_imu_stamp
+            if 1e-4 <= dt <= 0.25:
+                self._gyro_relative_yaw += float(msg.angular_velocity.z) * dt
+            self._last_imu_stamp = stamp
+        if self._heading_anchor_yaw is not None:
+            self.current_yaw = self._normalize_angle(
+                self._heading_anchor_yaw +
+                (self._gyro_relative_yaw - self._gyro_anchor_relative_yaw)
+            )
 
     def _scan_cb(self, msg):
         self.latest_scan = msg
@@ -410,9 +422,10 @@ class Stage3ReturnNavigator(Node):
         self._terminal_candidate_since = None
         self._terminal_lost_since = None
         self._terminal_commit_yaw = None
+        self._heading_anchor_yaw = self.entry_map_yaw
+        self._gyro_anchor_relative_yaw = self._gyro_relative_yaw
         self._awaiting_entry_yaw_alignment = self._imu_yaw is None
         if self._imu_yaw is not None:
-            self._imu_yaw_offset = self._normalize_angle(self.entry_map_yaw - self._imu_yaw)
             self.current_yaw = self.entry_map_yaw
         self._p_detector.set_inference_active(True)
         self.start_after_time = self._now() + self.start_delay_sec

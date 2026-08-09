@@ -183,6 +183,7 @@ class TelemetryWebMonitor(Node):
         self.declare_parameter('stage1_log_path', '/home/sunrise/dev_ws/log/competition_stage1/latest.log')
         self.declare_parameter('snapshot_dir', '/home/sunrise/dev_ws/log/telemetry_web_monitor')
         self.declare_parameter('snapshot_period_sec', 0.50)
+        self.declare_parameter('history_min_step_m', 0.06)
 
         self.state = _MonitorState()
         self.map_frame = str(self.get_parameter('map_frame').value)
@@ -207,6 +208,7 @@ class TelemetryWebMonitor(Node):
         self.stage1_log_path = str(self.get_parameter('stage1_log_path').value)
         self.snapshot_dir = str(self.get_parameter('snapshot_dir').value)
         self.snapshot_period = max(0.2, float(self.get_parameter('snapshot_period_sec').value))
+        self.history_min_step = max(0.01, float(self.get_parameter('history_min_step_m').value))
         os.makedirs(self.snapshot_dir, exist_ok=True)
         self.snapshot_image_path = os.path.join(self.snapshot_dir, 'latest.png')
         self.snapshot_state_path = os.path.join(self.snapshot_dir, 'latest_state.json')
@@ -214,13 +216,15 @@ class TelemetryWebMonitor(Node):
         self._last_log_size = 0
         self._last_log_tail = ''
         self._last_callback_error_at = 0.0
+        self._last_history_pose = None
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.raw_imu_yaw = None
         self.start_map_yaw = None
         self._map_heading_received_at = None
         self._fallback_heading_anchor = None
-        self._fallback_raw_anchor = None
+        self._gyro_relative_yaw = 0.0
+        self._last_imu_stamp = None
+        self._fallback_gyro_anchor = 0.0
         self._fallback_motion_active = False
         self.last_imu_at = None
         self.last_scan_at = None
@@ -342,8 +346,14 @@ class TelemetryWebMonitor(Node):
         self.last_odom_at = self._now()
 
     def _imu_cb(self, msg):
-        raw = self._yaw(msg.orientation)
-        self.raw_imu_yaw = raw
+        stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+        if self._last_imu_stamp is None:
+            self._last_imu_stamp = stamp
+        else:
+            dt = stamp - self._last_imu_stamp
+            if 1e-4 <= dt <= 0.25:
+                self._gyro_relative_yaw += float(msg.angular_velocity.z) * dt
+            self._last_imu_stamp = stamp
         now = self._now()
         self.last_imu_at = now
         with self.state.lock:
@@ -368,16 +378,17 @@ class TelemetryWebMonitor(Node):
             if moving and not self._fallback_motion_active:
                 if self.state.imu_yaw is not None:
                     self._fallback_heading_anchor = self.state.imu_yaw
-                self._fallback_raw_anchor = raw
+                self._fallback_gyro_anchor = self._gyro_relative_yaw
                 self._fallback_motion_active = True
             elif not moving:
                 if self._fallback_motion_active and self.state.imu_yaw is not None:
                     self._fallback_heading_anchor = self.state.imu_yaw
-                self._fallback_raw_anchor = raw
+                self._fallback_gyro_anchor = self._gyro_relative_yaw
                 self._fallback_motion_active = False
-            if self._fallback_motion_active and self._fallback_raw_anchor is not None:
+            if self._fallback_motion_active:
                 self.state.imu_yaw = self._norm(
-                    self._fallback_heading_anchor + self._norm(raw - self._fallback_raw_anchor)
+                    self._fallback_heading_anchor +
+                    self._norm(self._gyro_relative_yaw - self._fallback_gyro_anchor)
                 )
             else:
                 self.state.imu_yaw = self._fallback_heading_anchor
@@ -392,7 +403,7 @@ class TelemetryWebMonitor(Node):
             self.state.imu_yaw = heading
             self._map_heading_received_at = now
             self._fallback_heading_anchor = heading
-            self._fallback_raw_anchor = self.raw_imu_yaw
+            self._fallback_gyro_anchor = self._gyro_relative_yaw
             self._fallback_motion_active = False
 
     @staticmethod
@@ -419,7 +430,7 @@ class TelemetryWebMonitor(Node):
             with self.state.lock:
                 self.state.imu_yaw = self.start_map_yaw
                 self._fallback_heading_anchor = self.start_map_yaw
-                self._fallback_raw_anchor = self.raw_imu_yaw
+                self._fallback_gyro_anchor = self._gyro_relative_yaw
                 self._fallback_motion_active = False
         except (TypeError, json.JSONDecodeError, KeyError, ValueError):
             return
@@ -613,7 +624,12 @@ class TelemetryWebMonitor(Node):
                         'x': px + math.cos(yaw) * lx - math.sin(yaw) * ly,
                         'y': py + math.sin(yaw) * lx + math.cos(yaw) * ly,
                     })
-                self.state.history.append((self.state.pose[0], self.state.pose[1]))
+                if (self._last_history_pose is None or
+                        math.hypot(self.state.pose[0] - self._last_history_pose[0],
+                                   self.state.pose[1] - self._last_history_pose[1])
+                        >= self.history_min_step):
+                    self.state.history.append((self.state.pose[0], self.state.pose[1]))
+                    self._last_history_pose = tuple(self.state.pose)
             scan_stats = {
                 'points': len(scan),
                 'nearest_m': None if nearest_scan == float('inf') else nearest_scan,
@@ -663,10 +679,15 @@ class TelemetryWebMonitor(Node):
                 image = np.full((meta['height'], meta['width'], 3), 245, dtype=np.uint8)
             height, width = image.shape[:2]
             mission_route = snapshot.get('mission_route', [])
-            if len(mission_route) >= 2:
-                points = [self._map_pixel(meta, p['x'], p['y'], width, height) for p in mission_route]
-                for first, second in zip(points, points[1:]):
-                    cv2.line(image, first, second, (180, 80, 220), 2, cv2.LINE_AA)
+            # Mission targets are landmarks/search points, not a drivable
+            # polyline.  Connecting them across walls made the web route look
+            # like an additional planner output.
+            for index, point in enumerate(mission_route):
+                px, py = self._map_pixel(meta, point['x'], point['y'], width, height)
+                cv2.circle(image, (px, py), 5, (180, 80, 220), -1)
+                cv2.putText(image, str(index + 1), (px + 7, py - 7),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 80, 220), 1,
+                            cv2.LINE_AA)
             route = snapshot.get('route', [])
             if len(route) >= 2:
                 points = [self._map_pixel(meta, p['x'], p['y'], width, height) for p in route]

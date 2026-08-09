@@ -149,6 +149,7 @@ def generate_launch_description():
             'mission_route_topic': 'stage1_mission_route',
             'heading_motion_linear_threshold_mps': 0.015,
             'heading_motion_angular_threshold_rad_s': 0.03,
+            'history_min_step_m': 0.06,
         }],
         condition=IfCondition(LaunchConfiguration('enable_web_monitor')),
     )
