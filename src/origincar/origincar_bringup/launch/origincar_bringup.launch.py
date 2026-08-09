@@ -101,6 +101,9 @@ def generate_launch_description():
     ld.add_action(choose_car)
     ld.add_action(imu_filter_node)
     ld.add_action(robot_ekf)
+    # The laser driver publishes frame ``laser``.  Without this action the
+    # declared base_link->laser transform never enters the TF graph and Nav2
+    # drops every scan that cannot be transformed into its costmap frame.
     ld.add_action(link_to_laser)
     ld.add_action(RegisterEventHandler(OnProcessStart(
         target_action=imu_filter_node,

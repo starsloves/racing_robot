@@ -31,7 +31,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import Imu, LaserScan
-from std_msgs.msg import Float64, Int32, String
+from std_msgs.msg import Int32, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -43,7 +43,6 @@ class _MonitorState:
         self.scan = []
         self.scan_msg = None
         self.cmd = {'linear_x': 0.0, 'angular_z': 0.0}
-        self.imu_yaw = None
         self.stage_states = {}
         self.phase = 0
         self.qr_task = ''
@@ -171,15 +170,11 @@ class TelemetryWebMonitor(Node):
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('odom_topic', '/odom_combined')
         self.declare_parameter('imu_topic', '/imu/data')
-        self.declare_parameter('map_heading_topic', 'map_heading')
         self.declare_parameter('route_topic', 'stage1_route')
         self.declare_parameter('mission_route_topic', 'stage1_mission_route')
-        self.declare_parameter('heading_motion_linear_threshold_mps', 0.015)
-        self.declare_parameter('heading_motion_angular_threshold_rad_s', 0.03)
         self.declare_parameter('cmd_topic', '/cmd_vel')
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'base_footprint')
-        self.declare_parameter('start_corner_diagnostic_topic', 'start_corner_pose_diagnostic')
         self.declare_parameter('stage1_log_path', '/home/sunrise/dev_ws/log/competition_stage1/latest.log')
         self.declare_parameter('snapshot_dir', '/home/sunrise/dev_ws/log/telemetry_web_monitor')
         self.declare_parameter('snapshot_period_sec', 0.50)
@@ -188,18 +183,8 @@ class TelemetryWebMonitor(Node):
         self.state = _MonitorState()
         self.map_frame = str(self.get_parameter('map_frame').value)
         self.base_frame = str(self.get_parameter('base_frame').value)
-        self.start_corner_diagnostic_topic = str(
-            self.get_parameter('start_corner_diagnostic_topic').value
-        )
-        self.map_heading_topic = str(self.get_parameter('map_heading_topic').value)
         self.route_topic = str(self.get_parameter('route_topic').value)
         self.mission_route_topic = str(self.get_parameter('mission_route_topic').value)
-        self.heading_motion_linear_threshold = max(
-            0.0, float(self.get_parameter('heading_motion_linear_threshold_mps').value)
-        )
-        self.heading_motion_angular_threshold = max(
-            0.0, float(self.get_parameter('heading_motion_angular_threshold_rad_s').value)
-        )
         self._map_grid = None
         package_dir = get_package_share_directory('racing_tools')
         bringup_dir = get_package_share_directory('origincar_bringup')
@@ -219,13 +204,6 @@ class TelemetryWebMonitor(Node):
         self._last_history_pose = None
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.start_map_yaw = None
-        self._map_heading_received_at = None
-        self._fallback_heading_anchor = None
-        self._gyro_relative_yaw = 0.0
-        self._last_imu_stamp = None
-        self._fallback_gyro_anchor = 0.0
-        self._fallback_motion_active = False
         self.last_imu_at = None
         self.last_scan_at = None
         self.last_odom_at = None
@@ -236,7 +214,6 @@ class TelemetryWebMonitor(Node):
         self.create_subscription(LaserScan, str(self.get_parameter('scan_topic').value), self._scan_cb, 10)
         self.create_subscription(Odometry, str(self.get_parameter('odom_topic').value), self._odom_cb, 10)
         self.create_subscription(Imu, str(self.get_parameter('imu_topic').value), self._imu_cb, 10)
-        self.create_subscription(Float64, self.map_heading_topic, self._map_heading_cb, 10)
         self.create_subscription(Path, self.route_topic, self._route_cb, latched)
         self.create_subscription(Path, self.mission_route_topic, self._mission_route_cb, latched)
         self.create_subscription(Twist, str(self.get_parameter('cmd_topic').value), self._cmd_cb, 10)
@@ -245,9 +222,6 @@ class TelemetryWebMonitor(Node):
         self.create_subscription(String, 'stage3_state', lambda m: self._stage_cb('stage3', m), latched)
         self.create_subscription(Int32, 'competition_phase', self._phase_cb, latched)
         self.create_subscription(String, 'competition_qr_task', self._qr_cb, latched)
-        self.create_subscription(
-            String, self.start_corner_diagnostic_topic, self._start_pose_cb, latched
-        )
         self.create_timer(0.10, self._publish_state)
 
         requested_host = str(self.get_parameter('host').value)
@@ -309,10 +283,6 @@ class TelemetryWebMonitor(Node):
         return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                           1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
-    @staticmethod
-    def _norm(angle):
-        return math.atan2(math.sin(angle), math.cos(angle))
-
     def _now(self):
         return self.get_clock().now().nanoseconds / 1e9
 
@@ -346,65 +316,8 @@ class TelemetryWebMonitor(Node):
         self.last_odom_at = self._now()
 
     def _imu_cb(self, msg):
-        stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
-        if self._last_imu_stamp is None:
-            self._last_imu_stamp = stamp
-        else:
-            dt = stamp - self._last_imu_stamp
-            if 1e-4 <= dt <= 0.25:
-                self._gyro_relative_yaw += float(msg.angular_velocity.z) * dt
-            self._last_imu_stamp = stamp
-        now = self._now()
-        self.last_imu_at = now
-        with self.state.lock:
-            # While S1 is alive, use the controller's single corrected
-            # heading source.  The fallback is only for the later stages,
-            # after S1 has released and stopped publishing map_heading.
-            if (self._map_heading_received_at is not None and
-                    now - self._map_heading_received_at <= 0.50):
-                return
-            if self._fallback_heading_anchor is None:
-                self._fallback_heading_anchor = (
-                    self.state.imu_yaw if self.state.imu_yaw is not None
-                    else self.start_map_yaw
-                )
-            if self._fallback_heading_anchor is None:
-                self.state.imu_yaw = None
-                return
-            moving = (
-                abs(float(self.state.cmd.get('linear_x', 0.0))) >= self.heading_motion_linear_threshold
-                or abs(float(self.state.cmd.get('angular_z', 0.0))) >= self.heading_motion_angular_threshold
-            )
-            if moving and not self._fallback_motion_active:
-                if self.state.imu_yaw is not None:
-                    self._fallback_heading_anchor = self.state.imu_yaw
-                self._fallback_gyro_anchor = self._gyro_relative_yaw
-                self._fallback_motion_active = True
-            elif not moving:
-                if self._fallback_motion_active and self.state.imu_yaw is not None:
-                    self._fallback_heading_anchor = self.state.imu_yaw
-                self._fallback_gyro_anchor = self._gyro_relative_yaw
-                self._fallback_motion_active = False
-            if self._fallback_motion_active:
-                self.state.imu_yaw = self._norm(
-                    self._fallback_heading_anchor +
-                    self._norm(self._gyro_relative_yaw - self._fallback_gyro_anchor)
-                )
-            else:
-                self.state.imu_yaw = self._fallback_heading_anchor
-
-    def _map_heading_cb(self, msg):
-        try:
-            heading = self._norm(float(msg.data))
-        except (TypeError, ValueError):
-            return
-        now = self._now()
-        with self.state.lock:
-            self.state.imu_yaw = heading
-            self._map_heading_received_at = now
-            self._fallback_heading_anchor = heading
-            self._fallback_gyro_anchor = self._gyro_relative_yaw
-            self._fallback_motion_active = False
+        del msg
+        self.last_imu_at = self._now()
 
     @staticmethod
     def _path_points(msg):
@@ -420,20 +333,6 @@ class TelemetryWebMonitor(Node):
     def _mission_route_cb(self, msg):
         with self.state.lock:
             self.state.mission_route = self._path_points(msg)
-
-    def _start_pose_cb(self, msg):
-        try:
-            payload = json.loads(msg.data)
-            if str(payload.get('state', '')) != 'valid':
-                return
-            self.start_map_yaw = math.radians(float(payload['map_yaw_deg']))
-            with self.state.lock:
-                self.state.imu_yaw = self.start_map_yaw
-                self._fallback_heading_anchor = self.start_map_yaw
-                self._fallback_gyro_anchor = self._gyro_relative_yaw
-                self._fallback_motion_active = False
-        except (TypeError, json.JSONDecodeError, KeyError, ValueError):
-            return
 
     def _scan_cb(self, msg):
         self.last_scan_at = self._now()
@@ -554,7 +453,7 @@ class TelemetryWebMonitor(Node):
                 self.map_frame, self.base_frame, Time(), timeout=Duration(seconds=0.03)
             )
             t = tf.transform.translation
-            return float(t.x), float(t.y)
+            return float(t.x), float(t.y), self._yaw(tf.transform.rotation)
         except TransformException:
             return None
 
@@ -596,7 +495,7 @@ class TelemetryWebMonitor(Node):
         with self.state.lock:
             if pose is not None:
                 self.state.pose = pose
-            yaw = self.state.imu_yaw
+            yaw = None if self.state.pose is None else self.state.pose[2]
             scan = []
             nearest_scan = float('inf')
             nearest_forward = float('inf')
@@ -605,7 +504,7 @@ class TelemetryWebMonitor(Node):
             static_points = 0
             base_scan = self._scan_points_base()
             if base_scan is not None and self.state.pose is not None and yaw is not None:
-                px, py = self.state.pose
+                px, py = self.state.pose[:2]
                 for base_x, base_y, distance in base_scan:
                     range_m = math.hypot(base_x, base_y)
                     nearest_scan = min(nearest_scan, range_m)
@@ -629,7 +528,7 @@ class TelemetryWebMonitor(Node):
                                    self.state.pose[1] - self._last_history_pose[1])
                         >= self.history_min_step):
                     self.state.history.append((self.state.pose[0], self.state.pose[1]))
-                    self._last_history_pose = tuple(self.state.pose)
+                    self._last_history_pose = self.state.pose[:2]
             scan_stats = {
                 'points': len(scan),
                 'nearest_m': None if nearest_scan == float('inf') else nearest_scan,

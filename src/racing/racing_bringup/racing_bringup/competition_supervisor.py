@@ -19,6 +19,7 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 from racing_common.racing_logger import terminal_write
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -57,6 +58,7 @@ class CompetitionSupervisor(Node):
         self.declare_parameter('shutdown_grace_sec', 3.0)
         self.declare_parameter('restart_limit', 2)
         self.declare_parameter('enable_stage2_vision_ai', True)
+        self.declare_parameter('base_tf_timeout_sec', 0.10)
 
         latched = QoSProfile(
             depth=1,
@@ -130,6 +132,7 @@ class CompetitionSupervisor(Node):
         self._async_cleanup_threads = set()
         self._last_monitor_finished = time.monotonic()
         self._last_wait_log = 0.0
+        self._last_tf_failure_log = {}
         self._base_loss_since = None
         self._competition_phase = None
         # Top-level launch can shut down the ROS context before executor spin
@@ -200,16 +203,30 @@ class CompetitionSupervisor(Node):
         ]
         cmd_subscribers = self.count_subscribers('/cmd_vel')
         transforms = {}
+        tf_timeout = max(0.0, float(self.get_parameter('base_tf_timeout_sec').value))
         for label, parent, child in (
             ('map_to_odom_combined', 'map', 'odom_combined'),
             ('odom_combined_to_base_footprint', 'odom_combined', 'base_footprint'),
             ('map_to_base_footprint', 'map', 'base_footprint'),
         ):
             try:
-                self._tf_buffer.lookup_transform(parent, child, rclpy.time.Time())
+                # Only the composed edge may need to wait for the two dynamic
+                # samples to share a timestamp.  Keep the diagnostic edge
+                # checks non-blocking so the supervisor never starves sensor
+                # callbacks while reporting the missing link.
+                timeout = tf_timeout if label == 'map_to_base_footprint' else 0.0
+                self._tf_buffer.lookup_transform(
+                    parent, child, rclpy.time.Time(),
+                    timeout=Duration(seconds=timeout),
+                )
                 transforms[label] = True
-            except TransformException:
+            except TransformException as exc:
                 transforms[label] = False
+                last_log = self._last_tf_failure_log.get(label, 0.0)
+                if now - last_log >= 5.0:
+                    self._last_tf_failure_log[label] = now
+                    self.get_logger().warning(
+                        f'TF check failed {label} ({parent}->{child}): {exc}')
         return {
             'stale_messages': stale_messages,
             'localizer_valid': self._localizer_valid,

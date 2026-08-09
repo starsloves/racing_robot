@@ -50,10 +50,6 @@
     # 墙角只用于启动时的一次绝对锚定。行进中的扫描会有遮挡、动态点和
     # 错误墙对，禁止用它在线改写地图航向；行进航向由校准后的 IMU 陀螺积分。
     live_heading_topic: map_heading_lidar
-    # S1 supplies the unified IMU-distance Map position after startup lock.
-    map_pose_topic: stage1_map_pose
-    # S1 stops publishing after handoff; continue the same TF from its last pose.
-    map_pose_timeout_sec: 1.0
     live_heading_enabled: false
     live_heading_period_sec: 0.20
     # 以下阈值仅保留给隔离诊断实验；生产配置关闭在线墙角校正，

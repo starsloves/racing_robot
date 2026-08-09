@@ -132,7 +132,10 @@ def generate_launch_description():
     supervisor = Node(
         package='racing_bringup', executable='competition_supervisor',
         name='competition_supervisor', output='screen',
-        parameters=[{'enable_stage2_vision_ai': True}],
+        parameters=[{
+            'enable_stage2_vision_ai': True,
+            'base_tf_timeout_sec': 0.10,
+        }],
         on_exit=_supervisor_exit,
     )
     web_monitor = Node(
@@ -144,11 +147,8 @@ def generate_launch_description():
         parameters=[{
             'host': LaunchConfiguration('web_monitor_host'),
             'port': LaunchConfiguration('web_monitor_port'),
-            'map_heading_topic': 'map_heading',
             'route_topic': 'stage1_route',
             'mission_route_topic': 'stage1_mission_route',
-            'heading_motion_linear_threshold_mps': 0.015,
-            'heading_motion_angular_threshold_rad_s': 0.03,
             'history_min_step_m': 0.06,
         }],
         condition=IfCondition(LaunchConfiguration('enable_web_monitor')),

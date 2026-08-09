@@ -70,9 +70,11 @@ session_id, base_state, active_stage, prewarming_stage, lifecycle_state, reason
 
 `start_corner_pose_diagnostic` 在车辆静止时从后方 `(0,0)` 墙角的两条正交雷达墙线推算 Map 起点和 Map 航向。通过稳定门限后锁存起点，持续发布由雷达结果计算出的 `map -> odom_combined`，并以 transient-local JSON 发布 `map_x/map_y/map_yaw_deg` 与里程计锚点。生产摆放航向由参数限制在 `0~35°`，用来消除正交墙把 Map X/Y 互换时产生的互补角歧义；锁定后不再用行进扫描在线改写地图航向，避免遮挡、动态点或错误墙对造成跳变。行进期间保持锁定航向并只积分经零偏校准的 IMU 陀螺角速度。它不发布运动命令，也不再依赖旧的 `map_to_odom_*` 或 `initial_map_heading_deg` 参数。S1 只有在收到有效雷达起点并完成 IMU 陀螺角速度时间积分锚定后才发布 `ready`；二维码锁存后定位器继续运行，保证 S2/S3 交接期间地图 TF 不丢失。
 
-控制器初始为 `standby/ready`，只有 `/competition/stage1/activate` 后才会发布 `/cmd_vel`。S1 的生产运动链采用三层约束：`map_restricted` footprint 膨胀后的航向感知全局搜索（允许前进/倒车，带最小转弯半径、倒车和换挡惩罚）、基于 `/scan` 临时障碍的短时域 MPPI 风格轨迹采样，以及独立 TTC/footprint 硬安全层。地图外、未知格和黑色区域都是硬障碍；扫描障碍不写回永久地图；没有安全轨迹时才安全保持零速。S1 起点直接采用雷达锁定的 Map 位姿，后续将 `/odom_combined` 的 XY 相对起点旋转到该 Map 起始航向；IMU 仅以带消息时间戳的 `/imu/data.angular_velocity.z` 积分航向。标量 ODOM 距离仅用于起步直行距离和诊断，不能替代二维位置增量。`map_heading_lidar` 只传递启动锁定的绝对方向，不参与行进中的再校正。行进扫描按自身时间戳取历史 Map 位姿，以 IMU 航向固定角度后与静态地图障碍边缘做 XY 一致性匹配：连续稳定的小偏差只补偿 Map XY，超过自动补偿上限的可信偏差会记录具体 `dx/dy` 并触发定位质量门停车；证据不足时不校正也不猜测。绝不使用 Madgwick 的 orientation yaw，也绝不使用里程计 orientation。每个任务段只保留一条已经通过静态足迹验证的全局路线，普通位移不触发重规划；仅在任务目标、地图或局部安全轨迹持续失效时重新规划。
+控制器初始为 `standby/ready`，只有 `/competition/stage1/activate` 后才会启动 Nav2 任务。S1 不再实现自己的全局搜索、局部采样、雷达匹配或 TTC 监视器；这些职责统一交给 Nav2：`/scan` 进入局部/全局 `ObstacleLayer`，`InflationLayer` 提供足迹安全边界，`SmacPlannerHybrid` 负责带 Ackermann 最小转弯半径的全局路线，`nav2_mppi_controller::MPPIController` 负责短时域避障和 `/cmd_vel`，`velocity_smoother` 只做最终速度变化率限制。地图外、未知格和黑色区域仍由代价地图拒绝；扫描障碍不写回永久地图。`competition_controller.py` 现在只是 `NavigateToPose` action 适配器，因而整个 S1 只有 Nav2 一条正常运动发布链。
 
-扫码完成时立即清空当前全局路径并发布 `competition_qr_task`；S1 先从实时位姿规划到二维码目标，二维码到位后再次从实时位姿规划到通道入口 `(2.50,2.50)`，对齐名义 `90°` 后发布 `stage1_state=handoff_ready` 和 `stage2_entry_pose`，进入 `handoff_wait` 并保持最后的有效非零命令。生产路径不再使用盲开中线、固定 `back_target_x` 倒车或墙体 map-X 自动校正。
+启动定位器仍由雷达墙角提供唯一的 `map -> odom_combined`，Nav2 只启动 `navigation_launch.py`，不启动 AMCL 或第二个 map TF 源。`map -> odom_combined -> base_footprint -> base_link -> laser` 必须在 `/scan` 时间戳下完整可查；其中 `base_link -> laser` 由公共 bringup 静态发布。`/odom_combined` 的短时位置和 `/imu/data` 的航向仍遵守全局位姿规则，Nav2 通过 TF 使用这条统一链。
+
+扫码完成时适配器取消二维码 `NavigateToPose`，发布 `competition_qr_task`，再从实时 TF 位姿向通道入口 `(2.50,2.50,90°)` 发送第二个 action。Nav2 成功且入口位姿在窗口内稳定后，适配器发布 `stage1_state=handoff_ready` 和 `stage2_entry_pose`，进入 `handoff_wait`。生产路径不再使用盲开中线、固定倒车、墙体 map-X 自动校正或并行安全命令发布者。
 
 ### S2
 
@@ -114,6 +116,8 @@ S1 -> S2 和 S2 -> S3 的正常路径不会由 Supervisor 主动发送零速：
 - `/imu/data` 是所有阶段唯一的航向和转角来源。
 - S1 交接记录 `stage2_entry_pose`；S2 交接记录 `stage3_entry_anchor`。
 - 三阶段持续从 `map -> base_footprint` 输出真实 `[POSE_REAL]`。
+- Web 监视器只读取 `map -> base_footprint` 的完整 TF（X/Y/yaw）并做像素映射；不再积分 IMU、读取启动位姿覆盖坐标或维护第二套 Map 位姿。
+- 启动定位器将原始扫描、外参 TF、里程计、IMU、墙角解和最终 Map 位姿写入 `log/coordinate_trace/<session>/start_corner_trace.jsonl`。
 
 每次比赛使用统一 `COMPETITION_SESSION_ID`，日志写入：
 

@@ -1,163 +1,36 @@
-# S1 生产导航配置
-# 静态禁行地图由 map_overlay.launch.py 发布 map_restricted.yaml；扫描障碍只进入
-# 控制器的临时局部层，不回写 /map。起点来自雷达墙角定位，后续只取
-# /odom_combined 相邻 XY 样本的行驶距离；运动方向由带时间戳的
-# /imu/data angular_velocity.z 积分，雷达墙角只提供启动时的绝对地图航向锚点。
-    # 雷达锁定的 map heading 通过 map_heading 话题提供给网页和其他只读诊断端；
-    # 墙角只在启动时提供绝对锚点，只有实际非零运动指令期间才使用校准后的
-    # IMU 航向增量。
+# S1 mission adapter parameters.  Motion parameters belong to stage1_nav2.yaml.
 competition_controller:
   ros__parameters:
-    output_cmd_topic: /cmd_vel
-    scan_topic: /scan
-    imu_topic: /imu/data
-    raw_odom_topic: /odom
-    odom_topic: /odom_combined
     map_topic: /map
     map_frame: map
     base_frame: base_footprint
-    odom_frame: odom_combined
-    stage1_state_topic: stage1_state
+    diagnostic_topic: start_corner_pose_diagnostic
     qr_result_topic: qr_scan_result
     task_topic: competition_qr_task
+    stage1_state_topic: stage1_state
     stage2_entry_pose_topic: stage2_entry_pose
-    imu_map_yaw_offset_topic: imu_map_yaw_offset
-    map_heading_topic: map_heading
-    map_pose_topic: stage1_map_pose
-    lidar_heading_topic: map_heading_lidar
-    lidar_heading_max_age_sec: 0.80
-    # Ignore EKF jitter but retain a delayed normal sample; large resets are dropped.
-    map_pose_odom_min_step_m: 0.002
-    map_pose_odom_max_step_m: 0.30
     route_topic: stage1_route
     mission_route_topic: stage1_mission_route
-    start_corner_diagnostic_topic: start_corner_pose_diagnostic
+    planner_plan_topic: /planner_server/plan
+    planner_plan_fallback_topic: /plan
+    navigate_action: /navigate_to_pose
+    nav2_lifecycle_node: bt_navigator
     lifecycle_service_prefix: /competition/stage1
-    control_rate_hz: 20.0
 
-    # Any non-zero command is motion for the IMU integrator; a larger gate
-    # made the startup ramp repeatedly toggle dynamic-heading mode.
-    heading_motion_linear_threshold_mps: 0.001
-    heading_motion_angular_threshold_rad_s: 0.005
-    # Board IMU timestamps are bursty (occasionally over 2s apart); retain
-    # real turn motion and reject only genuinely stale intervals.
-    imu_max_integration_gap_sec: 2.50
-    # Require the steering command to cross zero before reversing sign.
-    angular_reversal_deadband_rad_s: 0.08
-
-    start_delay_sec: 0.0
-    # 起始摆放由雷达锁定为约 20deg；在直行候选已通过实时雷达和静态地图
-    # 校验时，先保持该航向通过起步区，避免离散全局路线首格触发反复打脚。
-    startup_straight_distance_m: 0.60
-    # 所有定位质量按消息头时间而非回调执行时间判断。底盘实测约 2Hz，
-    # 0.75s 可容纳一个正常周期，但不会把积压队列中的旧帧当成新定位。
-    localization_max_age_sec: 1.50
-    # EKF XY 必须满足车辆物理速度上限。验证间隔封顶，避免持续偏移在等待
-    # 数秒后被误接受；异常帧只记录并立即停车，不写入 Map 位姿。
-    odom_max_speed_mps: 1.20
-    odom_jump_tolerance_m: 0.12
-    odom_validation_max_gap_sec: 0.50
-
-    # 行进中固定使用 IMU 航向，只搜索雷达点与静态地图障碍边缘的 XY 重合。
-    # 连续稳定的小偏差补偿 Map XY；大偏差记录实际 dx/dy 并停车。
-    lidar_position_check_period_sec: 0.50
-    lidar_position_search_range_m: 0.80
-    lidar_position_coarse_step_m: 0.08
-    lidar_position_fine_range_m: 0.10
-    lidar_position_fine_step_m: 0.01
-    lidar_position_global_step_m: 0.10
-    lidar_position_min_scan_points: 40
-    lidar_position_max_scan_points: 160
-    lidar_position_max_score_distance_m: 0.35
-    lidar_position_inlier_distance_m: 0.10
-    lidar_position_min_inlier_ratio: 0.45
-    lidar_position_max_mean_distance_m: 0.12
-    lidar_position_stable_frames: 3
-    lidar_position_stable_spread_m: 0.08
-    lidar_position_min_correction_m: 0.03
-    lidar_position_max_auto_correction_m: 0.25
-    lidar_position_fault_threshold_m: 0.25
-
-    # 任务一：二维码坐标只是搜索参考点；真正的阶段完成事件是扫码结果。
+    # QR is a search waypoint.  The QR event, not reaching this point, ends
+    # the first mission segment.
     qr_goal_x_m: 4.50
     qr_goal_y_m: 1.60
-    qr_search_radius_m: 0.45
+    qr_goal_yaw_deg: 0.0
+
+    # Stage1 hands off at the fixed channel entry pose.  Direction is consumed
+    # by Stage2; S1 always arrives with the nominal +Y heading.
     channel_entry_x_m: 2.50
     channel_entry_y_m: 2.50
     channel_entry_yaw_deg: 90.0
-    channel_entry_tolerance_m: 0.16
-    channel_entry_yaw_tolerance_deg: 12.0
+    channel_entry_tolerance_m: 0.20
+    channel_entry_yaw_tolerance_deg: 15.0
     entry_stable_sec: 0.25
-
-    # Hybrid-A* 风格全局搜索：航向离散、前进/倒车运动原语、最小转弯半径、
-    # 换挡/倒车惩罚；地图外、未知格和黑色区域均为硬障碍。
-    # 同一任务段只规划一次并锁定路线；普通位移不会触发全局重规划。
-    # 只有首次无路、任务目标改变、地图改变，或局部安全轨迹持续失败
-    # 才允许重新规划。
-    global_plan_retry_period_sec: 1.50
-    global_replan_after_local_failure_sec: 2.00
-    global_route_deviation_threshold_m: 0.45
-    global_replan_cooldown_sec: 3.00
-    planner_grid_step_m: 0.16
-    planner_heading_bins: 32
-    planner_motion_step_m: 0.20
-    planner_max_expansions: 30000
-    planner_fast_grid_step_m: 0.12
-    planner_fast_corridor_length_m: 0.70
-    planner_occupied_threshold: 50
-    planner_unknown_is_occupied: true
-    planner_robot_radius_m: 0.26
-    planner_min_turn_radius_m: 0.62
-    planner_turn_penalty: 0.35
-    planner_steer_change_penalty: 0.40
-    planner_goal_yaw_tolerance_deg: 18.0
-
-    # 车体几何：雷达在 base_footprint，车体中心由实时 TF
-    # base_footprint->base_link 给出；禁止再用以雷达为圆心的碰撞圆。
-    robot_body_length_m: 0.276
-    robot_body_width_m: 0.164
-    robot_footprint_margin_m: 0.02
-    scan_self_filter_margin_m: 0.04
-    # Laser returns within this distance of the map rectangle are static
-    # boundary evidence, not dynamic obstacles in the collision monitor.
-    scan_static_match_tolerance_m: 0.16
-
-    # MPPI 风格短时域采样：每条候选同时检查静态地图和实时 /scan 足迹碰撞。
-    local_horizon_sec: 1.00
-    local_dt_sec: 0.15
-    local_samples_speed: 1
-    local_samples_steer: 7
-    local_nominal_speed_mps: 0.35
-    local_min_speed_mps: 0.12
-    local_max_speed_mps: 0.45
-    local_min_turn_radius_m: 0.62
-    local_goal_speed_floor_mps: 0.20
-    local_goal_speed_gain_mps: 0.50
-    local_goal_speed_cap_mps: 0.45
-    local_max_angular_speed_rad_s: 0.75
-    local_path_lookahead_m: 0.65
-    local_footprint_radius_m: 0.28
-    local_obstacle_clearance_m: 0.10
-    local_dynamic_obstacle_max_range_m: 2.20
-    local_scan_max_points: 32
-    local_steer_change_penalty: 0.80
-    local_heading_control_weight: 20.0
-    local_angular_effort_weight: 12.0
-    local_path_distance_weight: 12.0
-    local_heading_weight: 2.5
-    local_goal_weight: 4.0
-    local_clearance_weight: 3.0
-    local_obstacle_cost_weight: 1000.0
-    local_replan_period_sec: 0.20
-    local_command_hold_sec: 1.20
-    # 独立规划线程期间保持上一条安全命令；速度和角速度均限制变化率。
-    local_max_linear_accel_mps2: 1.50
-    local_max_angular_accel_rad_s2: 2.50
-
-    # 独立硬安全层（Collision Monitor 等价约束），优先于任何局部轨迹。
-    collision_stop_distance_m: 0.24
-    collision_slow_distance_m: 0.62
-    collision_stop_ttc_sec: 0.55
-    collision_slow_ttc_sec: 1.40
-    collision_slow_scale: 0.35
-    collision_forward_half_angle_deg: 38.0
+    action_server_timeout_sec: 0.0
+    goal_retry_delay_sec: 1.0
+    goal_retry_limit: 3

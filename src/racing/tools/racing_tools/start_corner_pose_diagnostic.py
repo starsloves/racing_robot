@@ -12,7 +12,7 @@ from collections import deque
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
@@ -22,9 +22,21 @@ from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Float64, String
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 
+from racing_common.session_file_log import SessionFileLog
+
 
 def normalize_angle(angle):
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def compose_map_xy(map_to_odom_x, map_to_odom_y, map_yaw, odom_x, odom_y):
+    """Compose the single XY position chain used by TF and diagnostics."""
+    cos_yaw = math.cos(map_yaw)
+    sin_yaw = math.sin(map_yaw)
+    return (
+        float(map_to_odom_x) + cos_yaw * float(odom_x) - sin_yaw * float(odom_y),
+        float(map_to_odom_y) + sin_yaw * float(odom_x) + cos_yaw * float(odom_y),
+    )
 
 
 def quaternion_to_yaw(quaternion):
@@ -52,7 +64,6 @@ class StartCornerPoseDiagnostic(Node):
         self._map_to_odom = None
         self._locked_map_xy = None
         self._locked_odom_xy = None
-        self._locked_map_yaw = None
         self._locked_raw_imu_yaw = None
         self._gyro_relative_yaw = 0.0
         self._locked_gyro_relative_yaw = 0.0
@@ -62,12 +73,28 @@ class StartCornerPoseDiagnostic(Node):
         self._last_live_heading_time = 0.0
         self._live_heading_pending = deque(maxlen=self.live_heading_stable_frames)
         self._live_heading_last_estimate = None
-        self._controller_map_pose = None
-        self._controller_map_pose_odom_xy = None
-        self._controller_map_pose_time = None
         self._last_status = None
         self._last_status_time = 0.0
         self._tf_broadcaster = TransformBroadcaster(self)
+        self._last_scan_transform = None
+        self._last_trace_pose_time = 0.0
+        self._last_trace_odom = None
+        self._trace = SessionFileLog(
+            'coordinate_trace',
+            filename='start_corner_trace.jsonl',
+            session_title='start corner coordinate trace',
+        )
+        self._trace.write(json.dumps({
+            'type': 'header',
+            'schema': 'start_corner_coordinate_trace_v1',
+            'frames': {
+                'map': self.map_frame,
+                'odom': self.odom_frame,
+                'base': self.base_frame,
+            },
+            'position_rule': 'map_xy = map_to_odom_xy + R(map_yaw) * odom_xy',
+            'yaw_rule': 'map_yaw is startup laser-corner heading; odom orientation is diagnostic only',
+        }, separators=(',', ':')))
 
         durable_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -80,7 +107,6 @@ class StartCornerPoseDiagnostic(Node):
         self.create_subscription(LaserScan, self.scan_topic, self._scan_callback, qos_profile_sensor_data)
         self.create_subscription(Imu, self.imu_topic, self._imu_callback, qos_profile_sensor_data)
         self.create_subscription(Odometry, self.odom_topic, self._odom_callback, qos_profile_sensor_data)
-        self.create_subscription(PoseStamped, self.map_pose_topic, self._map_pose_callback, 10)
         self._timer = self.create_timer(0.1, self._process_latest_scan)
 
         self.get_logger().info(
@@ -126,8 +152,6 @@ class StartCornerPoseDiagnostic(Node):
         self.declare_parameter('imu_stable_samples', 8)
         self.declare_parameter('imu_stable_gyro_rad_s', 0.08)
         self.declare_parameter('live_heading_topic', 'map_heading_lidar')
-        self.declare_parameter('map_pose_topic', 'stage1_map_pose')
-        self.declare_parameter('map_pose_timeout_sec', 1.0)
         # The wall corner is an absolute startup anchor only.  A moving scan
         # is not a reliable map-heading observation because occlusions and
         # wrong wall pairs can look orthogonal.
@@ -179,8 +203,6 @@ class StartCornerPoseDiagnostic(Node):
         self.imu_stable_samples = int(get('imu_stable_samples'))
         self.imu_stable_gyro = max(0.01, float(get('imu_stable_gyro_rad_s')))
         self.live_heading_topic = str(get('live_heading_topic'))
-        self.map_pose_topic = str(get('map_pose_topic'))
-        self.map_pose_timeout = max(0.10, float(get('map_pose_timeout_sec')))
         self.live_heading_enabled = bool(get('live_heading_enabled'))
         self.live_heading_period = max(0.05, float(get('live_heading_period_sec')))
         self.live_heading_max_correction = math.radians(max(1.0, float(get('live_heading_max_correction_deg'))))
@@ -220,18 +242,6 @@ class StartCornerPoseDiagnostic(Node):
     def _odom_callback(self, msg):
         self.latest_odom = msg
 
-    def _map_pose_callback(self, msg):
-        if msg.header.frame_id and msg.header.frame_id != self.map_frame:
-            return
-        self._controller_map_pose = (
-            float(msg.pose.position.x), float(msg.pose.position.y)
-        )
-        if self.latest_odom is not None:
-            odom = self.latest_odom.pose.pose.position
-            self._controller_map_pose_odom_xy = (float(odom.x), float(odom.y))
-        self._controller_map_pose_time = self.get_clock().now().nanoseconds / 1e9
-        self._publish_tf()
-
     def _process_latest_scan(self):
         if self.latest_scan is None:
             return
@@ -260,21 +270,26 @@ class StartCornerPoseDiagnostic(Node):
         self._last_scan_stamp_ns = stamp_ns
 
         if self.latest_imu is None or self.latest_odom is None:
+            self._record_scan_trace(self.latest_scan, reason='scan/imu/odom')
             self._publish_status('waiting', 'scan/imu/odom')
             return
         if not self._is_stationary():
             self._pose_samples.clear()
+            self._record_scan_trace(self.latest_scan, reason='vehicle_moving')
             self._publish_status('rejected', 'vehicle_moving')
             return
         if not self._imu_is_stable():
             self._pose_samples.clear()
+            self._record_scan_trace(self.latest_scan, reason='imu_unstable')
             self._publish_status('rejected', 'imu_unstable')
             return
 
         points = self._scan_points_in_base(self.latest_scan)
         if points is None:
+            self._record_scan_trace(self.latest_scan, reason='scan_to_base_tf_unavailable')
             return
         result, reason = self._solve_corner_pose(points)
+        self._record_scan_trace(self.latest_scan, points=points, result=result, reason=reason)
         if result is None:
             self._pose_samples.clear()
             self._publish_status('rejected', reason)
@@ -296,7 +311,6 @@ class StartCornerPoseDiagnostic(Node):
         )
         self._locked_map_xy = (final['map_x'], final['map_y'])
         self._locked_odom_xy = (final['odom_x'], final['odom_y'])
-        self._locked_map_yaw = final['map_yaw']
         self._locked_raw_imu_yaw = final['imu_raw_yaw']
         self._locked_gyro_relative_yaw = self._gyro_relative_yaw
         self._live_heading = final['map_yaw']
@@ -452,6 +466,13 @@ class StartCornerPoseDiagnostic(Node):
         yaw = quaternion_to_yaw(transform.transform.rotation)
         tx = float(transform.transform.translation.x)
         ty = float(transform.transform.translation.y)
+        self._last_scan_transform = {
+            'parent': self.base_frame,
+            'child': source_frame,
+            'translation_xy': [tx, ty],
+            'yaw_rad': float(yaw),
+            'lookup': 'latest',
+        }
         base_x = math.cos(yaw) * xs - math.sin(yaw) * ys + tx
         base_y = math.sin(yaw) * xs + math.cos(yaw) * ys + ty
         rear_angle = np.arctan2(base_y, base_x)
@@ -693,6 +714,117 @@ class StartCornerPoseDiagnostic(Node):
         keys = self._pose_samples[0].keys()
         return {key: float(np.mean([item[key] for item in self._pose_samples])) for key in keys}
 
+    @staticmethod
+    def _stamp_sec(message):
+        stamp = message.header.stamp
+        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+    @staticmethod
+    def _raw_odom(message):
+        if message is None:
+            return None
+        pose = message.pose.pose
+        twist = message.twist.twist
+        return {
+            'stamp_sec': StartCornerPoseDiagnostic._stamp_sec(message),
+            'frame_id': message.header.frame_id,
+            'child_frame_id': message.child_frame_id,
+            'x': float(pose.position.x),
+            'y': float(pose.position.y),
+            'orientation_yaw_rad_unused': float(quaternion_to_yaw(pose.orientation)),
+            'vx': float(twist.linear.x),
+            'vy': float(twist.linear.y),
+            'wz': float(twist.angular.z),
+        }
+
+    def _raw_imu(self, message):
+        if message is None:
+            return None
+        q = message.orientation
+        return {
+            'stamp_sec': self._stamp_sec(message),
+            'frame_id': message.header.frame_id,
+            'gyro_z_rad_s': float(message.angular_velocity.z),
+            'orientation_quaternion': [float(q.x), float(q.y), float(q.z), float(q.w)],
+            'orientation_yaw_rad_diagnostic': float(quaternion_to_yaw(q)),
+            'integrated_relative_yaw_rad': float(self._gyro_relative_yaw),
+        }
+
+    def _write_trace(self, payload):
+        try:
+            self._trace.write(json.dumps(payload, separators=(',', ':'), allow_nan=False))
+        except (TypeError, ValueError, OSError) as exc:
+            self.get_logger().warning(f'coordinate trace write skipped: {exc}')
+
+    def _record_scan_trace(self, scan, points=None, result=None, reason=None):
+        ranges = [
+            None if not math.isfinite(float(value)) else float(value)
+            for value in scan.ranges
+        ]
+        valid_count = sum(value is not None for value in ranges)
+        sample_stride = max(1, len(ranges) // 64)
+        raw_samples = [
+            {
+                'index': index,
+                'angle_rad': float(scan.angle_min) + index * float(scan.angle_increment),
+                'range_m': ranges[index],
+            }
+            for index in range(0, len(ranges), sample_stride)
+        ]
+        base_samples = []
+        if points is not None and points.size:
+            stride = max(1, int(points.shape[0]) // 64)
+            base_samples = [
+                [float(point[0]), float(point[1])] for point in points[::stride]
+            ]
+        self._write_trace({
+            'type': 'startup_scan',
+            'recorded_at_sec': self.get_clock().now().nanoseconds / 1e9,
+            'scan': {
+                'stamp_sec': self._stamp_sec(scan),
+                'frame_id': scan.header.frame_id,
+                'angle_min_rad': float(scan.angle_min),
+                'angle_increment_rad': float(scan.angle_increment),
+                'range_min_m': float(scan.range_min),
+                'range_max_m': float(scan.range_max),
+                'count': len(ranges),
+                'valid_count': valid_count,
+                'ranges_m': ranges,
+                'raw_samples': raw_samples,
+            },
+            'laser_to_base': self._last_scan_transform,
+            'base_points_sample_xy': base_samples,
+            'odom_raw': self._raw_odom(self.latest_odom),
+            'imu_raw': self._raw_imu(self.latest_imu),
+            'corner_solution': result,
+            'rejection_reason': reason,
+        })
+
+    def _record_pose_trace(self, tf_x, tf_y, tf_yaw, source):
+        now = self.get_clock().now().nanoseconds / 1e9
+        if now - self._last_trace_pose_time < 0.20 or self.latest_odom is None:
+            return
+        self._last_trace_pose_time = now
+        odom = self.latest_odom.pose.pose.position
+        map_x, map_y = compose_map_xy(tf_x, tf_y, tf_yaw, odom.x, odom.y)
+        odom_xy = (float(odom.x), float(odom.y))
+        delta = None
+        if self._last_trace_odom is not None:
+            delta = [odom_xy[0] - self._last_trace_odom[0], odom_xy[1] - self._last_trace_odom[1]]
+        self._last_trace_odom = odom_xy
+        self._write_trace({
+            'type': 'map_pose',
+            'recorded_at_sec': now,
+            'source': source,
+            'map_to_odom_tf': {
+                'x': float(tf_x), 'y': float(tf_y), 'yaw_rad': float(tf_yaw),
+            },
+            'odom_to_base_raw': self._raw_odom(self.latest_odom),
+            'imu_raw': self._raw_imu(self.latest_imu),
+            'map_base_calculated': {'x': map_x, 'y': map_y, 'yaw_rad': float(tf_yaw)},
+            'odom_delta_xy': delta,
+        })
+
     def _publish_status(self, state, reason):
         now = self.get_clock().now().nanoseconds / 1e9
         if state == self._last_status and now - self._last_status_time < 2.0:
@@ -707,29 +839,15 @@ class StartCornerPoseDiagnostic(Node):
         if self._map_to_odom is None:
             return
         x, y, yaw = self._map_to_odom
-        if (self._locked_map_yaw is not None and self._controller_map_pose is not None
-                and self.latest_odom is not None):
-            odom = self.latest_odom.pose.pose.position
-            yaw = self._locked_map_yaw
-            cos_yaw = math.cos(yaw)
-            sin_yaw = math.sin(yaw)
-            map_x, map_y = self._controller_map_pose
-            if (self._controller_map_pose_odom_xy is not None
-                    and self._controller_map_pose_time is not None
-                    and self.get_clock().now().nanoseconds / 1e9
-                    - self._controller_map_pose_time > self.map_pose_timeout):
-                dx = float(odom.x) - self._controller_map_pose_odom_xy[0]
-                dy = float(odom.y) - self._controller_map_pose_odom_xy[1]
-                map_x += cos_yaw * dx - sin_yaw * dy
-                map_y += sin_yaw * dx + cos_yaw * dy
-            x = map_x - (
-                cos_yaw * float(odom.x) - sin_yaw * float(odom.y)
-            )
-            y = map_y - (
-                sin_yaw * float(odom.x) + cos_yaw * float(odom.y)
-            )
+        source = 'locked_start_corner'
         transform = TransformStamped()
-        transform.header.stamp = self.get_clock().now().to_msg()
+        # Use the same timestamp as odom->base_footprint.  Publishing this
+        # anchor at wall-clock ``now`` while EKF odom lags creates a future
+        # map->odom edge; TF2 then rejects the composed map->base lookup.
+        if self.latest_odom is not None:
+            transform.header.stamp = self.latest_odom.header.stamp
+        else:
+            transform.header.stamp = self.get_clock().now().to_msg()
         transform.header.frame_id = self.map_frame
         transform.child_frame_id = self.odom_frame
         transform.transform.translation.x = float(x)
@@ -738,6 +856,7 @@ class StartCornerPoseDiagnostic(Node):
         transform.transform.rotation.z = math.sin(yaw * 0.5)
         transform.transform.rotation.w = math.cos(yaw * 0.5)
         self._tf_broadcaster.sendTransform(transform)
+        self._record_pose_trace(x, y, yaw, source)
 
     def _publish_valid(self, result):
         payload = {
@@ -772,6 +891,13 @@ class StartCornerPoseDiagnostic(Node):
                 result['corner_ray_gate_fallback'],
             )
         )
+
+    def destroy_node(self):
+        try:
+            self._trace.close()
+        except (AttributeError, OSError):
+            pass
+        super().destroy_node()
 
 
 def main(args=None):
