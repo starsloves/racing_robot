@@ -125,6 +125,10 @@ class CompetitionController(Node):
         self._entry_stable_since = None
         self._entry_announced = False
         self._last_plan = None
+        self._last_plan_received_at = 0.0
+        self._goal_sent_at = 0.0
+        self._motion_started_at = 0.0
+        self._watchdog_latched = False
         self._last_pose_log_at = 0.0
         self._shutdown_timer = None
         self._timer = self.create_timer(0.1, self._tick, callback_group=self._group)
@@ -142,6 +146,7 @@ class CompetitionController(Node):
             'map_topic': '/map',
             'map_frame': 'map',
             'base_frame': 'base_footprint',
+            'nav_base_frame': 'base_link',
             'diagnostic_topic': 'start_corner_pose_diagnostic',
             'qr_result_topic': 'qr_scan_result',
             'task_topic': 'competition_qr_task',
@@ -166,6 +171,10 @@ class CompetitionController(Node):
             'action_server_timeout_sec': 0.0,
             'goal_retry_delay_sec': 1.0,
             'goal_retry_limit': 3,
+            'nav2_warmup_sec': 1.0,
+            'initial_plan_timeout_sec': 3.0,
+            'plan_stale_timeout_sec': 2.5,
+            'path_deviation_abort_m': 0.22,
             'pose_log_period_sec': 0.50,
         }
         for name, value in defaults.items():
@@ -177,6 +186,7 @@ class CompetitionController(Node):
         self.map_topic = str(value('map_topic'))
         self.map_frame = str(value('map_frame'))
         self.base_frame = str(value('base_frame'))
+        self.nav_base_frame = str(value('nav_base_frame'))
         self.diagnostic_topic = str(value('diagnostic_topic'))
         self.qr_result_topic = str(value('qr_result_topic'))
         self.task_topic = str(value('task_topic'))
@@ -200,6 +210,10 @@ class CompetitionController(Node):
         self.action_server_timeout = max(0.0, float(value('action_server_timeout_sec')))
         self.goal_retry_delay = max(0.1, float(value('goal_retry_delay_sec')))
         self.goal_retry_limit = max(0, int(value('goal_retry_limit')))
+        self.nav2_warmup_sec = max(0.0, float(value('nav2_warmup_sec')))
+        self.initial_plan_timeout = max(0.1, float(value('initial_plan_timeout_sec')))
+        self.plan_stale_timeout = max(0.1, float(value('plan_stale_timeout_sec')))
+        self.path_deviation_abort = max(0.0, float(value('path_deviation_abort_m')))
         self.pose_log_period = max(0.2, float(value('pose_log_period_sec')))
 
     # ------------------------------------------------------------------
@@ -244,10 +258,11 @@ class CompetitionController(Node):
             else:
                 self._nav2_active = active
 
-    def _lookup_pose(self):
+    def _lookup_pose(self, frame=None):
+        frame = self.base_frame if frame is None else frame
         try:
             transform = self.tf_buffer.lookup_transform(
-                self.map_frame, self.base_frame, Time(), timeout=Duration(seconds=0.0))
+                self.map_frame, frame, Time(), timeout=Duration(seconds=0.0))
         except TransformException:
             return None
         translation = transform.transform.translation
@@ -296,7 +311,69 @@ class CompetitionController(Node):
             return
         with self._lock:
             self._last_plan = msg
+            self._last_plan_received_at = time.monotonic()
             self.route_pub.publish(msg)
+
+    @staticmethod
+    def _nearest_path_distance(pose, path_msg):
+        if pose is None or path_msg is None or not path_msg.poses:
+            return None
+        x, y = pose[0], pose[1]
+        points = [(item.pose.position.x, item.pose.position.y) for item in path_msg.poses]
+        if len(points) == 1:
+            return math.hypot(x - points[0][0], y - points[0][1])
+        best = float('inf')
+        for (x1, y1), (x2, y2) in zip(points, points[1:]):
+            dx, dy = x2 - x1, y2 - y1
+            length_sq = dx * dx + dy * dy
+            if length_sq <= 1.0e-12:
+                distance = math.hypot(x - x1, y - y1)
+            else:
+                projection = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length_sq))
+                distance = math.hypot(x - (x1 + projection * dx), y - (y1 + projection * dy))
+            best = min(best, distance)
+        return best
+
+    def _abort_unreliable_goal_locked(self, reason):
+        if self._watchdog_latched or (
+                self._goal_handle is None and self._goal_future is None):
+            return False
+        kind = self._goal_kind or 'unknown'
+        self._watchdog_latched = True
+        self._goal_generation += 1
+        self._cancel_goal_locked()
+        self._goal_sent_at = 0.0
+        self._last_plan = None
+        self._last_plan_received_at = 0.0
+        self._schedule_goal_retry_locked(kind, reason)
+        self.get_logger().error(f'Nav2 {kind} watchdog cancelled goal: {reason}')
+        terminal_write(f'[SAFETY] 取消失效 Nav2 目标: {reason}')
+        return True
+
+    def _check_goal_watchdog_locked(self, now, nav_pose):
+        if self._goal_handle is None and self._goal_future is None:
+            return False
+        if self._goal_sent_at <= 0.0:
+            return False
+        if self._last_plan_received_at <= 0.0:
+            if now - self._goal_sent_at > self.initial_plan_timeout:
+                return self._abort_unreliable_goal_locked(
+                    f'no plan within {self.initial_plan_timeout:.1f}s')
+            return False
+        if now - self._last_plan_received_at > self.plan_stale_timeout:
+            return self._abort_unreliable_goal_locked(
+                f'plan stale for {now - self._last_plan_received_at:.1f}s')
+        plan = self._last_plan
+        plan_age = now - self._last_plan_received_at
+        if (self.path_deviation_abort > 0.0 and nav_pose is not None and
+                plan is not None and
+                plan_age <= min(0.75, self.plan_stale_timeout * 0.5) and
+                (not plan.header.frame_id or plan.header.frame_id == self.map_frame)):
+            deviation = self._nearest_path_distance(nav_pose, plan)
+            if deviation is not None and deviation > self.path_deviation_abort:
+                return self._abort_unreliable_goal_locked(
+                    f'base_link off path by {deviation:.2f}m')
+        return False
 
     # ------------------------------------------------------------------
     # Nav2 action bridge
@@ -339,6 +416,10 @@ class CompetitionController(Node):
         self._goal_generation += 1
         generation = self._goal_generation
         self._goal_kind = kind
+        self._last_plan = None
+        self._last_plan_received_at = 0.0
+        self._goal_sent_at = time.monotonic()
+        self._watchdog_latched = False
         goal = self._make_goal(target[0], target[1], yaw)
         future = self.nav_client.send_goal_async(
             goal, feedback_callback=lambda feedback: self._feedback_cb(feedback, generation))
@@ -372,6 +453,7 @@ class CompetitionController(Node):
             with self._lock:
                 if generation == self._goal_generation:
                     self._goal_future = None
+                    self._goal_sent_at = 0.0
                     self._schedule_goal_retry_locked(kind, f'send error: {exc}')
             self.get_logger().error(f'Nav2 goal request failed: {exc}')
             return
@@ -386,9 +468,11 @@ class CompetitionController(Node):
             self._goal_future = None
             if not handle.accepted:
                 self._goal_handle = None
+                self._goal_sent_at = 0.0
                 self._schedule_goal_retry_locked(kind, 'goal rejected')
                 return
             self._goal_handle = handle
+            self._watchdog_latched = False
             terminal_write(f'[PLAN] 目标已接受 kind={kind} 路径规划中...')
             result_future = handle.get_result_async()
             result_future.add_done_callback(
@@ -405,12 +489,14 @@ class CompetitionController(Node):
                 return
             self._goal_handle = None
             self._goal_future = None
+            self._goal_sent_at = 0.0
             self._goal_result = status
             if status != GoalStatus.STATUS_SUCCEEDED:
                 self._schedule_goal_retry_locked(kind, f'goal ended status={status}')
                 return
             self._goal_retry_count = 0
             self._goal_retry_at = 0.0
+            self._watchdog_latched = False
             if kind == 'entry':
                 self._entry_goal_done = True
                 self._entry_stable_since = None
@@ -458,6 +544,9 @@ class CompetitionController(Node):
             self._entry_goal_done = False
             self._entry_stable_since = None
             self._goal_generation += 1
+            self._goal_sent_at = 0.0
+            self._last_plan = None
+            self._last_plan_received_at = 0.0
             self._cancel_goal_locked()
             self._publish_state(self.MISSION_RETURN_TO_ENTRY)
             self._publish_mission_route()
@@ -543,6 +632,7 @@ class CompetitionController(Node):
                 return
             if not self._motion_enabled:
                 self._motion_enabled = True
+                self._motion_started_at = time.monotonic()
                 self._running_published = True
                 self._publish_state('running')
                 self._publish_state(self.MISSION_SEARCH_QR)
@@ -550,14 +640,29 @@ class CompetitionController(Node):
                 self.get_logger().info('S1 running: Nav2 owns /cmd_vel; QR scanning armed')
 
             if self._mission_state == self.MISSION_SEARCH_QR:
+                now = time.monotonic()
+                nav_pose = None
+                if self._goal_handle is not None or self._goal_future is not None:
+                    nav_pose = pose if self.nav_base_frame == self.base_frame else self._lookup_pose(
+                        self.nav_base_frame)
+                    if self._check_goal_watchdog_locked(now, nav_pose):
+                        return
                 if (self._goal_handle is None and self._goal_future is None and
-                        self._goal_result is None and time.monotonic() >= self._goal_retry_at):
+                        self._goal_result is None and now >= self._goal_retry_at and
+                        now - self._motion_started_at >= self.nav2_warmup_sec):
                     self._send_goal_locked('qr_search', self.qr_goal, self.qr_goal_yaw)
                 return
 
+            now = time.monotonic()
+            nav_pose = None
+            if self._goal_handle is not None or self._goal_future is not None:
+                nav_pose = pose if self.nav_base_frame == self.base_frame else self._lookup_pose(
+                    self.nav_base_frame)
+                if self._check_goal_watchdog_locked(now, nav_pose):
+                    return
             if (self._pending_entry and not self._cancel_waiting and
                     self._goal_handle is None and self._goal_future is None and
-                    time.monotonic() >= self._goal_retry_at):
+                    now >= self._goal_retry_at):
                 self._pending_entry = False
                 self._goal_result = None
                 self._send_goal_locked('entry', self.entry_goal, self.entry_yaw)

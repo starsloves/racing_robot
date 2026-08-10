@@ -67,7 +67,7 @@ class QRScannerNode(Node):
         self.diagnostics_log_filename = str(
             self.get_parameter('diagnostics_log_filename').value
         ).strip()
-self.debug_image_enabled = bool(self.get_parameter('debug_image_enabled').value)
+        self.debug_image_enabled = bool(self.get_parameter('debug_image_enabled').value)
         self.debug_image_filename = str(
             self.get_parameter('debug_image_filename').value
         ).strip() or 'qr_latest.jpg'
@@ -191,7 +191,7 @@ self.debug_image_enabled = bool(self.get_parameter('debug_image_enabled').value)
             f'debug_image={self.debug_image_path() or "disabled"}'
         )
 
-def diagnostic_log_path(self):
+    def diagnostic_log_path(self):
         if self._diag_log is None:
             return ''
         return self._diag_log.path

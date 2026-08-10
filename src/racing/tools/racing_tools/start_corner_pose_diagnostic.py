@@ -2,8 +2,9 @@
 """Startup localization from the rear map-origin corner.
 
 A stable rear L-corner is matched to the known map corner (0, 0).  The locked
-map->odom transform is then published continuously for the competition.  This
-node never publishes motion commands.
+map->odom transform is then published for the competition.  In production it
+is static after the startup lock; live-heading diagnostics may publish it
+dynamically.  This node never publishes motion commands.
 """
 
 import json
@@ -20,7 +21,13 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rclpy.time import Time
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Float64, String
-from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
+from tf2_ros import (
+    Buffer,
+    StaticTransformBroadcaster,
+    TransformBroadcaster,
+    TransformException,
+    TransformListener,
+)
 
 from racing_common.session_file_log import SessionFileLog
 
@@ -76,6 +83,8 @@ class StartCornerPoseDiagnostic(Node):
         self._last_status = None
         self._last_status_time = 0.0
         self._tf_broadcaster = TransformBroadcaster(self)
+        self._static_tf_broadcaster = StaticTransformBroadcaster(self)
+        self._static_tf_sent = False
         self._last_scan_transform = None
         self._last_trace_pose_time = 0.0
         self._last_trace_odom = None
@@ -855,7 +864,13 @@ class StartCornerPoseDiagnostic(Node):
         transform.transform.translation.z = 0.0
         transform.transform.rotation.z = math.sin(yaw * 0.5)
         transform.transform.rotation.w = math.cos(yaw * 0.5)
-        self._tf_broadcaster.sendTransform(transform)
+        if self.live_heading_enabled:
+            self._tf_broadcaster.sendTransform(transform)
+        elif not self._static_tf_sent:
+            # Startup localization is locked in production.  A static edge
+            # avoids future extrapolation when EKF publishes at a lower rate.
+            self._static_tf_broadcaster.sendTransform(transform)
+            self._static_tf_sent = True
         self._record_pose_trace(x, y, yaw, source)
 
     def _publish_valid(self, result):

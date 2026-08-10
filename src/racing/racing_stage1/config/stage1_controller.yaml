@@ -13,6 +13,7 @@ competition_controller:
     mission_route_topic: stage1_mission_route
     planner_plan_topic: /planner_server/plan
     planner_plan_fallback_topic: /plan
+    nav_base_frame: base_link
     navigate_action: /navigate_to_pose
     nav2_lifecycle_node: bt_navigator
     lifecycle_service_prefix: /competition/stage1
@@ -34,5 +35,9 @@ competition_controller:
     action_server_timeout_sec: 0.0
     goal_retry_delay_sec: 1.0
     goal_retry_limit: 3
+    nav2_warmup_sec: 1.0
+    initial_plan_timeout_sec: 3.0
+    plan_stale_timeout_sec: 2.5
+    path_deviation_abort_m: 0.22
     # Terminal and web both report the same map->base_footprint TF pose.
     pose_log_period_sec: 0.50

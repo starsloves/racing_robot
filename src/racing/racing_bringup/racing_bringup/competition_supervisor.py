@@ -52,7 +52,9 @@ class CompetitionSupervisor(Node):
         self.declare_parameter('base_ready_stable_sec', 1.5)
         self.declare_parameter('base_message_max_age_sec', 2.0)
         self.declare_parameter('base_localizer_topic', 'start_corner_pose_diagnostic')
-        self.declare_parameter('base_loss_grace_sec', 3.0)
+        self.declare_parameter('base_loss_grace_sec', 8.0)
+        self.declare_parameter('base_health_probe_period_sec', 1.0)
+        self.declare_parameter('monitor_period_sec', 0.10)
         self.declare_parameter('stage_start_timeout_sec', 20.0)
         self.declare_parameter('handoff_timeout_sec', 12.0)
         self.declare_parameter('shutdown_grace_sec', 3.0)
@@ -136,6 +138,16 @@ class CompetitionSupervisor(Node):
         self._last_monitor_finished = time.monotonic()
         self._last_wait_log = 0.0
         self._last_tf_failure_log = {}
+        self._health_probe_at = 0.0
+        self._health_probe_cache = {
+            'cmd_subscribers': 0,
+            'odom_publishers': [],
+            'transforms': {
+                'map_to_odom_combined': False,
+                'odom_combined_to_base_footprint': False,
+                'map_to_base_footprint': False,
+            },
+        }
         self._base_loss_since = None
         self._competition_phase = None
         # Top-level launch can shut down the ROS context before executor spin
@@ -145,9 +157,13 @@ class CompetitionSupervisor(Node):
         self._set_competition_phase(0)
         self._publish_state()
         # Handoff activation is event-driven; this timer is only the service
-        # discovery/retry safety net.  A 50 ms cadence bounds that fallback
-        # without adding a visible command gap.
-        self._timer = self.create_timer(0.05, self._monitor)
+        # discovery/retry safety net.  Sensor freshness is updated directly
+        # by the reentrant subscriptions, so the monitor need not run at a
+        # high rate.
+        self._timer = self.create_timer(
+            max(0.05, float(self.get_parameter('monitor_period_sec').value)),
+            self._monitor,
+        )
         self._heartbeat = self.create_timer(1.0, self._publish_state)
 
     def _mark(self, name):
@@ -204,44 +220,61 @@ class CompetitionSupervisor(Node):
             # than periodically like the live sensor streams.
             if stamp is None or (name != 'map' and now - stamp > max_age)
         ]
-        cmd_subscribers = self.count_subscribers('/cmd_vel')
-        try:
-            odom_publishers = [
-                {
-                    'node_name': str(info.node_name),
-                    'node_namespace': str(info.node_namespace),
-                    'gid': str(info.endpoint_gid),
-                }
-                for info in self.get_publishers_info_by_topic(
-                    '/odom_combined', no_mangle=False)
-            ]
-        except Exception as exc:
-            odom_publishers = [{'error': f'{type(exc).__name__}: {exc}'}]
-        transforms = {}
-        tf_timeout = max(0.0, float(self.get_parameter('base_tf_timeout_sec').value))
-        for label, parent, child in (
-            ('map_to_odom_combined', 'map', 'odom_combined'),
-            ('odom_combined_to_base_footprint', 'odom_combined', 'base_footprint'),
-            ('map_to_base_footprint', 'map', 'base_footprint'),
-        ):
+        # DDS graph queries and TF waits are comparatively expensive.  Running
+        # them on every 100 ms monitor tick can starve this process's sensor
+        # callbacks during Nav2 startup, making healthy streams look stale.
+        # Freshness stays live; only the slow structural probes are cached.
+        probe_period = max(
+            0.1, float(self.get_parameter('base_health_probe_period_sec').value))
+        if now - self._health_probe_at >= probe_period:
+            self._health_probe_at = now
+            cmd_subscribers = self.count_subscribers('/cmd_vel')
             try:
-                # Only the composed edge may need to wait for the two dynamic
-                # samples to share a timestamp.  Keep the diagnostic edge
-                # checks non-blocking so the supervisor never starves sensor
-                # callbacks while reporting the missing link.
-                timeout = tf_timeout if label == 'map_to_base_footprint' else 0.0
-                self._tf_buffer.lookup_transform(
-                    parent, child, rclpy.time.Time(),
-                    timeout=Duration(seconds=timeout),
-                )
-                transforms[label] = True
-            except TransformException as exc:
-                transforms[label] = False
-                last_log = self._last_tf_failure_log.get(label, 0.0)
-                if now - last_log >= 5.0:
-                    self._last_tf_failure_log[label] = now
-                    self.get_logger().warning(
-                        f'TF check failed {label} ({parent}->{child}): {exc}')
+                odom_publishers = [
+                    {
+                        'node_name': str(info.node_name),
+                        'node_namespace': str(info.node_namespace),
+                        'gid': str(info.endpoint_gid),
+                    }
+                    for info in self.get_publishers_info_by_topic(
+                        '/odom_combined', no_mangle=False)
+                ]
+            except Exception as exc:
+                odom_publishers = [{'error': f'{type(exc).__name__}: {exc}'}]
+            transforms = {}
+            tf_timeout = max(0.0, float(self.get_parameter('base_tf_timeout_sec').value))
+            for label, parent, child in (
+                ('map_to_odom_combined', 'map', 'odom_combined'),
+                ('odom_combined_to_base_footprint', 'odom_combined', 'base_footprint'),
+                ('map_to_base_footprint', 'map', 'base_footprint'),
+            ):
+                try:
+                    # Only the composed edge may need to wait for the two dynamic
+                    # samples to share a timestamp.  Keep the diagnostic edge
+                    # checks non-blocking so the supervisor never starves sensor
+                    # callbacks while reporting the missing link.
+                    timeout = tf_timeout if label == 'map_to_base_footprint' else 0.0
+                    self._tf_buffer.lookup_transform(
+                        parent, child, rclpy.time.Time(),
+                        timeout=Duration(seconds=timeout),
+                    )
+                    transforms[label] = True
+                except TransformException as exc:
+                    transforms[label] = False
+                    last_log = self._last_tf_failure_log.get(label, 0.0)
+                    if now - last_log >= 5.0:
+                        self._last_tf_failure_log[label] = now
+                        self.get_logger().warning(
+                            f'TF check failed {label} ({parent}->{child}): {exc}')
+            self._health_probe_cache = {
+                'cmd_subscribers': cmd_subscribers,
+                'odom_publishers': odom_publishers,
+                'transforms': transforms,
+            }
+        else:
+            cmd_subscribers = self._health_probe_cache['cmd_subscribers']
+            odom_publishers = self._health_probe_cache['odom_publishers']
+            transforms = self._health_probe_cache['transforms']
         return {
             'stale_messages': stale_messages,
             'localizer_valid': self._localizer_valid,
