@@ -57,7 +57,7 @@ def generate_launch_description():
             {'scan_task_phase': 1},
             # Keep QR startup evidence separate from the Stage1 controller
             # session, which truncates latest.log when it starts.
-            {'diagnostics_log_subdir': 'competition_stage1'},
+            {'diagnostics_log_subdir': 'stage1'},
             {'diagnostics_log_filename': 'qr_scanner.log'},
             {'crop_top_ratio': 0.25},
             {'crop_top_px': 80},

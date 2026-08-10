@@ -3,6 +3,7 @@ import threading
 from types import SimpleNamespace
 
 from lifecycle_msgs.msg import State
+import racing_stage1.competition_controller as controller_module
 from racing_stage1.competition_controller import CompetitionController, normalize_angle
 
 
@@ -38,3 +39,16 @@ def test_nav2_lifecycle_callback_marks_only_active_state_ready():
 
     assert controller._nav2_active is True
     assert controller._nav2_state_future is None
+
+
+def test_real_pose_log_uses_map_tf_value_once_per_period(monkeypatch):
+    controller = CompetitionController.__new__(CompetitionController)
+    controller._last_pose_log_at = 0.0
+    controller.pose_log_period = 60.0
+    messages = []
+    monkeypatch.setattr(controller_module, 'terminal_write', messages.append)
+
+    controller._log_real_pose((1.25, 2.50, math.pi / 2.0))
+    controller._log_real_pose((9.0, 9.0, 0.0))
+
+    assert messages == ['[POSE_REAL] real_map=(1.250,2.500) yaw=90.0deg source=map_tf']

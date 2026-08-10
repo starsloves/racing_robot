@@ -58,10 +58,13 @@ class VisionPDetector:
         # HTTP 可视化。视觉快照固定覆盖到 Stage3 日志目录，避免在
         # /tmp 或工作区其他位置散落诊断图片。
         self._combined_frame = None
+        session_root = os.environ.get('RACING_SESSION_ROOT', '').strip()
         workspace_root = os.getcwd()
         if not os.path.isdir(os.path.join(workspace_root, 'src', 'racing')):
             workspace_root = os.environ.get('DEV_WS', workspace_root)
-        self._vision_log_dir = os.path.join(workspace_root, 'log', 'competition_stage3')
+        self._vision_log_dir = os.path.join(
+            session_root, 'stage3'
+        ) if session_root else os.path.join(workspace_root, 'log', 'stage3')
         os.makedirs(self._vision_log_dir, exist_ok=True)
         # 与现有 vision_viewer.html 共用的图像路径；每帧原子覆盖。
         self._jpeg_output_path = os.path.join(self._vision_log_dir, 'latest_vision.jpg')

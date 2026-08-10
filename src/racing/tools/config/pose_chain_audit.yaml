@@ -1,0 +1,13 @@
+pose_chain_audit:
+  ros__parameters:
+    record_scan_ranges: true
+    record_map_data: true
+    inventory_period_sec: 1.0
+    tf_period_sec: 0.20
+    position_jump_min_m: 0.25
+    position_speed_factor: 1.5
+    position_jump_slack_m: 0.10
+    yaw_jump_min_rad: 0.50
+    yaw_jump_max_dt_sec: 0.50
+    audit_subdir: pose_chain_audit
+    audit_filename: pose_chain_audit.jsonl

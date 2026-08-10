@@ -21,10 +21,13 @@ ros2 launch racing_bringup competition_total.launch.py
 - map server、lifecycle manager、启动雷达定位节点发布的 `map -> odom_combined` TF；
 - 语音节点；
 - `competition_supervisor`。
+- `pose_chain_audit`，被动记录原始轮速/IMU、EKF、控制指令、雷达、地图、`/tf` 和
+  `map->base_footprint` 查询；每条记录带 publisher 节点、GID、消息时间和接收年龄，写入
+  `log/pose_chain_audit/<session>/pose_chain_audit.jsonl`。
 
 生产环境没有 BNO055。`/imu/data` 的角速度来自底盘 IMU 经启动零偏校准后的链路；Madgwick 的 `orientation.yaw` 没有磁力计绝对参考，不能作为生产绝对航向。
 
-Supervisor 只有在下列条件连续稳定后才开始 S1：`/cmd_vel` 有底盘订阅者、IMU、EKF 里程计、雷达、相机和 `/map` 都持续有新消息，且启动雷达定位已经锁定并发布 `map -> base_footprint`。发现上一轮残留的阶段节点会拒绝本轮会话。
+Supervisor 只有在下列条件连续稳定后才开始 S1：`/cmd_vel` 有底盘订阅者、IMU、EKF 里程计、雷达、相机和 `/map` 都持续有新消息，且启动雷达定位已经锁定并发布 `map -> base_footprint`。`/odom_combined` 必须恰好只有一个 publisher；否则记录完整 publisher 身份并拒绝取得运动权。发现上一轮残留的阶段节点会拒绝本轮会话。
 
 Supervisor 也是 `competition_phase` 的唯一 transient-local 发布者：待命/结束为 `0`，取得运动权的 S1/S2/S3 分别为 `1/2/3`。阶段专属 AI 只能以该话题判断是否允许执行任务，不能从其他阶段状态推断运动权。
 
@@ -74,6 +77,8 @@ session_id, base_state, active_stage, prewarming_stage, lifecycle_state, reason
 
 启动定位器仍由雷达墙角提供唯一的 `map -> odom_combined`，Nav2 只启动 `navigation_launch.py`，不启动 AMCL 或第二个 map TF 源。`map -> odom_combined -> base_footprint -> base_link -> laser` 必须在 `/scan` 时间戳下完整可查；其中 `base_link -> laser` 由公共 bringup 静态发布。`/odom_combined` 的短时位置和 `/imu/data` 的航向仍遵守全局位姿规则，Nav2 通过 TF 使用这条统一链。
 
+S1 Smac Hybrid-A* 的启发式查表限制为覆盖地图对角线的 8 m；这只缩短冷启动查表，不改变地图内搜索约束。
+
 扫码完成时适配器取消二维码 `NavigateToPose`，发布 `competition_qr_task`，再从实时 TF 位姿向通道入口 `(2.50,2.50,90°)` 发送第二个 action。Nav2 成功且入口位姿在窗口内稳定后，适配器发布 `stage1_state=handoff_ready` 和 `stage2_entry_pose`，进入 `handoff_wait`。生产路径不再使用盲开中线、固定倒车、墙体 map-X 自动校正或并行安全命令发布者。
 
 ### S2
@@ -112,20 +117,27 @@ S1 -> S2 和 S2 -> S3 的正常路径不会由 Supervisor 主动发送零速：
 
 ## 6. 坐标和日志
 
+- 运动过程的唯一连续解算链为：底盘串口轮速 `vx/vy` → `/odom` 速度 → `robot_localization` EKF；IMU 陀螺 `angular_velocity.z` 同时进入 EKF 提供航向变化 → `/odom_combined` → 与初始 `map -> odom_combined` 锚点组成 `map -> base_footprint`。运动过程中不再由控制器或网页重新积分、二次旋转或覆盖这三个量。
 - `/odom_combined` 只提供 XY、距离和位移；绝不使用其 orientation/yaw 导航。
 - `/imu/data` 是所有阶段唯一的航向和转角来源。
-- S1 交接记录 `stage2_entry_pose`；S2 交接记录 `stage3_entry_anchor`。
+- S1 终端 `[POSE_REAL]` 与 Web 的 `pose.x/y/yaw` 均读取同一个 `map -> base_footprint` TF；S1 交接记录 `stage2_entry_pose`；S2 交接记录 `stage3_entry_anchor`。
 - 三阶段持续从 `map -> base_footprint` 输出真实 `[POSE_REAL]`。
 - Web 监视器只读取 `map -> base_footprint` 的完整 TF（X/Y/yaw）并做像素映射；不再积分 IMU、读取启动位姿覆盖坐标或维护第二套 Map 位姿。
 - 启动定位器将原始扫描、外参 TF、里程计、IMU、墙角解和最终 Map 位姿写入 `log/coordinate_trace/<session>/start_corner_trace.jsonl`。
+- `pose_chain_audit` 另外记录每个关键话题的完整消息字段、`/tf`/`/tf_static` 每条变换、地图栅格以及周期性 publisher/ EKF 参数快照，用于区分“谁发了转弯指令”和“哪条位姿边先跳变”。
 
 每次比赛使用统一 `COMPETITION_SESSION_ID`，日志写入：
 
 ```text
-log/competition_runtime/<session_id>/
-log/competition_stage1/<session_id>/latest.log
-log/competition_stage2/<session_id>/latest.log
-log/competition_stage3/<session_id>/latest.log
+log/competition_runs/<session_id>/
+├── ros/runtime/            # ROS 系统日志（顶层 launch）
+├── ros/stage1/  ros/stage2/  ros/stage3/   # 各阶段 ROS 日志
+├── stage1/latest.log       # 会话日志 + qr_latest.jpg（qr_scanner）
+├── stage2/latest.log       # 会话日志 + ai_capture.jpg + local-smolvlm.log（vision_ai）
+├── stage3/latest.log       # 会话日志 + latest_vision.jpg（Stage3）
+├── pose_chain_audit/       # 位姿链审计 JSONL
+└── coordinate_trace/       # 坐标追踪 JSONL
+tools/                       # 开发工具日志（video / manual_trajectories / telemetry_web_monitor）
 ```
 
 各阶段目录下的 `latest.log` 只是指向最新会话的软链接，历史事故日志不会被覆盖。终端只输出 `[STARTUP]`、`[TASK]`、`[POSE_REAL]` 和 `[ERROR]`。
@@ -133,3 +145,29 @@ log/competition_stage3/<session_id>/latest.log
 ## 7. 独立测试
 
 三个 `competition_stage*.launch.py` 可以用于隔离测试，但测试 phase/task 必须是隔离话题，不能启动生产阶段 relay，也不能影响 `competition_total.launch.py`。
+
+## 8.运动链路
+```txt
+STM32 原始轮速
+  → origincar_base 解码 vx / vy
+  → /odom.twist
+  → robot_localization EKF
+
+STM32 原始陀螺 z
+  → /imu/data_raw
+  → /imu/data.angular_velocity.z
+  → EKF 航向变化
+
+/odom vx/vy + IMU gyro_z
+  → /odom_combined
+  → odom_combined→base_footprint TF
+
+初始 T₀(map→odom_combined)
+  + 动态 /odom_combined
+  → map→base_footprint TF
+
+map→base_footprint TF
+  ├→ S1 控制器
+  ├→ 终端 [POSE_REAL]
+  └→ 网页 Map X/Y/yaw
+```

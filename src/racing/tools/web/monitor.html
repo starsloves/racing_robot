@@ -39,13 +39,13 @@
 <main>
   <canvas id="map"></canvas>
   <section class="panel">
-    <h2>实时位姿 / 实际输出</h2>
+    <h2>实时位姿（TF 唯一来源）/ 实际输出</h2>
     <div>Map X：<span id="x" class="value">-</span> m</div>
     <div>Map Y：<span id="y" class="value">-</span> m</div>
     <div>地图校正航向：<span id="yaw" class="value">-</span>°</div>
     <div>/cmd_vel 线速度：<span id="cmdv" class="value">-</span> m/s</div>
     <div>/cmd_vel 角速度：<span id="cmdw" class="value">-</span> rad/s</div>
-    <div>目标：<span id="target" class="value">-</span></div>
+    <div>规划目标（不是实时位姿）：<span id="target" class="value">-</span></div>
     <hr>
     <h2>传感器与碰撞前沿</h2>
     <div>TF：<span id="tf">-</span></div>
@@ -60,7 +60,7 @@
     <hr>
     <h2>规划器最近事件</h2>
     <div id="events">等待 Stage1 日志…</div>
-    <div class="hint">橙色实线是当前锁定的安全规划路线，紫色圆点是任务目标/二维码搜索区域，蓝线是去抖后的历史轨迹，红点是实时激光点，紫色十字是当前目标。页面只读，不会向小车发送速度指令。</div>
+    <div class="hint">绿色车体和 X/Y/yaw 只来自 map→base_footprint TF；橙线是规划路线，紫点是任务点，蓝线是历史轨迹，红点是激光投影，紫色十字是日志目标。页面只读，不会向小车发送速度指令。</div>
     <a href="/snapshot.png" target="_blank">打开当前调试图</a>
     <img id="debugImage" alt="实时调试快照">
 </section>

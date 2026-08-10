@@ -34,3 +34,5 @@ competition_controller:
     action_server_timeout_sec: 0.0
     goal_retry_delay_sec: 1.0
     goal_retry_limit: 3
+    # Terminal and web both report the same map->base_footprint TF pose.
+    pose_log_period_sec: 0.50

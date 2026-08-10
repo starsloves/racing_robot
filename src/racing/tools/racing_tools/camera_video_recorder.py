@@ -18,7 +18,7 @@ class CameraVideoRecorder(Node):
 
         self.declare_parameter('camera_topic', '/aurora/rgb/image_raw')
         self.declare_parameter('use_compressed', False)
-        self.declare_parameter('output_dir', 'dev_ws/log/video')
+        self.declare_parameter('output_dir', '')
         self.declare_parameter('output_prefix', 'stage2_path')
         self.declare_parameter('max_duration_sec', 0.0)
         self.declare_parameter('rgb_fps', 15)
@@ -27,6 +27,11 @@ class CameraVideoRecorder(Node):
         self.camera_topic = str(self.get_parameter('camera_topic').value)
         self.use_compressed = bool(self.get_parameter('use_compressed').value)
         raw_dir = str(self.get_parameter('output_dir').value)
+        if not raw_dir:
+            raw_dir = os.path.join(
+                os.environ.get('DEV_WS', os.path.expanduser('~/dev_ws')),
+                'log', 'tools', 'video',
+            )
         self.output_dir = raw_dir if os.path.isabs(raw_dir) else os.path.join(os.path.expanduser('~'), raw_dir)
         self.output_prefix = str(self.get_parameter('output_prefix').value)
         self.max_duration_sec = max(0.0, float(self.get_parameter('max_duration_sec').value))

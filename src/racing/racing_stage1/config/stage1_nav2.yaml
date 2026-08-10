@@ -27,7 +27,8 @@ controller_server:
       plugin: nav2_mppi_controller::MPPIController
       motion_model: Ackermann
       AckermannConstraints:
-        min_turning_r: 0.62
+        # wheelbase / tan(max_steer_angle) = 0.30 / tan(30 deg) ~= 0.52 m
+        min_turning_r: 0.52
       model_dt: 0.10
       time_steps: 20
       batch_size: 800
@@ -106,6 +107,11 @@ planner_server:
       allow_unknown: false
       max_iterations: 100000
       max_planning_time: 1.0
+      # The default 20 m heuristic table is much larger than this 7.1 m map
+      # and caused a ~65 s cold-start pause.  Keep the table just beyond the
+      # map diagonal so initialization is bounded without changing search
+      # quality inside the competition map.
+      lookup_table_size: 8.0
       # MPPI is configured forward-only, so the global planner must not emit
       # reverse primitives that the local controller cannot execute.
       motion_model_for_search: DUBIN
@@ -115,7 +121,10 @@ planner_server:
       angle_quantization_bins: 48
       analytic_expansion_ratio: 3.5
       analytic_expansion_max_length: 3.0
-      minimum_turning_radius: 0.62
+      # Keep Smac's Dubins geometry consistent with the Ackermann controller
+      # and the chassis steering limit above; 0.62 m forces an outside-wall
+      # detour from the QR area and becomes infeasible with real scan costs.
+      minimum_turning_radius: 0.52
       reverse_penalty: 10.0
       change_penalty: 20.0
       non_straight_penalty: 5.0

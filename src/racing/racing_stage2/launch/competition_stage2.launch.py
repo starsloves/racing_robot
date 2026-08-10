@@ -165,8 +165,10 @@ def generate_launch_description():
 
     # Do not suppress RCUTILS: detailed startup diagnostics must remain
     # available on disk even though child stdout/stderr is terminal-isolated.
+    session_root = os.environ.get('RACING_SESSION_ROOT', '').strip()
     runtime_ros_log_dir = SetEnvironmentVariable(
-        'ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_stage2/ros'
+        'ROS_LOG_DIR', os.path.join(session_root, 'ros', 'stage2')
+        if session_root else os.path.join(os.environ.get('DEV_WS', os.path.expanduser('~/dev_ws')), 'log', 'stage2', 'ros')
     )
     isolate_process_output = SetEnvironmentVariable(
         'OVERRIDE_LAUNCH_PROCESS_OUTPUT', 'own_log'

@@ -125,6 +125,7 @@ class CompetitionController(Node):
         self._entry_stable_since = None
         self._entry_announced = False
         self._last_plan = None
+        self._last_pose_log_at = 0.0
         self._shutdown_timer = None
         self._timer = self.create_timer(0.1, self._tick, callback_group=self._group)
 
@@ -165,6 +166,7 @@ class CompetitionController(Node):
             'action_server_timeout_sec': 0.0,
             'goal_retry_delay_sec': 1.0,
             'goal_retry_limit': 3,
+            'pose_log_period_sec': 0.50,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -198,6 +200,7 @@ class CompetitionController(Node):
         self.action_server_timeout = max(0.0, float(value('action_server_timeout_sec')))
         self.goal_retry_delay = max(0.1, float(value('goal_retry_delay_sec')))
         self.goal_retry_limit = max(0, int(value('goal_retry_limit')))
+        self.pose_log_period = max(0.2, float(value('pose_log_period_sec')))
 
     # ------------------------------------------------------------------
     # State and TF
@@ -254,6 +257,18 @@ class CompetitionController(Node):
             1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z),
         )
         return float(translation.x), float(translation.y), normalize_angle(yaw)
+
+    def _log_real_pose(self, pose):
+        """Expose the same map TF pose used by S1 and the web monitor."""
+        now = time.monotonic()
+        if now - self._last_pose_log_at < self.pose_log_period:
+            return
+        self._last_pose_log_at = now
+        x, y, yaw = pose
+        terminal_write(
+            f'[POSE_REAL] real_map=({x:.3f},{y:.3f}) '
+            f'yaw={math.degrees(yaw):.1f}deg source=map_tf'
+        )
 
     def _publish_mission_route(self):
         message = Path()
@@ -485,6 +500,7 @@ class CompetitionController(Node):
             pose = self._lookup_pose()
             if pose is not None:
                 self._current_pose = pose
+                self._log_real_pose(pose)
                 if self._start_pose is None:
                     self._start_pose = pose
                     self._publish_mission_route()

@@ -29,6 +29,19 @@ from racing_common.process_lifecycle import install_parent_death_signal
 from voice_api.vision_analyzer import VisionAnalyzer
 
 
+def _resolve_stage2_dir():
+    session_root = os.environ.get('RACING_SESSION_ROOT', '').strip()
+    if session_root:
+        return os.path.join(session_root, 'stage2')
+    dev_ws = os.environ.get('DEV_WS', '').strip()
+    if dev_ws:
+        return os.path.join(dev_ws, 'log', 'stage2')
+    cwd = os.getcwd()
+    if os.path.isdir(os.path.join(cwd, 'src', 'racing')):
+        return os.path.join(cwd, 'log', 'stage2')
+    return os.path.join(os.path.expanduser('~'), 'dev_ws', 'log', 'stage2')
+
+
 class VisionAINode(Node):
     """Cache camera frames and run cloud analysis outside the ROS callbacks."""
 
@@ -74,10 +87,11 @@ class VisionAINode(Node):
         capture_config = self._config.get('capture', {})
         if not isinstance(capture_config, dict):
             capture_config = {}
-        self._capture_image_path = Path(str(capture_config.get(
-            'save_path', '/home/sunrise/dev_ws/log/competition_stage2/ai_capture.jpg'
-        ))).expanduser()
-        self._stage2_log_path = self._capture_image_path.with_name('latest.log')
+        self._stage2_dir = _resolve_stage2_dir()
+        self._capture_image_path = Path(
+            os.path.join(self._stage2_dir, 'ai_capture.jpg')
+        )
+        self._stage2_log_path = Path(os.path.join(self._stage2_dir, 'latest.log'))
         self._stage2_log_active = False
         self._vision_models: dict[str, VisionAnalyzer] = {}
         for name, model in models.items():
@@ -376,7 +390,7 @@ class VisionAINode(Node):
                 )
                 self._publish_status('local_vlm_failed:missing_files')
                 return
-            log_path = Path(str(self._local_config.get('log_path', '')).strip())
+            log_path = Path(os.path.join(self._stage2_dir, 'local-smolvlm.log'))
             try:
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 self._local_server_log = log_path.open('a', encoding='utf-8')

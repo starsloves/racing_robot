@@ -15,7 +15,7 @@ from std_msgs.msg import Empty, String
 from tf2_ros import TransformException
 
 from racing_stage2.stage2_inertial_base import Stage2InertialBase
-from racing_stage2.session_file_log import SessionFileLog
+from racing_common.session_file_log import SessionFileLog
 from racing_common.obstacle_marker_publisher import ObstacleMarkerPublisher
 from racing_common.process_lifecycle import install_parent_death_signal
 from racing_common.racing_logger import (
@@ -542,7 +542,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         )
 
     def _setup_session_log(self) -> None:
-        self.declare_parameter('session_log_subdir', 'competition_stage2')
+        self.declare_parameter('session_log_subdir', 'stage2')
         self.declare_parameter('session_log_filename', 'latest.log')
         self.declare_parameter('session_telemetry_interval_sec', 0.25)
         self.declare_parameter('session_track_ctrl_interval_sec', 0.50)
@@ -550,7 +550,7 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
         self.declare_parameter('control_gap_stop_sec', 1.0)
         subdir = (
             str(self.get_parameter('session_log_subdir').value).strip()
-            or 'competition_stage2'
+            or 'stage2'
         )
         filename = (
             str(self.get_parameter('session_log_filename').value).strip() or 'latest.log'
@@ -593,7 +593,6 @@ class Stage2InertialNavigator(Stage2InertialBase, Stage2VisionMixin):
             self._session_log_subdir,
             self._session_log_filename,
             session_title='Stage2 competition navigator',
-            workspace_root=os.path.expanduser('~/dev_ws'),
         )
         self.get_logger().info(
             f'{self.test_feedback_prefix}会话日志: {self._session_log.path}'

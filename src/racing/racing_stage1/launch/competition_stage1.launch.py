@@ -194,8 +194,10 @@ def generate_launch_description():
 
     # Process output remains off the terminal, while ROS keeps complete
     # startup and failure diagnostics in this stage's runtime log directory.
+    session_root = os.environ.get('RACING_SESSION_ROOT', '').strip()
     runtime_ros_log_dir = SetEnvironmentVariable(
-        'ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_stage1/ros'
+        'ROS_LOG_DIR', os.path.join(session_root, 'ros', 'stage1')
+        if session_root else os.path.join(os.environ.get('DEV_WS', os.path.expanduser('~/dev_ws')), 'log', 'stage1', 'ros')
     )
     isolate_process_output = SetEnvironmentVariable(
         'OVERRIDE_LAUNCH_PROCESS_OUTPUT', 'own_log'

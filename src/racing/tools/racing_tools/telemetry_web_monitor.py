@@ -175,8 +175,8 @@ class TelemetryWebMonitor(Node):
         self.declare_parameter('cmd_topic', '/cmd_vel')
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'base_footprint')
-        self.declare_parameter('stage1_log_path', '/home/sunrise/dev_ws/log/competition_stage1/latest.log')
-        self.declare_parameter('snapshot_dir', '/home/sunrise/dev_ws/log/telemetry_web_monitor')
+        self.declare_parameter('stage1_log_path', '')
+        self.declare_parameter('snapshot_dir', '')
         self.declare_parameter('snapshot_period_sec', 0.50)
         self.declare_parameter('history_min_step_m', 0.06)
 
@@ -192,6 +192,16 @@ class TelemetryWebMonitor(Node):
         self.map_image_path = os.path.join(bringup_dir, 'map', 'map_restricted.png')
         self.stage1_log_path = str(self.get_parameter('stage1_log_path').value)
         self.snapshot_dir = str(self.get_parameter('snapshot_dir').value)
+        if not self.stage1_log_path:
+            session_root = os.environ.get('RACING_SESSION_ROOT', '').strip()
+            if session_root:
+                self.stage1_log_path = os.path.join(session_root, 'stage1', 'latest.log')
+            else:
+                dev_ws = os.environ.get('DEV_WS', os.path.expanduser('~/dev_ws'))
+                self.stage1_log_path = os.path.join(dev_ws, 'log', 'stage1', 'latest.log')
+        if not self.snapshot_dir:
+            dev_ws = os.environ.get('DEV_WS', os.path.expanduser('~/dev_ws'))
+            self.snapshot_dir = os.path.join(dev_ws, 'log', 'tools', 'telemetry_web_monitor')
         self.snapshot_period = max(0.2, float(self.get_parameter('snapshot_period_sec').value))
         self.history_min_step = max(0.01, float(self.get_parameter('history_min_step_m').value))
         os.makedirs(self.snapshot_dir, exist_ok=True)

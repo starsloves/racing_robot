@@ -26,7 +26,6 @@ setup(
             'stage2_inertial_navigator = racing_stage2.stage2_inertial_navigator:main',
             'lidar_obstacle_circle_markers = racing_stage2.lidar_obstacle_circle_markers:main',
             'vision_preview = racing_stage2.vision_preview:main',
-            'data_recorder = racing_stage2.data_recorder:main',
             'stage_test_publisher = racing_stage2.stage_test_publisher:main',
         ],
     },

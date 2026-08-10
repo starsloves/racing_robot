@@ -151,16 +151,22 @@ void origincar_base::Publish_ImuSensor()
     Imu_Data_Pub.orientation.w = Mpu6050.orientation.w;
     Imu_Data_Pub.orientation_covariance[0] = 1e6; 
     Imu_Data_Pub.orientation_covariance[4] = 1e6;
-    Imu_Data_Pub.orientation_covariance[8] = 1e-6;
+    Imu_Data_Pub.orientation_covariance[8] = 1e6;
     Imu_Data_Pub.angular_velocity.x = Mpu6050.angular_velocity.x;
     Imu_Data_Pub.angular_velocity.y = Mpu6050.angular_velocity.y;
     Imu_Data_Pub.angular_velocity.z = Mpu6050.angular_velocity.z;
     Imu_Data_Pub.angular_velocity_covariance[0] = 1e6;
     Imu_Data_Pub.angular_velocity_covariance[4] = 1e6;
-    Imu_Data_Pub.angular_velocity_covariance[8] = 1e-6;
+    // Do not make one raw gyro sample infinitely authoritative; a serial
+    // glitch must be rejected by robot_localization rather than becoming a
+    // visible yaw jump.
+    Imu_Data_Pub.angular_velocity_covariance[8] = 0.01;
     Imu_Data_Pub.linear_acceleration.x = Mpu6050.linear_acceleration.x;
     Imu_Data_Pub.linear_acceleration.y = Mpu6050.linear_acceleration.y;
     Imu_Data_Pub.linear_acceleration.z = Mpu6050.linear_acceleration.z;
+    Imu_Data_Pub.linear_acceleration_covariance[0] = 0.04;
+    Imu_Data_Pub.linear_acceleration_covariance[4] = 0.04;
+    Imu_Data_Pub.linear_acceleration_covariance[8] = 0.04;
 
     imu_publisher->publish(Imu_Data_Pub);
 
@@ -190,6 +196,13 @@ void origincar_base::Publish_Odom()
     odom.twist.twist.linear.x =  Robot_Vel.X;
     odom.twist.twist.linear.y =  Robot_Vel.Y;
     odom.twist.twist.angular.z = Robot_Vel.Z; 
+    // The EKF consumes only vx/vy from this message.  Keep covariance
+    // explicit so a future config cannot accidentally treat the raw wheel
+    // pose or wheel yaw as a high-confidence world-frame measurement.
+    std::copy(std::begin(odom_pose_covariance), std::end(odom_pose_covariance),
+              odom.pose.covariance.begin());
+    std::copy(std::begin(odom_twist_covariance), std::end(odom_twist_covariance),
+              odom.twist.covariance.begin());
 
     robotpose.x = Robot_Pos.X;
     robotpose.y = Robot_Pos.Y;

@@ -1,6 +1,5 @@
 import os
 import time
-import fcntl
 import threading
 
 import cv2
@@ -9,6 +8,7 @@ from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry
 from racing_common.process_lifecycle import install_parent_death_signal
+from racing_common.session_file_log import SessionFileLog
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
@@ -32,7 +32,7 @@ class QRScannerNode(Node):
         self.declare_parameter('min_publish_interval', 1.0)
         self.declare_parameter('diagnostics_enabled', True)
         self.declare_parameter('diagnostics_interval_sec', 1.0)
-        self.declare_parameter('diagnostics_log_subdir', 'competition_stage1')
+        self.declare_parameter('diagnostics_log_subdir', 'stage1')
         self.declare_parameter('diagnostics_log_filename', 'latest.log')
         self.declare_parameter('debug_image_enabled', True)
         self.declare_parameter('debug_image_filename', 'qr_latest.jpg')
@@ -67,10 +67,18 @@ class QRScannerNode(Node):
         self.diagnostics_log_filename = str(
             self.get_parameter('diagnostics_log_filename').value
         ).strip()
-        self.debug_image_enabled = bool(self.get_parameter('debug_image_enabled').value)
+self.debug_image_enabled = bool(self.get_parameter('debug_image_enabled').value)
         self.debug_image_filename = str(
             self.get_parameter('debug_image_filename').value
         ).strip() or 'qr_latest.jpg'
+
+        self._diag_log = None
+        if self.diagnostics_enabled:
+            self._diag_log = SessionFileLog(
+                self.diagnostics_log_subdir or 'stage1',
+                filename=self.diagnostics_log_filename or 'latest.log',
+                session_title='QR scanner diagnostic',
+            )
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -183,15 +191,10 @@ class QRScannerNode(Node):
             f'debug_image={self.debug_image_path() or "disabled"}'
         )
 
-    def diagnostic_log_path(self):
-        workspace_root = os.environ.get('DEV_WS', '').strip()
-        if not workspace_root:
-            workspace_root = os.getcwd()
-        if not os.path.isdir(os.path.join(workspace_root, 'src', 'racing')):
+def diagnostic_log_path(self):
+        if self._diag_log is None:
             return ''
-        subdir = self.diagnostics_log_subdir or 'competition_stage1'
-        filename = self.diagnostics_log_filename or 'latest.log'
-        return os.path.join(workspace_root, 'log', subdir, filename)
+        return self._diag_log.path
 
     def debug_image_path(self):
         if not self.debug_image_enabled:
@@ -203,44 +206,22 @@ class QRScannerNode(Node):
         return os.path.join(os.path.dirname(log_path), self.debug_image_filename)
 
     def write_diagnostic(self, message):
-        """Append QR processing evidence without taking ownership of the Stage1 log."""
-        if not self.diagnostics_enabled:
+        if not self.diagnostics_enabled or self._diag_log is None:
             return
 
-        path = self.diagnostic_log_path()
-        if not path:
-            return
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'a', encoding='utf-8') as log_file:
-                fcntl.flock(log_file.fileno(), fcntl.LOCK_EX)
-                try:
-                    log_file.write(f'[QR_DIAG] {message}\n')
-                    log_file.flush()
-                finally:
-                    fcntl.flock(log_file.fileno(), fcntl.LOCK_UN)
-        except OSError as exc:
-            self.get_logger().warn(f'failed to write QR diagnostic log: {exc}')
+        self._diag_log.write(f'[QR_DIAG] {message}')
 
     def reset_diagnostic_log(self):
-        """Start a fresh QR diagnostic session without touching Stage1 latest.log."""
         if not self.diagnostics_enabled:
             return
 
-        path = self.diagnostic_log_path()
-        if not path:
-            return
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as log_file:
-                fcntl.flock(log_file.fileno(), fcntl.LOCK_EX)
-                try:
-                    log_file.write('=== QR scanner diagnostic session ===\n')
-                    log_file.flush()
-                finally:
-                    fcntl.flock(log_file.fileno(), fcntl.LOCK_UN)
-        except OSError as exc:
-            self.get_logger().warn(f'failed to reset QR diagnostic log: {exc}')
+        if self._diag_log is not None:
+            self._diag_log.close()
+        self._diag_log = SessionFileLog(
+            self.diagnostics_log_subdir or 'stage1',
+            filename=self.diagnostics_log_filename or 'latest.log',
+            session_title='QR scanner diagnostic',
+        )
 
     def write_debug_image(self, gray_image, candidate_descriptions, results):
         path = self.debug_image_path()

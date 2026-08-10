@@ -48,7 +48,7 @@ class Stage3ReturnNavigator(Node):
         self._read_params()
 
         self.log = RacingLogger(
-            self, log_subdir='competition_stage3', log_filename='latest.log',
+            self, log_subdir='stage3', log_filename='latest.log',
             session_title='Stage3 return navigator', defer_file=True,
         )
         self._activated = False

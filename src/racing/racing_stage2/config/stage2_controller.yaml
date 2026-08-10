@@ -266,7 +266,7 @@ stage2_inertial_navigator:
     vision_crop_ratio: 0.60
     vision_crop_side_ratio: 0.05
     vision_http_port: 8082
-    session_log_subdir: competition_stage2
+    session_log_subdir: stage2
     session_log_filename: latest.log
     session_telemetry_interval_sec: 0.50
     session_track_ctrl_interval_sec: 0.50

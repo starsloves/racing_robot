@@ -105,7 +105,10 @@ class CompetitionSupervisor(Node):
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
-        self.session_id = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        self.session_id = (
+            os.environ.get('COMPETITION_SESSION_ID', '').strip()
+            or datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        )
         self.base_state = 'starting'
         self.active_stage = ''
         self.prewarming_stage = ''
@@ -202,6 +205,18 @@ class CompetitionSupervisor(Node):
             if stamp is None or (name != 'map' and now - stamp > max_age)
         ]
         cmd_subscribers = self.count_subscribers('/cmd_vel')
+        try:
+            odom_publishers = [
+                {
+                    'node_name': str(info.node_name),
+                    'node_namespace': str(info.node_namespace),
+                    'gid': str(info.endpoint_gid),
+                }
+                for info in self.get_publishers_info_by_topic(
+                    '/odom_combined', no_mangle=False)
+            ]
+        except Exception as exc:
+            odom_publishers = [{'error': f'{type(exc).__name__}: {exc}'}]
         transforms = {}
         tf_timeout = max(0.0, float(self.get_parameter('base_tf_timeout_sec').value))
         for label, parent, child in (
@@ -231,6 +246,7 @@ class CompetitionSupervisor(Node):
             'stale_messages': stale_messages,
             'localizer_valid': self._localizer_valid,
             'cmd_subscribers': cmd_subscribers,
+            'odom_publishers': odom_publishers,
             'transforms': transforms,
         }
 
@@ -241,6 +257,8 @@ class CompetitionSupervisor(Node):
             not health['stale_messages']
             and health['localizer_valid']
             and health['cmd_subscribers'] > 0
+            and len(health['odom_publishers']) == 1
+            and 'error' not in health['odom_publishers'][0]
             and health['transforms']['map_to_base_footprint']
         )
         if not ready:
@@ -255,6 +273,9 @@ class CompetitionSupervisor(Node):
         missing = list(health['stale_messages'])
         if health['cmd_subscribers'] == 0:
             missing.append('cmd_vel subscriber')
+        if len(health['odom_publishers']) != 1:
+            missing.append(
+                'odom_combined publishers=' + str(health['odom_publishers']))
         if not health['localizer_valid']:
             missing.append('START_CORNER_LOCALIZER valid')
         for label, available in health['transforms'].items():
@@ -278,6 +299,9 @@ class CompetitionSupervisor(Node):
                 details.append('ages=' + ages)
         if health['cmd_subscribers'] == 0:
             details.append('cmd_vel_subscribers=0')
+        if len(health['odom_publishers']) != 1:
+            details.append(
+                'odom_combined_publishers=' + str(health['odom_publishers']))
         if not health['localizer_valid']:
             details.append('start_corner_localizer_invalid')
         missing_tfs = [

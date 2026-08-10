@@ -3,6 +3,7 @@
 import os
 import socket
 import threading
+from datetime import datetime
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -55,11 +56,20 @@ def _web_host_hint():
     return '127.0.0.1'
 
 
+def _session_environment():
+    session_id = os.environ.get('COMPETITION_SESSION_ID', '').strip()
+    if not session_id:
+        session_id = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    workspace_root = os.environ.get('DEV_WS', '').strip() or '/home/sunrise/dev_ws'
+    return session_id, os.path.join(workspace_root, 'log', 'competition_runs', session_id)
+
+
 _SUPERVISOR_SHUTDOWN_LOCK = threading.Lock()
 _SUPERVISOR_SHUTDOWN_REQUESTED = False
 
 
 def generate_launch_description():
+    session_id, session_root = _session_environment()
     bringup_dir = get_package_share_directory('origincar_bringup')
     voice_dir = get_package_share_directory('voice_driver')
     qr_dir = get_package_share_directory('qr_scanner')
@@ -94,6 +104,13 @@ def generate_launch_description():
             {'odom_frame': 'odom_combined'},
         ],
         output='log',
+    )
+    pose_audit = Node(
+        package='racing_tools',
+        executable='pose_chain_audit',
+        name='pose_chain_audit',
+        output='log',
+        parameters=[os.path.join(tools_dir, 'config', 'pose_chain_audit.yaml')],
     )
     camera = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(qr_dir, 'launch', 'start_competition.launch.py')),
@@ -163,14 +180,16 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        SetEnvironmentVariable('ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_runtime'),
+        SetEnvironmentVariable('COMPETITION_SESSION_ID', session_id),
+        SetEnvironmentVariable('RACING_SESSION_ROOT', session_root),
+        SetEnvironmentVariable('ROS_LOG_DIR', os.path.join(session_root, 'ros', 'runtime')),
         SetEnvironmentVariable('OVERRIDE_LAUNCH_PROCESS_OUTPUT', 'own_log'),
         SetEnvironmentVariable('RMW_FASTRTPS_USE_SHM', '0'),
         SetEnvironmentVariable('RMW_FASTRTPS_TRANSPORT', 'UDPv4'),
         SetEnvironmentVariable('RACING_OPERATOR_TTY', _operator_tty()),
         map_yaml, include_depth, include_voice,
         enable_web_monitor, web_monitor_host, web_monitor_port,
-        base, map_stack, camera, lidar, start_localizer,
+        base, map_stack, camera, lidar, start_localizer, pose_audit,
         voice,
         web_monitor,
         web_monitor_hint,

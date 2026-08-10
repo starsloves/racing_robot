@@ -30,6 +30,7 @@ setup(
             'start_corner_pose_diagnostic = racing_tools.start_corner_pose_diagnostic:main',
             'manual_trajectory_recorder = racing_tools.manual_trajectory_recorder:main',
             'telemetry_web_monitor = racing_tools.telemetry_web_monitor:main',
+            'pose_chain_audit = racing_tools.pose_chain_audit:main',
         ],
     },
 )

@@ -21,9 +21,6 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{'mode': LaunchConfiguration('mode')}],
     )
     return LaunchDescription([
-        SetEnvironmentVariable(
-            'ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_runtime'
-        ),
         DeclareLaunchArgument('mode', default_value='tts_only'),
         broadcast_node,
         RegisterEventHandler(OnProcessStart(

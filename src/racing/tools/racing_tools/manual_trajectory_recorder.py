@@ -44,7 +44,7 @@ class ManualTrajectoryRecorder(Node):
         self.declare_parameter('odom_topic', '/odom_combined')
         self.declare_parameter('record_rate_hz', 10.0)
         self.declare_parameter('sample_distance_m', 0.03)
-        self.declare_parameter('output_dir', 'log/manual_trajectories')
+        self.declare_parameter('output_dir', 'log/tools/manual_trajectories')
         self.declare_parameter('record_name', 'manual_trajectory')
         self.declare_parameter('tf_timeout_sec', 0.05)
 

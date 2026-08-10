@@ -81,6 +81,7 @@ def generate_launch_description():
             condition=UnlessCondition(carto_slam),
             package='robot_localization', 
             executable='ekf_node', 
+            name='ekf_filter_node',
             parameters=[ekf_config],
             remappings=[("odometry/filtered", "odom_combined")]
             )

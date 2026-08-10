@@ -120,8 +120,10 @@ def generate_launch_description():
 
     # Preserve ROS startup and shutdown diagnostics on disk while keeping the
     # terminal reserved for the operator-facing status messages.
+    session_root = os.environ.get('RACING_SESSION_ROOT', '').strip()
     runtime_ros_log_dir = SetEnvironmentVariable(
-        'ROS_LOG_DIR', '/home/sunrise/dev_ws/log/competition_stage3/ros'
+        'ROS_LOG_DIR', os.path.join(session_root, 'ros', 'stage3')
+        if session_root else os.path.join(os.environ.get('DEV_WS', os.path.expanduser('~/dev_ws')), 'log', 'stage3', 'ros')
     )
     isolate_process_output = SetEnvironmentVariable(
         'OVERRIDE_LAUNCH_PROCESS_OUTPUT', 'own_log'
