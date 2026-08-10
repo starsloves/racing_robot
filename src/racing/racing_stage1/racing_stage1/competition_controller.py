@@ -348,6 +348,9 @@ class CompetitionController(Node):
         self.get_logger().info(
             f'Nav2 goal sent kind={kind} target=({target[0]:.2f},{target[1]:.2f},'
             f'{math.degrees(yaw):.1f}deg)')
+        terminal_write(
+            f'[PLAN] 发送目标 kind={kind} 目标=({target[0]:.2f},{target[1]:.2f},'
+            f'{math.degrees(yaw):.1f}deg) 规划中...')
         return True
 
     def _feedback_cb(self, feedback, generation):
@@ -356,6 +359,11 @@ class CompetitionController(Node):
         distance = getattr(feedback.feedback, 'distance_remaining', None)
         if distance is not None:
             self.get_logger().debug(f'Nav2 {self._goal_kind} distance={distance:.2f}m')
+            now = time.monotonic()
+            if getattr(self, '_last_feedback_log', 0) + 2.0 < now:
+                self._last_feedback_log = now
+                terminal_write(
+                    f'[NAV] {self._goal_kind} 剩余距离={distance:.2f}m')
 
     def _goal_response_cb(self, future, generation, kind):
         try:
@@ -381,6 +389,7 @@ class CompetitionController(Node):
                 self._schedule_goal_retry_locked(kind, 'goal rejected')
                 return
             self._goal_handle = handle
+            terminal_write(f'[PLAN] 目标已接受 kind={kind} 路径规划中...')
             result_future = handle.get_result_async()
             result_future.add_done_callback(
                 lambda result: self._goal_result_cb(result, generation, kind))
@@ -513,6 +522,20 @@ class CompetitionController(Node):
                 self._publish_state('ready')
                 self.get_logger().info(
                     'S1 ready: map, startup localization, TF and Nav2 lifecycle are active')
+                terminal_write('[S1] Nav2 就绪，等待 Supervisor 激活')
+            elif not self._ready_published:
+                missing = []
+                if not self._localizer_valid: missing.append('localizer')
+                if not self._map_received: missing.append('map')
+                if pose is None: missing.append('TF')
+                if not action_ready: missing.append('Nav2_action')
+                if not self._nav2_active: missing.append('Nav2_lifecycle')
+                now = time.monotonic()
+                if getattr(self, '_last_wait_log', 0) + 5.0 < now:
+                    self._last_wait_log = now
+                    self.get_logger().info(
+                        f'S1 waiting for: {", ".join(missing)}')
+                    terminal_write(f'[S1] 等待: {", ".join(missing)}')
 
             if not (self._ready_published and self._activation_requested and pose is not None):
                 return

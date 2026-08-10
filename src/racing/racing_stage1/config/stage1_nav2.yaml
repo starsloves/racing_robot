@@ -37,7 +37,7 @@ controller_server:
       vy_std: 0.0
       wz_std: 0.70
       vx_max: 0.45
-      vx_min: 0.0
+      vx_min: 0.05
       vy_max: 0.0
       wz_max: 0.72
       ax_max: 1.50
@@ -46,7 +46,7 @@ controller_server:
       temperature: 0.30
       gamma: 0.015
       prune_distance: 1.5
-      transform_tolerance: 0.20
+      transform_tolerance: 0.50
       visualize: false
       critics: [ConstraintCritic, ObstaclesCritic, GoalCritic, GoalAngleCritic,
                 PathAlignCritic, PathFollowCritic, PathAngleCritic, PreferForwardCritic]
@@ -58,7 +58,7 @@ controller_server:
         critical_weight: 20.0
         consider_footprint: true
         collision_cost: 10000.0
-        collision_margin_distance: 0.08
+        collision_margin_distance: 0.15
         near_goal_distance: 0.5
       GoalCritic:
         cost_power: 1
@@ -104,7 +104,7 @@ planner_server:
     GridBased:
       plugin: nav2_smac_planner/SmacPlannerHybrid
       tolerance: 0.30
-      allow_unknown: false
+      allow_unknown: true
       max_iterations: 100000
       max_planning_time: 1.0
       # The default 20 m heuristic table is much larger than this 7.1 m map
@@ -140,6 +140,7 @@ local_costmap:
       use_sim_time: false
       update_frequency: 10.0
       publish_frequency: 10.0
+      transform_tolerance: 0.50
       global_frame: odom_combined
       robot_base_frame: base_link
       rolling_window: true
@@ -169,7 +170,7 @@ local_costmap:
           max_obstacle_height: 2.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.40
+        inflation_radius: 0.55
         cost_scaling_factor: 10.0
       always_send_full_costmap: false
   local_costmap_client:
@@ -183,6 +184,7 @@ global_costmap:
       use_sim_time: false
       update_frequency: 3.0
       publish_frequency: 2.0
+      transform_tolerance: 0.50
       global_frame: map
       robot_base_frame: base_link
       rolling_window: false
@@ -204,13 +206,13 @@ global_costmap:
           marking: true
           inf_is_valid: true
           obstacle_min_range: 0.10
-          obstacle_max_range: 3.00
+          obstacle_max_range: 4.50
           raytrace_min_range: 0.10
           raytrace_max_range: 5.00
           max_obstacle_height: 2.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.40
+        inflation_radius: 0.55
         cost_scaling_factor: 10.0
       always_send_full_costmap: true
   global_costmap_client:
@@ -224,7 +226,7 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_link
     odom_topic: /odom_combined
-    transform_tolerance: 0.20
+    transform_tolerance: 0.50
     bt_loop_duration: 50
     default_server_timeout: 20
     default_nav_to_pose_bt_xml: navigate_to_pose_s1.xml
@@ -246,7 +248,7 @@ behavior_server:
       plugin: nav2_behaviors/DriveOnHeading
     global_frame: odom_combined
     robot_base_frame: base_link
-    transform_tolerance: 0.20
+    transform_tolerance: 0.50
     simulate_ahead_time: 2.0
     max_rotational_vel: 0.72
     min_rotational_vel: 0.0
