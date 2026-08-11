@@ -171,7 +171,9 @@ local_costmap:
           max_obstacle_height: 2.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.55
+        # The mapped center opening is about 0.83 m wide. 0.55 m inflated
+        # walls closed it despite the 0.28 m chassis footprint.
+        inflation_radius: 0.25
         cost_scaling_factor: 10.0
       always_send_full_costmap: false
   local_costmap_client:
@@ -213,7 +215,9 @@ global_costmap:
           max_obstacle_height: 2.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.55
+        # Keep the local safety gradient below the measured corridor width;
+        # footprint/collision_margin still provide the hard collision guard.
+        inflation_radius: 0.30
         cost_scaling_factor: 10.0
       always_send_full_costmap: true
   global_costmap_client:

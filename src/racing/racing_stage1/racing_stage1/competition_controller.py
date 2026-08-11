@@ -121,6 +121,7 @@ class CompetitionController(Node):
         self._nav2_state_future = None
         self._nav2_active = False
         self._pending_entry = False
+        self._entry_route_index = 0
         self._entry_goal_done = False
         self._entry_stable_since = None
         self._entry_announced = False
@@ -165,6 +166,24 @@ class CompetitionController(Node):
             'channel_entry_x_m': 2.50,
             'channel_entry_y_m': 2.50,
             'channel_entry_yaw_deg': 90.0,
+            'entry_align_x_m': 2.25,
+            'entry_align_y_m': 1.50,
+            'entry_align_yaw_deg': 90.0,
+            'entry_turn_x_m': 4.55,
+            'entry_turn_y_m': 1.35,
+            'entry_turn_yaw_deg': 330.0,
+            'entry_lower_turn_x_m': 4.45,
+            'entry_lower_turn_y_m': 0.75,
+            'entry_lower_turn_yaw_deg': 225.0,
+            'entry_lower_approach_x_m': 3.50,
+            'entry_lower_approach_y_m': 0.90,
+            'entry_lower_approach_yaw_deg': 150.0,
+            'entry_corridor_approach_x_m': 2.25,
+            'entry_corridor_approach_y_m': 2.10,
+            'entry_corridor_approach_yaw_deg': 90.0,
+            'entry_corridor_x_m': 2.50,
+            'entry_corridor_y_m': 2.10,
+            'entry_corridor_yaw_deg': 90.0,
             'channel_entry_tolerance_m': 0.20,
             'channel_entry_yaw_tolerance_deg': 15.0,
             'entry_stable_sec': 0.25,
@@ -203,6 +222,30 @@ class CompetitionController(Node):
         self.qr_goal_yaw = math.radians(float(value('qr_goal_yaw_deg')))
         self.entry_goal = (float(value('channel_entry_x_m')), float(value('channel_entry_y_m')))
         self.entry_yaw = math.radians(float(value('channel_entry_yaw_deg')))
+        self.entry_align_goal = (
+            float(value('entry_align_x_m')), float(value('entry_align_y_m')))
+        self.entry_align_yaw = math.radians(float(value('entry_align_yaw_deg')))
+        self.entry_turn_goal = (
+            float(value('entry_turn_x_m')), float(value('entry_turn_y_m')))
+        self.entry_turn_yaw = math.radians(float(value('entry_turn_yaw_deg')))
+        self.entry_lower_turn_goal = (
+            float(value('entry_lower_turn_x_m')), float(value('entry_lower_turn_y_m')))
+        self.entry_lower_turn_yaw = math.radians(float(value('entry_lower_turn_yaw_deg')))
+        self.entry_lower_approach_goal = (
+            float(value('entry_lower_approach_x_m')),
+            float(value('entry_lower_approach_y_m')),
+        )
+        self.entry_lower_approach_yaw = math.radians(
+            float(value('entry_lower_approach_yaw_deg')))
+        self.entry_corridor_approach_goal = (
+            float(value('entry_corridor_approach_x_m')),
+            float(value('entry_corridor_approach_y_m')),
+        )
+        self.entry_corridor_approach_yaw = math.radians(
+            float(value('entry_corridor_approach_yaw_deg')))
+        self.entry_corridor_goal = (
+            float(value('entry_corridor_x_m')), float(value('entry_corridor_y_m')))
+        self.entry_corridor_yaw = math.radians(float(value('entry_corridor_yaw_deg')))
         self.entry_tolerance = max(0.05, float(value('channel_entry_tolerance_m')))
         self.entry_yaw_tolerance = math.radians(
             max(1.0, float(value('channel_entry_yaw_tolerance_deg'))))
@@ -295,7 +338,9 @@ class CompetitionController(Node):
         points.append((self.qr_goal[0], self.qr_goal[1], self.qr_goal_yaw))
         if self._mission_state in (
                 self.MISSION_RETURN_TO_ENTRY, self.MISSION_HANDOFF_WAIT):
-            points.append((self.entry_goal[0], self.entry_goal[1], self.entry_yaw))
+            points.extend(
+                (target[0], target[1], yaw)
+                for _kind, target, yaw in self._entry_route_targets())
         for x, y, yaw in points:
             pose = PoseStamped()
             pose.header = message.header
@@ -305,6 +350,20 @@ class CompetitionController(Node):
             pose.pose.orientation.w = math.cos(yaw * 0.5)
             message.poses.append(pose)
         self.mission_route_pub.publish(message)
+
+    def _entry_route_targets(self):
+        """Return short, map-verified segments into the narrow handoff lane."""
+        return [
+            ('entry_turn', self.entry_turn_goal, self.entry_turn_yaw),
+            ('entry_lower_turn', self.entry_lower_turn_goal, self.entry_lower_turn_yaw),
+            ('entry_lower_approach', self.entry_lower_approach_goal,
+             self.entry_lower_approach_yaw),
+            ('entry_align', self.entry_align_goal, self.entry_align_yaw),
+            ('entry_corridor_approach', self.entry_corridor_approach_goal,
+             self.entry_corridor_approach_yaw),
+            ('entry_corridor', self.entry_corridor_goal, self.entry_corridor_yaw),
+            ('entry', self.entry_goal, self.entry_yaw),
+        ]
 
     def _plan_cb(self, msg):
         if not msg.poses:
@@ -387,7 +446,7 @@ class CompetitionController(Node):
         self._goal_retry_count += 1
         self._goal_retry_at = time.monotonic() + self.goal_retry_delay
         self._goal_result = None
-        if kind == 'entry':
+        if kind.startswith('entry'):
             self._pending_entry = True
         self.get_logger().warning(
             f'Nav2 {kind} goal retry {self._goal_retry_count}/{self.goal_retry_limit} '
@@ -497,9 +556,21 @@ class CompetitionController(Node):
             self._goal_retry_count = 0
             self._goal_retry_at = 0.0
             self._watchdog_latched = False
-            if kind == 'entry':
-                self._entry_goal_done = True
-                self._entry_stable_since = None
+            if kind.startswith('entry'):
+                if kind == 'entry':
+                    self._entry_goal_done = True
+                    self._entry_stable_since = None
+                else:
+                    self._entry_route_index += 1
+                    self._pending_entry = self._entry_route_index < len(
+                        self._entry_route_targets())
+                    self._goal_retry_at = 0.0
+                    if self._pending_entry:
+                        next_kind = self._entry_route_targets()[self._entry_route_index][0]
+                        self.get_logger().info(
+                            f'S1 entry route reached {kind}; advancing to {next_kind}')
+                    else:
+                        self.get_logger().info(f'S1 entry route reached {kind}')
             else:
                 self.get_logger().info('QR search goal reached; waiting for QR result')
 
@@ -541,6 +612,7 @@ class CompetitionController(Node):
             self.task_pub.publish(String(data=task))
             self._publish_state(self.MISSION_QR_LOCKED)
             self._pending_entry = True
+            self._entry_route_index = 0
             self._entry_goal_done = False
             self._entry_stable_since = None
             self._goal_generation += 1
@@ -551,9 +623,8 @@ class CompetitionController(Node):
             self._publish_state(self.MISSION_RETURN_TO_ENTRY)
             self._publish_mission_route()
             self.get_logger().info(
-                f'QR locked task={task}; switching Nav2 goal to entry '
-                f'({self.entry_goal[0]:.2f},{self.entry_goal[1]:.2f},'
-                f'{math.degrees(self.entry_yaw):.1f}deg)')
+                f'QR locked task={task}; starting staged entry route '
+                f'via {" -> ".join(kind for kind, _target, _yaw in self._entry_route_targets())}')
 
     def _activate_cb(self, _request, response):
         with self._lock:
@@ -665,7 +736,8 @@ class CompetitionController(Node):
                     now >= self._goal_retry_at):
                 self._pending_entry = False
                 self._goal_result = None
-                self._send_goal_locked('entry', self.entry_goal, self.entry_yaw)
+                kind, target, yaw = self._entry_route_targets()[self._entry_route_index]
+                self._send_goal_locked(kind, target, yaw)
                 return
 
             if self._mission_state == self.MISSION_RETURN_TO_ENTRY and self._entry_goal_done:

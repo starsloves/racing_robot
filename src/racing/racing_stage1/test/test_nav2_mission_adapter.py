@@ -27,6 +27,112 @@ def test_nav2_goal_uses_map_frame_and_requested_yaw():
     assert math.isclose(goal.pose.pose.orientation.w, math.cos(math.pi / 4.0))
 
 
+def test_entry_route_uses_left_approach_then_corridor_then_handoff():
+    controller = CompetitionController.__new__(CompetitionController)
+    controller.entry_turn_goal = (4.55, 1.35)
+    controller.entry_turn_yaw = math.radians(330.0)
+    controller.entry_lower_turn_goal = (4.45, 0.75)
+    controller.entry_lower_turn_yaw = math.radians(225.0)
+    controller.entry_lower_approach_goal = (3.50, 0.90)
+    controller.entry_lower_approach_yaw = math.radians(150.0)
+    controller.entry_align_goal = (2.25, 1.5)
+    controller.entry_align_yaw = math.pi / 2.0
+    controller.entry_corridor_approach_goal = (2.25, 2.1)
+    controller.entry_corridor_approach_yaw = math.pi / 2.0
+    controller.entry_corridor_goal = (2.5, 2.1)
+    controller.entry_corridor_yaw = math.pi / 2.0
+    controller.entry_goal = (2.5, 2.5)
+    controller.entry_yaw = math.pi / 2.0
+
+    route = controller._entry_route_targets()
+
+    assert [item[0] for item in route] == [
+        'entry_turn', 'entry_lower_turn', 'entry_lower_approach',
+        'entry_align', 'entry_corridor_approach', 'entry_corridor', 'entry']
+    assert route[-1][1:] == ((2.5, 2.5), math.pi / 2.0)
+
+
+def _entry_result_controller():
+    controller = CompetitionController.__new__(CompetitionController)
+    controller._lock = threading.RLock()
+    controller._released = False
+    controller._goal_generation = 1
+    controller._goal_handle = object()
+    controller._goal_future = object()
+    controller._goal_sent_at = 10.0
+    controller._goal_result = None
+    controller._goal_retry_count = 0
+    controller.goal_retry_limit = 3
+    controller._goal_retry_at = 0.0
+    controller._watchdog_latched = False
+    controller._entry_route_index = 0
+    controller._pending_entry = False
+    controller._entry_goal_done = False
+    controller._entry_stable_since = None
+    controller.entry_align_goal = (2.25, 1.5)
+    controller.entry_align_yaw = math.pi / 2.0
+    controller.entry_turn_goal = (4.55, 1.35)
+    controller.entry_turn_yaw = math.radians(330.0)
+    controller.entry_lower_turn_goal = (4.45, 0.75)
+    controller.entry_lower_turn_yaw = math.radians(225.0)
+    controller.entry_lower_approach_goal = (3.50, 0.90)
+    controller.entry_lower_approach_yaw = math.radians(150.0)
+    controller.entry_corridor_approach_goal = (2.25, 2.1)
+    controller.entry_corridor_approach_yaw = math.pi / 2.0
+    controller.entry_corridor_goal = (2.5, 2.1)
+    controller.entry_corridor_yaw = math.pi / 2.0
+    controller.entry_goal = (2.5, 2.5)
+    controller.entry_yaw = math.pi / 2.0
+    controller.goal_retry_delay = 1.0
+    controller._cancel_waiting = False
+    controller.get_logger = lambda: SimpleNamespace(
+        info=lambda _message: None,
+        warning=lambda _message: None,
+        error=lambda _message: None,
+    )
+    return controller
+
+
+def test_entry_success_advances_each_segment_and_handoff_only_after_final():
+    controller = _entry_result_controller()
+    future = SimpleNamespace(result=lambda: SimpleNamespace(
+        status=controller_module.GoalStatus.STATUS_SUCCEEDED))
+
+    route = controller._entry_route_targets()
+    for generation, (kind, _target, _yaw) in enumerate(route[:-1], start=1):
+        controller._goal_generation = generation
+        controller._goal_handle = object()
+        controller._goal_future = object()
+        controller._goal_kind = kind
+        controller._goal_result_cb(future, generation, kind)
+        assert controller._entry_route_index == generation
+        assert controller._pending_entry is True
+        assert controller._entry_goal_done is False
+
+    controller._goal_generation = len(route)
+    controller._goal_handle = object()
+    controller._goal_future = object()
+    controller._goal_kind = 'entry'
+    controller._goal_result_cb(future, len(route), 'entry')
+    assert controller._pending_entry is True
+    assert controller._entry_goal_done is True
+
+
+def test_entry_failure_retries_same_segment_without_restarting_route():
+    controller = _entry_result_controller()
+    controller._entry_route_index = 1
+    controller._goal_kind = 'entry_lower_turn'
+    future = SimpleNamespace(result=lambda: SimpleNamespace(
+        status=controller_module.GoalStatus.STATUS_ABORTED))
+
+    controller._goal_result_cb(future, 1, 'entry_lower_turn')
+
+    assert controller._entry_route_index == 1
+    assert controller._pending_entry is True
+    assert controller._goal_retry_count == 1
+    assert controller._goal_result is None
+
+
 def test_nav2_lifecycle_callback_marks_only_active_state_ready():
     controller = CompetitionController.__new__(CompetitionController)
     controller._lock = threading.RLock()

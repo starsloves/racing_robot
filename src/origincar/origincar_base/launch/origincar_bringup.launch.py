@@ -97,6 +97,7 @@ def generate_launch_description():
     ld.add_action(joint_state_publisher_node)
     ld.add_action(choose_car)
     ld.add_action(imu_filter_node)
+    ld.add_action(link_to_laser)
     ld.add_action(robot_ekf)
 
     return ld

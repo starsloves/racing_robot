@@ -29,6 +29,30 @@ competition_controller:
     channel_entry_x_m: 2.50
     channel_entry_y_m: 2.50
     channel_entry_yaw_deg: 90.0
+    # Narrow-lane return route: turn in below the wall, enter its center, then
+    # settle at the S2 handoff pose. All points are map-frame parameters.
+    # Enter the left half first; the last-run radar obstacle was near
+    # map=(2.9,1.84), so a direct x=2.50 vertical approach is invalid.
+    entry_align_x_m: 2.25
+    entry_align_y_m: 1.50
+    entry_align_yaw_deg: 90.0
+    # Pre-validated forward-only waypoints keep each Dubins search local. They
+    # steer below the QR area before entering the narrow center corridor.
+    entry_turn_x_m: 4.55
+    entry_turn_y_m: 1.35
+    entry_turn_yaw_deg: 330.0
+    entry_lower_turn_x_m: 4.45
+    entry_lower_turn_y_m: 0.75
+    entry_lower_turn_yaw_deg: 225.0
+    entry_lower_approach_x_m: 3.50
+    entry_lower_approach_y_m: 0.90
+    entry_lower_approach_yaw_deg: 150.0
+    entry_corridor_approach_x_m: 2.25
+    entry_corridor_approach_y_m: 2.10
+    entry_corridor_approach_yaw_deg: 90.0
+    entry_corridor_x_m: 2.50
+    entry_corridor_y_m: 2.10
+    entry_corridor_yaw_deg: 90.0
     channel_entry_tolerance_m: 0.20
     channel_entry_yaw_tolerance_deg: 15.0
     entry_stable_sec: 0.25
